@@ -17,6 +17,11 @@
                      （器 → 术 → 法 → 道，每层有边界有反面）
 ```
 
+## 仓库
+
+<https://github.com/Chandlersn/dsh-mind-system> —— 四家合成一个仓库（`packages/` 下），
+npm 上仍是五个独立包。
+
 ## 安装
 
 ```bash
