@@ -20,7 +20,11 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-// here = <workspace>/dsh-agent-mind/test → 上两级才是 workspace（readIn 会再拼插件名）
+// here = <repo>/packages/dsh-agent-mind/test → 上三级到 packages/（readIn 再拼插件名）
+//
+// ⚠️ monorepo 布局下这个基准变了：独立仓库时期是 <workspace>，现在兄弟包在
+// packages/ 下。写死旧基准会让本测试**静默读到空串**（readIn 返回 ''），
+// 断言会以"数量不对"的方式失败 —— 不是"读不到"的明确报错。
 const workspace = resolve(here, '..', '..');
 
 /** 读某个插件目录下的文件（不存在返回空串）。 */
@@ -47,11 +51,11 @@ function allToolNames(src, re) {
 // ---------------------------------------------------------------------------
 console.log('\n--- 1. 本地 import 可解析 ---');
 {
-	const index = readIn('dsh-mind', 'index.js');
+	const index = readIn('dsh-agent-mind', 'index.js');
 	const imports = [...index.matchAll(/from\s+'(\.[^']+)'/g)].map((m) => m[1]);
 	assert.ok(imports.length >= 3, `mind 应 import 至少三个本地模块，实际 ${imports.length}`);
 	for (const imp of imports) {
-		const target = join(workspace, 'dsh-mind', imp.replace(/^\.\//, ''));
+		const target = join(workspace, 'dsh-agent-mind', imp.replace(/^\.\//, ''));
 		assert.ok(existsSync(target), `import 目标应存在：${imp}`);
 	}
 }
@@ -59,8 +63,8 @@ console.log('\n--- 1. 本地 import 可解析 ---');
 // ---------------------------------------------------------------------------
 console.log('\n--- 2. 导出符号真的被消费 ---');
 {
-	const index = readIn('dsh-mind', 'index.js');
-	const dispatch = readIn('dsh-mind', 'src/dispatch.js');
+	const index = readIn('dsh-agent-mind', 'index.js');
+	const dispatch = readIn('dsh-agent-mind', 'src/dispatch.js');
 
 	// dispatch.js 的导出必须被 index.js 用上（否则固化的机制没接进主链路）
 	for (const sym of ['explainSituation', 'recordDecision', 'listSignals', 'registerSignal']) {
@@ -76,7 +80,7 @@ console.log('\n--- 3. 跨插件接口真的可达 ---');
 {
 	// 3a. mind 的探针必须能被 CLIS 发现 —— 两条路径都要在
 	const clis = readIn('dsh-clis', 'index.js');
-	const mind = readIn('dsh-mind', 'index.js');
+	const mind = readIn('dsh-agent-mind', 'index.js');
 
 	assert.ok(/mind\.healthProbe/.test(clis), 'CLIS 的 KNOWN_PROBE_KEYS 应含 mind.healthProbe（兜底路径）');
 	assert.ok(
@@ -104,7 +108,7 @@ console.log('\n--- 3. 跨插件接口真的可达 ---');
 	// `TOOL_NAME = 'meta_reframe'`，字面量在 index.js 里搜不到 ——
 	// 用字面量搜索会得出"工具不存在"的假结论（这次真踩过）。
 	// 正确做法：解析各插件**真实的注册处**。
-	const mindSection = readIn('dsh-mind', 'src/mind.js');
+	const mindSection = readIn('dsh-agent-mind', 'src/mind.js');
 	const sectionText = mindSection.match(/SECTION_TEXT = \[([\s\S]*?)\]\.join/)?.[1] ?? '';
 	const named = [...sectionText.matchAll(/`([a-z_]+)`/g)].map((m) => m[1]);
 	assert.ok(named.length >= 5, `判断顺序应点名多家工具，实际 ${named.length}`);
@@ -129,13 +133,13 @@ console.log('\n--- 3. 跨插件接口真的可达 ---');
 // ---------------------------------------------------------------------------
 console.log('\n--- 4. 调度机制可被外部使用（固化的实质）---');
 {
-	const index = readIn('dsh-mind', 'index.js');
+	const index = readIn('dsh-agent-mind', 'index.js');
 	assert.ok(/export function registerSituationSignal/.test(index), 'mind 应导出 registerSituationSignal（外部单元可贡献信号）');
 	assert.ok(/export function situationSignals/.test(index), 'mind 应导出 situationSignals（信号可查）');
 	assert.ok(/export function lastDispatchDecision/.test(index), 'mind 应导出 lastDispatchDecision（判定可解释）');
 
 	// 探针要能区分"调度没生效"与"本轮无信号"
-	const probes = readIn('dsh-mind', 'index.js');
+	const probes = readIn('dsh-agent-mind', 'index.js');
 	assert.ok(/dispatched:/.test(probes), '探针应有 dispatched 代号（命中）');
 	assert.ok(/noSignal:/.test(probes), '探针应有 no-signal 代号（无信号，正常状态）');
 

@@ -1,0 +1,163 @@
+/**
+ * README 数字校验 —— 文档里的每个数字都要对得上代码。
+ *
+ * ## 为什么需要这个
+ *
+ * README 里写了工具数、判据数、测试数、代码行数、门槛值 —— 这些**会过期**。
+ * 一旦过期，README 就变成"看起来有据、实际已失效"的文档 ——
+ * 而"写进文档的约束等于没有约束"这条自我约束，同样适用于文档里的数字。
+ *
+ * 所以数字不靠人记：**这个脚本从源码里数出来，与 README 里写的比对**，
+ * 对不上就非零退出。改代码忘了改 README（或反之）会被它挡住。
+ *
+ * ## 它守什么
+ *
+ * 1. **工具清单**：每个注册的工具名都要出现在 README 的工具总表里
+ * 2. **工具总数**：README 声称的数字 = 实际注册数
+ * 3. **判据数**：memory_check 实际检查的判据数 = README 声称的
+ * 4. **门槛值**：术块 900 / 概括 110 / 法 ≥2 / 道 ≥5 —— 从 constants 与
+ *    layer-gate 里读，与 README 比对
+ * 5. **测试规模**：文件数与用例数从测试目录数，与 README 比对
+ * 6. **内置信号数**：dispatch.js 里实际注册的信号数
+ *
+ * @module scripts/verify-readme.mjs
+ */
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(here, '..');
+const pkgs = join(repoRoot, 'packages');
+
+let failures = 0;
+const ok = (cond, label) => {
+	console.log(`${cond ? '  PASS ' : '  FAIL '}${label}`);
+	if (!cond) failures++;
+};
+const read = (p) => {
+	try {
+		return readFileSync(p, 'utf8');
+	} catch {
+		return '';
+	}
+};
+
+const readme = read(join(repoRoot, 'README.md'));
+ok(readme.length > 0, 'README 存在');
+
+// ---------------------------------------------------------------------------
+console.log('\n--- 1. 工具清单：每个注册的工具都要在 README 里 ---');
+const toolSpecs = [
+	['dsh-agent-mind', 'index.js', /name:\s*'(mind_\w+)'/g],
+	['dsh-clis', 'index.js', /name:\s*"(clis_\w+)"/g],
+	['dsh-meta-framework', 'src/tools.js', /TOOL_NAME\s*=\s*'(\w+)'/g],
+	['dsh-memory-manager', 'server.js', /name:\s*'(memory_\w+)'/g],
+];
+const allTools = [];
+for (const [pkg, file, re] of toolSpecs) {
+	const src = read(join(pkgs, pkg, file));
+	const names = [...new Set([...src.matchAll(re)].map((m) => m[1]))];
+	allTools.push(...names);
+	for (const n of names) {
+		ok(readme.includes(`\`${n}\``), `${n} 在 README 的工具总表里`);
+	}
+}
+const claimed = Number(/(\d+) 个工具/.exec(readme)?.[1] ?? -1);
+ok(claimed === allTools.length, `README 声称 ${claimed} 个工具 = 实际 ${allTools.length}`);
+
+// ---------------------------------------------------------------------------
+console.log('\n--- 2. 判据数（memory_check 实际检查的）---');
+const mm = read(join(pkgs, 'dsh-memory-manager', 'server.js'));
+const codes = [...new Set([...mm.matchAll(/add\(\s*'(?:WARN|FAIL|INFO)'\s*,\s*'([^']+)'/g)].map((m) => m[1]))];
+const claimedCriteria = Number(/体检记忆根（(\d+) 条判据）/.exec(readme)?.[1] ?? -1);
+ok(claimedCriteria === codes.length, `README 声称 ${claimedCriteria} 条判据 = 实际 ${codes.length}`);
+// 每个代号都要在判据总表里出现
+for (const c of codes) {
+	ok(readme.includes(`\`${c}\``), `判据代号 ${c} 在 README 判据总表里`);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n--- 3. 门槛值（从代码读，与 README 比对）---');
+const cst = read(join(pkgs, 'dsh-memory-manager', 'src', 'constants.js'));
+const gate = read(join(pkgs, 'dsh-memory-manager', 'src', 'layer-gate.js'));
+const blockMax = cst.match(/MAX_BLOCK_CHARS\s*=\s*(\d+)/)?.[1];
+const rowMax = cst.match(/MAX_ROW_SUMMARY_CHARS\s*=\s*(\d+)/)?.[1];
+const faMin = gate.match(/MIN_FA_SOURCES\s*=\s*(\d+)/)?.[1];
+const daoMin = gate.match(/MIN_DAO_SOURCES\s*=\s*(\d+)/)?.[1];
+ok(readme.includes(`≤ ${blockMax} 字`), `术块上限 ${blockMax} 字与 README 一致`);
+ok(readme.includes(`≤ ${rowMax} 字`), `概括上限 ${rowMax} 字与 README 一致`);
+ok(readme.includes(`≥ ${faMin} 个**无关**来源域`), `法来源下限 ${faMin} 与 README 一致`);
+ok(readme.includes(`≥ ${daoMin} 条法萃取`), `道来源下限 ${daoMin} 与 README 一致`);
+
+// ---------------------------------------------------------------------------
+console.log('\n--- 4. 内置信号数 ---');
+const dispatch = read(join(pkgs, 'dsh-agent-mind', 'src', 'dispatch.js'));
+const sigCount = (dispatch.match(/name:\s*'(?:no-effect|need-\w+|do-it|intent-[\w-]+)'/g) ?? []).length;
+const claimedSig = Number(/内置 (\d+) 条信号/.exec(readme)?.[1] ?? -1);
+ok(claimedSig === sigCount, `README 声称 ${claimedSig} 条信号 = 实际 ${sigCount}`);
+
+// ---------------------------------------------------------------------------
+console.log('\n--- 5. 测试规模 ---');
+function countTests(pkg, dir) {
+	let files = 0;
+	let cases = 0;
+	try {
+		for (const f of readdirSync(join(pkgs, pkg, dir))) {
+			if (!/\.test\.(js|mjs)$/.test(f)) continue;
+			files += 1;
+			const c = read(join(pkgs, pkg, dir, f));
+			cases += Math.max(
+				(c.match(/^\s*ok\(/gm) ?? []).length,
+				(c.match(/^\s*(test|it)\(/gm) ?? []).length,
+			);
+		}
+	} catch {
+		/* 没有该目录 */
+	}
+	return { files, cases };
+}
+const am = countTests('dsh-agent-mind', 'test');
+const mmT = countTests('dsh-memory-manager', 'tests');
+const amRow = /`dsh-agent-mind` \| (\d+) \| (\d+)/.exec(readme);
+const mmRow = /`dsh-memory-manager` \| (\d+) \| (\d+)/.exec(readme);
+ok(
+	Number(amRow?.[1]) === am.files && Number(amRow?.[2]) === am.cases,
+	`agent-mind 测试规模 ${am.files}/${am.cases} 与 README 一致`,
+);
+ok(
+	Number(mmRow?.[1]) === mmT.files && Number(mmRow?.[2]) === mmT.cases,
+	`memory 测试规模 ${mmT.files}/${mmT.cases} 与 README 一致`,
+);
+
+// ---------------------------------------------------------------------------
+console.log('\n--- 6. 代码规模 ---');
+function countLines(pkg, files) {
+	let n = 0;
+	let okCount = 0;
+	for (const f of files) {
+		const c = read(join(pkgs, pkg, f));
+		if (c.length === 0) continue;
+		n += c.split('\n').length;
+		okCount += 1;
+	}
+	return { okCount, n };
+}
+const LINES = {
+	'dsh-agent-mind': [
+		'src/dispatch.js', 'src/hitrate.js', 'src/sampling.js', 'src/orchestrate.js',
+		'src/mind.js', 'src/host.js', 'index.js',
+		'test/dispatch.test.js', 'test/hitrate.test.js', 'test/sampling.test.js',
+		'test/interfaces.test.js', 'test/mind.test.js', 'test/orchestrate.test.js',
+	],
+	'dsh-meta-framework': ['index.js', 'src/tools.js', 'src/health.js', 'src/host.js'],
+	'dsh-memory-manager': ['server.js', 'src/layer-gate.js', 'src/layer-selfcheck.js', 'src/dao-shape.js'],
+};
+for (const [pkg, files] of Object.entries(LINES)) {
+	const r = countLines(pkg, files);
+	const row = new RegExp(`\`${pkg}\` \\| \\d+ 文件? / (\\d+) 行`).exec(readme);
+	ok(Number(row?.[1]) === r.n, `${pkg} 代码行数 ${r.n} 与 README 一致`);
+}
+
+console.log(failures === 0 ? '\nverify-readme: ALL PASS' : `\nverify-readme: ${failures} FAILED`);
+process.exit(failures === 0 ? 0 : 1);
