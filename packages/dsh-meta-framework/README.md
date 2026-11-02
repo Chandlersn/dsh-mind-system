@@ -28,6 +28,57 @@ DSH 插件：把 [`@causal-layers/meta-framework`](https://www.npmjs.com/package
 
 ---
 
+## 相对上游：用了什么、没用什么、缺了什么
+
+上游 `@causal-layers/meta-framework` 导出 **46 个符号**，本插件只用了其中一小部分。
+差别不是疏漏，是**分清"诊断"与"决策"**后的取舍 —— 但有一处是真缺口。
+
+| 上游能力 | 本插件 | 为什么 |
+|---|---|---|
+| `createClisSession` | ✅ 用 | 从宿主上下文探测三个 CLIS 服务 |
+| `redefine` / `customize` / `select` | ✅ 用 | 分步调用，拿到结构判断就停 |
+| `writeTrace` | ✅ 用（自己拼） | **补上游的坑**：见下 |
+| `run` / `runWithTrace` | ❌ 不用 | 会走完整四层 → 因果任务上必定撞回退上限转人工 |
+| `GateController` / `approveByHuman` / `governingGate` | ❌ 不用 | 闸门语义就是"转人工"；插件改走诊断路径，不需要闸门 |
+| `assertRunGateNotAutoApproved` | ❌ 不用 | 只在 `run()` 返回前断言；插件路径不经 `run()` |
+| **`META_FRAMEWORK_SERVICE` / `apply`** | ❌ **未注册** | **真缺口**，见下 |
+
+### 补上游的坑：trace 必须自己写
+
+分步调用绕过了 `run()`，而 `writeTrace()` **只在 `run()` 里被调用** ——
+于是工具路径上原本**一条 trace 都不落**（实测：连调三次后全盘搜不到任何
+`meta-*.json`）。这等于"每次运行都可回放"这个承诺在工具路径上失效。
+
+所以本插件自己拼一条 trace 并落盘，字段按 `MetaTrace` 契约填满 10 个：
+没走 observe，故 `execution` / `change` 为 null、`rollback_count` 为 0 ——
+**如实反映"这次只做了诊断，没有执行"**，而不是编造执行结果。
+
+### 真缺口：上游服务没注册
+
+上游提供 `apply(ctx)`，会把服务按 `'causalLayers.metaFramework'` 注册到宿主，
+别的插件可以 `ctx.get()` 取它。本插件**没有调用 `apply`**，
+所以宿主里**不存在这个服务** —— 别的插件拿不到 meta 的能力。
+
+这不是设计取舍，是**漏了**。要补的话是三行：`apply(ctx)` + 注册 disposer +
+在 `inject` 里声明所需服务。**但要先确认有人消费** —— 没人用的话，
+注册一个服务只是多一份待维护的面。
+
+上游自己也没有把 `META_FRAMEWORK_SERVICE` 放进 `apply` 的默认路径之外，
+所以现在**纯 meta 模式零配置可用**（不装 CLIS 也能跑通四层）。
+
+### 什么时候该重新评估
+
+上游的 D11 决策（2026-11-01，实测）写明三个触发条件，任一成立就该重新决定
+"给 `PathExecutor` 补实现规格 + 可用示例"还是"把定位正式收窄为诊断工具"：
+
+1. 出现第二个真实使用者，且也卡在 `human_gate`（说明不是个例）；
+2. 有人实现了真实执行器（届时路径质量是否提升可重新测）；
+3. 需要把路径建议从"模板"升级为"领域相关"（那需要知识注入，是另一项工程）。
+
+**目前三个条件都没成立** —— 所以现状是对的。
+
+---
+
 ## 用法
 
 装上即用，无需配置。agent 会看到一个工具：
@@ -160,10 +211,23 @@ dsh plugin --profile web add "link:<本目录>"
 改完要重启宿主才生效（服务端插件）。`cordis.patch.yml` 的 `id` 必须与
 `index.js` 的 `export const name` 一致。
 
+## 排错
+
+| 症状 | 多半是 | 怎么办 |
+|---|---|---|
+| 工具一个都调不到 | 插件没装载 | 看宿主启动日志的 "did not activate"；`inject` 必须含 `tools` |
+| `meta_reframe` 报因果类型是"没判出" | 四问没给或没给全 | 三种"没判出"要分清：**非因果问题**（正确）、**四问不全**（补齐）、**问题描述太笼统**（具体化） |
+| 输出里没有因果成分 | 宿主没装 CLIS，或 CLIS 服务没就位 | `clis_used=false` 是正常的降级；纯 meta 模式四层照样跑完 |
+| trace 找不到 | 落盘目录不是预期的 | 默认 `data/meta-traces/`，可用 `META_FRAMEWORK_TRACE_DIR` 改位置 |
+| 分类结果看着像"抄进模板" | 非因果任务上的已知空转 | 这是实测记录的局限（见上方 D11 表），不是 bug |
+| 改了源码不生效 | 跑的是旧产物 / 模块缓存 | 服务端插件要重启宿主 |
+
 ## 已知限制
 
 见仓库根的 `REVIEW.md`。要点：
 
 - 因果任务不走完整四层（刻意：会卡 human_gate）
+- **上游服务未注册**（`'causalLayers.metaFramework'`）—— 别的插件取不到 meta 的能力，
+  是一处已知缺口而非设计取舍，见「相对上游」章
 - `causal_answers` 是契约外的扩展字段（D7 的延续），类型层不设防
 - 无 `icon` / `locale`，面板走默认图标与裸名回退

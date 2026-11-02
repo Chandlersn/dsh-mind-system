@@ -8,8 +8,10 @@
     "packages/*"
   ],
   "scripts": {
-    "test": "node scripts/verify-readme.mjs && node --test \"packages/dsh-agent-mind/test/*.test.js\" && node packages/dsh-mind-system/scripts/publish-check.mjs",
+    "test": "node scripts/verify-readme.mjs && node scripts/verify-subpackages.mjs && node scripts/verify-subpackage-structure.mjs && node --test \"packages/dsh-agent-mind/test/*.test.js\" && node packages/dsh-mind-system/scripts/publish-check.mjs",
     "verify-readme": "node scripts/verify-readme.mjs",
+    "verify-subpackages": "node scripts/verify-subpackages.mjs",
+    "verify-structure": "node scripts/verify-subpackage-structure.mjs",
     "publish-check": "node packages/dsh-mind-system/scripts/publish-check.mjs",
     "test:mind": "node --test \"packages/dsh-agent-mind/test/*.test.js\""
   },
