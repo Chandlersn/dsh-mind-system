@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Strategy Matcher",
+    "description": "Matches a strategy to the causal type, generates candidate paths, ranks and executes them. It never re-judges the type or decides rollback. Families: duality→symmetric mapping / relation tuning / definition clarification; cyclic→leverage point / gain control / delay tuning / damping injection; unidirectional→upstream trace / necessary condition / irreversibility acceptance / new-cause overlay; nested→decompose. Ranking: type fit 0.4 + expected effect 0.3 + side-effect risk 0.2 + execution cost 0.1. Forbidden actions never enter a path."
+  }
+}

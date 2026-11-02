@@ -1,0 +1,55 @@
+{
+  "name": "dsh-agent-mind",
+  "version": "0.2.0",
+  "private": false,
+  "type": "module",
+  "description": "DSH 调度层：把\"判断顺序\"装进系统提示，并按当前处境重排工具面（只重排不删除）。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "mind",
+    "prompt-section",
+    "tool-orchestration"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "src/**/*.js",
+    "scripts/verify-assembly.mjs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chandlersn/dsh-mind-system.git",
+    "directory": "packages/dsh-agent-mind"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

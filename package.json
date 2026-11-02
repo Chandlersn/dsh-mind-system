@@ -1,0 +1,24 @@
+{
+  "name": "dsh-mind-system-monorepo",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DSH 心智系统 —— 判断顺序、按处境编排、因果结构判据、五层记忆判据，一套装齐。",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "node packages/dsh-agent-mind/test/*.test.js && node packages/dsh-mind-system/scripts/publish-check.mjs",
+    "publish-check": "node packages/dsh-mind-system/scripts/publish-check.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "agent-mind",
+    "orchestration",
+    "causal",
+    "memory"
+  ],
+  "private": true
+}

@@ -1,0 +1,12 @@
+- insert:
+    # 包根入口：往系统提示注入"判断顺序"分节。
+    #
+    # 本插件**只** inject `systemPrompt` —— 它不注册任何工具，也不持有状态。
+    # 它做的是"给已有的工具面装一个索引"：告诉 agent 遇到什么信号时
+    # 先问什么，而不是把工具清单再念一遍（清单在工具表里已经存在）。
+    #
+    # systemPrompt 由 @deepseek-ai/dsh-base 提供，本 bundle 排在末位，
+    # 单行顺序没有隐患。
+    - id: mind
+      name: 'dsh-agent-mind'
+      config: {}

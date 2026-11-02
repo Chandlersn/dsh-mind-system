@@ -1,0 +1,8 @@
+node_modules/
+*.tmp-*
+*.log
+.DS_Store
+Thumbs.db
+
+# throwaway local probe scripts
+.probe-*

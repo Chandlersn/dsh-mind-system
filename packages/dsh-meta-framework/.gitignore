@@ -1,0 +1,11 @@
+﻿node_modules/
+dist/
+*.log
+vite-cache/
+.vite-cache/
+.test-traces/
+data/
+*.tgz
+.npmrc
+.env
+.env.*

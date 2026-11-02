@@ -1,0 +1,4 @@
+- insert:
+    - id: memory-manager
+      name: 'dsh-memory-manager'
+      config: {}

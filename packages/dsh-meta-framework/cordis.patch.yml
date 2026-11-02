@@ -1,0 +1,14 @@
+- insert:
+    # 包根入口：注册 agent 工具 meta_reframe。
+    #
+    # 本插件只 inject 一个服务：`tools`（工具注册表，dsh-tools 里
+    # `super(ctx, 'tools')` 注册的就是它）。它由更早的 @deepseek-ai/dsh-base
+    # 提供，而本 bundle 排在 bundles 列表末位，所以单行顺序没有隐患 ——
+    # 不需要像 dsh-clis 那样把服务插件排前面。
+    #
+    # 注意：CLIS 三个服务（clis.causalClassifier 等）**不在 inject 里**。
+    # 它们由 dsh-clis 提供，本插件用 ctx.get() 运行时探测 ——
+    # ctx.get 的语义正是「取服务但不声明 inject 要求」，缺了也能装载。
+    - id: meta-framework
+      name: 'dsh-meta-framework'
+      config: {}

@@ -1,0 +1,65 @@
+{
+  "name": "dsh-memory-manager",
+  "version": "5.29.10",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chandlersn/dsh-mind-system.git",
+    "directory": "packages/dsh-memory-manager"
+  },
+  "homepage": "https://github.com/Chandlersn/dsh-memory-manager#readme",
+  "bugs": {
+    "url": "https://github.com/Chandlersn/dsh-memory-manager/issues"
+  },
+  "meta": {
+    "title": "记忆管理",
+    "description": "以功能域为骨架的全局长期记忆：十四个记忆工具、主动回忆钩子与只读面板。"
+  },
+  "description": "Function-area long-term memory for the DeepSeek Harness (DSH): fourteen memory tools (read/search/capability/write/index/insight/fold/rename/check/usage/federation/skill/inbox), an injected system-prompt discipline, a pre-step recall hook, and a read-only Web panel. Process stays in the session; memory keeps distilled conclusions.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "memory",
+    "agent-memory",
+    "context-engineering"
+  ],
+  "license": "MIT",
+  "icon": "./icon.svg",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "test": "node tests/layer-gate.test.js && node tests/layer-selfcheck.test.js && node tests/dao-shape.test.js && node tests/coverage.test.js && node harness-test.mjs && node api-test.mjs && node ui-test.mjs"
+  },
+  "exports": {
+    ".": "./server.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "server.js",
+    "src/",
+    "client.js",
+    "icon.svg",
+    "README.md",
+    "README.en.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "private": false
+}

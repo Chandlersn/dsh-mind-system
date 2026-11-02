@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Feedback Detector",
+    "description": "Detects the feedback signal and suggests a rollback only: it never re-classifies, never executes a rollback, never mutates state. Four signals: effective (meets the success criteria), ineffective (deviates but the type hypothesis still holds), type_misjudged (repeated deviation contradicting the hypothesis), boundary_invalid (the optimisation exceeded the preset boundary). On misjudgement it suggests: cyclic-treated-as-unidirectional→recheck cyclic; cyclic made worse→recheck unidirectional; duality unilaterally redefined→recheck unidirectional; duality destabilised by added feedback→restore duality."
+  }
+}

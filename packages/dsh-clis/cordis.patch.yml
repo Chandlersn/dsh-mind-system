@@ -1,0 +1,18 @@
+- insert:
+    - id: clis-classifier
+      name: 'dsh-clis/classifier'
+      config: {}
+    - id: clis-strategy
+      name: 'dsh-clis/strategy'
+      config: {}
+    - id: clis-feedback
+      name: 'dsh-clis/feedback'
+      config: {}
+    - id: clis-orchestrator
+      name: 'dsh-clis/orchestrator'
+      config: {}
+    # 包根入口：只注册 agent 工具（clis_run / clis_classify / clis_plan）。
+    # 必须放在四行之后 —— 它的 inject 依赖分类器/策略/编排三个服务。
+    - id: clis-tools
+      name: 'dsh-clis'
+      config: {}
