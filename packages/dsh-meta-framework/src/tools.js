@@ -73,6 +73,52 @@ const ANSWER_KEYS = {
   q4: 'q4_coexisting_causal_structures',
 };
 
+/**
+ * 契约承认的四种**确定**因果类型。
+ *
+ * 与 `dsh-clis` 的 `KNOWN_CAUSAL_TYPES` 一致（`structural_duality` /
+ * `cyclic` / `unidirectional` / `nested`），另加 `unknown` ——
+ * `unknown` 是合法的**结论**（"不属于已知结构"），但不是可执行类型，
+ * 契约的 `FAMILY_BY_TYPE` 不覆盖它。
+ *
+ * ## 为什么需要这份白名单
+ *
+ * 库的 `isUsableCausalType()` 只判 `causalType !== 'unknown'` ——
+ * **任何非 unknown 的字符串都算数**，包括 `'totally_made_up_type'`。
+ *
+ * 后果有两处：
+ *
+ * 1. `clis_used: true` + note 把它当结论呈现 —— 垃圾输出被当成"CLIS 干成了"
+ * 2. `meta.customize(definition)` 里 `FOCUS_BY_TYPE[causalType]` 是 `undefined`
+ *    → **解构时抛错**（`const { focus, criterion } = undefined`）
+ *
+ * 第 2 条是真实故障：分类器返回一个越界类型，工具就整个炸掉，
+ * 而这条路径 `reframe()` 会向上传播（`customize()` 在 try 之外）。
+ *
+ * 所以本插件对分类器返回的类型做**白名单校验**：
+ * 不在表内的类型不当成"判出了类型"，而是当成**离契约的返回值**如实报出来。
+ */
+export const KNOWN_CAUSAL_TYPES = [
+  'structural_duality',
+  'cyclic',
+  'unidirectional',
+  'nested',
+];
+
+/** `unknown`：合法的结论，但**不是**可执行类型（契约 `FAMILY_BY_TYPE` 不覆盖它）。 */
+export const UNKNOWN_CAUSAL_TYPE = 'unknown';
+
+/**
+ * 判断一个因果类型是否在契约承认的范围内。
+ *
+ * @param causalType — 分类器返回的类型。
+ * @returns 是则返回该类型（`unknown` 也返回），否则 undefined。
+ */
+export function knownCausalType(causalType) {
+  if (causalType === UNKNOWN_CAUSAL_TYPE) return UNKNOWN_CAUSAL_TYPE;
+  return KNOWN_CAUSAL_TYPES.includes(causalType) ? causalType : undefined;
+}
+
 /** 四问的说明文本（工具参数用）。 */
 export const QUESTION_DOCS = {
   q1: 'Q1：A 与 B 是否同时成立、彼此定义、且无时间先后？（对偶，如正与反、买与卖）',
@@ -151,7 +197,7 @@ function toProblem(args) {
  * @param traceWriteOptions — trace 落盘配置（测试用于指定临时目录）。
  * @returns 结构化的审视结果。
  */
-export async function reframe(args, session, traceWriteOptions = {}) {
+export async function reframe(args, session, traceWriteOptions = {}, clisUnavailableReason = undefined) {
   const meta = await getMeta();
   const { problem, submitted, missing } = toProblem(args);
 
@@ -159,10 +205,31 @@ export async function reframe(args, session, traceWriteOptions = {}) {
   const { definition } = await meta.redefine(problem, session);
 
   // ② 边界
-  const boundary = meta.customize(definition);
+  //
+  // ## 为什么这里要挡住"离契约的类型"
+  //
+  // 库的 `customize()` 里是 `FOCUS_BY_TYPE[causalType]` 的解构 ——
+  // 而 `FOCUS_BY_TYPE` 只有四种确定类型 + unknown。
+  // 分类器若返回 `'totally_made_up_type'`（库的 `isUsableCausalType()` 只判
+  // `!== 'unknown'`，所以这种值能一路混进来），这里就会
+  // `const { focus, criterion } = undefined` → **抛 TypeError**，
+  // 而 `customize()` 不在 try 里 → 整个工具炸掉。
+  //
+  // 所以先校验类型，**离契约就当没判出**（并在 note 里如实说）。
+  const rawCausalType = definition.causal_type_hint;
+  const validatedType = rawCausalType === undefined ? undefined : knownCausalType(rawCausalType);
+  const offContractType = rawCausalType !== undefined && validatedType === undefined ? rawCausalType : undefined;
+
+  /** 交给下游的 definition：离契约的类型不能让 customize() 撞上。 */
+  const safeDefinition =
+    offContractType === undefined
+      ? definition
+      : { ...definition, causal_type_hint: undefined };
+
+  const boundary = meta.customize(safeDefinition);
 
   // ③ 候选（只取排序结果，不执行）
-  const ranked = await meta.select(definition, boundary, session);
+  const ranked = await meta.select(safeDefinition, boundary, session);
 
   const candidates = ranked.slice(0, 3).map((item) => ({
     path_id: item.path.path_id,
@@ -172,17 +239,16 @@ export async function reframe(args, session, traceWriteOptions = {}) {
     rank: item.rank,
   }));
 
-  const causalType = definition.causal_type_hint;
-
-  // 区分**四种**"没判出类型"的情形 —— 它们的含义完全不同，
-  // 尤其是最后两种：一个是"这问题不属于已知结构"（结论），
-  // 另一个是"分类器坏了"（故障）。把故障说成结论就是在撒谎。
+  // 区分**五种**"没判出类型"的情形 —— 它们的含义完全不同，
+  // 尤其是最后三种：一个是"这问题不属于已知结构"（结论），
+  // 另外两个是"分类器坏了"（故障）。把故障说成结论就是在撒谎。
   //
   //   a) 一项都没给                 → 请补作答
   //   a') 给了一部分（缺 1–3 项）   → 请补上**具体缺的那几项**
-  //   b) 给了但 CLIS 服务缺失       → 装 clis-* 才能判
+  //   b) 给了但 CLIS 服务不可用       → 说清**真实**原因（装 clis-* 还是查询抛错）
   //   c) 给了、服务在，但分类器抛错/返回空 → **故障**，不是结论
   //   d) 给了、服务在、分类器正常返回 unknown → 结论：不属于已知四种
+  //   e) 给了、服务在、但返回**离契约的类型** → 故障（不是结论），且工具不能炸
   const answered = problem.causal_answers !== undefined;
   const clisAvailable = session !== undefined && session.hasClassifier;
 
@@ -195,10 +261,15 @@ export async function reframe(args, session, traceWriteOptions = {}) {
   //
   // 这个字段会被读 trace 的人当作"当时到底问没问 CLIS"，
   // 用错判据会让历史记录撒谎。所以优先取库的记账，拿不到才回退。
+  //
+  // **但离契约的类型要单独处理**：库的记账说"调用成功了"，
+  // 而返回的是 `'totally_made_up_type'` —— 那不是"CLIS 干成了"，
+  // 那是"CLIS 返回了垃圾"。报 `clis_used: true` 会把垃圾粉饰成结论。
+  // 所以离契约时 `clis_used` 报 false，并在 note 里说清**返回了什么**。
+  const libraryMarkedUsed =
+    session !== undefined && typeof session.clisUsed === 'boolean' ? session.clisUsed : undefined;
   const clisUsed =
-    session !== undefined && typeof session.clisUsed === 'boolean'
-      ? session.clisUsed
-      : causalType !== undefined;
+    offContractType !== undefined ? false : libraryMarkedUsed ?? validatedType !== undefined;
 
   // 分类器"调用失败"的判据：服务在、作答给了、但库没记上使用 ——
   // 说明 safeClassify 抛错或拿到空结果，库在 redefine.js 里 return 了 generic。
@@ -209,10 +280,18 @@ export async function reframe(args, session, traceWriteOptions = {}) {
   const classifierFailed = answered && clisAvailable && !clisUsed;
 
   let note;
-  if (causalType !== undefined) {
+  if (validatedType !== undefined && validatedType !== UNKNOWN_CAUSAL_TYPE) {
     note =
-      `因果结构判为「${causalType}」。候选路径仅作参考——本框架擅长诊断结构，` +
+      `因果结构判为「${validatedType}」。候选路径仅作参考——本框架擅长诊断结构，` +
       '不擅长给可执行步骤，请据此自行决策。';
+  } else if (offContractType !== undefined) {
+    // 离契约的类型：**如实报出收到了什么**，并说清这不是一个可用结论。
+    // 不能说成"unknown"（那是谎话：那等于把"分类器返回垃圾"说成
+    // "这问题不属于已知结构"，使用者会因此放弃一个本来能判出来的问题）。
+    note =
+      `CLIS 分类器返回了契约之外的类型「${offContractType}」，本次**没有拿到可用的因果结论**——` +
+      '这不代表这个问题不属于已知的四种结构，而是分类器的返回值不在契约允许的范围内' +
+      `（${KNOWN_CAUSAL_TYPES.join(' / ')}）。请检查分类器实现。`;
   } else if (!answered && submitted === 0) {
     note = '未提供四问作答，本次只做通用重定义与候选排序；因果结构未经判断。补全 q1–q4 可得到结构判断。';
   } else if (!answered) {
@@ -223,7 +302,20 @@ export async function reframe(args, session, traceWriteOptions = {}) {
       '但因果判断要求四项齐全，本次**这 '+submitted+' 项已被忽略**，只做了通用重定义与候选排序。' +
       `补上 ${missing.map((k) => k.toUpperCase()).join('、')} 即可得到结构判断。`;
   } else if (!clisAvailable) {
-    note = '已提供四问作答，但 CLIS 分类服务不可用（未安装 clis-classifier），故未做因果判断。';
+    // **说真实的原因**，不说"未安装 clis-classifier"。
+    //
+    // 上一版这里无条件写死"（未安装 clis-classifier）"—— 而插件入口
+    // 那一层把**所有**建会话失败都压成"没有 session"，于是
+    // "建会话时抛了"也被说成"没装"。那是一句**具体但可能是假**的断言，
+    // 排查方向完全相反。
+    //
+    // 现在入口把真实原因带进来（`clisUnavailableReason`）：
+    // 有原因 → 说原因；没原因（真的是"服务不存在"）→ 才说"未安装"。
+    note =
+      clisUnavailableReason === undefined
+        ? '已提供四问作答，但 CLIS 分类服务不可用（未安装 clis-classifier），故未做因果判断。'
+        : `已提供四问作答，但 CLIS 分类服务不可用，故未做因果判断。真实原因：${clisUnavailableReason}——` +
+          '这不是"未安装"的结论，请按上面的原因排查宿主集成。';
   } else if (classifierFailed) {
     // 故障 ≠ 结论。这句话必须与 unknown 那句明确分开，否则使用者会以为
     // "这问题本来就没有因果结构"，从而放弃一个本来能判出来的问题。
@@ -246,7 +338,7 @@ export async function reframe(args, session, traceWriteOptions = {}) {
   const traceWrite = await writeTrace(
     {
       problem_id: problem.problem_id,
-      definition,
+      definition: safeDefinition,
       boundary,
       // 只取了候选、没有"选中并执行"，故 selected_path 取排序第一名作为
       // **诊断推荐**，而不是"已选中的执行路径"。
@@ -272,7 +364,14 @@ export async function reframe(args, session, traceWriteOptions = {}) {
     boundary_declaration: definition.boundary_declaration,
     redefine_reason: definition.redefine_reason,
     /** CLIS 判出的因果类型；未判出时为 null。 */
-    causal_type: causalType ?? null,
+    causal_type: validatedType ?? null,
+    /**
+     * 分类器返回的**离契约**类型（不在四种已知类型里，也不是 unknown）。
+     *
+     * 报出来而不是吞掉：它是"分类器实现有问题"的直接证据。
+     * 为 null 时表示分类器没返回类型，或返回的是契约内的类型。
+     */
+    off_contract_type: offContractType ?? null,
     /** 四问是否给全了。 */
     answered,
     /** 给了几项（0–4）；与 `answered` 配合才能区分"没给"和"给不全"。 */
@@ -281,6 +380,14 @@ export async function reframe(args, session, traceWriteOptions = {}) {
     answers_missing: missing,
     /** CLIS 分类服务是否可用。 */
     clis_available: clisAvailable,
+    /**
+     * CLIS 不可用的**真实原因**（字符串）；可用时为 null。
+     *
+     * 上一版把"不可用"压成一个布尔量，于是 note 只能写死
+     * "（未安装 clis-classifier）" —— 而"建会话时抛了"也被说成"没装"。
+     * 这里把原因单独给出来，调用方能据此选排查方向（查安装 vs 查宿主集成）。
+     */
+    clis_unavailable_reason: clisAvailable ? null : (clisUnavailableReason ?? null),
     /** 本次是否真的拿到了因果判断。 */
     clis_used: clisUsed,
     success_criteria: boundary.success_criteria,

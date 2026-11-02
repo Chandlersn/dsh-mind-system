@@ -168,19 +168,37 @@ DSH 插件：把 [`@causal-layers/meta-framework`](https://www.npmjs.com/package
 
 ## 健康探针
 
-导出 `healthProbe`（供 dsh-clis 的监督层自动发现）。**探针只读 `apply()` 的实测结果，
+导出 `healthProbe`（供 dsh-clis 的监督层自动发现）。**探针只读实测结果，
 不自己推断** —— 上一版用文件存在性猜"工具会不会注册"，实测两头都能错。
+
+探针有**两个独立的事实来源**，各自只证明自己那一件事：
+
+| 来源 | 写入者 | 证明什么 | 不证明什么 |
+| --- | --- | --- | --- |
+| `recordRegistration()` | `apply()` | 工具定义器加载成功、工具已注册 | 工具能不能跑 |
+| `recordExecution()` | `execute()` 包装器 | **最近一次真实执行成功** | 之后的调用会不会成功 |
+
+只有第二个能证明"工具可用"。上一版只看"注册了没有"，于是"库一调用就抛"
+的工具照样报 `status: ok` —— 给坏工具发绿牌。
 
 | 代号 | 严重度 | 含义 |
 | --- | --- | --- |
 | `meta-framework.not-loaded` | error | 没跑到 `apply()`（inject 未满足 / 模块加载失败） |
 | `meta-framework.host-root-missing` | error | `apply()` 跑过，但定位不到 DSH 安装目录 |
 | `meta-framework.tools-unavailable` | error | 装根在，但 `@deepseek-ai/dsh-tools` 加载抛错 |
+| `meta-framework.execution-failed` | error | 最近一次真实执行失败 → 工具当前不可用 |
 | `meta-framework.classifier-missing` | info | 无 CLIS 分类服务 → 判不出因果类型 |
 | `meta-framework.ok` | info | 一切正常 |
 
 探针只读、不抛错。CLIS 缺失标 `info` 而非 `error`——它是可选增强，
 把它报成错误会让监督层天天亮红灯，最后没人再看它。
+
+**CLIS 可用性用与工具路径同一把尺**（`src/clis.js`）：服务要取得到、
+是对象、**且有 `classify()` 方法**。只判"存在"会让探针与工具对同一宿主
+给出相反结论（探针说可用、工具说不可用）。
+
+**没执行过时**（`not-observed`）探针**不装作有结论** —— 报 ok 但文案写明
+"执行路径尚无实测记录"，既不说"能用"也不说"不能用"。
 
 ## 依赖
 
@@ -195,12 +213,21 @@ DSH 插件：把 [`@causal-layers/meta-framework`](https://www.npmjs.com/package
 
 ```bash
 npm install
-npm test          # 三个文件：tools / health / entry，41 个用例
+npm test          # 五个文件：tools / health / entry / host / clis-rule，77 个用例
 ```
 
-`test/entry.test.js` 专门守入口：工具真的注册了、`inject` 含 `tools`、
-加载失败时降级而不抛错、探针与注册结果同步。此前入口零覆盖，
-而插件唯一一次"完全不装载"的事故就发生在那里。
+各测试文件守的东西：
+
+- `test/entry.test.js` —— 入口：工具真的注册了、`inject` 含 `tools`、
+  加载失败时降级而不抛错、**执行结果同步进探针**（缺陷 1）。
+  此前入口零覆盖，而插件唯一一次"完全不装载"的事故就发生在那里。
+- `test/health.test.js` —— 探针：两个事实来源（注册了 / 执行成功了）、
+  CLIS 判据与工具路径同一把尺、代号稳定、注释不说假话（缺陷 1 / 9）。
+- `test/host.test.js` —— 宿主根定位：假安装根、`DSH_HOME` 被拒绝、
+  缓存清理真的生效（缺陷 5）。此前 `src/host.js` 函数覆盖 0.00%。
+- `test/clis-rule.test.js` —— **漂移守卫**：mock 判据与**真实** `dsh-clis`
+  在全部 81 种四问组合上逐条比对（缺陷 2）。
+- `test/tools.test.js` —— 工具逻辑与输出契约（缺陷 7 / 8）。
 
 装进宿主（link 模式）：
 

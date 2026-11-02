@@ -9,14 +9,28 @@
  * 必须从 **DSH 安装目录** 的 node_modules 里 require。这个目录不能写死
  * `D:\dsh` —— 换机器就废。按下面顺序探测，任一个命中即可：
  *
- * 1. `DSH_INSTALL_DIR` / `DSH_ROOT` / `DSH_HOME`（显式指定，最可靠）
+ * 1. `DSH_INSTALL_DIR` / `DSH_ROOT`（显式指定，最可靠）
  * 2. `process.argv[1]` 向上找（宿主进程的入口在 `<root>/node_modules/...`）
  * 3. 已加载模块里找（宿主自己一定加载过 cordis）
  * 4. `DSH_PROFILE_DIR` 向上找
  * 5. `process.cwd()` 向上找
  *
- * 判定"找到了"的依据只有一条：`<dir>/node_modules/@deepseek-ai/cordis` 存在。
+ * 判定"找到了"的依据只有一条：`<dir>/node_modules/@deepseek-ai/cordis/package.json` 存在。
  * 光看目录存在没用 —— DSH_HOME 本身也有 node_modules，但不是那份。
+ *
+ * ## ⚠️ `DSH_HOME` **不是**安装根
+ *
+ * `DSH_HOME` 是**数据目录**（`~/.dsh`，放 profile / 记忆 / 指标），
+ * 不是安装目录。实测这台机器上 `DSH_HOME=C:\Users\lyq\.dsh`，
+ * 而真实安装在 `D:\dsh` —— 把 DSH_HOME 当安装根会直接判错。
+ *
+ * 上一版把它留作"最后一档候选"，理由是"有人可能装在同一处"。
+ * 那个理由站不住：真装在同一处时，`DSH_INSTALL_DIR` / `DSH_ROOT` /
+ * `argv` 向上找 / 已加载模块 任一条都能命中；而 DSH_HOME 命中的唯一
+ * 情形是"数据目录里恰好也有个 cordis" —— 那恰恰是**误判**。
+ *
+ * 所以现在：**DSH_HOME 明确被拒绝**，不参与候选。
+ * （`test/host.test.js` 有一条测试直接钉住这件事。）
  */
 
 import { createRequire } from 'node:module';
@@ -30,7 +44,7 @@ import { dirname, join, resolve, sep } from 'node:path';
  * 会被"只判目录"的版本误认为安装根，然后 `loadHost` 才在很远的地方失败，
  * 排查成本很高。参照实现 dsh-clis 也是判到 package.json。
  */
-const MARKER = join('node_modules', '@deepseek-ai', 'cordis', 'package.json');
+export const MARKER = join('node_modules', '@deepseek-ai', 'cordis', 'package.json');
 
 /**
  * 判断目录是否是 DSH 安装根。
@@ -38,7 +52,7 @@ const MARKER = join('node_modules', '@deepseek-ai', 'cordis', 'package.json');
  * @param dir — 候选目录。
  * @returns 是则返回该目录的绝对路径。
  */
-function probe(dir) {
+export function probe(dir) {
   if (typeof dir !== 'string' || dir.length === 0) return undefined;
   const abs = resolve(dir);
   return existsSync(join(abs, MARKER)) ? abs : undefined;
@@ -50,7 +64,7 @@ function probe(dir) {
  * @param start — 起点（文件或目录）。
  * @returns 找到的 DSH 安装根。
  */
-function ascend(start) {
+export function ascend(start) {
   if (typeof start !== 'string' || start.length === 0) return undefined;
   let dir = resolve(start);
   for (;;) {
@@ -104,17 +118,59 @@ function probeFromLoadedModules() {
 /** 缓存的宿主根。 */
 let cachedRoot;
 
+/** 缓存宿主 require。 */
+let hostRequire;
+
 /**
  * 清除解析缓存。
  *
+ * ## 为什么它必须同时清**两个**缓存
+ *
+ * 上一版只清了 `cachedRoot`，**没清 `hostRequire`** —— 那是个真 bug：
+ * `hostRequire` 是用**当时的**根造的 `createRequire`，根变了它也不会变。
+ * 于是"改了 `DSH_INSTALL_DIR` 却不生效"的现象只被清了一半：
+ * `resolveDshRoot()` 返回新根，`loadHost()` 仍然从旧根 require。
+ *
+ * 现在两个一起清，缓存才真正对得上。
+ *
+ * ## 它的用途
+ *
  * 生产代码不需要调它 —— 缓存的意义就是"一次解析、多次复用"。
- * 存在的唯一原因是**测试**：缓存是模块级的，用例之间会互相污染，
+ * 存在的理由是**测试**：缓存是模块级的，用例之间会互相污染，
  * 导致"改了环境变量却不生效"这种难查的假失败。
+ * `test/host.test.js` 每个用例之间都调它 —— 它不是死代码。
  *
  * @internal
  */
 export function clearRootCache() {
   cachedRoot = undefined;
+  hostRequire = undefined;
+}
+
+/**
+ * 列出**候选安装根**（按优先级）。
+ *
+ * ## 为什么不把 DSH_HOME 列进来
+ *
+ * `DSH_HOME` 是数据目录（`~/.dsh`），不是安装目录 —— 把它当候选就是误判。
+ * 详见文件头的说明。
+ *
+ * ## 为什么把它抽成一个函数
+ *
+ * 这样"候选到底有哪些"就是**可测的**：
+ * `test/host.test.js` 直接断言 `DSH_HOME` 不在候选里，
+ * 而不是靠"跑一遍看结果碰巧对"（那依赖机器上恰好没有别的候选命中）。
+ *
+ * @returns 候选目录列表（环境变量原值或路径，按优先级排列）。
+ */
+export function candidateRoots() {
+  return [
+    process.env.DSH_INSTALL_DIR,
+    process.env.DSH_ROOT,
+    process.argv[1],
+    process.env.DSH_PROFILE_DIR,
+    process.cwd(),
+  ];
 }
 
 /**
@@ -128,10 +184,7 @@ export function clearRootCache() {
  * 4. `DSH_PROFILE_DIR` 向上找 —— profile 在 `<root>` 同级的某些布局下有效
  * 5. `process.cwd()` 向上找 —— 最后兜底
  *
- * **`DSH_HOME` 排在后面，且要单独判**：它是**数据目录**（`~/.dsh`），
- * 不是安装目录。实测这台机器上 `DSH_HOME=C:\Users\lyq\.dsh`，
- * 而真实安装在 `D:\dsh` —— 把 DSH_HOME 当安装根会直接判错。
- * 但它也可能是安装根（有人装在同一处），所以仍保留为候选，只是靠后。
+ * **明确不含 `DSH_HOME`** —— 它是数据目录，不是安装目录（见文件头）。
  *
  * @returns 安装根绝对路径。
  * @throws Error 全部探测失败时（消息里给出该设哪个环境变量）。
@@ -145,9 +198,7 @@ export function resolveDshRoot() {
     ascend(process.argv[1]) ??
     probeFromLoadedModules() ??
     ascend(process.env.DSH_PROFILE_DIR) ??
-    ascend(process.cwd()) ??
-    // DSH_HOME 放最后：它通常是数据目录而非安装目录
-    probe(process.env.DSH_HOME);
+    ascend(process.cwd());
 
   if (hit === undefined) {
     throw new Error(
@@ -159,9 +210,6 @@ export function resolveDshRoot() {
   cachedRoot = hit;
   return hit;
 }
-
-/** 缓存宿主 require。 */
-let hostRequire;
 
 /**
  * 从宿主侧加载一个包。

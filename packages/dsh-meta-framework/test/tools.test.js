@@ -25,6 +25,7 @@ import { join } from 'node:path';
 
 import { ClisSession } from '@causal-layers/meta-framework';
 import { reframe, TOOL_NAME, QUESTION_DOCS } from '../src/tools.js';
+import { decideType } from './clis-rule.js';
 
 /**
  * 造一个临时 trace 目录。
@@ -41,27 +42,32 @@ function makeTraceDir() {
 /**
  * 一个最小的分类器：按四问判定类型。
  *
- * 规则来自对真实 CLIS 的穷举实测（16 种组合）：
- *   Q4=yes → nested（优先级最高）
- *   Q2=yes → cyclic
- *   Q1=yes → structural_duality
- *   Q3=yes → unidirectional
- *   全 no  → unknown
+ * ## 为什么用 `decideType()` 而不是手写规则
+ *
+ * 上一版在这里**手写**了一份规则：
+ *
+ * ```js
+ * q4 ? nested : q2 ? cyclic : q1 ? duality : q3 ? unidirectional : unknown
+ * ```
+ *
+ * 那份规则在"两个以上 yes"时**全错**（短路取第一个），
+ * 而真实 CLIS 的规则是"两个以上 yes ⇒ nested（结构冲突）"。
+ * 实测 81 种组合里 **14 种**给出不同结论 —— 而测试还全绿。
+ *
+ * 现在直接调用 `test/clis-rule.js` 里的 `decideType()`，
+ * 那是真实规则的**忠实复刻**，并由 `test/clis-rule.test.js` 用
+ * **穷举 81 种组合**与真实现逐条比对把住 —— 两者不可能再漂。
+ *
+ * 规则本身（来自 `dsh-clis/chunk-2HMO3QIV.js` 的 `decide()`）：
+ *   Q4=yes → nested
+ *   Q4≠yes 且 Q1..Q3 恰好一个 yes → 那个类型
+ *   Q4≠yes 且 Q1..Q3 两个以上 yes → nested（结构冲突）
+ *   没有 yes → unknown
  */
 function makeClassifier() {
   return {
     async classify(problem) {
-      const a = problem.answers;
-      const type =
-        a.q4_coexisting_causal_structures === 'yes'
-          ? 'nested'
-          : a.q2_delayed_mutual_influence === 'yes'
-            ? 'cyclic'
-            : a.q1_simultaneous_mutual_definition === 'yes'
-              ? 'structural_duality'
-              : a.q3_strict_irreversible_order === 'yes'
-                ? 'unidirectional'
-                : 'unknown';
+      const type = decideType(problem.answers);
       return { causal_type: type, confidence: 0.9, rationale: 'mock', evidence: [] };
     },
   };
@@ -436,4 +442,166 @@ test('trace 落盘失败时如实报告（不静默吞掉）', async () => {
   assert.ok(out.trace.error, '失败要带原因，便于排查');
   // 关键：落盘失败不能拖垮整个工具调用
   assert.ok(out.candidates.length > 0, 'trace 写不了，诊断结果仍要给出');
+});
+
+// ── 缺陷 8：分类器返回**离契约的类型** ────────────────────────────
+//
+// 库的 `isUsableCausalType()` 只判 `causalType !== 'unknown'` ——
+// 任何非 unknown 的字符串都算数，包括 `'totally_made_up_type'`。
+//
+// 后果两处：
+//   1. `clis_used: true` + note 把它当结论呈现（垃圾被粉饰成"CLIS 干成了"）
+//   2. `meta.customize()` 里 `FOCUS_BY_TYPE[causalType]` 是 undefined
+//      → 解构抛 TypeError → 工具整个炸掉（reframe() 会向上传播）
+
+test('缺陷 8：分类器返回离契约的类型 → 工具不能炸，且如实报出来', async () => {
+  const garbage = new ClisSession({
+    classifier: {
+      async classify() {
+        return {
+          causal_type: 'totally_made_up_type',
+          confidence: 0.9,
+          rationale: 'garbage',
+          evidence: [],
+        };
+      },
+    },
+  });
+
+  // 关键：不许抛。上一版这里会 `const { focus, criterion } = undefined` → TypeError
+  //
+  // 注意：**不能**用 `assert.doesNotThrow(async () => ...)` ——
+  // 那个断言对 async 函数不同步等待，抛出的错会变成"未处理的 rejection"，
+  // 而 `out` 仍是 undefined（实测报 "Cannot read properties of undefined"）。
+  // 所以直接 await 调用：抛了就是测试失败，错误信息还更清楚。
+  const out = await reframe(
+    { description: '测试', q1: 'no', q2: 'yes', q3: 'no', q4: 'no' },
+    garbage,
+    { root: makeTraceDir() },
+  );
+
+  assert.ok(out !== undefined, '离契约的类型绝不能让工具整个炸掉（customize 会解构 FOCUS_BY_TYPE[类型]）');
+  assert.equal(out.causal_type, null, '离契约的类型不是可用结论 → causal_type 必须为 null');
+  assert.equal(out.off_contract_type, 'totally_made_up_type', '但必须如实报出收到了什么');
+  assert.equal(out.clis_used, false, '垃圾输出不能算"CLIS 干成了"');
+});
+
+test('缺陷 8：离契约时 note 必须说清"没有拿到可用结论"，且不能说成"不属于已知结构"', async () => {
+  const garbage = new ClisSession({
+    classifier: {
+      async classify() {
+        return { causal_type: 'made_up', confidence: 0.9, rationale: 'x', evidence: [] };
+      },
+    },
+  });
+
+  const out = await reframe(
+    { description: '测试', q1: 'no', q2: 'yes', q3: 'no', q4: 'no' },
+    garbage,
+    { root: makeTraceDir() },
+  );
+
+  assert.ok(
+    out.note.includes('没有拿到可用的因果结论'),
+    `必须说清没有拿到可用结论，实际：${out.note}`,
+  );
+  assert.ok(out.note.includes('made_up'), '必须报出实际收到的类型，实际：' + out.note);
+  // 不能说成"这个问题不属于已知的四种结构"—— 那是结论，而真相是分类器坏了。
+  //
+  // 判据要落在"是否加了否定前缀"上，而不是关键词是否出现 ——
+  // 故障说明里那句"这**不代表**这个问题不属于已知的四种结构"本身就含这几个字
+  // （REVIEW.md 里记过这个坑：断言关键词缺失会误判）。
+  assert.ok(
+    out.note.includes('不代表'),
+    '必须明确否定"问题不属于已知结构"，实际：' + out.note,
+  );
+  assert.ok(
+    !/^[^。]*不属于已知的四种结构。/.test(out.note),
+    `不能把故障说成结论（"不属于已知结构"不能作为独立断言出现），实际：${out.note}`,
+  );
+});
+
+test('缺陷 8：契约内的四种类型仍然照常判出（白名单不能误伤）', async () => {
+  const cases = [
+    ['structural_duality', { q1: 'yes', q2: 'no', q3: 'no', q4: 'no' }],
+    ['cyclic', { q1: 'no', q2: 'yes', q3: 'no', q4: 'no' }],
+    ['unidirectional', { q1: 'no', q2: 'no', q3: 'yes', q4: 'no' }],
+    ['nested', { q1: 'no', q2: 'no', q3: 'no', q4: 'yes' }],
+  ];
+  for (const [expected, answers] of cases) {
+    const out = await reframe(
+      { description: '测试问题', ...answers },
+      sessionWithClassifier(),
+      { root: makeTraceDir() },
+    );
+    assert.equal(out.causal_type, expected, `${JSON.stringify(answers)} 应判为 ${expected}`);
+    assert.equal(out.off_contract_type, null, '契约内的类型不该被标成离契约');
+    assert.equal(out.clis_used, true, '契约内的类型算真的判出了');
+  }
+});
+
+// ── 缺陷 7：CLIS 不可用的**真实原因** ─────────────────────────────
+//
+// 上一版入口把 `createClisSession()` 的所有失败都压成"没有 session"，
+// 工具的 note 于是无条件写死"（未安装 clis-classifier）" ——
+// 而真相可能是"建会话时抛了"。排查方向完全相反。
+
+test('缺陷 7：CLIS 不可用且**有真实原因** → note 必须说原因，不能说"未安装"', async () => {
+  const out = await reframe(
+    { description: '测试', q1: 'no', q2: 'yes', q3: 'no', q4: 'no' },
+    undefined,
+    { root: makeTraceDir() },
+    'cannot get property "tools" without inject',
+  );
+
+  assert.equal(out.clis_available, false);
+  assert.ok(
+    out.note.includes('cannot get property "tools" without inject'),
+    `note 必须带上真实原因，实际：${out.note}`,
+  );
+  assert.ok(
+    !out.note.includes('未安装 clis-classifier'),
+    `有真实原因时不能说"未安装"（那是具体但可能假的断言），实际：${out.note}`,
+  );
+  assert.ok(
+    out.note.includes('不是"未安装"的结论'),
+    `必须说清这不是"未安装"的结论，实际：${out.note}`,
+  );
+});
+
+test('缺陷 7：CLIS 真的不可用且**没有原因** → 才可以说"未安装"', async () => {
+  const out = await reframe(
+    { description: '测试', q1: 'no', q2: 'yes', q3: 'no', q4: 'no' },
+    undefined,
+    { root: makeTraceDir() },
+  );
+
+  assert.equal(out.clis_available, false);
+  assert.ok(
+    out.note.includes('未安装 clis-classifier'),
+    `确实是服务不存在时可以说"未安装"，实际：${out.note}`,
+  );
+});
+
+test('缺陷 7：真实原因要单独给出来（机器可读，不只藏在文案里）', async () => {
+  const out = await reframe(
+    { description: '测试', q1: 'no', q2: 'yes', q3: 'no', q4: 'no' },
+    undefined,
+    { root: makeTraceDir() },
+    'boom',
+  );
+
+  assert.equal(out.clis_unavailable_reason, 'boom', '原因要能被程序读到');
+  assert.ok('clis_unavailable_reason' in out, '字段必须存在（消费方按名取）');
+});
+
+test('缺陷 7：CLIS 可用时原因字段为 null（不是空串，也不是 undefined）', async () => {
+  const out = await reframe(
+    { description: '测试', q1: 'no', q2: 'yes', q3: 'no', q4: 'no' },
+    sessionWithClassifier(),
+    { root: makeTraceDir() },
+  );
+
+  assert.equal(out.clis_available, true);
+  assert.equal(out.clis_unavailable_reason, null, '可用时原因必须是 null');
 });

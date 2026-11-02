@@ -1,4 +1,4 @@
-﻿/**
+/**
  * dsh-meta-framework —— 把 @causal-layers/meta-framework 包装成 DSH 工具。
  *
  * 只暴露一个工具 `meta_reframe`：把一个问题重新审视一遍，给出
@@ -27,7 +27,13 @@
 
 import { reframe, getDefineTool, TOOL_NAME, QUESTION_DOCS } from './src/tools.js';
 import { createClisSession } from '@causal-layers/meta-framework';
-import { healthProbe, bindContext, recordRegistration, classifyLoadError } from './src/health.js';
+import {
+  healthProbe,
+  bindContext,
+  recordRegistration,
+  recordExecution,
+  classifyLoadError,
+} from './src/health.js';
 
 /** 插件名。 */
 export const name = 'meta-framework';
@@ -82,11 +88,23 @@ export const inject = ['tools'];
  * 没有接缝就没法在测试里把"宿主工具定义器加载失败"造出来 ——
  * 于是只能靠手工在真宿主里试，不可回归。
  *
- * `overrides.loadDefineTool` / `overrides.logger` 仅测试使用；生产不给，
- * 走的仍是 `getDefineTool()` 与 `ctx.logger`，行为一分不变。
+ * `overrides.loadDefineTool` / `overrides.logger` / `overrides.reframe` 仅测试使用；
+ * 生产不给，走的仍是 `getDefineTool()` 与 `ctx.logger`，行为一分不变。
  *
  * 覆盖点选在**加载器**而不是它的返回值：真实失败形态就是加载器自己抛错
  * （定位不到安装根 / dsh-tools 加载不了），测试必须能复现那一抛。
+ *
+ * ## 为什么还需要 `overrides.reframe`
+ *
+ * 缺陷 1 的复现形态是"**注册成功，但执行路径整个是坏的**" ——
+ * 框架库一调用就抛。这条路径单靠 `loadDefineTool` 造不出来：
+ * 装载器只管"能不能拿到 defineTool"，管不到"调用会不会抛"。
+ *
+ * 而这条路径恰恰是探针此前**完全看不见**的那条（探针只看注册结果）。
+ * 没有接缝就复现不了，复现不了就无法证明修复有效。
+ *
+ * 所以 `overrides.reframe` 覆盖的是**执行体**（不是它的返回值）——
+ * 真实失败形态就是执行体抛错。
  *
  * @param ctx — Cordis 上下文。
  * @param overrides — 仅测试用的注入接缝（生产省略）。
@@ -119,12 +137,27 @@ export function apply(ctx, overrides = {}) {
   //
   // 每次调用都重新探测而不是装载时缓存：dsh-clis 可能比本插件晚装载，
   // 装载时探测会错过它。探测本身很轻（三次 ctx.get）。
+  //
+  // ## 为什么返回 `{session, unavailableReason}` 而不是 `session | undefined`
+  //
+  // 上一版是 `try { return createClisSession(ctx) } catch { return undefined }` ——
+  // **所有失败都被压成"没有 session"**，于是工具的 note 会说
+  // "CLIS 分类服务不可用（未安装 clis-classifier）"。
+  //
+  // 那是一句**具体但可能是假**的断言：真正的原因是"建会话时抛了"
+  // （宿主 ctx 形状不符、get 抛错……），与"没装"是两回事。
+  // 排查方向完全不同：前者查宿主集成，后者查安装。
+  //
+  // 所以这里保留真实原因，让工具如实说出来。
   const session = () => {
     try {
-      return createClisSession(ctx);
-    } catch {
-      // 宿主 ctx 形状不符（或探测抛错）等价于"服务不可用"
-      return undefined;
+      return { session: createClisSession(ctx), unavailableReason: undefined };
+    } catch (error) {
+      // 建不出会话 ≠ 没装 CLIS：原因必须带出去，由工具如实转述。
+      return {
+        session: undefined,
+        unavailableReason: error instanceof Error ? error.message : String(error),
+      };
     }
   };
 
@@ -172,10 +205,26 @@ export function apply(ctx, overrides = {}) {
     },
     async execute(rawArgs) {
       try {
-        return await reframe(rawArgs, session());
+        // `overrides.reframe` 仅测试使用（生产走的是真的 `reframe`）。
+        // 覆盖的是**执行体** —— 缺陷 1 的复现形态正是"执行体抛错"。
+        const run = overrides.reframe ?? reframe;
+        const current = session();
+        const result = await run(rawArgs, current.session, undefined, current.unavailableReason);
+        // 执行成功 → 探针拿到一条**真实**的"能用"证据。
+        //
+        // 这一步是缺陷 1 的核心修复：探针此前的唯一依据是
+        // `recordRegistration('ok')`，那行代码紧跟在 `ctx.tools.register(tool)`
+        // 之后 —— 它证明的只是"注册了"，**不证明"能用"**。
+        // 实测复现：库换成"每个调用都抛"，探针照样报 `status: ok`。
+        recordExecution('ok');
+        return result;
       } catch (error) {
         // 工具失败要说清是哪一环，不要把异常堆栈直接抛给 agent ——
         // 那对使用者没有信息量，且会中断整轮对话。
+        //
+        // 同时把失败记进探针：这是探针能看见"工具注册成功但执行路径是坏的"
+        // 的**唯一**途径。
+        recordExecution('failed', error instanceof Error ? error.message : String(error));
         return {
           error: 'meta_reframe 执行失败',
           reason: error instanceof Error ? error.message : String(error),

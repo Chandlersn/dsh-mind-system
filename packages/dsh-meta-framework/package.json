@@ -28,7 +28,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/tools.test.js test/health.test.js test/entry.test.js"
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@causal-layers/meta-framework": "^1.0.1"
