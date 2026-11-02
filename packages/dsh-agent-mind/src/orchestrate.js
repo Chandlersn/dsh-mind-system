@@ -68,10 +68,38 @@ export const SITUATIONS = {
  *
  * 前缀是稳定的工具命名约定：`clis_`/`meta_` 是判结构的，`memory_` 是记忆的，
  * 检索类工具没有统一前缀，按名字列举。
+ *
+ * ## ⚠️ execute 族曾经整族是死代码（2026-11-02 对抗式审查修）
+ *
+ * 旧值：`['pwsh','read','edit','write','glob','grep']`。
+ *
+ * 但这六个**全是 core 工具**，而 `rank()` 先判 core：
+ *
+ * ```js
+ * const rank = (tool) => {
+ *   if (isCoreTool(name)) return 1;      // ← core 先判
+ *   return isRelevant(name) ? 0 : 2;     // ← 族永远进不了 0
+ * };
+ * ```
+ *
+ * 于是 execute 族**一个成员都进不了 rank 0** —— 该处境的重排与 unknown
+ * 完全相同。实测：execute 重排后首位是 `read`（core），而"动手工具排最前"
+ * 这个意图从未成立过。
+ *
+ * 修法：**core 工具本来就在第 1 档，不需要在族里再写一遍**。execute 的真实
+ * 意图是"把动手类工具**排在非动手工具之前**"，而 core 恰恰已经做到了这一点。
+ * 所以 execute 族改为**只列 core 之外、仍属动手类的工具**。
+ *
+ * 宿主里这类工具的真实名字（见 dsh-tool-* 包）：
+ * `str_replace_editor`（编辑）、`file_reference`（文件引用）、
+ * `cordis`（宿主命令）、`bash`/`terminal`（终端）。
+ *
+ * 若某个前缀在本机不存在，族退化为"无额外成员" —— execute 就等于"把非 core
+ * 推后"，这仍然是一个有意义且可观测的行为（不是空转）。
  */
 const PRIORITY_FAMILIES = {
   diagnose: ['clis_', 'meta_'],
-  execute: ['pwsh', 'read', 'edit', 'write', 'glob', 'grep'],
+  execute: ['str_replace_editor', 'file_reference', 'cordis', 'bash', 'terminal'],
   recall: ['memory_'],
   retrieve: ['web_search', 'web_fetch', 'advanced_search', 'multi_search', 'platform_search', 'domain_search'],
 };

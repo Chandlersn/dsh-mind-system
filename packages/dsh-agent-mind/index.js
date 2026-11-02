@@ -21,9 +21,11 @@
  */
 
 import { registerMindSection, SECTION_NAME, SECTION_ORDER } from './src/mind.js';
-import { arrangeTools, classifySituation, SITUATIONS } from './src/orchestrate.js';
-import { explainSituation, recordDecision, listSignals, registerSignal } from './src/dispatch.js';
-import { recordSample, readTrend, trendLine } from './src/sampling.js';
+import { arrangeTools, SITUATIONS } from './src/orchestrate.js';
+import { listSignals, registerSignal } from './src/dispatch.js';
+import { recordSample, readTrend, readTrendSync } from './src/sampling.js';
+import { benchmarkFromDailyLogs } from './src/hitrate.js';
+import { judge, currentSituationOf, lastDecisionOf, __resetSituationForTest, __forceSituationForTest } from './src/situation.js';
 import { getDefineTool } from './src/host.js';
 import { join } from 'node:path';
 
@@ -48,22 +50,15 @@ export const inject = ['systemPrompt', 'tools'];
  * 最近一次判出的处境（模块级）。
  *
  * 为什么需要它：装配器（`systemPrompt/assemble`）拿不到本轮消息，
- * 唯一能看到消息的是 `agent/pre-step`。所以后者写、前者读 ——
- * 这也是 memory-manager 召回注入用的同一条时序。
+ * 唯一能看到消息的是处境采集点。所以后者写、前者读 —— 这也是
+ * memory-manager 召回注入用的同一条时序。
  *
  * 那个 "unknown" 初值是**刻意**的：还没看到任何输入时不该假装知道
  * 该优先什么，保持默认工具顺序最安全。
- */
-let currentSituation = SITUATIONS.unknown;
-
-/**
- * 最近一次判定的**可解释记录**（模块级）。
  *
- * 为什么单独留一份：调度"有没有生效"和"这一轮有没有命中信号"在观察上
- * 完全同形（工具面都没变）。有了它，探针才能说出"调度已接上，但本轮
- * 无信号"——那是有用的信息，而不是故障。
+ * @deprecated 状态现由 `src/situation.js` 持有；此处保留导出以兼容旧调用方。
  */
-let lastDecision = null;
+export { currentSituationOf };
 
 /**
  * 是否给异族工具打 `deferLoading`（缺省关）。
@@ -96,12 +91,80 @@ export function apply(ctx) {
   // 没有它，"生态为空"与"生态已长出来"在观察上完全同形。
   registerSignalsTool(ctx);
 
-  // —— 处境采集：agent/pre-step 是唯一能看到本轮消息的地方 ——
+  // —— 处境采集：在**工具面定稿之前**判出处境 ——
+  //
+  // ⚠️ 2026-11-02 对抗式审查发现并修：原来在 `agent/pre-step` 里判处境。
+  // 但宿主次序是反的：
+  //
+  //   dsh-agent-loop/lib/index.js:906  claim()      ← 拿到本轮输入
+  //   dsh-agent-loop/lib/index.js:907  assemble()   ← 工具面在此定稿
+  //   dsh-agent-loop/lib/index.js:909  pre-step     ← 处境在此才判出
+  //
+  // 于是重排永远晚一步：第 1 步（模型首次回应用户、决定用哪个工具的那一步）
+  // 用默认顺序；第 2 步用上了第 1 步判的处境；第 2 步起 inbox 为空 → 处境被
+  // 重置 → 第 3 步又变回默认顺序。一个 turn 内工具面**变动两次**。
+  //
+  // 而宿主的 `headerEquals` 按**顺序**比较工具面（dsh-session/lib/types/
+  // request-header.js:44），顺序一变就判"工具面变了" → 请求序列重启、
+  // 提示缓存前缀作废。收益在第 1 步（没有），代价在第 2 步（全付）。
+  //
+  // 修法：改用 `agent/inbox/claimed`。它在 claim() 里发出，**早于** assemble()，
+  // 且携带用户消息本身 → 工具面定稿时处境已经就位，重排能作用于第 1 步。
+  //
+  // 保留 `agent/pre-step` 作为兜底：老宿主没有 `inbox/claimed` 时仍能工作。
+  let claimedOk = false;
+  let preStepOk = false;
+  let assembleOk = false;
+
+  /** 判一次处境并记账（两条信号源共用）。 */
+  const judgeAndSample = (text) => {
+    const decision = judge(text);
+    // 采样：把这次判定落盘，命中率成为**长期趋势**而不是一次性测量。
+    // 只存输入哈希（不含原文）与判定结果 —— 够算趋势，且不可反推内容。
+    // 空输入不采样（分母口径见 src/sampling.js）。
+    void recordSample(dshHomeOf(), decision);
+    return decision;
+  };
+
+  // —— 主路径：`agent/inbox/claimed`（早于 assemble）——
+  try {
+    ctx.on?.('agent/inbox/claimed', (payload) => {
+      try {
+        const text = textOfMessage(payload?.message);
+        if (text.length === 0) return; // 空输入不判（见 src/situation.js）
+        judgeAndSample(text);
+      } catch {
+        /* 采集失败绝不能拖垮主链路 */
+      }
+    });
+    claimedOk = typeof ctx.on === 'function';
+  } catch {
+    /* 宿主没有该事件 → 退到 pre-step */
+  }
+
+  // —— 兜底：`agent/pre-step`（老宿主）——
   //
   // ⚠️ pre-step 的 waterfall **没有 catch**：监听器抛错会中断整个 turn。
   // 所以整段包在 try 里，增强的失败绝不能拖垮主链路。
-  let preStepOk = false;
-  let assembleOk = false;
+  try {
+    ctx.on?.('agent/pre-step', async (payload, next) => {
+      try {
+        const text = lastUserText(payload?.messages);
+        // 已经有 inbox/claimed 判过 → 不重复采样（否则同一输入记两次）。
+        if (text.length > 0 && !claimedOk) {
+          judgeAndSample(text);
+        } else if (text.length > 0) {
+          judge(text);
+        }
+      } catch {
+        /* 判定失败 → 处境保持不变 */
+      }
+      return next();
+    });
+    preStepOk = typeof ctx.on === 'function';
+  } catch {
+    /* 宿主没有该事件（旧宿主/单测）→ 处境恒 unknown，等价于不做重排 */
+  }
 
   // —— 接收外部单元贡献的处境信号（零配合的另一半）——
   //
@@ -127,37 +190,15 @@ export function apply(ctx) {
     /* 宿主没有该事件 → 只能用内置信号，其他单元的词汇进不来 */
   }
 
-  try {
-    ctx.on?.('agent/pre-step', async (payload, next) => {
-      try {
-        // 走**可解释的判定**：命中与落选都记下来，"为什么排这个顺序"可回答。
-        const text = lastUserText(payload?.messages);
-        const decision = explainSituation(text);
-        decision.text = text;
-        recordDecision(decision);
-        lastDecision = decision;
-        currentSituation = decision.unknown ? SITUATIONS.unknown : decision.situation;
-        // 采样：把这次判定落盘，命中率成为**长期趋势**而不是一次性测量。
-        // 只存输入哈希（不含原文）与判定结果 —— 够算趋势，且不可反推内容。
-        void recordSample(dshHomeOf(), decision);
-      } catch {
-        currentSituation = SITUATIONS.unknown;
-      }
-      return next();
-    });
-    preStepOk = typeof ctx.on === 'function';
-  } catch {
-    /* 宿主没有该事件（旧宿主/单测）→ 处境恒 unknown，等价于不做重排 */
-  }
-
   // —— 工具面编排：装配 waterfall 的返回值对 tools 是权威的 ——
   try {
     ctx.on?.('system-prompt/assemble', async (assembly, _context, next) => {
       const result = await next();
+      const situation = currentSituationOf();
       // 处境未知 → 原样返回。宁可不动，也不要凭空猜一个顺序。
-      if (currentSituation === SITUATIONS.unknown) return result;
+      if (situation === SITUATIONS.unknown) return result;
       try {
-        return { ...result, tools: arrangeTools(result.tools, currentSituation, { park: PARK_ENABLED }) };
+        return { ...result, tools: arrangeTools(result.tools, situation, { park: PARK_ENABLED }) };
       } catch {
         // 编排失败退回原装配 —— 工具面是主干道，这里绝不中断它。
         return result;
@@ -171,8 +212,14 @@ export function apply(ctx) {
   // 注册成功也要记账 —— 探针唯一的事实来源就是这一行。
   // 漏了这一步，探针会永远报 not-applied（写了 record 却没调用，
   // 属于"看起来有探针但结论恒假"的那类缺陷）。
-  record('ok', preStepOk && assembleOk);
-  ctx.logger?.('mind')?.info?.(`心智索引已注册：${SECTION_NAME}（order ${SECTION_ORDER}）。`);
+  //
+  // 编排就绪的判据：assemble 监听器在，且**至少有一个**处境采集点可用
+  // （inbox/claimed 或 pre-step）。两个都没有 → 处境恒 unknown → 重排永不发生。
+  record('ok', assembleOk && (claimedOk || preStepOk));
+  ctx.logger?.('mind')?.info?.(
+    `心智索引已注册：${SECTION_NAME}（order ${SECTION_ORDER}）。` +
+      `处境采集：${claimedOk ? 'agent/inbox/claimed' : ''}${claimedOk && preStepOk ? '+' : ''}${preStepOk && !claimedOk ? 'agent/pre-step' : ''}。`,
+  );
 
   // —— 向监督层登记探针（零配合通道）——
   //
@@ -203,6 +250,34 @@ function dshHomeOf() {
 }
 
 /**
+ * 取记忆根目录（每日记录所在处）。
+ *
+ * 与数据根同在 `~/.dsh` 下：`memory/` 是记忆根，`storages/` 是采样。
+ * DSH_HOME 覆盖时两者一起跟着走。
+ *
+ * @returns {string} 记忆根绝对路径。
+ */
+function memoryRootOf() {
+	return join(dshHomeOf(), 'memory');
+}
+
+/**
+ * 取一条消息的文本。
+ *
+ * 用于 `agent/inbox/claimed` —— 该事件每次携带**一条**消息。
+ *
+ * @param message 单条消息。
+ * @returns 文本；没有文本时返回空串。
+ */
+function textOfMessage(message) {
+  const blocks = Array.isArray(message?.content) ? message.content : [];
+  return blocks
+    .filter((b) => b?.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text)
+    .join('\n');
+}
+
+/**
  * 取最后一条 user 消息的文本。
  *
  * **只取最后一条**：往前的历史带着早已解决的老问题，用它判处境等于让
@@ -216,11 +291,7 @@ function lastUserText(messages) {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const m = messages[i];
     if (m?.role !== 'user') continue;
-    const blocks = Array.isArray(m.content) ? m.content : [];
-    const text = blocks
-      .filter((b) => b?.type === 'text' && typeof b.text === 'string')
-      .map((b) => b.text)
-      .join('\n');
+    const text = textOfMessage(m);
     if (text.length > 0) return text;
   }
   return '';
@@ -259,6 +330,8 @@ export const PROBE_CODES = {
   noSignal: 'mind.no-signal',
   /** 采样趋势（长期命中率）—— 词表是否跟得上真实说法的持续读数。 */
   trend: 'mind.trend',
+  /** 留出基准命中率 —— 拿未参与修词表的真实用户原话测泛化性。 */
+  benchmark: 'mind.benchmark',
   /** 信号清单（内置 / 外部贡献各多少条）—— 生态是否长出来的唯一可见证据。 */
   signals: 'mind.signals',
   /** 一切正常。 */
@@ -282,11 +355,6 @@ function record(stage, listenersOk) {
   if (listenersOk !== undefined) {
     orchestration = { listeners: listenersOk ? 'ok' : 'unavailable' };
   }
-}
-
-/** 读当前处境（测试与探针用；只读）。 */
-export function currentSituationOf() {
-  return currentSituation;
 }
 
 /**
@@ -323,7 +391,7 @@ export function situationSignals() {
  * @returns 判定记录；还没有过则 null。
  */
 export function lastDispatchDecision() {
-  return lastDecision;
+  return lastDecisionOf();
 }
 
 /**
@@ -359,6 +427,7 @@ export function registerSignalsTool(ctx) {
       async execute() {
         const signals = listSignals();
         const external = signals.filter((s) => s.owner && s.owner !== 'mind');
+        const decision = lastDecisionOf();
         return {
           total: signals.length,
           builtin: signals.length - external.length,
@@ -372,17 +441,21 @@ export function registerSignalsTool(ctx) {
             ...(s.counterWords ? { counterWords: s.counterWords } : {}),
           })),
           external_owners: external.map((s) => s.owner),
-          last_decision: lastDecision
+          last_decision: decision
             ? {
-                situation: lastDecision.situation,
-                unknown: lastDecision.unknown,
-                hits: lastDecision.hits,
-                misses: lastDecision.misses,
-                evidence: lastDecision.evidence,
+                situation: decision.situation,
+                unknown: decision.unknown,
+                hits: decision.hits,
+                misses: decision.misses,
+                evidence: decision.evidence,
               }
             : null,
-          current_situation: currentSituation,
+          current_situation: currentSituationOf(),
           trend: await readTrend(dshHomeOf()),
+          // 留出基准：拿**从未参与修词表**的真实用户原话去测泛化性。
+          // 与 trend 是两个指标：trend 看"真实使用里有多少判不出"，
+          // benchmark 看"词表是不是只认见过的说法"。
+          benchmark: benchmarkFromDailyLogs(memoryRootOf()),
         };
       },
     });
@@ -406,7 +479,10 @@ export function registerSignalsTool(ctx) {
 
 /** 供测试重置模块级状态（生产不用）。 */
 export function __setSituationForTest(situation) {
-  currentSituation = situation;
+  __resetSituationForTest();
+  if (situation !== undefined && situation !== SITUATIONS.unknown) {
+    __forceSituationForTest(situation);
+  }
 }
 
 /**
@@ -454,8 +530,9 @@ function probe() {
 
   // 调度"有没有生效"与"这一轮有没有信号"必须可区分 ——
   // 两者在观察上同形（工具面都没变），所以把判定记账报出来。
-  if (stage === 'ok' && lastDecision !== null) {
-    if (lastDecision.unknown) {
+  const decision = lastDecisionOf();
+  if (stage === 'ok' && decision !== null) {
+    if (decision.unknown) {
       findings.push({
         code: PROBE_CODES.noSignal,
         severity: 'info',
@@ -466,7 +543,7 @@ function probe() {
       findings.push({
         code: PROBE_CODES.dispatched,
         severity: 'info',
-        message: `调度命中：处境「${lastDecision.situation}」，信号 ${lastDecision.hits.join('、') || '无'}。`,
+        message: `调度命中：处境「${decision.situation}」，信号 ${decision.hits.join('、') || '无'}。`,
       });
     }
   }
@@ -505,22 +582,52 @@ function probe() {
   // 采样趋势：无信号率是**长期**指标（词表跟不上真实说法时它先涨）。
   // 放在探针里，是因为它是"调度还灵不灵"的唯一持续读数 ——
   // 单轮的 no-signal 只是瞬时，趋势才是判断依据。
-  if (stage === 'ok') {
-    void readTrend(dshHomeOf())
-      .then((trend) => {
-        if (trend.overall === null) return;
-        const rate = Math.round((1 - trend.overall.unknownRate) * 100);
-        findings.push({
-          code: PROBE_CODES.trend,
-          severity: 'info',
-          message:
-            `调度采样 ${trend.overall.total} 次：无信号率 ${Math.round(trend.overall.unknownRate * 100)}%` +
-            `（命中率 ${rate}%）。无信号率走高 = 词表跟不上真实说法。`,
-        });
-      })
-      .catch(() => {
-        /* 读趋势失败不影响其它检查 */
-      });
+  //
+  // ⚠️ 必须**同步**读（2026-11-02 对抗式审查修）。
+  //
+  // 旧写法在 `readTrend().then()` 里 push finding，而 `probe()` 早已在函数
+  // 末尾 `return findings` —— 监督层拿到的是**定型快照**，那条 finding 永远
+  // 不在里面。实测：同步返回只有 `mind.ok, mind.signals`；等 1 秒后同一个
+  // 数组才多出 `mind.trend`，但监督层早就拿走了。
+  //
+  // 而 `mind.trend` 恰好是唯一上报"命中率趋势"的读数 —— 修好分母之后，
+  // 它是判断"词表还跟不跟得上真实说法"的唯一依据。
+  //
+  // 同步读用 `readFileSync`：采样文件是本地小文件（每行几十字节），
+  // 探针调用频率低，同步读的代价可接受；而异步读会让这条读数**根本不存在**。
+  //
+  // 不按 stage 门控：趋势是**历史**读数 —— 插件刚装载、或上一轮失败时，
+  // 它依然是对"词表跟不跟得上"的唯一线索。把它藏在 stage==='ok' 后面，
+  // 等于在最需要它的时候（出问题了）把它关掉。
+  const trend = readTrendSync(dshHomeOf());
+  if (trend.overall !== null) {
+    const rate = Math.round((1 - trend.overall.unknownRate) * 100);
+    findings.push({
+      code: PROBE_CODES.trend,
+      severity: 'info',
+      message:
+        `调度采样 ${trend.overall.total} 次：无信号率 ${Math.round(trend.overall.unknownRate * 100)}%` +
+        `（命中率 ${rate}%）。无信号率走高 = 词表跟不上真实说法。`,
+    });
+  }
+
+  // 留出基准命中率：拿**从未参与修词表**的真实用户原话去测。
+  //
+  // ⚠️ 这与上面的 trend 是**两个指标**，不能互相替代：
+  // trend 看"真实使用里有多少判不出"，benchmark 看"词表是不是只认见过的说法"。
+  // 只报一个就等于只回答了问题的一半。
+  //
+  // 基准缺失时不报 —— "没有可测的样本"是事实，不该编一个数出来。
+  const benchmark = benchmarkFromDailyLogs(memoryRootOf());
+  if (benchmark !== null) {
+    findings.push({
+      code: PROBE_CODES.benchmark,
+      severity: 'info',
+      message:
+        `留出基准 ${benchmark.total} 条真实用户原话：命中率 ${Math.round((benchmark.rate ?? 0) * 100)}%` +
+        `（命中 ${benchmark.hit}，判错 ${benchmark.missed}，无信号 ${benchmark.unknown}）。` +
+        `基准样本不参与修词表 —— 它测的是泛化性，不是拟合度。`,
+    });
   }
 
   const status = findings.some((f) => f.severity === 'error')

@@ -146,11 +146,16 @@ function countLines(pkg, files) {
 const LINES = {
 	'dsh-agent-mind': [
 		'src/dispatch.js', 'src/hitrate.js', 'src/sampling.js', 'src/orchestrate.js',
-		'src/mind.js', 'src/host.js', 'index.js',
+		'src/mind.js', 'src/host.js', 'src/situation.js', 'index.js',
 		'test/dispatch.test.js', 'test/hitrate.test.js', 'test/sampling.test.js',
 		'test/interfaces.test.js', 'test/mind.test.js', 'test/orchestrate.test.js',
+		'test/integration.test.js', 'test/regressions.test.js',
 	],
-	'dsh-meta-framework': ['index.js', 'src/tools.js', 'src/health.js', 'src/host.js'],
+	'dsh-meta-framework': [
+		'index.js', 'src/tools.js', 'src/health.js', 'src/host.js', 'src/clis.js',
+		'test/entry.test.js', 'test/health.test.js', 'test/tools.test.js',
+		'test/host.test.js', 'test/clis-rule.test.js',
+	],
 	'dsh-memory-manager': ['server.js', 'src/layer-gate.js', 'src/layer-selfcheck.js', 'src/dao-shape.js'],
 };
 for (const [pkg, files] of Object.entries(LINES)) {

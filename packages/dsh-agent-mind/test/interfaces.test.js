@@ -12,6 +12,26 @@
  * 关键判据：**接口"存在"不等于"畅通"**。此前的 mind.healthProbe
  * 就是活例子 —— 插件导出了探针，但 CLIS 的 KNOWN_PROBE_KEYS 没有它，
  * 于是 mind 的编排失效**永远不会被监督层发现**。
+ *
+ * ## ⚠️ 2026-11-02 对抗式审查后重写
+ *
+ * 旧版这个文件用**源码文本匹配**判断接口是否被消费，例如：
+ *
+ * ```js
+ * assert.ok(index.includes(sym), `index.js 应消费 ${sym}`);
+ * ```
+ *
+ * 那只证明"文件里出现过这个词"，不证明"它被调用了"。更糟的是第 75 行：
+ *
+ * ```js
+ * assert.ok(!/…/.test(index) === false || true);   // ← X || true 恒真
+ * ```
+ *
+ * `X || true` 永远为真 —— 这条断言**什么都没检查**。而它本意是抓未使用的
+ * import，而 `index.js:24` 确实 import 了从不使用的 `classifySituation`。
+ *
+ * 现在改为**真正 import 并调用**导出的 API：导出被删或变成空操作，
+ * 测试必须变红。恒真断言已删除，替换为真实的"没有未使用的 import"检查。
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,8 +39,22 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
+import {
+  explainSituation,
+  registerSignal,
+  listSignals,
+  recordDecision,
+  lastDecisionOf,
+} from '../src/dispatch.js';
+import {
+  judge,
+  currentSituationOf,
+  lastDecisionOf as situationLastDecisionOf,
+  __resetSituationForTest,
+} from '../src/situation.js';
+
 const here = dirname(fileURLToPath(import.meta.url));
-// here = <repo>/packages/dsh-agent-mind/test → 上三级到 packages/（readIn 再拼插件名）
+// here = <repo>/packages/dsh-agent-mind/test → 上两级到 packages/（readIn 再拼插件名）
 //
 // ⚠️ monorepo 布局下这个基准变了：独立仓库时期是 <workspace>，现在兄弟包在
 // packages/ 下。写死旧基准会让本测试**静默读到空串**（readIn 返回 ''），
@@ -49,8 +83,7 @@ function allToolNames(src, re) {
 }
 
 // ---------------------------------------------------------------------------
-console.log('\n--- 1. 本地 import 可解析 ---');
-{
+test('1. 本地 import 可解析', () => {
 	const index = readIn('dsh-agent-mind', 'index.js');
 	const imports = [...index.matchAll(/from\s+'(\.[^']+)'/g)].map((m) => m[1]);
 	assert.ok(imports.length >= 3, `mind 应 import 至少三个本地模块，实际 ${imports.length}`);
@@ -58,27 +91,70 @@ console.log('\n--- 1. 本地 import 可解析 ---');
 		const target = join(workspace, 'dsh-agent-mind', imp.replace(/^\.\//, ''));
 		assert.ok(existsSync(target), `import 目标应存在：${imp}`);
 	}
-}
+});
 
-// ---------------------------------------------------------------------------
-console.log('\n--- 2. 导出符号真的被消费 ---');
-{
-	const index = readIn('dsh-agent-mind', 'index.js');
-	const dispatch = readIn('dsh-agent-mind', 'src/dispatch.js');
-
-	// dispatch.js 的导出必须被 index.js 用上（否则固化的机制没接进主链路）
-	for (const sym of ['explainSituation', 'recordDecision', 'listSignals', 'registerSignal']) {
-		assert.ok(dispatch.includes(`export function ${sym}`), `dispatch 应导出 ${sym}`);
-		assert.ok(index.includes(sym), `index.js 应消费 ${sym}（否则机制没接进主链路）`);
+test('2. dispatch 的导出真的被消费（调用得出结果，不只是文件里出现过这个词）', () => {
+	// 真正调用，而不是 grep 源码文本 —— 导出被改成空操作时这里必须变红。
+	const dispose = registerSignal({
+		name: 'iface-probe',
+		situation: 'diagnose',
+		owner: 'test',
+		weight: 9,
+		words: ['接口探测词'],
+	});
+	try {
+		assert.ok(listSignals().some((s) => s.name === 'iface-probe'), 'registerSignal 必须让信号出现在 listSignals 里');
+		const d = explainSituation('这里有接口探测词');
+		assert.equal(d.situation, 'diagnose', 'explainSituation 必须真的用上注册信号');
+		assert.ok(d.hits.includes('iface-probe'), '命中的信号名必须可查');
+	} finally {
+		dispose();
 	}
-	// 反向：index.js 里不能只剩一个没被用的 import（那说明改造只做了一半）
-	assert.ok(!/import\s*\{[^}]*classifySituation[^}]*\}\s*from\s*'[^']*orchestrate/.test(index) === false || true);
-}
+	assert.ok(!listSignals().some((s) => s.name === 'iface-probe'), '注销后信号必须消失');
 
-// ---------------------------------------------------------------------------
-console.log('\n--- 3. 跨插件接口真的可达 ---');
-{
-	// 3a. mind 的探针必须能被 CLIS 发现 —— 两条路径都要在
+	// recordDecision / lastDecisionOf 是一对，必须真的能往返。
+	const decision = explainSituation('接口往返测试');
+	recordDecision(decision);
+	const back = lastDecisionOf();
+	assert.equal(back.situation, decision.situation, 'lastDecisionOf 必须读回刚写的判定');
+	assert.deepEqual(back.hits, decision.hits);
+});
+
+test('3. situation 模块：导出可被消费，空输入不覆盖已有处境', () => {
+	__resetSituationForTest();
+	assert.equal(currentSituationOf(), 'unknown', '初始处境必须是 unknown');
+
+	judge('帮我改一下这个文件');
+	assert.equal(currentSituationOf(), 'execute', '有输入时处境必须更新');
+
+	// 空输入不覆盖：宿主第 2 步起 inbox 为空，那是"这一轮没新输入"，
+	// 不是"用户没表达任何处境"。若让它重置，工具面会在 turn 中途抖回去。
+	judge('');
+	assert.equal(currentSituationOf(), 'execute', '空输入不得把已有处境重置掉');
+
+	const d = situationLastDecisionOf();
+	assert.ok(d !== null, '判定必须被记账');
+	assert.equal(d.unknown, true, '空输入的判定本身是 unknown');
+});
+
+test('4. 没有未使用的 import（旧版的恒真断言替换成真检查）', () => {
+	const index = readIn('dsh-agent-mind', 'index.js');
+	const importRe = /import\s*\{([^}]+)\}\s*from\s*'([^']+)'/g;
+	for (const m of index.matchAll(importRe)) {
+		const names = m[1]
+			.split(',')
+			.map((s) => s.trim().split(/\s+as\s+/)[0].trim())
+			.filter((s) => s.length > 0);
+		const body = index.slice(0, m.index) + index.slice(m.index + m[0].length);
+		for (const name of names) {
+			const used = new RegExp(`(?<![A-Za-z0-9_$])${name}(?![A-Za-z0-9_$])`).test(body);
+			assert.ok(used, `index.js import 了 ${name} 但从未使用（未使用的 import 会掩盖改造只做了一半）`);
+		}
+	}
+});
+
+test('5. 跨插件接口真的可达', () => {
+	// 5a. mind 的探针必须能被 CLIS 发现 —— 两条路径都要在
 	const clis = readIn('dsh-clis', 'index.js');
 	const mind = readIn('dsh-agent-mind', 'index.js');
 
@@ -94,15 +170,15 @@ console.log('\n--- 3. 跨插件接口真的可达 ---');
 	);
 	assert.ok(/export const healthProbe/.test(mind), 'mind 应导出 healthProbe');
 
-	// 3b. meta 取 CLIS 服务的路径
+	// 5b. meta 取 CLIS 服务的路径
 	const meta = readIn('dsh-meta-framework', 'index.js');
 	assert.ok(/createClisSession\(ctx\)/.test(meta), 'meta 应通过 createClisSession(ctx) 取 CLIS 会话');
 	assert.ok(/clis\.causalClassifier/.test(readIn('dsh-meta-framework', 'src/health.js')), 'meta 探针应检查 causalClassifier');
 
-	// 3c. memory 的探针是 CLIS 白名单第一方
+	// 5c. memory 的探针是 CLIS 白名单第一方
 	assert.ok(/memory\.healthProbe/.test(clis), 'CLIS 白名单应含 memory.healthProbe');
 
-	// 3d. 判断顺序分节点名的工具必须**真实存在**
+	// 5d. 判断顺序分节点名的工具必须**真实存在**
 	//
 	// ⚠️ 不能用"源码里搜到这个字符串"来判：meta 的工具名是常量
 	// `TOOL_NAME = 'meta_reframe'`，字面量在 index.js 里搜不到 ——
@@ -128,11 +204,9 @@ console.log('\n--- 3. 跨插件接口真的可达 ---');
 			`判断顺序应点到 ${prefix}* 工具（不能只认一家）`,
 		);
 	}
-}
+});
 
-// ---------------------------------------------------------------------------
-console.log('\n--- 4. 调度机制可被外部使用（固化的实质）---');
-{
+test('6. 调度机制可被外部使用（固化的实质）', () => {
 	const index = readIn('dsh-agent-mind', 'index.js');
 	assert.ok(/export function registerSituationSignal/.test(index), 'mind 应导出 registerSituationSignal（外部单元可贡献信号）');
 	assert.ok(/export function situationSignals/.test(index), 'mind 应导出 situationSignals（信号可查）');
@@ -154,4 +228,4 @@ console.log('\n--- 4. 调度机制可被外部使用（固化的实质）---');
 		/mind\/register-signal/.test(readIn('dsh-memory-manager', 'server.js')),
 		'memory 应广播自己的领域信号',
 	);
-}
+});

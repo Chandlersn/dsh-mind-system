@@ -46,8 +46,33 @@ const mindMod = await import(new URL('../index.js', import.meta.url).href);
 check('dsh-agent-mind 入口可加载', typeof mindMod.apply === 'function');
 
 // —— 真实装载 ——
+//
+// ⚠️ 2026-11-02 对抗式审查修：**必须提供 `tools` 服务**。
+//
+// mind 的 `inject` 是 `['systemPrompt', 'tools']` —— 按 Cordis 规则，inject 未满足
+// 时 `apply()` 根本不会被调用，插件**不激活**（宿主只报一句 "1 entry did not
+// activate"）。旧版这个脚本只装了 systemPrompt，于是：
+//
+// - 分节没注册 → assembly.sections 里没有 mind:orchestration
+// - 编排监听器没挂上 → 工具面不重排
+//
+// 而这个脚本**不在测试套件里**，所以那 5 项 FAIL 从来没人看见。
+//
+// 补上 tools 服务后，插件正常激活，全部判据通过。
+class ToolsService extends host.Service {
+  constructor(ctx) {
+    super(ctx, 'tools');
+    this.registered = [];
+  }
+  register(tool) {
+    this.registered.push(tool);
+    return () => {};
+  }
+}
+
 const ctx = new host.Context();
 await ctx.plugin(SystemPrompt);
+ctx.plugin(ToolsService);
 check('真实 systemPrompt 服务就位', ctx.systemPrompt !== undefined);
 
 await ctx.plugin(mindMod);
@@ -108,6 +133,7 @@ await ctxBase.fiber.dispose();
 
 const ctx2 = new host.Context();
 await ctx2.plugin(SystemPrompt);
+ctx2.plugin(ToolsService); // ⚠️ 没有它 mind 不激活（inject 未满足）→ 编排不生效
 withTools(ctx2);
 await ctx2.plugin(mindMod);
 
@@ -141,6 +167,54 @@ check(
 
 // 收尾：卸载干净，避免影响后续断言
 await ctx2.fiber.dispose();
+mindMod.__setSituationForTest('unknown');
+
+// —— 判据 5：重排在**第 1 步**就生效（2026-11-02 对抗式审查补）——
+//
+// 旧实现把判处境放在 `agent/pre-step`，而宿主次序是：
+//   claim() → assemble() → pre-step
+// 于是重排永远晚一步：第 1 步（模型首次回应用户、决定用哪个工具的那一步）
+// 用默认顺序；第 2 步才用上；第 2 步起 inbox 为空 → 处境被重置 → 第 3 步又
+// 变回默认顺序。一个 turn 内工具面**变动两次** → 宿主 headerEquals 按序比较
+// → 请求序列重启、提示缓存前缀作废。
+//
+// 修法：改用 `agent/inbox/claimed`（在 claim() 里发出，**早于** assemble()）。
+const ctx3 = new host.Context();
+await ctx3.plugin(SystemPrompt);
+ctx3.plugin(ToolsService);
+withTools(ctx3);
+await ctx3.plugin(mindMod);
+mindMod.__setSituationForTest('unknown');
+
+const base3 = (await ctx3.systemPrompt.assemble({})).tools.map((t) => t.name).join(',');
+// 模拟宿主第 1 步：用户消息到达（claim 发出 claimed）→ 紧接着 assemble
+ctx3.emit('agent/inbox/claimed', {
+  message: { role: 'user', content: [{ type: 'text', text: '帮我审查一下这个插件有没有隐患' }] },
+  turn: 1,
+});
+const step1 = (await ctx3.systemPrompt.assemble({})).tools.map((t) => t.name).join(',');
+check(
+  '重排在第 1 步就生效（不是滞后一拍）',
+  step1 !== base3,
+  '第 1 步的工具面与基线相同 → 判处境发生得太晚，重排赶不上模型首次选工具',
+);
+const step1Names = step1.split(',');
+check(
+  '第 1 步的判结构工具已排到最前',
+  step1Names[0] === 'clis_run' || step1Names[0] === 'clis_classify' || step1Names[0] === 'meta_reframe',
+  `实际首个 ${step1Names[0]}`,
+);
+
+// 第 2 步：inbox 为空 → 工具面必须**保持不变**（不抖）
+ctx3.emit('agent/inbox/claimed', { message: { role: 'user', content: [] }, turn: 1 });
+const step2 = (await ctx3.systemPrompt.assemble({})).tools.map((t) => t.name).join(',');
+check(
+  '空输入后工具面保持不变（一个 turn 内只变一次）',
+  step2 === step1,
+  '工具面抖回默认顺序 → 宿主会重启请求序列、提示缓存前缀作废',
+);
+
+await ctx3.fiber.dispose();
 mindMod.__setSituationForTest('unknown');
 
 console.log('');

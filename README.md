@@ -494,7 +494,7 @@ npm test
 
 | 包 | 测试文件 | 用例/断言 |
 |---|---|---|
-| `dsh-agent-mind` | 6 | 52 |
+| `dsh-agent-mind` | 8 | 74 |
 | `dsh-memory-manager` | 4 | 131 |
 | `dsh-clis`（源仓库） | 41 | 617 |
 
@@ -518,9 +518,9 @@ node packages/dsh-mind-system/scripts/publish-check.mjs
 
 | 包 | 规模 |
 |---|---|
-| `dsh-agent-mind` | 13 文件 / 2551 行 |
+| `dsh-agent-mind` | 16 文件 / 3529 行 |
 | `dsh-clis` | 源仓库 45 个 .ts / 9458 行 |
-| `dsh-meta-framework` | 4 文件 / 932 行 |
+| `dsh-meta-framework` | 10 文件 / 3230 行 |
 | `dsh-memory-manager` | 4 文件 / 5747 行 |
 
 ### 发布形态

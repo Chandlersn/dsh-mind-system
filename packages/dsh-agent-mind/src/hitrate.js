@@ -24,6 +24,8 @@
  * @module src/hitrate
  */
 
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { explainSituation } from './dispatch.js';
 
 /**
@@ -154,4 +156,57 @@ export function hitRateLine(r, threshold = 0.6) {
   const unk = (r.unknownRate * 100).toFixed(0);
   const verdict = r.rate < threshold ? `低于阈值 ${(threshold * 100).toFixed(0)}% —— 调度基本失灵` : '达到阈值';
   return `调度命中率 ${rate}%（${r.hit}/${r.total}，判错 ${r.missed}，无信号 ${unk}%）—— ${verdict}`;
+}
+
+/**
+ * 从记忆根读每日记录并算"留出基准"命中率。
+ *
+ * ## 这是 `hitrate.js` 的**生产用途**（2026-11-02 对抗式审查补）
+ *
+ * 审查发现：这个模块在生产链路里**零引用** —— `hitRate`/`hitRateLine`/
+ * `extractUserQuotes` 只在测试里跑。而探针上报的命中率是 `readTrend` 的
+ * "无信号率"，两者**不是同一个指标**。
+ *
+ * 两个指标各管一件事，缺一不可：
+ *
+ * - **无信号率（readTrend）**：真实使用中"判不出处境"的比例。分母已修为
+ *   "有用户文本的判定"（见 src/sampling.js）。
+ * - **留出基准命中率（本函数）**：拿**从未参与修词表**的真实用户原话去测，
+ *   看词表是不是只认见过的说法。它是**泛化性**的读数。
+ *
+ * 为什么必须来自"留出"样本：参与修词表的样本已被拟合，其命中率不能证明
+ * 泛化。每日记录里的「用户原话」是真实输入，且不是为测调度而写的。
+ *
+ * @param memoryRoot 记忆根目录（含 `YYYY-MM-DD.md`）。
+ * @param threshold 低于此值算失灵。
+ * @returns {{total: number, hit: number, unknown: number, rate: number|null, line: string}|null}
+ *   没有样本时返回 null（"没有可测的基准"本身是信息，不该编一个数出来）。
+ */
+export function benchmarkFromDailyLogs(memoryRoot, threshold = 0.6) {
+  let text = '';
+  try {
+    const entries = readdirSync(memoryRoot)
+      .filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n))
+      .sort();
+    for (const name of entries) {
+      try {
+        text += readFileSync(join(memoryRoot, name), 'utf8') + '\n';
+      } catch {
+        /* 单份读不到就跳过 */
+      }
+    }
+  } catch {
+    return null;
+  }
+  const samples = extractUserQuotes(text);
+  if (samples.length === 0) return null;
+  const r = hitRate(samples);
+  return {
+    total: r.total,
+    hit: r.hit,
+    missed: r.missed,
+    unknown: r.unknown,
+    rate: r.rate,
+    line: hitRateLine(r, threshold),
+  };
 }

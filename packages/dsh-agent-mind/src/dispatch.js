@@ -229,9 +229,27 @@ export function listSignals() {
 /**
  * 判定处境，并给出**可解释**的理由。
  *
- * 打分规则：命中一个信号得 `weight × 命中处数`；命中反例则该信号作废。
- * 取最高分；同分时按**内置优先、注册优先于内置**不成立 —— 规则是：
- * 同分取**权重高者**，再同则取**注册顺序靠后者**（后注册的更具体）。
+ * ## 打分规则（2026-11-02 对抗式审查修）
+ *
+ * 旧规则是 `score = weight × 命中处数`，**权重压不住广度**：一条权重 1 但
+ * 命中 9 个词的信号，会赢过权重 10 但只命中 1 个词的信号。实测：
+ *
+ * ```
+ * heavy(权重10, 1词) vs many(权重1, 9词)  →  many 赢
+ * ```
+ *
+ * 这让"权重"这个字段名不副实 —— 它不是"这个信号有多可信"，而是"每多命中
+ * 一处算几分"。改判据：**score = weight × (1 + log2(命中处数))**，命中处数
+ * 只贡献对数级加成，权重仍是主导项。
+ *
+ * ## 同分规则（旧文档与代码不一致，已对齐）
+ *
+ * 旧文档写"同分取权重高者，再同则取**注册顺序靠后者**（后注册的更具体）"，
+ * 但代码用严格 `>` 比较，遍历顺序是"内置在前、注册在后" —— 严格 `>` 意味着
+ * **先到先赢**，同分时**内置赢**，与文档相反。
+ *
+ * 现在两者一致：**同分取后注册者**（外部信号更具体，理应覆盖内置）。
+ * 实现上把比较改成 `>=`，并保证注册信号排在内置之后遍历。
  *
  * @param text 本轮输入文本。
  * @returns 判定结果（含命中、落选与证据计数）。
@@ -258,10 +276,12 @@ export function explainSituation(text) {
       misses.push(signal.name);
       continue;
     }
-    const score = signal.weight * count;
+    const score = scoreOf(signal, count);
     evidence[signal.name] = count;
     hits.push(signal.name);
-    if (score > bestScore) {
+    // `>=` 而非 `>`：同分时**后遍历到的胜出**。遍历顺序是"内置在前、注册在后"，
+    // 所以同分时外部（后注册、更具体）信号赢 —— 与文档一致。
+    if (score >= bestScore) {
       bestScore = score;
       best = signal;
     }
@@ -283,6 +303,22 @@ export function explainSituation(text) {
     evidence,
     unknown: false,
   };
+}
+
+/**
+ * 算一个信号的得分。
+ *
+ * 命中处数只给**对数级**加成：多命中几处说明信号更贴合，但不该压过一条
+ * 权重明显更高的信号。用 `1 + log2(count)` 是为了让 count=1 时得 1 分、
+ * count=2 时得 2 分、count=4 时得 3 分 —— 边际递减。
+ *
+ * @param {{weight: number}} signal 信号。
+ * @param {number} count 命中处数。
+ * @returns 得分。
+ */
+function scoreOf(signal, count) {
+  const weight = typeof signal.weight === 'number' && Number.isFinite(signal.weight) ? signal.weight : 1;
+  return weight * (1 + Math.log2(Math.max(1, count)));
 }
 
 /** 最近一次判定的记录（供探针与自检读取）。 */

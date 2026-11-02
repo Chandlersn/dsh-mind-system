@@ -31,6 +31,7 @@
 
 import { createHash } from 'node:crypto';
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 /** 采样文件相对路径（与记忆层同区，便于一起备份/清理）。 */
@@ -63,11 +64,33 @@ export function sampleKey(text) {
  * **fire-and-forget**：采样是观测手段，绝不能拖慢调度。失败静默 ——
  * 采样文件写不进去不影响任何功能（且下次补记即可）。
  *
+ * ## ⚠️ 空输入不记（2026-11-02 对抗式审查修）
+ *
+ * 宿主一个 turn 里，第 2 步起 inbox 已被 claim 干净 —— `claimed` 是空数组，
+ * 判出来必然是 unknown。把这些记进采样，"无信号率"就变成了**空输入率**。
+ *
+ * 实测：采样文件 362 行里 351 行是空输入（哈希 = sha256(空串)），
+ * 空/非空严格交替呈轮次结构。同一份数据两个口径：
+ *
+ * ```
+ * 步骤口径：351/362 = 97% 无信号 → "调度基本失灵"
+ * 轮次口径：  4/14 = 27% 无信号 → 命中率 73.3%
+ * ```
+ *
+ * 且该读数对被测对象**几乎不敏感**：把词表整个销毁，步骤口径也只从 97%
+ * 变到 100%（动态范围 3 个百分点），而轮次口径从 27% 变到 100%（100 个
+ * 百分点）。一个几乎不动的读数不能用来判断被测对象的好坏。
+ *
+ * 判据：**只有判过内容的判定才进采样**。命中率���单位回到"一次用户输入"。
+ *
  * @param {string} dshHome 数据根。
  * @param {object} decision 判定结果（explainSituation 的返回）。
  * @returns {Promise<void>} 永不抛错。
  */
 export async function recordSample(dshHome, decision) {
+	const text = decision?.text ?? '';
+	// 空输入 → 不采样。理由见上。
+	if (String(text).length === 0) return;
 	try {
 		const path = sampleFilePath(dshHome);
 		await mkdir(dirname(path), { recursive: true });
@@ -75,7 +98,7 @@ export async function recordSample(dshHome, decision) {
 			path,
 			`${JSON.stringify({
 				t: new Date().toISOString(),
-				key: sampleKey(decision?.text ?? ''),
+				key: sampleKey(text),
 				situation: decision?.unknown ? null : decision?.situation,
 				unknown: decision?.unknown === true,
 				hits: decision?.hits ?? [],
@@ -168,4 +191,81 @@ export function trendLine(trend) {
 		`（命中率 ${rate}%，近一日 ${lastRate ?? 'n/a'}%）。` +
 		`无信号率高 = 词表跟不上真实说法。`
 	);
+}
+
+/**
+ * **同步**读采样并按天聚合趋势。
+ *
+ * ## 为什么需要同步版（2026-11-02 对抗式审查修）
+ *
+ * 健康探针是**同步**函数（监督层零参数调用 `exported.probe()`），返回值
+ * 当场定型。异步版 `readTrend()` 只能在 Promise resolve 之后才拿到数据 ——
+ * 那时探针早已返回，finding 进不了监督层看到的快照。
+ *
+ * 实测（旧写法）：同步返回只有 `mind.ok, mind.signals`；等 1 秒后同一个
+ * 数组才多出 `mind.trend`，但监督层早就拿走了 —— 那条读数**从未出现过**。
+ *
+ * 而 `mind.trend` 是唯一上报"命中率趋势"的读数。修好分母之后，它是判断
+ * "词表还跟不跟得上真实说法"的唯一依据。
+ *
+ * 代价：同步读一个小文件。采样文件每行几十字节，探针调用频率低，可接受。
+ *
+ * @param {string} dshHome 数据根。
+ * @param {number} [days] 回看天数（缺省 30）。
+ * @returns {{days: Array<object>, overall: object|null}} 趋势。
+ */
+export function readTrendSync(dshHome, days = 30) {
+	const path = sampleFilePath(dshHome);
+	/** @type {Map<string, {total:number, unknown:number, situations:Map<string,number>}>} */
+	const byDay = new Map();
+	let raw = '';
+	try {
+		raw = readFileSync(path, 'utf8');
+	} catch {
+		/* 没有采样文件 = 还没开始采样（正常路径，不是错误） */
+	}
+	const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+	for (const line of raw.split('\n')) {
+		const s = line.trim();
+		if (!s) continue;
+		try {
+			const e = JSON.parse(s);
+			const t = Date.parse(e.t);
+			if (!Number.isFinite(t) || t < cutoff) continue;
+			const day = e.t.slice(0, 10);
+			let bucket = byDay.get(day);
+			if (bucket === undefined) {
+				bucket = { total: 0, unknown: 0, situations: new Map() };
+				byDay.set(day, bucket);
+			}
+			bucket.total += 1;
+			if (e.unknown === true) bucket.unknown += 1;
+			else if (e.situation) {
+				bucket.situations.set(e.situation, (bucket.situations.get(e.situation) ?? 0) + 1);
+			}
+		} catch {
+			/* 坏行跳过 */
+		}
+	}
+
+	const out = [...byDay.entries()]
+		.sort((a, b) => (a[0] < b[0] ? -1 : 1))
+		.map(([day, b]) => ({
+			day,
+			total: b.total,
+			unknown: b.unknown,
+			unknownRate: b.total === 0 ? null : b.unknown / b.total,
+			situations: Object.fromEntries(b.situations),
+		}));
+
+	let total = 0;
+	let unknown = 0;
+	for (const b of byDay.values()) {
+		total += b.total;
+		unknown += b.unknown;
+	}
+	return {
+		days: out,
+		overall: total === 0 ? null : { total, unknown, unknownRate: unknown / total },
+	};
 }

@@ -59,9 +59,9 @@ DSH 插件：把**"该用哪类工具"的判断顺序**装进系统提示，并�
 ## 它怎么让工具面跟着处境走
 
 ```
-agent/pre-step   ──看本轮消息──▶  判处境（diagnose/execute/recall/retrieve/unknown）
-                                        │
-system-prompt/assemble ──读处境──────▶  重排 assembly.tools
+agent/inbox/claimed ──看本轮消息──▶  判处境（diagnose/execute/recall/retrieve/unknown）
+                                              │
+system-prompt/assemble ──读处境────────────▶  重排 assembly.tools
 ```
 
 五种处境把对应工具族排到前面：
@@ -69,7 +69,7 @@ system-prompt/assemble ──读处境──────▶  重排 assembly.too
 | 处境 | 何时进入 | 工具面怎么变 |
 |---|---|---|
 | `diagnose` | 解法未知、反复无效、分不清因果 | 判据工具提前 |
-| `execute` | 知道要做什么，只差动手改 | 执行工具提前 |
+| `execute` | 知道要做什么，只差动手改 | 动手类工具提前 |
 | `recall` | 涉及既有约定/踩过的坑 | 记忆工具提前 |
 | `retrieve` | 需要外部事实 | 检索工具提前 |
 | `unknown` | 判不出来 | 什么都不做，保持默认顺序 |
@@ -89,11 +89,31 @@ system-prompt/assemble ──读处境──────▶  重排 assembly.too
   延后载入标记会让声明不常驻、效果依模型适配器而异。有风险的那半做成
   显式开关（`DSH_MIND_PARK=1`），默认只交付无风险的那半
 
-### ⚠️ 有一拍延迟，这是结构性的
+### 为什么用 `agent/inbox/claimed` 而不是 `agent/pre-step`
 
-宿主 `preStep()` 的次序是 `:907 assemble()` 先、`:909 agent/pre-step` 后。
-所以第 N 步读到的处境作用在第 N+1 步的工具面上。**不要试图"修"它** ——
-那需要改动宿主时序；memory-manager 的召回注入、clis 的提示注入都遵循同一时序。
+宿主 `preStep()` 的次序是：
+
+```
+:906  claim()      ← 拿到本轮输入，并发出 agent/inbox/claimed
+:907  assemble()   ← 工具面在此定稿
+:909  agent/pre-step  ← 处境在此才判出
+```
+
+早期版本在 `agent/pre-step` 里判处境，于是**重排永远晚一步**：
+
+- 第 1 步（模型第一次回应用户、决定用哪个工具的那一步）用的是默认顺序
+- 第 2 步用上了第 1 步判出的处境 —— 但模型已经在干活了
+- 第 2 步起 inbox 为空 → 处境被重置 → 第 3 步又变回默认顺序
+
+一个 turn 内工具面**变动两次**。而宿主的 `headerEquals` 是**按顺序**比较
+工具面的（`dsh-session/lib/types/request-header.js:44`），顺序一变就判"工具面
+变了" → `startsSeries=true` → 全部系统提示节点被替换 → **请求序列重启、
+提示缓存前缀作废**。收益在第 1 步（没有），代价在第 2 步（全付）。
+
+`agent/inbox/claimed` 在 `claim()` 里发出，**早于** `assemble()`，且携带用户
+消息本身 —— 工具面定稿时处境已经就位，重排能作用于第 1 步。
+
+`agent/pre-step` 保留为**兜底**：老宿主没有 `inbox/claimed` 时仍能工作。
 
 ---
 
@@ -157,6 +177,35 @@ system-prompt/assemble ──读处境──────▶  重排 assembly.too
 每次判定落盘，按天聚合成命中率趋势。**只存输入哈希，不存原文** ——
 够算趋势，且不可反推内容。
 
+### ⚠️ 采样的单位是"一次用户输入"，不是"一个 step"
+
+宿主一个 turn 里，第 2 步起 inbox 已被 claim 干净 —— `claimed` 是空数组，
+判出来必然是 unknown。把这些记进采样，"无信号率"就变成了**空输入率**。
+
+实测（修复前）：采样文件 702 行里 598 行是空输入（哈希 = sha256(空串)），
+空/非空严格交替呈轮次结构。同一份数据两个口径：
+
+```
+步骤口径：598/702 = 85% 无信号 → "调度基本失灵"
+轮次口径： 22/104 = 21% 无信号 → 命中率 78.8%
+```
+
+而且该读数**对它声称测量的东西几乎不敏感**：把词表整个销毁，步骤口径也只
+从 85% 变到 100%（动态范围 15 个百分点），轮次口径从 21% 变到 100%
+（79 个百分点）。一个几乎不动的读数不能用来判断被测对象的好坏。
+
+所以：**只有判过内容的判定才进采样**（`src/sampling.js`）。
+
+### 两个指标，各管一件事
+
+| 指标 | 代号 | 分母 | 回答什么 |
+|---|---|---|---|
+| 真实使用无信号率 | `mind.trend` | 有用户文本的判定 | 真实使用里有多少判不出 |
+| 留出基准命中率 | `mind.benchmark` | 每日记录里未参与修词表的真实用户原话 | 词表是不是只认见过的说法 |
+
+**少一个就等于只回答了问题的一半**：前者说"当下词表够不够用"，后者说
+"词表能不能泛化到没见过的说法"。
+
 ---
 
 ## 输出与副作用
@@ -167,7 +216,7 @@ system-prompt/assemble ──读处境──────▶  重排 assembly.too
 | 工具 | `mind_signals`（只读，见下） |
 | 状态 | 只读处境 + 重排装配结果，不写任何文件（采样除外，见下） |
 | 采样文件 | `<DSH_HOME>/storages/mind-dispatch-samples.jsonl` |
-| 降级 | 两个事件缺任一 → 只是不重排，工具照常可用 |
+| 降级 | 三个事件缺任一 → 只是不重排，工具照常可用 |
 
 ### `mind_signals`（只读）
 
@@ -186,10 +235,11 @@ system-prompt/assemble ──读处境──────▶  重排 assembly.too
 | --- | --- | --- |
 | `mind.not-loaded` | error | 没跑到 `apply()`（inject 未满足 / 模块加载失败） |
 | `mind.section-missing` | error | `systemPrompt` 不可用 → 判断顺序不会出现在提示里 |
-| `mind.orchestration-missing` | info | 两个编排事件不可用 → 工具照常可用，但不会按处境重排 |
+| `mind.orchestration-missing` | info | 编排事件不可用 → 工具照常可用，但不会按处境重排 |
 | `mind.dispatched` | info | 调度命中：处境 + 命中的信号名 |
 | `mind.no-signal` | info | 调度已接上，但本轮没命中任何信号（**正常状态，不是故障**） |
-| `mind.trend` | info | 采样趋势：累计次数、无信号率、命中率 |
+| `mind.trend` | info | 采样趋势：累计次数、无信号率、命中率（分母 = 有用户文本的判定） |
+| `mind.benchmark` | info | 留出基准：未参与修词表的真实用户原话上的命中率（泛化性） |
 | `mind.signals` | info | 信号清单：内置几条、外部贡献几条（各 owner 一条独立代号） |
 | `mind.ok` | info | 正常 |
 
@@ -200,12 +250,16 @@ system-prompt/assemble ──读处境──────▶  重排 assembly.too
 外部信号按 **owner 发独立代号**（`mind.signal-from-<owner>`）——
 监督面只输出代号不转发 message，所以数字必须编码进代号才看得见。
 
+`mind.trend` 与 `mind.benchmark` 都是**同步**读出来的 —— 探针是同步函数，
+返回值当场定型。早期版本在 Promise 里 push 那条 finding，监督层拿到的
+定型快照里根本没有它 —— 那条读数**从未出现过**。
+
 ---
 
 ## 开发
 
 ```bash
-npm test                        # 52 个用例（分节 / 编排 / 调度 / 命中率 / 采样 / 接口）
+npm test                        # 74 个用例（分节 / 编排 / 调度 / 命中率 / 采样 / 接口 / 接线集成）
 node scripts/verify-assembly.mjs # 对真实 systemPrompt 服务验证（推荐先跑这个）
 ```
 
@@ -214,11 +268,22 @@ node scripts/verify-assembly.mjs # 对真实 systemPrompt 服务验证（推荐�
 
 - 分节真的进了装配结果（不是"我调了 section()"）
 - 工具面重排真的落到装配结果，且与"不装本插件"的基线逐字相同（未判处境时）
+- **重排在第 1 步就生效**（不是滞后一拍）
+- **空输入后工具面保持不变**（一个 turn 内只变一次，不抖）
 - 工具数量与名字集合不变（能力零损失）
 - 卸载后分节消失
 
-单测用假 ctx，只能证明"调用发生了"；这个脚本证明"下游真的接上了"。
+⚠️ 这个脚本**必须提供 `tools` 服务**（mind 的 `inject` 是
+`['systemPrompt', 'tools']`）。缺了它，`apply()` 不会被调用、插件不激活，
+分节不注册、编排不生效 —— 脚本会报 5 项 FAIL 而插件看起来"没坏"。
+它现在也在测试套件里（`test/integration.test.js`），跑不掉。
+
+单测用假 ctx，只能证明"调用发生在"；这个脚本证明"下游真的接上了"。
 两者的差距正是本机反复踩过的那类缺陷。
+
+`test/integration.test.js` 用**真实 cordis** 装载插件，走宿主同一条路径，
+钉住"宿主接线"这一层 —— 旧套件删掉 `agent/pre-step` 或
+`system-prompt/assemble` 监听器仍然全绿，那就是这条缺口。
 
 ## 依赖
 
