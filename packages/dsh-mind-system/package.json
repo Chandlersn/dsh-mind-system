@@ -54,5 +54,11 @@
     "type": "git",
     "url": "git+https://github.com/Chandlersn/dsh-mind-system.git",
     "directory": "packages/dsh-mind-system"
+  },
+  "dependencies": {
+    "dsh-clis": "^0.3.0",
+    "dsh-meta-framework": "^0.1.0",
+    "dsh-memory-manager": "^5.29.10",
+    "dsh-agent-mind": "^0.2.0"
   }
 }

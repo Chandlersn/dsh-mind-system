@@ -41,6 +41,7 @@
   },
   "files": [
     "server.js",
+    "health-inbox.js",
     "src/",
     "client.js",
     "icon.svg",

@@ -2,3 +2,4 @@
 *.tgz
 .DS_Store
 data/
+_history-archives/
