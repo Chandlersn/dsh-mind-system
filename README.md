@@ -350,7 +350,7 @@ CLIS 的真正源码在独立仓 `Chandlersn/dsh-clis`（多包 workspace：`@ca
 
 | 症状 | 多半是 | 怎么办 |
 |---|---|---|
-| 改了插件代码，行为没变，也没报错 | 该包不在 HMR `root` 列表里 | 把它的真实物理目录加进 `cordis.patch.yml` 的 HMR `root`（**不能写 junction 路径**，`**/node_modules` 默认被过滤） |
+| 改了插件代码，行为没变，也没报错 | 该包**不是** junction（是拷贝），或不在 HMR `root` 里 | 先 `Get-Item ...node_modules/dsh-mind-system -Force` 看 `LinkType`：不是 `Junction` 就按下面「装进 profile」一节改；`root` 要写**仓库真实路径**（本机已配），不要写 `node_modules` 路径 —— `**/node_modules` 默认被过滤 |
 | `clis_probe` 报 `unknown tool` | CLIS 没装载成功 | 看宿主启动日志的 "did not activate"；多半是 `inject` 的依赖服务没就位 |
 | 聚合包装了，但四家都不在 | 聚合包与单独安装互斥 | 从 `bundles` 里去掉单独装的那家，或去掉聚合包 |
 | 调度命中但工具面没变 | 一拍延迟（结构性） | 处境在下一轮生效，不是 bug |
@@ -409,7 +409,7 @@ npm test
 
 | 包 | 测试文件 | 用例/断言 |
 |---|---|---|
-| `dsh-agent-mind` | 9 | 81 |
+| `dsh-agent-mind` | 11 | 124 |
 | `dsh-memory-manager` | 4 | 131 |
 | `dsh-clis`（源仓库） | 41 | 617 |
 
@@ -435,7 +435,7 @@ node scripts/build-combined.mjs --prune    # 顺带删掉已无来源的陈旧�
 # 校验产物与源是否一致（只读；已接进 npm test 第一步）
 node scripts/verify-combined.mjs
 
-# 装进 DSH profile（拷贝而非硬链接；先 build，产物不新鲜会拒绝安装）
+# 装进 DSH profile（link:/junction 形态；先 build，产物不新鲜会拒绝安装）
 node scripts/install-profile.mjs
 node scripts/install-profile.mjs --dry-run
 ```
@@ -473,28 +473,58 @@ node scripts/install-profile.mjs --dry-run
 - **注释两边完全相同**，两种装法都成立 —— 注释若又要分叉，说明设计退化了
 - `memory/ui-test.mjs` 断言 id 等于"宿主会为哪个包校验"，两种装法都算得对，不写死
 
-### 装进 profile 是拷贝，不是链接
+### 装进 profile：`link:`（junction），不是 `file:`（拷贝）
 
-`~/.dsh/profiles/web/node_modules/dsh-mind-system` 若与源码树共享 inode
-（`ls -li` 看第一列，或 links 计数为 2），说明安装是**硬链接**：改源码等于改正在跑的实例，
-"我改了源码"和"我改了运行环境"从此不再可分。
+> 2026-11-03 更新。此前本文件写的是「装进 profile 是拷贝，不是链接」，那是当时的
+> 刻意选择（源码与运行环境隔离）。现在**改为 junction**，理由见下 —— 两种形态的
+> 代价必须分清，别把旧结论当现行规则。
 
-规矩：
+**profile 里怎么写，决定 `node_modules` 里是什么形态：**
 
-- 装进 profile 用**拷贝**，走脚本，别手工 `cp -r`／`rm -rf`
-- 改了源码 → `npm run build` → `npm run install:profile` → 重启 dsh，源码改了不会自动生效
-- `build-combined` 检测到共享 inode 会打警告，提醒你这步还没做
+| `package.json` 里的声明 | pnpm 行为 | `node_modules` 里的形态 | 改源码后 |
+|---|---|---|---|
+| `link:C:/...` | 建目录链接 | **Junction** | **立即生效**（配合 HMR） |
+| `file:C:/...` | 打包拷贝 | 真实拷贝（`LinkType` 为空） | **不生效**，必须重建+重装+重启 |
+
+一条命令判断当前是哪种：
+
+```powershell
+Get-Item "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-mind-system" -Force |
+  Select-Object LinkType, Target
+# LinkType=Junction → 链接形态（改源码即生效）
+# LinkType 为空     → 拷贝形态（改了不生效）
+```
+
+**为什么必须是 junction**：`dsh-hmr` 用 `realpathSync()` 表示被监听的模块
+（官方 README 第 81 行），而 `esmHas()` 查的是 Node 的 ESM `loadCache`，
+键也是 realpath。拷贝形态下两者不相等 —— `loadCache` 的键是
+`node_modules/...`（无链接，realpath 就是它自己），而 HMR 在仓库路径上监听，
+于是**改了源码也匹配不上，静默不生效**。junction 把两条路径合并成一条，链路才闭合。
+
+> 注意：`core.autocrlf` 之外，`file:` 的拷贝与 `link:` 的链接在 Windows 上
+> **不是同一种东西**，不能在仓库里混用两种写法还指望行为一致。
+
+**规矩：**
+
+- 声明用 `link:`，走 `npm run install:profile`，别手工 `mklink`
+- 首次切换形态要**停宿主**再替换目录（Windows 上被加载的 `.js` 会被占用）
+- 切换前先备份成 `.copybak-<时间戳>`，失败可回滚
+- **junction 形态下改源码就是部署** —— 见 PUBLISH.md 的「运行状态警示」
 
 ```bash
 npm run build              # 先让产物与源一致（不一致时脚本会拒绝安装）
-npm run install:profile    # 拷到 ~/.dsh/profiles/web/node_modules（可加 --profile 指定）
+npm run install:profile    # 装到 profile（可加 --profile 指定）
 npm run install:profile -- --dry-run   # 只说做什么
 ```
 
-为什么必须走脚本：`cp -r` 到已存在的目录会**顺着硬链接改写源码**，先删后拷会中途留下
-半套文件（此时 dsh 去 import 就崩）。脚本的顺序是「拷到同级临时目录 → 校验文件数与注册 id
-→ 替换」，任一步失败旧副本不动。（2026-11-03 手工做这事：`cp` 落沙箱层、`rm` 落真实目录，
-安装副本被删光。）
+**两种形态的取舍（这是设计选择，不是对错）：**
+
+| | 拷贝（`file:`） | junction（`link:`） |
+|---|---|---|
+| 改源码 | 安全，不影响运行实例 | **立刻影响运行实例** |
+| 生效方式 | 必须 重建 → 重装 → 重启 | 被 import 过的模块由 HMR 热替换 |
+| 隔离性 | 有好几层缓冲，误改可撤回 | 无缓冲，`git checkout`/切分支即换线上版本 |
+| 适合 | 生产、多人协作 | 单人持续开发（本机现状） |
 
 没装宿主的机器上，`harness-test` / `api-test` 打 `SKIP` 而不是失败（它们验证的是"与真宿主
 协作"，没有宿主就没有可验证的对象）；要它们变硬失败（CI），设 `DSH_REQUIRE_HOST=1`，
@@ -504,7 +534,7 @@ npm run install:profile -- --dry-run   # 只说做什么
 
 | 包 | 规模 |
 |---|---|
-| `dsh-agent-mind` | 17 文件 / 3551 行 |
+| `dsh-agent-mind` | 20 文件 / 5570 行 |
 | `dsh-clis` | 源仓库 45 个 .ts / 9458 行 |
 | `dsh-meta-framework` | 10 文件 / 3230 行 |
 | `dsh-memory-manager` | 4 文件 / 5747 行 |
@@ -523,13 +553,27 @@ packages/dsh-memory-manager   → npm: dsh-memory-manager
 packages/dsh-mind-system      → npm: dsh-mind-system（聚合包）
 ```
 
-### 更新插件时的生效方式（实测）
+### 更新插件时的生效方式（2026-11-03 实测）
 
-| 改了什么 | 生效方式 |
-|---|---|
-| 提示分节、编排逻辑 | 改 `cordis.patch.yml` 触发 profile 重组即可 |
-| `index.js` / `src/` 里的模块 | 需在 HMR `root` 列表内，否则**改了不生效且无报错**（本机 profile 已配） |
-| `server.js`（memory-manager 的工具与路由） | 需重启宿主（模块生成缓存以 realpath 为键） |
+前提：安装形态是 junction（`LinkType=Junction`）。若是拷贝形态，**任何** `.js` 改动
+都必须 重建 → 重装 → 重启。
+
+| 改了什么 | 生效方式 | 依据 |
+|---|---|---|
+| `index.js` / `src/` 里**已被 import 过**的模块 | HMR 热替换（约 debounce 后），不需重启 | `dsh-hmr/lib/index.js:908` `esmHas(url)` 命中 `loadCache` 才进热替换候选 |
+| **新增**的文件、或改 `package.json` / `exports` | **不保证**，重启宿主 | 官方 README：仅 `package.json` 的变化不会被检测到 |
+| 提示分节、编排逻辑（`src/mind.js` 等） | 同上 —— 它们是 `index.js` 静态导入的模块，走同一条链 | — |
+| `server.js`（memory-manager 的工具与路由） | 需**重启**宿主 | 模块生成缓存以 realpath 为键 |
+| `cordis.patch.yml` | 它触发 profile 重组（与模块通道是两条独立路径） | `dsh-hmr/lib/index.js:865` `reconcileProfile()` |
+
+**改完不要假设已生效**。拿不准就重启（几秒，确定生效）。
+`logger.info("reload plugin at %C")` 是 HMR 重载成功的日志点
+（`dsh-hmr/lib/index.js:1120`），但它**不写** `D:\dsh\logs\web-3080.log`，
+所以"看日志确认"这条路走不通 —— 实际判据是跑一次真实输入看行为。
+
+**一个副作用要知道**：热重载会 `registry.delete(plugin)` 再重新 `apply()`
+（`:1112` → `:1119`），所以插件的**模块级状态会全部重建** ——
+信号注册表、采样写入队列、缓存全部归零。对话历史不受影响（那归 session 管）。
 
 ---
 

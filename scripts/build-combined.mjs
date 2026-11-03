@@ -12,7 +12,7 @@
  *
  * @module scripts/build-combined
  */
-import { renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { lstatSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { computeTargets, compare, repoRoot } from './build/plan.mjs';
 
@@ -104,15 +104,40 @@ if (diff.extra.length > 0 && !prune) {
 const written = diff.missing.length + diff.changed.length;
 const linked = written > 0 ? findLinkedInstall(pkgRoot) : null;
 if (linked !== null) {
+	// ⚠️ 2026-11-03 更新：安装形态已从「拷贝」改为 junction，这条提示随之改写。
+	//
+	// 旧版写的是"本次写入用 rename 断链，要生效必须重装" —— 那是**拷贝形态**下
+	// 的正确结论。现在 junction 是指向整个 packages/dsh-mind-system 的目录链接，
+	// 构建写入的就是运行实例读的那个文件，**不需要重装**。
+	//
+	// 但反过来的风险更大了，所以提示要说清楚：junction 下构建 = 直接改运行代码。
+	const isJunction = (() => {
+		try {
+			return lstatSync(linked).isSymbolicLink();
+		} catch {
+			return false;
+		}
+	})();
 	console.error(
-		[
-			'',
-			'⚠️  产物与一个已安装副本共享 inode（两者是同一个文件）。',
-			`   安装位置：${linked}`,
-			'   本次写入用 rename 断链，所以运行实例仍是旧内容——**要生效必须重装**：',
-			'   删掉上面的安装目录，再按你平时的装法重新装一次（拷贝，不要硬链接），然后重启 dsh。',
-			'   详见 README「装进 profile 是拷贝，不是链接」。'
-		].join('\n')
+		isJunction
+			? [
+				'',
+				'⚠️  安装副本是指向本包的 junction —— 构建写入**直接就是运行实例的代码**。',
+				`   安装位置：${linked}`,
+				'   不需要重装；但也意味着**没有隔离缓冲**：',
+				'   · 被 import 过的模块会由 HMR 热替换，可能中断进行中的会话；',
+				'   · 半成品实现会立刻成为运行时行为；',
+				'   · `git checkout` / 切分支 = 换线上版本。',
+				'   详见 PUBLISH.md「运行状态警示：改这个仓库等于改正在运行的系统」。'
+			].join('\n')
+			: [
+				'',
+				'⚠️  产物与一个已安装副本共享 inode（两者是同一个文件）。',
+				`   安装位置：${linked}`,
+				'   本次写入用 rename 断链，所以运行实例仍是旧内容——**要生效必须重装**：',
+				'   删掉上面的安装目录，再按你平时的装法重新装一次（拷贝，不要硬链接），然后重启 dsh。',
+				'   详见 README「装进 profile」一节。'
+			].join('\n')
 	);
 }
 

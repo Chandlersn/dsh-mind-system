@@ -154,6 +154,10 @@ const LINES = {
 		'test/dispatch.test.js', 'test/hitrate.test.js', 'test/sampling.test.js',
 		'test/interfaces.test.js', 'test/mind.test.js', 'test/orchestrate.test.js',
 		'test/integration.test.js', 'test/regressions.test.js', 'test/review-fixes.test.js',
+		// 2026-11-03 补：这几个文件此前漏在清单外，导致"代码规模"只数了 17 个文件、
+		// 少报几百行。**清单漏项本身就是数字失真的来源** —— 校验通过也说明不了
+		// README 是对的，只能说"清单里那些文件数对了"。
+		'test/policy.test.js', 'test/diagnostics.test.js', 'scripts/verify-assembly.mjs',
 	],
 	'dsh-meta-framework': [
 		'index.js', 'src/tools.js', 'src/health.js', 'src/host.js', 'src/clis.js',

@@ -288,7 +288,20 @@ system-prompt/assemble ──读处境────────────▶  �
 | `mind.benchmark` | info | 每日记录中用户原话的信号覆盖率；不代表准确率或独立留出集 |
 | `mind.event-status` | info | 已观察到 claimed、使用了兜底，或事件尚未验证 |
 | `mind.signals` | info | 信号清单：内置几条、外部贡献几条（各 owner 一条独立代号） |
+| `mind.guidance-issued` | info | **第二级**：已向 DSH 提供引导（工具面真的按处境重排了） |
+| `mind.guidance-withheld` | info | **第二级**：判定已作出但未提供引导（unknown / ambiguous 克制 / 事件缺失） |
+| `mind.guidance-followed` | info | **第三级**：观察到模型采用了引导推荐的工具族 |
+| `mind.guidance-not-followed` | info | **第三级**：观察到工具调用，但不属引导推荐的族 |
+| `mind.guidance-unobserved` | info | **第三级**：已提供引导但本轮无工具调用 —— **无法判断，不等于没照做** |
 | `mind.ok` | info | 正常 |
+
+`guidance-*` 五个代号对应任务书要求区分**三件事**：插件判断了什么（`mind.dispatched`）、
+插件提供了什么引导（`issued` / `withheld`）、模型实际做了什么（`followed` / `not-followed` /
+`unobserved`）。**前两级不能冒充第三级**：
+
+- `followed` 为 `null` 表示**没观察**（没提供引导，或本轮没调工具），**不是** `false`
+- 「模型没照做」不是插件故障，所以这五条严重度全是 `info`，不拉红灯
+- `withheld` 长期出现才值得怀疑判据，单次是刻意的克制
 
 编排缺失标 `info` 不拉红灯（它是增强），但**必须报出来** —— 否则
 "编排没生效"与"编排生效了但这一轮处境是 unknown"在观察上完全同形

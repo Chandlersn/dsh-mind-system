@@ -265,7 +265,7 @@
     },
     "mind/README.md": {
       "source": "dsh-agent-mind/README.md",
-      "sha256": "e8a738f44a125a6bc82afd72f7d0082c570c9662bd0e35e98fecc2db3f0635d1"
+      "sha256": "b5a697c6d3681cfe47331f7ac0100aada123e48df021ec8fd0e5ff89e4ba51fd"
     },
     "mind/index.js": {
       "source": "dsh-agent-mind/index.js",

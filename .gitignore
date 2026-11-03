@@ -15,5 +15,9 @@ _history-archives/
 reports/
 
 # 提交信息临时文件（用文件传多行信息，避免 PowerShell 破坏编码）
+#
+# 为什么用通配：只写死一个文件名时，换个名字（如 .commitmsg-<日期>.txt）
+# 就会漏进暂存区 —— 2026-11-03 就漏过一次。规则要覆盖一整类，不是一个名字。
 .git-commit-msg.txt
+.commitmsg-*.txt
 
