@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Causal Classifier",
+    "description": "Judges the causal type only: it does not generate strategies, execute, or roll back. Four questions decide between structural duality (hold simultaneously, define each other, no order), cyclic (A→B→A with delay), unidirectional (strict irreversible order), and nested (multiple structures). Confidence is capped at 0.9; below 0.7 it flags exploration; when undecidable it returns unknown with candidate hypotheses instead of forcing a label."
+  }
+}

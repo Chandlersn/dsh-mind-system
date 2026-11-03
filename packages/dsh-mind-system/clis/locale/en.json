@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "CLIS Tool Interface",
+    "description": "Exposes causal reasoning to the agent through three tools: clis_run for the full loop (classify → match → execute → feedback → rollback), clis_classify for the causal type alone, and clis_plan for candidate paths alone. This component only forwards; it holds no judgement logic. Disabling it removes the three tools while the four components keep working independently."
+  }
+}

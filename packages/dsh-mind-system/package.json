@@ -1,9 +1,9 @@
 {
   "name": "dsh-mind-system",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": false,
   "type": "module",
-  "description": "DSH 心智系统插件包：一次装齐 mind / clis / meta-framework / memory-manager 四件 —— 判断顺序常驻、按处境编排工具面、因果结构判据、五层记忆判据与自我迭代闭环。",
+  "description": "DSH 心智系统（合成包）：判断顺序常驻、按处境编排工具面、因果结构判据、五层记忆判据与自我迭代闭环——四家源码并入一包，一个装载点。",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -19,32 +19,38 @@
   },
   "exports": {
     ".": "./index.js",
+    "./clis-classifier": "./clis/clis-classifier.js",
+    "./clis-strategy": "./clis/clis-strategy.js",
+    "./clis-feedback": "./clis/clis-feedback.js",
+    "./clis-orchestrator": "./clis/clis-orchestrator.js",
+    "./clis": "./clis/index.js",
+    "./agent-mind": "./mind/index.js",
+    "./meta-framework": "./meta/index.js",
+    "./memory-manager": "./memory/server.js",
+    "./client": "./memory/client.js",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
     "cordis.patch.yml",
+    "clis/",
+    "mind/",
+    "meta/",
+    "memory/",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node test/run-all.mjs"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    }
-  },
-  "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.0.5",
-    "dsh-clis": "^0.3.0",
-    "dsh-memory-manager": "^5.29.10",
-    "dsh-meta-framework": "^0.1.0",
-    "dsh-agent-mind": "^0.2.0"
-  },
-  "peerDependenciesMeta": {
-    "@deepseek-ai/cordis": {
-      "optional": true
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
     }
   },
   "publishConfig": {
@@ -54,11 +60,5 @@
     "type": "git",
     "url": "git+https://github.com/Chandlersn/dsh-mind-system.git",
     "directory": "packages/dsh-mind-system"
-  },
-  "dependencies": {
-    "dsh-clis": "^0.3.0",
-    "dsh-meta-framework": "^0.1.0",
-    "dsh-memory-manager": "^5.29.10",
-    "dsh-agent-mind": "^0.2.0"
   }
 }

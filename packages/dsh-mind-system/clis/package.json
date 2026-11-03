@@ -1,0 +1,69 @@
+{
+  "name": "dsh-clis",
+  "version": "0.3.0",
+  "private": false,
+  "type": "module",
+  "description": "DSH 插件：agent 碰到失败反馈时介入（判因果结构，避免方向性错误），并监督全系统插件的健康——枚举插件、收集探针、只投递结构判断。介入有效性可测（clis_metrics）。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "causal",
+    "clis",
+    "health-probe",
+    "supervision",
+    "feedback-intervention"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./classifier": "./clis-classifier.js",
+    "./strategy": "./clis-strategy.js",
+    "./feedback": "./clis-feedback.js",
+    "./orchestrator": "./clis-orchestrator.js",
+    "./classifier/locale/*.json": "./locale/classifier/*.json",
+    "./strategy/locale/*.json": "./locale/strategy/*.json",
+    "./feedback/locale/*.json": "./locale/feedback/*.json",
+    "./orchestrator/locale/*.json": "./locale/orchestrator/*.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "clis-classifier.js",
+    "clis-strategy.js",
+    "clis-feedback.js",
+    "clis-orchestrator.js",
+    "chunk-*.js",
+    "cordis.patch.yml",
+    "locale/**/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chandlersn/dsh-mind-system.git",
+    "directory": "packages/dsh-clis"
+  }
+}

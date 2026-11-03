@@ -1,0 +1,61 @@
+{
+  "name": "dsh-meta-framework",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "DSH 插件：把 @causal-layers/meta-framework 暴露为 meta_reframe 工具——重新审视问题、判断因果结构，是诊断工具不是决策工具。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "meta-framework",
+    "causal",
+    "reframe"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "src/**/*.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@causal-layers/meta-framework": "^1.0.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chandlersn/dsh-mind-system.git",
+    "directory": "packages/dsh-meta-framework"
+  }
+}

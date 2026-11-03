@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Loop Orchestrator",
+    "description": "Orchestration only: calls classifier, strategy, and feedback in turn, then decides to continue, switch path, roll back to the classifier, or roll back to the boundary. It contains no judgement, matching, or feedback rules. Hard constraints: at most 3 rollbacks, after which it reports that human intervention is required and keeps the full trace; two consecutive rollbacks of the same type lock that type for at least one round; every round is recorded for replay. Offers run(problem) for the whole loop or decide for one round."
+  }
+}

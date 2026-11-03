@@ -1,43 +1,24 @@
 /**
- * dsh-mind-system —— 心智系统聚合包的入口。
+ * dsh-mind-system — 心智系统合成包的入口。
  *
  * ## 这个包做什么（以及不做什么）
  *
- * 它**不提供任何能力**。四家各自提供：
+ * 它**是唯一的装载点**：四家成员（clis / meta-framework / memory-manager /
+ * agent-mind）的**源码物理并入本包**（clis/ mind/ meta/ memory/ 四个子目录），
+ * 由 `cordis.patch.yml` 里八条 insert 行按顺序装载。
  *
- * | 插件 | 提供什么 | 少了会怎样 |
- * |---|---|---|
- * | `dsh-clis` | 因果结构判据（分类/策略/反馈/编排）+ 五工具 + 系统监督 | 判不了环/对偶/单向/嵌套；meta 退化为通用重定义 |
- * | `dsh-meta-framework` | 重定义→边界→选择→观测四层 + trace 落盘 | 失去"重新审视问题"这一手 |
- * | `dsh-memory-manager` | 五层记忆判据 + 写入准入 + 回读复核 | 记忆无判据，蒸馏回到"写进去就算" |
- * | `dsh-agent-mind` | 判断顺序常驻分节 + 按处境编排工具面 | 工具平铺，模型自行分辨该用谁 |
+ * 能力归成员，本文件只承载：
  *
- * 本包只做一件事：**给这四家一个共同的装载点与版本约束**。
- * 少装一家，那部分能力就不在 —— 是**降级**，不是报错。
+ * 1. 装载清单常量（MEMBERS / MEMBER_PACKAGES / CLIS_COMPONENTS）——
+ *    与 patch 的一致性由 test/members.test.js 钉住；
+ * 2. 健康探针 —— 检查成员子目录在**包内**是否齐全。
  *
- * ## 为什么是聚合而不是合成
+ * ## 与旧聚合形态的差别
  *
- * 合成（把四家代码内联进一个插件）的问题：
- *
- * - 四家绑死，无法单独升级或单独关闭
- * - 体积大、审阅难、任一家改动都要重发全包
- * - 版本冲突无从解决（合成后没有"谁的版本"这个问题了）
- *
- * 聚合保留独立性，同时给使用者"一次装齐"的入口 —— 这正是本包存在的意义。
- *
- * ## ⭐ 成员清单是**唯一事实来源**（缺陷 4）
- *
- * 此前成员清单在**三个地方各写一遍**，三种形状：
- *
- * - 本文件导出 `MEMBERS`（8 条子路径形态）—— **零引用者**，是死代码
- * - `scripts/publish-check.mjs` 的三处字面量（4 个基本名，顺序还不同）
- * - patch YAML 里的 9 个 `name:` 条目
- *
- * 三份清单可以各自漂移而不被发现 —— 而"聚合包装载了哪些成员"正是
- * 这个包**唯一**承诺的事。
- *
- * 现在：**本文件是唯一事实来源**，`publish-check.mjs` 从这里 import。
- * patch YAML 里的顺序由测试对照本清单校验（见 `test/members.test.js`）。
+ * 旧形态成员是**外部包**（宿主按名字从 node_modules 解析），
+ * 探针只能探"仓库里在不在"，file:/link: 装法下曾系统性误报
+ * （packageDir/../.. 推不出仓库根）。合成形态成员在**包内**，
+ * 探针直接看包内子目录 —— 永远不会误报。
  *
  * @module dsh-mind-system
  */
@@ -46,153 +27,84 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** 聚合包名。 */
+/** 合成包名（宿主据此把本包当普通 bundle 处理）。 */
 export const name = 'dsh-mind-system';
 
-/** 本包不注入任何服务（它是装载点，不是能力提供者）。 */
+/** 本包入口不注入任何服务（能力在成员子目录里）。 */
 export const inject = [];
 
 /**
- * 心智系统的成员（**按装载顺序**，子路径形态）。
+ * 成员装载点（**按装载顺序**，全部是本包的 exports 子路径）。
  *
- * ## 顺序的依据：服务提供者先于消费者
- *
- * | # | 成员 | 为什么在这个位置 |
- * |---|---|---|
- * | 1 | `dsh-clis/classifier` | 因果分类器 —— `dsh-clis` 工具包 inject 依赖它 |
- * | 2 | `dsh-clis/strategy` | 策略匹配服务 |
- * | 3 | `dsh-clis/feedback` | 反馈检测服务 |
- * | 4 | `dsh-clis/orchestrator` | 编排服务 |
- * | 5 | `dsh-clis` | clis 工具包（`inject` 依赖上面四个服务） |
- * | 6 | `dsh-meta-framework` | 依赖 clis 的分类器（`ctx.get` 运行时取） |
- * | 7 | `dsh-memory-manager` | 自足，放哪都行 |
- * | 8 | `dsh-agent-mind` | 需要 `tools` 与 `systemPrompt` 都已就位 |
- *
- * 注意第 5–6 条：clis 的**四个子组件**必须都在 clis 工具包**之前** ——
- * 工具包的 `inject` 含 `clis.causalClassifier` / `clis.causalStrategy` /
- * `clis.causalOrchestrator`，服务没就位时它不激活
- * （宿主只报一句 "1 entry did not activate"，极难排查）。
- *
- * `dsh-mind-system` 自己在最后收口（patch 里的最后一条 insert）。
+ * 顺序的依据：服务提供者先于消费者——
+ * clis 四组件 → clis 工具包（inject 依赖那四服务）→
+ * meta-framework（依赖 clis 分类器）→ memory-manager（自足）→
+ * mind（需要 tools 与 systemPrompt 都已就位）→ 本包最后收口。
  */
 export const MEMBERS = [
-  'dsh-clis/classifier',
-  'dsh-clis/strategy',
-  'dsh-clis/feedback',
-  'dsh-clis/orchestrator',
-  'dsh-clis',
-  'dsh-meta-framework',
-  'dsh-memory-manager',
-  'dsh-agent-mind',
+  'dsh-mind-system/clis-classifier',
+  'dsh-mind-system/clis-strategy',
+  'dsh-mind-system/clis-feedback',
+  'dsh-mind-system/clis-orchestrator',
+  'dsh-mind-system/clis',
+  'dsh-mind-system/meta-framework',
+  'dsh-mind-system/memory-manager',
+  'dsh-mind-system/agent-mind',
 ];
 
 /**
- * 四个成员包（**基本名**形态，按与 `MEMBERS` 一致的顺序）。
- *
- * ## 与 `MEMBERS` 的关系
- *
- * `MEMBERS` 是**装载点**（含 clis 的四个子组件，因为它们各自是一个装载点）；
- * 这里是**包**（一个包一个基本名）—— 用于依赖声明、目录检查、版本区间核对。
- *
- * 两者由**同一条规则**派生：`MEMBERS` 里去掉子路径（`/` 之后的部分），
- * 去重后保持原序。所以不会出现"两份清单对不上"——
- * `test/members.test.js` 有一条测试直接比对它们。
+ * 四个成员的**子目录名**（包内，与 MEMBERS 一一对应去重）。
+ * 用于探针的磁盘检查：目录在 = 源码并入完成。
  */
-export const MEMBER_PACKAGES = [...new Set(MEMBERS.map((m) => m.split('/')[0]))];
+export const MEMBER_PACKAGES = ['clis', 'meta', 'memory', 'mind'];
 
-/**
- * clis 的四个子组件（装载点形态）。
- *
- * 单独列出来是因为它们有**硬约束**：四个都必须在 `dsh-clis` 工具包之前，
- * 且一个都不能少 —— 少一个，工具包的 inject 就少一个满足条件。
- */
+/** clis 的四个子组件（装载点形态，缺一工具包不激活）。 */
 export const CLIS_COMPONENTS = [
-  'dsh-clis/classifier',
-  'dsh-clis/strategy',
-  'dsh-clis/feedback',
-  'dsh-clis/orchestrator',
+  'dsh-mind-system/clis-classifier',
+  'dsh-mind-system/clis-strategy',
+  'dsh-mind-system/clis-feedback',
+  'dsh-mind-system/clis-orchestrator',
 ];
 
-/**
- * 探针代号（稳定，供监督层与日志检索）。
- *
- * 与 `dsh-meta-framework` 的命名法一致（`<包名>.<状态>`）。
- */
+/** 探针代号（稳定，供监督层与日志检索）。 */
 export const PROBE_CODES = {
-  /** 成员清单里有成员在磁盘上找不到 —— 装出来的聚合包是残缺的。 */
+  /** 成员子目录在包内找不到 —— 合成包是残缺的。 */
   memberMissing: 'mind-system.member-missing',
   /** 一切正常。 */
   ok: 'mind-system.ok',
 };
 
-/**
- * 本包所在目录（用于定位兄弟包）。
- *
- * @type {string}
- */
+/** 本包所在目录。@type {string} */
 export const packageDir = dirname(fileURLToPath(import.meta.url));
 
 /**
- * 仓库根（`packages/` 的上一级）。
+ * 找一个成员在**包内**的目录。
  *
- * @type {string}
+ * @param {string} memberDir — 成员子目录名（clis / meta / memory / mind）。
+ * @returns {string|undefined} 绝对路径；不存在则 undefined。
  */
-export const repoRoot = join(packageDir, '..', '..');
-
-/**
- * 找一个成员包在**本仓库**里的目录。
- *
- * @param packageName — 包名（如 `dsh-clis`）。
- * @returns 绝对路径；找不到则 undefined。
- */
-export function memberPackageDir(packageName) {
-  const dir = join(repoRoot, 'packages', packageName);
-  return existsSync(join(dir, 'package.json')) ? dir : undefined;
+export function memberPackageDir(memberDir) {
+  const dir = join(packageDir, memberDir);
+  return existsSync(join(dir, 'index.js')) || existsSync(join(dir, 'server.js')) ? dir : undefined;
 }
 
 /**
- * 探测成员是否**在本仓库里**。
+ * 探测成员是否在包内。
  *
- * ## 这里能观察到什么、观察不到什么
- *
- * 能观察：成员包在磁盘上**存在**（`packages/<name>/package.json` 在）。
- * 观察不到：它在真宿主里**有没有装载成功** —— 那需要宿主上下文
- * （`ctx.loader.entries()`），而探针是**零参数**调用的，拿不到。
- *
- * 所以这个探针**只说"成员在不在"**，绝不说"成员加载好了"——
- * 后者是它观察不到的事实，说了就是假话（这正是缺陷 6 要消灭的东西）。
- *
- * @param packageName — 包名。
- * @returns `{present, dir}`。
+ * @param {string} memberDir — 成员子目录名。
+ * @returns `{{present: boolean, dir: string|undefined}}`。
  */
-export function probeMember(packageName) {
-  const dir = memberPackageDir(packageName);
+export function probeMember(memberDir) {
+  const dir = memberPackageDir(memberDir);
   return { present: dir !== undefined, dir };
 }
 
 /**
- * 聚合包的健康探针。
+ * 合成包的健康探针：只检查成员子目录在**包内**是否存在。
  *
- * ## 为什么聚合包也需要探针（缺陷 6）
- *
- * 聚合包**不提供任何能力** —— 它只是四个成员的共同装载点。
- * 但"某个成员没装上"这件事此前**完全不可见**：
- *
- * - 宿主不报错（少装一家只是降级）
- * - 聚合包自己没有 `healthProbe`，监督层报 `coverage.no-probe`
- * - `apply()` 是纯 no-op，什么都不做
- *
- * 结果是"装了个残缺的聚合包"这件事没人知道。
- *
- * ## 它只报**能观察到**的事实
- *
- * 本探针**只检查成员包在磁盘上是否存在**。它**不**声称成员已装载 ——
- * 那需要宿主上下文，而探针拿不到（与 `dsh-meta-framework` 的
- * "探针收不到 ctx" 是同一条约束）。
- *
- * 特别地：**当成员在磁盘上但不在本仓库里时**（例如只装了 npm 包、
- * 在别处部署），本探针会**如实说"未观测到"**，而不是报"缺失"——
- * 因为"磁盘上没有"不等于"没装"。
+ * 它**不**声称成员已装载——那需要宿主上下文，探针零参数拿不到。
+ * 合成形态下成员随包分发，"包在 = 成员源码在"，
+ * 因此本探针不再有旧聚合形态的系统性误报。
  *
  * @returns 探针结果。
  */
@@ -201,29 +113,26 @@ export function probe() {
     const findings = [];
     const missing = [];
 
-    for (const memberName of MEMBER_PACKAGES) {
-      const { present } = probeMember(memberName);
-      if (!present) missing.push(memberName);
+    for (const memberDir of MEMBER_PACKAGES) {
+      const { present } = probeMember(memberDir);
+      if (!present) missing.push(memberDir);
     }
 
     if (missing.length > 0) {
       findings.push({
         code: PROBE_CODES.memberMissing,
         severity: 'error',
-        message:
-          `聚合包声明的成员在仓库里找不到：${missing.join('、')}。` +
-          '注意：本探针只能看到**本仓库**里的成员（探针零参数调用，拿不到宿主上下文，' +
-          '无法知道真宿主里装载了谁）。若这些成员是从 npm 装的，请忽略此条。',
-        hint: '在 monorepo 里检查 packages/ 下的成员目录是否齐全。',
+        message: `合成包声明的成员子目录在包内找不到：${missing.join('、')}。`,
+        hint: '包分发不完整——重新安装/重新打包。',
       });
     } else {
       findings.push({
         code: PROBE_CODES.ok,
         severity: 'info',
         message:
-          `聚合包声明的 ${MEMBER_PACKAGES.length} 个成员在仓库里都在：` +
+          `合成包的 ${MEMBER_PACKAGES.length} 个成员子目录都在包内：` +
           `${MEMBER_PACKAGES.join('、')}。` +
-          '（本探针只看得到仓库里的成员，**不**声称它们在真宿主里已装载。）',
+          '（本探针只看包内文件，不声称成员在真宿主里已装载。）',
       });
     }
 
@@ -233,7 +142,6 @@ export function probe() {
       findings,
     };
   } catch (error) {
-    // 探针自己抛错比没探针更糟（会让监督层一起挂）。
     return {
       plugin: 'dsh-mind-system',
       status: 'failing',
@@ -242,43 +150,28 @@ export function probe() {
           code: PROBE_CODES.memberMissing,
           severity: 'error',
           message: `探针自身执行异常：${error instanceof Error ? error.message : String(error)}`,
-          hint: '这是探针的缺陷，不是聚合包的缺陷；请上报。',
+          hint: '这是探针的缺陷，不是合成包的缺陷；请上报。',
         },
       ],
     };
   }
 }
 
-/**
- * 由 findings 推整体状态。
- *
- * 与 `dsh-meta-framework` / `dsh-clis` 用的**契约包那一支**同口径：
- * `error → failing`、`warn → degraded`、否则 `ok`。
- * （`dsh-clis` 内部 `structuralProbe()` 用的另一支是"有发现即 degraded"，
- * 那对它合适 —— 它的发现项只有 warn/error。本探针也可能产 info 级发现项，
- * 所以用契约包那一支。）
- *
- * @param findings — 发现项。
- * @returns 状态字符串。
- */
+/** 由 findings 推整体状态：error→failing、warn→degraded、否则 ok。 */
 export function deriveStatus(findings) {
   if (findings.some((item) => item.severity === 'error')) return 'failing';
   if (findings.some((item) => item.severity === 'warn')) return 'degraded';
   return 'ok';
 }
 
-/** 探针对象形态（监督层接受 `ns.healthProbe` 为对象含 `probe()`）。 */
+/** 探针对象形态（监督层接受 ns.healthProbe 为对象含 probe()）。 */
 export const healthProbe = { probe };
 
 /**
- * 装载：不做事。
- *
- * 成员由 `cordis.patch.yml` 里的 insert 行装载（宿主按名字解析已装 bundle）。
- * 这个入口存在是为了给宿主一个可识别的包根 —— 它导出 `name` 与 `inject`，
- * 宿主据此把它当作普通 bundle 处理。
+ * 装载：不做事。能力在四个成员子目录里，本入口只是可识别的包根。
  *
  * @param {unknown} ctx Cordis 上下文（本包不用它）。
  */
 export function apply(ctx) {
-  // 故意空实现：能力在四个成员里，本包只是它们的装载点。
+  // 故意空实现。
 }
