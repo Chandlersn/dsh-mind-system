@@ -2167,4 +2167,12 @@ window.__ModuleLoader__.load({
 					),
 				);
 				ctx.slots.inject('main', () =>
-	
+					ctx.slots.register({ name: 'main', key: 'memory-panel' }, MemoryPanel),
+				);
+			},
+			// Pure view logic, exposed so ui-test.mjs can assert the panel's
+			// parsing/folding behaviour without a browser.
+			__internalsForTest: { relTime, plain, parseIndexTables, parseProseSections, splitSections, subTablesOf, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight, tokenizeCode },
+		};
+	},
+});
