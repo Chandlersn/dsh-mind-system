@@ -2,9 +2,9 @@
 
 > 让 agent 知道"遇到什么问题先问什么"，并且**能自己发现自己错了**。
 
-**简体中文** | 仓库 <https://github.com/Chandlersn/dsh-mind-system>
+仓库 <https://github.com/Chandlersn/dsh-mind-system>
 
-四个插件合成一个仓库（`packages/` 下），npm 上是五个独立包。
+四个插件同仓（`packages/` 下），npm 上是五个独立包。
 
 ---
 
@@ -42,7 +42,7 @@ DSH 的工具面是**平铺**的：几十个工具并排躺在提示里，每个
 **不适合**：
 
 - 单步问答、一次性脚本 —— 装它只是多占一点提示空间；
-- 需要精确控制工具调用顺序的场景 —— 调度层只**重排不删除**，且有一拍延迟（见「已知限制」）；
+- 需要精确控制工具调用顺序的场景 —— 调度层只**重排不删除**，旧宿主兜底可能滞后一拍；
 - 已经在用别的记忆方案且不想换 —— memory-manager 会与既有记忆根冲突（同一 `~/.dsh/memory` 下不建议并存两套）。
 
 ---
@@ -55,8 +55,7 @@ dsh plugin --profile web add dsh-mind-system
 
 装完**重启宿主**（server 半边需要重新装载）。
 
-聚合包 `dsh-mind-system` **装载四个成员**，是它们唯一的装载入口。
-别再单独装其中一家 —— 那家会被装载两次（同 id 覆盖，仍能工作但行为取决于装载顺序）。
+聚合包 `dsh-mind-system` **装载四个成员**，是它们唯一的装载入口 —— 再单独装其中一家就会双装载。
 
 ### 只想用其中一家的能力
 
@@ -107,7 +106,7 @@ dsh plugin --profile web add dsh-mind-system
 
 ### 判断顺序分节（agent-mind 注入系统提示的内容）
 
-不是工具清单，是**四步问自己**：
+不是工具清单，是**四步问自己**，第 3 步后挂一处补丁（3b）：
 
 1. 这是"不知道该怎么办"，还是"知道但没做成"？
 2. 反复无效时，先怀疑"判断的因果结构"，而不是继续换方案
@@ -147,16 +146,17 @@ dsh plugin --profile web add dsh-mind-system
 | `dsh-clis` | `clis-causal` | 因果、结构、回路、反馈环、对偶、矛盾、归因、根因… |
 | `dsh-memory-manager` | `memory-recall` | 沉淀、蒸馏、五层、层级、边界、反面、约束条件… |
 
-用广播而非 import：直接 import 会让 CLIS 反向依赖调度层，于是"没装调度层就装不上 CLIS"。
 **广播没有方向性** —— 缺调度层时这条广播无人接收，CLIS 照常工作。
-
-信号形状的契约由 `tests/signal-broadcast.test.ts` 守住（7 条）——
-事件名写错、载荷改成位置参数、字段名对不上，这些在类型断言下**编译期全绿**，
+信号形状的契约在 CLIS 源仓库的 `tests/signal-broadcast.test.ts`（7 条）：
+事件名写错、载荷改成位置参数、字段名对不上，在类型断言下**编译期全绿**，
 只有契约测试能抓住。
 
 ---
 
 ## 四个包详解
+
+各包的工具清单写在**各自的 README** 里（`packages/*/README.md`），这里不再重列 ——
+同一张表写两遍，改一处忘一处，最后两份都不作数。
 
 ### dsh-agent-mind · 调度层
 
@@ -175,26 +175,18 @@ dsh plugin --profile web add dsh-mind-system
 反例词让信号能自己否定自己 —— "这个测试**反复**失败"里的"反复"指测试自身，
 不该触发诊断。
 
-**命中率可测**（`src/hitrate.js`）：三批样本
+**信号覆盖与准确率**（`src/hitrate.js`）：无标签样本只能衡量是否命中信号，
+不能证明分类正确或泛化；有标签样本单独计算准确率。
 
-| 批次 | 用途 | 门槛 |
-|---|---|---|
-| A · 每日记录里的真实用户原话 | 真实但偏具体任务 | ≥ 50% |
-| B · 本会话真实输入 | 抽象指令，当前真实分布 | ≥ 50% |
-| **C · 留白样本** | **改词表时不许看** —— 唯一的泛化检验 | **≥ 60%** |
-
-改词表后，参与修表的样本会跑到 100%，但全新样本只有 50% ——
-**拿考题补答案的自欺**。所以 C 批固定在测试里不改。
-
-**真实使用采样**（`src/sampling.js`）：每次判定落盘，按天聚合成趋势。
-**只存输入哈希，不存原文** —— 够算趋势，且不可反推内容。
+**真实使用采样**（`src/sampling.js`）：按天统计处境与信号覆盖，不保存原文或
+稳定输入哈希。`DSH_MIND_SAMPLING=0` 可关闭新采样；旧采样文件不会自动清除。
 
 **只读工具 `mind_signals`**：查此刻覆盖了哪些词、谁贡献的、上次判定命中了什么。
 没有它，"生态为空"与"生态已长出来"在观察上完全同形。
 
 ### dsh-clis · 因果结构判据
 
-四个组件 + 五个工具。
+四个组件 + 一层封装，对外五个工具。
 
 | 组件 | 职责 |
 |---|---|
@@ -204,14 +196,10 @@ dsh plugin --profile web add dsh-mind-system
 | `clis-orchestrator` | 多轮决策与回滚 |
 | `clis-tools` | 把上面四个包成工具（`clis-tools` bundle） |
 
-**介入机制带漏判分母**：`clis_run` 的写动作默认拦下，只放行只读动作。
-每次"放过"都记原因与闸门分解，`miss_rate` 可查 ——
-**漏判的分母在这里，不在别处**。
-
-> 没有分母，"漏判率 0%"和"没人看"完全同形。所以 `clis_metrics` 把
-> `hinted`（真的递过尺子）、`adopted`（模型真的用了）、`skipped`（评估过但放过）
-> 与 `missRate = skipped / evaluated` 分开报 —— 只看 `hinted` 那一栏，
-> "闸门在工作"和"没人在看"长得一样。
+**介入机制带漏判分母**：`clis_run` 的写动作默认拦下，只放行只读动作；每次"放过"都记
+原因与闸门分解。`clis_metrics` 把 `hinted`（递过尺子）/ `adopted`（真用了）/
+`skipped`（评估后放过）分开报，`missRate = skipped / evaluated` 就是那个分母 ——
+只看 `hinted` 一栏，**"闸门在工作"和"没人在看"完全同形**。
 
 **系统监督**：`clis_probe` 只投递被监督者自己产不出的结论（结构性判断），
 对方自查出的逐条警告在各自面板里已有，重复搬运只是噪音。
@@ -252,40 +240,9 @@ dsh plugin --profile web add dsh-mind-system
 
 三个模块，**判据单一实现** —— 展示层只读不判。
 
-> **判据能自检的证据**：一次写入说"道已沉淀"，体检 R24 却读出 **0 条来源法** ——
-> 写入方按模板写、模板节在文件里、判据是 `split('## 来源法')[1]`，
-> 而正文里的「## 来源法逐条」把 `[1]` 抢走了。于是"我写了"与"写出的东西符合道的定义"
-> 被当成同一件事。现在判据从磁盘回读正文、按整行精确匹配取**最后一个**「## 来源法」节。
-
----
-
-## 工具总表
-
-**21 个工具**（agent-mind 1 + clis 5 + meta 1 + memory 14）
-
-| 工具 | 包 | 用途 |
-|---|---|---|
-| `mind_signals` | agent-mind | 查调度覆盖了哪些词、谁贡献的、上次判定命中了什么（只读） |
-| `clis_classify` | clis | 只判因果结构，不给做法 |
-| `clis_run` | clis | 给匹配做法并执行；写动作需显式放行 |
-| `clis_plan` | clis | 只列做法与各自代价，不执行 |
-| `clis_probe` | clis | 系统级插件监督：覆盖面 + 结构性诊断 |
-| `clis_metrics` | clis | 介入效果读数（含**漏判分母** `miss_rate`） |
-| `meta_reframe` | meta-framework | 重新审视问题：重定义 → 边界 → 选择 → 观测 |
-| `memory_read` | memory-manager | 按索引行判断相关性后读功能域/思想/道 |
-| `memory_search` | memory-manager | 全库排序检索（带时间区间） |
-| `memory_write` | memory-manager | 追加一个术层迭代块（≤900 字，蒸馏结论） |
-| `memory_index` | memory-manager | 收一条索引行（功能域稳定后） |
-| `memory_insight` | memory-manager | 蒸馏一条可迁移原则（法层，含边界） |
-| `memory_dao` | memory-manager | 萃取一条道（≥5 法来源，含哲学形态） |
-| `memory_fold` | memory-manager | 折叠最旧迭代块（R9 体积治理） |
-| `memory_rename` | memory-manager | 重命名/合并功能域（改写全部引用并验死链清零） |
-| `memory_check` | memory-manager | 体检记忆根（25 条判据） |
-| `memory_usage` | memory-manager | 记/读使用信号（纠正率 → 分层建议） |
-| `memory_federation` | memory-manager | 联邦模式同步/体检 |
-| `memory_capability` | memory-manager | 能力台账（外部 CLI/MCP 的调用方式与坑） |
-| `memory_skill` | memory-manager | 技能结晶/生命周期 |
-| `memory_inbox` | memory-manager | 插件问题收件箱 |
+> **判据能自检的证据**：写入方报"道已沉淀"，体检 R24 却读出 **0 条来源法** ——
+> 判据原是 `split('## 来源法')[1]`，被正文里的「## 来源法逐条」抢走了。
+> 于是"我写了"和"写出的东西符合道的定义"被当成同一件事。
 
 ---
 
@@ -319,22 +276,17 @@ dsh plugin --profile web add dsh-mind-system
 
 守护型（🛡）文件跳过冷记忆规则 —— 低频高价值的兜底经验不该因"很久没写"被删。
 
-### agent-mind · 调度判据
+其余三家（agent-mind 的信号覆盖与有标签准确率、clis 的只读放行与逐次记账、meta 的探针只读实测）
+的判据写在各包 README 里，这里不重列 —— 同一套判据写两遍，改一处忘一处。
 
-- 命中率回归：C 批留白样本 ≥ 60%，A/B 批 ≥ 50%
-- 留白样本固定在测试里，**改词表时不许看**
-- 采样只存输入哈希，**不存原文**
+### 判据在代码里的落点
 
-### clis · 判据
-
-- 介入只放行只读动作；写动作需 `allow_writes` 显式白名单
-- **每次放过都记账**（原因 + 闸门分解），`miss_rate` 是分母
-- `clis_probe` 只投递结构诊断，不转发对方的逐条警告
-
-### meta-framework · 判据
-
-- 探针只读实测结果，**不靠 `existsSync` 推断**（"文件在但 require 抛错"会假绿）
-- 部分作答显式报缺项（`answers_missing`），不静默丢弃
+| 层 | 实现 |
+|---|---|
+| memory | `src/layer-gate.js`（写入前准入）+ `src/layer-selfcheck.js`（落盘后回读）+ `src/dao-shape.js`（道体结构与哲学形态） |
+| agent-mind | `src/dispatch.js`（判定）+ `src/hitrate.js`（命中率）+ `test/hitrate.test.js`（泛化门） |
+| clis | `src/intervene.ts`（只读放行）+ `src/intervene-metrics.ts`（漏判分母）+ `src/probe-registry.ts`（探针发现） |
+| meta-framework | `src/health.js`（探针只读实测） |
 
 ---
 
@@ -353,16 +305,12 @@ dsh plugin --profile web add dsh-mind-system
 clis 的提示注入都遵循同一时序。**写在这里是为了让后来者不要试图"修"它** ——
 那需要改动宿主时序。
 
-**命中率不是 100%，也不会是。**
-留白批门槛是 60%，实测 80%。剩下 20% 是**真实用户表述的分布**——
-不是 bug，是词表跟不上人话。趋势采样就是为盯这个：无信号率走高就该扩词表。
+**命中率不会到 100%。** 留白批门槛 60%，实测 80%；剩下的是**词表跟不上人话**，
+不是 bug。趋势采样就是为盯这个：无信号率走高就该扩词表。
 
 **`mind_signals` 工具需要宿主有 `dsh-tools`。**
 取不到就静默降级（工具不注册，其它功能不受影响），但会留 warn 日志 ——
 **静默降级过一次**，那次探针只报 `mind.ok`，看起来一切正常。
-
-**聚合包与单独安装互斥。**
-聚合包装载四家；再单独装一家会双装载（同 id 覆盖，仍能工作但行为取决于装载顺序）。
 
 **`packages/dsh-clis` 是发布产物，不是源码。**
 CLIS 的真正源码在独立仓 `Chandlersn/dsh-clis`（多包 workspace：`@causal-layers/clis-*`）。
@@ -373,29 +321,11 @@ CLIS 的真正源码在独立仓 `Chandlersn/dsh-clis`（多包 workspace：`@ca
 声明在那里会让不依赖任何包的 memory-manager 拿不到同一事件名，
 类型层与运行时层分叉。改用局部类型断言 + 契约测试保证载荷形状。
 
-**HMR 监视范围是硬编码白名单。**
-改 `dsh-agent-mind` / `dsh-memory-manager` 的代码若不在 `root` 列表里，
-**不会触发模块替换** —— 表现为"改完了但行为没变"，且没有任何报错。
-本机 profile 已把两者加进 `cordis.patch.yml` 的 HMR `root`。
-
 ---
 
 ## 配置
 
-在 profile 的 `cordis.yml` 里给对应 bundle 配 `config`：
-
-```yml
-- id: memory-manager
-  name: 'dsh-memory-manager'
-  config:
-    memoryRoot: C:/Users/you/.dsh/memory   # 默认 ~/.dsh/memory
-    maxIndexBytes: 10240                   # 索引舒适线（10KB）
-    maxIndexHardBytes: 15360               # 索引硬上限（15KB，达到即拒写）
-    maxFunctionBytes: 30720                # 单个功能文件上限（30KB）
-    newFeatureGraceDays: 3                 # 冷记忆宽限期（天）
-    recallTimeoutMs: 3000                 # 前台召回预算（只能缩短不能延长）
-    dshRoot: D:/dsh                        # 一般不需要，见下
-```
+在 profile 的 `cordis.yml` 里给对应 bundle 的 `config:` 下配这些键（不写的用默认）：
 
 | 配置项 | 默认 | 作用 |
 |---|---|---|
@@ -412,8 +342,7 @@ CLIS 的真正源码在独立仓 `Chandlersn/dsh-clis`（多包 workspace：`@ca
 
 `recallTimeoutMs` **只能缩短不能延长** —— 配置可以更保守，不能更激进。
 
-`captureUserTurns` 默认关闭：原始层属于模型，把每轮对话都记下来是噪音，
-也是隐私问题。
+`captureUserTurns` 默认关闭：把每轮对话都记下来既是噪音，也是隐私问题。
 
 ---
 
@@ -444,42 +373,28 @@ CLIS 的真正源码在独立仓 `Chandlersn/dsh-clis`（多包 workspace：`@ca
 | **Hindsight 的 observations** | 原则是"带证据的信念"：信任级由认可/纠正计数**自动算出**，不靠自述 |
 | **MemOS 的前台预算与被动捕获** | `recallTimeoutMs` 绝对超时静默放行；`captureUserTurns` 默认关闭 |
 | **自组织分层的思路** | 使用信号（触及/曝光/纠正/认可）聚合出分层建议，**只建议不擅动** |
-| **"信号在谁身上生成"** | 自产信号不给自己背书：先问"没人检查时这读数会不同吗" |
+| **"信号在谁身上生成"** | 四条自我约束第 2 条的出处：自产信号不能给自己背书 |
 
 ---
 
 ## 这套系统的四条自我约束
 
 **1. 判据必须能被证伪。** 每条判据都要能回答："把这条判据删掉，测试会不会红？"
-只警告不阻止 = 没有闸门。所以每条判据的**拒绝路径**都有测试。
+只警告不阻止 = 没有闸门。所以每道**闸门**的拒绝路径都有测试（只诊断不拦截的没有拒绝路径）。
 
-**2. 自产信号不能给自己背书。** 来自回路自身的绿灯（计数正常、探针报 ok、
-测试全绿）先问一句：**若这条回路根本没人检查，这个读数会不同吗？**
-不会不同，它就还没被当作证据用过。信息只存在于这条回路伪造不了的那一面：
-外部退出码、被放过的样本、改坏了会红的变异。
+**2. 自产信号不能给自己背书。** 回路自己给的绿灯（计数正常、探针报 ok、测试全绿）
+先问一句：**若这条回路根本没人检查，这个读数会不同吗？** 不会不同，它就还不是证据。
+证据只在回路伪造不了的那一面：外部退出码、被放过的样本、改坏了会红的变异。
 
-> 这条不是从别处借来的道理，是这套系统自己的亲身经历：
-> 调度命中率曾只有 20%，而探针报的是 `mind.no-signal` ——
-> 看着像"本轮无信号是正常状态"，其实高频的 no-signal 不是正常，是失灵。
-> 于是补了命中率读数，让"失灵"变成看得见的东西。
+> 亲历：调度命中率曾只有 20%，探针报的却是 `mind.no-signal` ——
+> 高频 no-signal 不是"正常无信号"，是失灵。补了命中率读数，失灵才看得见。
 
 **3. 写进文档的约束等于没有约束。** 判据是函数、写入前拒绝、落盘后回读、
 模型侧说明同步 —— 四件事缺一不可。
 
 **4. 文档里的数字同样会过期。** README 里每个数字都由 `scripts/verify-readme.mjs`
-从源码数出来与文档比对，对不上就非零退出。变异反证：工具数改错 / 删工具条目 /
-门槛值改错 / 判据数改错 / 测试数改错 / 信号数改错 —— **6 处全部变红**。
-
----
-
-## 判据落点
-
-| 层 | 实现 |
-|---|---|
-| memory | `src/layer-gate.js`（写入前准入）+ `src/layer-selfcheck.js`（落盘后回读）+ `src/dao-shape.js`（道体结构与哲学形态） |
-| agent-mind | `src/dispatch.js`（判定）+ `src/hitrate.js`（命中率）+ `test/hitrate.test.js`（泛化门） |
-| clis | `src/intervene.ts`（只读放行）+ `src/intervene-metrics.ts`（漏判分母）+ `src/probe-registry.ts`（探针发现） |
-| meta-framework | `src/health.js`（探针只读实测） |
+从源码数出来与文档比对，对不上就非零退出。变异反证：判据数 / 门槛值 / 测试数 /
+信号数 / 代码行数改错，或把某个工具名从它包的 README 里删掉 —— **6 处全部变红**。
 
 ---
 
@@ -494,14 +409,14 @@ npm test
 
 | 包 | 测试文件 | 用例/断言 |
 |---|---|---|
-| `dsh-agent-mind` | 8 | 74 |
+| `dsh-agent-mind` | 9 | 81 |
 | `dsh-memory-manager` | 4 | 131 |
 | `dsh-clis`（源仓库） | 41 | 617 |
 
 ### 关键命令
 
 ```bash
-# README 数字校验（工具数/判据数/门槛值/测试规模/代码行数）
+# README 数字校验（判据数/门槛值/测试规模/信号数/代码行数/工具名）
 node scripts/verify-readme.mjs
 
 # 调度层测试
@@ -512,20 +427,93 @@ node packages/dsh-agent-mind/scripts/verify-assembly.mjs
 
 # 聚合包发布前检查（装载点/依赖声明/唯一入口形态/版本区间）
 node packages/dsh-mind-system/scripts/publish-check.mjs
+
+# 生成聚合包产物（clis/ mind/ meta/ memory/ 由四个独立包生成，勿手改）
+node scripts/build-combined.mjs
+node scripts/build-combined.mjs --prune    # 顺带删掉已无来源的陈旧文件
+
+# 校验产物与源是否一致（只读；已接进 npm test 第一步）
+node scripts/verify-combined.mjs
+
+# 装进 DSH profile（拷贝而非硬链接；先 build，产物不新鲜会拒绝安装）
+node scripts/install-profile.mjs
+node scripts/install-profile.mjs --dry-run
 ```
+
+### 聚合包是产物，四个成员包才是源
+
+`packages/dsh-mind-system/{clis,mind,meta,memory}/` 下的 84 个文件全部由
+`scripts/build-combined.mjs` 生成。规则只有两处：
+
+- `packages/dsh-mind-system/build.manifest.json`：收哪些包、放哪个目录、排除哪些文件**以及为什么**
+- `scripts/build/rewrites.mjs`：产物与源之间少数几处必要差异（纯数据，逐条断言命中次数）
+
+规矩：
+
+- **改代码改源包**，不要改产物。产物被手改后 `npm run verify-combined` 会红并指名文件
+- 包根与 `scripts/` `test/` 下的文件（`index.js` 装配清单、`cordis.patch.yml`、`package.json`、README 等）**是手写的**，不归构建管
+- `meta/node_modules/` 不归构建管（也不在 git 里）：里面是 `@causal-layers/meta-framework`，删了要手工装回来
+- 上游改了而构建规则没跟上（比如 `ENTRY_FILES` 键名变了），构建会**报错停住**，不会产出一份半改的文件
+
+为什么值得这么绕：产物与源只差 4 个文件里的几行改写，手工复制则是"改一处要记得改两处"，
+忘了不报错 —— `npm test` 照样绿，发出去却是旧的。
+
+### 客户端注册 id：一份文件，两行不同的 id
+
+宿主**按包名建客户端行**，行 id = 包名，并把该包 `exports["./client"]` 指向的文件
+当这一行的 bundle；bundle 执行后校验 `factories.has(行id)`，对不上就报
+`loaded without registering "<包名>"`。
+
+于是同一个记忆面板必须带两个 id：聚合包里是 `dsh-mind-system`，独立包里是
+`dsh-memory-manager`。手抄两份必然分叉（2026-11-03 就因此让宿主起不来一次）。现在：
+
+- **源只有一份**：`packages/dsh-memory-manager/client.js`，id 写 `dsh-memory-manager`
+- **聚合包那份**由构建把这一行改成 `dsh-mind-system`（`scripts/build/rewrites.mjs`，
+  命中次数被断言，改坏了构建立刻红）
+- **注释两边完全相同**，两种装法都成立 —— 注释若又要分叉，说明设计退化了
+- `memory/ui-test.mjs` 断言 id 等于"宿主会为哪个包校验"，两种装法都算得对，不写死
+
+### 装进 profile 是拷贝，不是链接
+
+`~/.dsh/profiles/web/node_modules/dsh-mind-system` 若与源码树共享 inode
+（`ls -li` 看第一列，或 links 计数为 2），说明安装是**硬链接**：改源码等于改正在跑的实例，
+"我改了源码"和"我改了运行环境"从此不再可分。
+
+规矩：
+
+- 装进 profile 用**拷贝**，走脚本，别手工 `cp -r`／`rm -rf`
+- 改了源码 → `npm run build` → `npm run install:profile` → 重启 dsh，源码改了不会自动生效
+- `build-combined` 检测到共享 inode 会打警告，提醒你这步还没做
+
+```bash
+npm run build              # 先让产物与源一致（不一致时脚本会拒绝安装）
+npm run install:profile    # 拷到 ~/.dsh/profiles/web/node_modules（可加 --profile 指定）
+npm run install:profile -- --dry-run   # 只说做什么
+```
+
+为什么必须走脚本：`cp -r` 到已存在的目录会**顺着硬链接改写源码**，先删后拷会中途留下
+半套文件（此时 dsh 去 import 就崩）。脚本的顺序是「拷到同级临时目录 → 校验文件数与注册 id
+→ 替换」，任一步失败旧副本不动。（2026-11-03 手工做这事：`cp` 落沙箱层、`rm` 落真实目录，
+安装副本被删光。）
+
+没装宿主的机器上，`harness-test` / `api-test` 打 `SKIP` 而不是失败（它们验证的是"与真宿主
+协作"，没有宿主就没有可验证的对象）；要它们变硬失败（CI），设 `DSH_REQUIRE_HOST=1`，
+并让 `DSH_INSTALL_DIR` 指向宿主。
 
 ### 代码规模（实测）
 
 | 包 | 规模 |
 |---|---|
-| `dsh-agent-mind` | 16 文件 / 3529 行 |
+| `dsh-agent-mind` | 17 文件 / 3551 行 |
 | `dsh-clis` | 源仓库 45 个 .ts / 9458 行 |
 | `dsh-meta-framework` | 10 文件 / 3230 行 |
 | `dsh-memory-manager` | 4 文件 / 5747 行 |
 
+memory-manager 只计常改的 4 个文件（`server.js` + 三个判据模块），不是全包。
+
 ### 发布形态
 
-monorepo 只是源码在一起，**npm 上是五个独立包**：
+源码同仓，发布是五个独立包：
 
 ```
 packages/dsh-agent-mind       → npm: dsh-agent-mind
@@ -540,7 +528,7 @@ packages/dsh-mind-system      → npm: dsh-mind-system（聚合包）
 | 改了什么 | 生效方式 |
 |---|---|
 | 提示分节、编排逻辑 | 改 `cordis.patch.yml` 触发 profile 重组即可 |
-| `index.js` / `src/` 里的模块 | 需在 HMR `root` 列表内，否则**改了不生效且无报错** |
+| `index.js` / `src/` 里的模块 | 需在 HMR `root` 列表内，否则**改了不生效且无报错**（本机 profile 已配） |
 | `server.js`（memory-manager 的工具与路由） | 需重启宿主（模块生成缓存以 realpath 为键） |
 
 ---

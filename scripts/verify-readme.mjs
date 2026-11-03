@@ -12,13 +12,14 @@
  *
  * ## 它守什么
  *
- * 1. **工具清单**：每个注册的工具名都要出现在 README 的工具总表里
- * 2. **工具总数**：README 声称的数字 = 实际注册数
- * 3. **判据数**：memory_check 实际检查的判据数 = README 声称的
- * 4. **门槛值**：术块 900 / 概括 110 / 法 ≥2 / 道 ≥5 —— 从 constants 与
+ * 1. **工具清单**：每个注册的工具名都要出现在**它自己包**的 README 里
+ *    （根 README 不重列工具总表 —— 同一张表两处维护，必然漂）
+ * 2. **判据数**：memory_check 实际检查的判据数 = README 声称的
+ * 3. **门槛值**：术块 900 / 概括 110 / 法 ≥2 / 道 ≥5 —— 从 constants 与
  *    layer-gate 里读，与 README 比对
+ * 4. **内置信号数**：dispatch.js 里实际注册的信号数
  * 5. **测试规模**：文件数与用例数从测试目录数，与 README 比对
- * 6. **内置信号数**：dispatch.js 里实际注册的信号数
+ * 6. **代码规模**：代码行数从源码数，与 README 比对
  *
  * @module scripts/verify-readme.mjs
  */
@@ -47,30 +48,33 @@ const readme = read(join(repoRoot, 'README.md'));
 ok(readme.length > 0, 'README 存在');
 
 // ---------------------------------------------------------------------------
-console.log('\n--- 1. 工具清单：每个注册的工具都要在 README 里 ---');
+console.log('\n--- 1. 工具清单：每个注册的工具都要在自己包的 README 里 ---');
+// 清单只维护一处：各包 README。根 README 重列一张总表，就得两处同步 ——
+// 而"写进文档的约束等于没有约束"，何况同一张表写两遍。
+ok(!/^## 工具总表/m.test(readme), '根 README 不重列工具总表（清单归各包 README）');
 const toolSpecs = [
 	['dsh-agent-mind', 'index.js', /name:\s*'(mind_\w+)'/g],
 	['dsh-clis', 'index.js', /name:\s*"(clis_\w+)"/g],
 	['dsh-meta-framework', 'src/tools.js', /TOOL_NAME\s*=\s*'(\w+)'/g],
 	['dsh-memory-manager', 'server.js', /name:\s*'(memory_\w+)'/g],
 ];
-const allTools = [];
+let toolTotal = 0;
 for (const [pkg, file, re] of toolSpecs) {
 	const src = read(join(pkgs, pkg, file));
 	const names = [...new Set([...src.matchAll(re)].map((m) => m[1]))];
-	allTools.push(...names);
+	toolTotal += names.length;
+	const pkgReadme = read(join(pkgs, pkg, 'README.md'));
 	for (const n of names) {
-		ok(readme.includes(`\`${n}\``), `${n} 在 README 的工具总表里`);
+		ok(pkgReadme.includes(n), `${n} 在 ${pkg}/README.md 里`);
 	}
 }
-const claimed = Number(/(\d+) 个工具/.exec(readme)?.[1] ?? -1);
-ok(claimed === allTools.length, `README 声称 ${claimed} 个工具 = 实际 ${allTools.length}`);
+console.log(`  · 四包共 ${toolTotal} 个工具，逐个出处见各包 README`);
 
 // ---------------------------------------------------------------------------
 console.log('\n--- 2. 判据数（memory_check 实际检查的）---');
 const mm = read(join(pkgs, 'dsh-memory-manager', 'server.js'));
 const codes = [...new Set([...mm.matchAll(/add\(\s*'(?:WARN|FAIL|INFO)'\s*,\s*'([^']+)'/g)].map((m) => m[1]))];
-const claimedCriteria = Number(/体检记忆根（(\d+) 条判据）/.exec(readme)?.[1] ?? -1);
+const claimedCriteria = Number(/### memory-manager · (\d+) 条/.exec(readme)?.[1] ?? -1);
 ok(claimedCriteria === codes.length, `README 声称 ${claimedCriteria} 条判据 = 实际 ${codes.length}`);
 // 每个代号都要在判据总表里出现
 for (const c of codes) {
@@ -149,7 +153,7 @@ const LINES = {
 		'src/mind.js', 'src/host.js', 'src/situation.js', 'index.js',
 		'test/dispatch.test.js', 'test/hitrate.test.js', 'test/sampling.test.js',
 		'test/interfaces.test.js', 'test/mind.test.js', 'test/orchestrate.test.js',
-		'test/integration.test.js', 'test/regressions.test.js',
+		'test/integration.test.js', 'test/regressions.test.js', 'test/review-fixes.test.js',
 	],
 	'dsh-meta-framework': [
 		'index.js', 'src/tools.js', 'src/health.js', 'src/host.js', 'src/clis.js',

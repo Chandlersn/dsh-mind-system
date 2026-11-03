@@ -1,5 +1,19 @@
-﻿node_modules/
+node_modules/
 *.tgz
 .DS_Store
 data/
 _history-archives/
+
+# 实验原始记录：留在本地，不入库（2026-11-03 决定）
+#
+# 理由：reports/ 里是真实模型运行的完整事件流（1.4MB/86 文件），
+# 其中的工具调用参数含本机绝对路径（如 C:\Users\<user>\AppData\Local\Temp\...）。
+# 这些不是凭据，但会暴露本机目录结构；而脱敏又会破坏"原始记录"的可追溯性。
+#
+# 结论：仓库只放代码、文档、脚本与可复现的方法说明（METHOD.md 里写清了
+# 如何重跑），证据本体留本地。要复核的人按 METHOD.md 自己跑一遍即可。
+reports/
+
+# 提交信息临时文件（用文件传多行信息，避免 PowerShell 破坏编码）
+.git-commit-msg.txt
+

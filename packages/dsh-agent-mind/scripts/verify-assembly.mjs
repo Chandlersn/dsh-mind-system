@@ -146,7 +146,7 @@ check(
 );
 
 // 设成 diagnose → 判结构类应被排到最前，且顺序确实变了
-mindMod.__setSituationForTest('diagnose');
+ctx2.emit('agent/inbox/claimed', { message: { role: 'user', content: [{ type: 'text', text: '请审查这个问题' }] }, turn: 1 });
 const diagnosed = await ctx2.systemPrompt.assemble({});
 const names2 = diagnosed.tools.map((t) => t.name);
 check(

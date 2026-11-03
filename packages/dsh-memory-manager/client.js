@@ -23,6 +23,15 @@
  * the host's CSS modules.
  */
 window.__ModuleLoader__.load({
+	// 注册 id 必须等于宿主为「本包」建的那条客户端行 id —— 也就是包名。
+	// 宿主按包名建客户端行，把 exports["./client"] 指向的文件当它的 bundle，
+	// 加载后校验 `factories.has(包名)`；对不上就报 loaded without registering。
+	//
+	// 同一份面板有两种装法：独立装是 dsh-memory-manager，聚合装是 dsh-mind-system。
+	// 聚合包那份的这一行由 scripts/build/rewrites.mjs 在构建时替换 —— 勿手改产物，
+	// 改这里（源）：packages/dsh-memory-manager/client.js。
+	//
+	// 面板本身只依赖 inject:['slots'] 与槽位 id('memory-panel')，与注册 id 无关。
 	id: 'dsh-memory-manager',
 	factory(require) {
 		const React = require('react');

@@ -38,12 +38,12 @@ test('判不出时是 unknown，且明确标记', () => {
 });
 
 test('判定可解释：命中的信号名与落选的都能查', () => {
-  const d = explainSituation('改了没效果，反复都不行');
+  const d = explainSituation('修改后没效果，反复都不行');
   assert.ok(d.hits.includes('no-effect'), `应命中 no-effect，实际 ${JSON.stringify(d.hits)}`);
   // 命中与落选是**互补**的两组：命中的进 hits，落选的进 misses。
   // 注意"改"会同时命中 do-it，所以 do-it 也在 hits 里 —— 这不是 bug，
   // 是"多个信号同时命中"的事实，只是 no-effect 权重更高所以赢了判定。
-  assert.ok(d.hits.includes('do-it'), '多个信号可同时命中（"改"命中 do-it）');
+  assert.ok(d.hits.includes('do-it'), '多个信号可同时命中（"修改"命中 do-it）');
   assert.ok(d.misses.includes('need-external'), '未命中的信号进 misses');
   assert.ok(d.misses.includes('need-prior'), '未命中的信号进 misses');
   // 两组不重叠，且并起来等于全部信号

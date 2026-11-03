@@ -1,156 +1,137 @@
-/**
- * 处境判定与记账 —— 把"何时判、在哪判、算什么"从索引文件里拆出来。
- *
- * ## 为什么拆出来（2026-11-02 对抗式审查的结论）
- *
- * 原来的做法是：在 `agent/pre-step` 里判处境、在 `system-prompt/assemble` 里
- * 用它重排工具面。这两件事在宿主里的次序是**反的**：
- *
- * ```
- * dsh-agent-loop/lib/index.js:906   const claimed = this.inbox.claim(...)   ← 拿到本轮输入
- * dsh-agent-loop/lib/index.js:907   const assembly = await ...assemble(...)  ← 工具面在此定稿
- * dsh-agent-loop/lib/index.js:909   await waterfall("agent/pre-step", ...)   ← 处境在此才判出
- * ```
- *
- * 后果是"重排永远晚一步"：
- *
- * - 第 1 步（模型第一次回应用户、决定用哪个工具的那一步）用的还是默认顺序
- * - 第 2 步用上了第 1 步判出的处境 —— 但此时模型已经在干活了
- * - 第 2 步起 inbox 为空，处境被重置成 unknown → 第 3 步又变回默认顺序
- *
- * 于是一个 turn 内工具面**变动两次**。而宿主的 `headerEquals` 是**按顺序**
- * 比较工具面的（dsh-session/lib/types/request-header.js:44），顺序一变就判
- * "工具面变了" → `startsSeries=true` → `project()` 替换全部系统提示节点 →
- * **请求序列重启、提示缓存前缀作废**。
- *
- * 也就是说：收益在第 1 步（没有），代价在第 2 步（全付）。
- *
- * ## 修法：换一条更早的信号
- *
- * `inbox.claim()` 在 `assemble()` **之前**发出 `agent/inbox/claimed`：
- *
- * ```
- * dsh-agent-loop/lib/index.js:103-111
- *   claim(target, turn) {
- *     ...
- *     for (const message of claimed) this.dispatch.emit("agent/inbox/claimed", { message, turn });
- *     return claimed;
- *   }
- * ```
- *
- * 这个事件携带用户消息本身，且发生在装配之前。所以改成：
- *
- * - **在 `agent/inbox/claimed` 里判处境** → 工具面定稿时处境已经就位
- * - **保留 `agent/pre-step` 作为兜底** → 老宿主没有 `inbox/claimed` 时仍能工作
- *
- * 两条信号源的判定结果一致时不会有任何额外代价；不一致时以先到的为准
- * （`inbox/claimed` 更早也更权威）。
- *
- * ## 为什么采样只记"有用户文本"的判定
- *
- * 原来的采样在**每个 step** 记一次。但宿主一个 turn 里，第 2 步起 inbox 已经
- * 被 claim 干净 —— `claimed` 是空数组，判出来必然是 unknown。
- *
- * 实测采样文件 362 行里 351 行是空输入（哈希 = sha256(空串)），空/非空严格
- * 交替呈轮次结构。把这些算进分母，"无信号率"就成了**空输入率**：
- *
- * ```
- * 步骤口径：351/362 = 97% 无信号 → "调度基本失灵"
- * 轮次口径：  4/14 = 27% 无信号 → 命中率 73.3%
- * ```
- *
- * 同一份数据，两个口径给出相反的结论。而探针还把它归因为"词表跟不上真实
- * 说法"——把一个**分母错误**说成了**词表问题**。
- *
- * 判据：只有**判出过内容的判定**才进采样。空输入的判定不记。
- * 这样"命中率"的单位回到"一次用户输入"，而不是"一个 step"。
- *
- * @module src/situation
- */
-
+/** Agent-scoped situation state. An instance belongs to one plugin context. */
 import { explainSituation, recordDecision } from './dispatch.js';
 import { SITUATIONS } from './orchestrate.js';
 
-/**
- * 最近一次判定的可解释记录（模块级）。
- *
- * @type {{situation: string, unknown: boolean, hits: string[], misses: string[], evidence: Record<string, number>, text: string}|null}
- */
-let lastDecision = null;
+// Diagnostic summary only; never used to arrange an agent's tools.
+let latestDecision = null;
 
 /**
- * 当前处境（模块级）。
+ * 每个 agent 的处境状态。
  *
- * 初始值刻意是 unknown：还没看到任何输入时不该假装知道该优先什么。
+ * ## 三件事必须分开存（2026-11-03）
  *
- * @type {string}
+ * 上一版把"处境"当成一个字符串塞进 WeakMap，于是下面三件事无法区分：
+ *
+ * 1. 插件**判出了**什么（`decision`）
+ * 2. 插件**提供了**哪条引导（`guidance` —— 是否真的据此重排了工具面）
+ * 3. 模型**照做了**没有（`followed` —— 由 tools/result 观察得到）
+ *
+ * 这三件事在旧实现里同形："工具面没变化"既可能是判成 unknown，
+ * 也可能是判出了但被克制闸门拦下，还可能是判出了、也重排了，
+ * 而模型压根没用那个工具族。三者对维护者的含义完全不同。
+ *
+ * 因此状态里同时留 `decision`（判断）、`guidance`（提供的引导）、
+ * `outcome`（模型行为），探针与工具分别读各自那一段。
  */
-let currentSituation = SITUATIONS.unknown;
+export function createSituationStore() {
+  let states = new WeakMap();
+  let unscoped = {};
+  const keyOf = (agent) => (agent !== null && (typeof agent === 'object' || typeof agent === 'function')) ? agent : unscoped;
+  const stateOf = (agent) => states.get(keyOf(agent));
 
-/**
- * 记一次判定并更新当前处境。
- *
- * ## 为什么"空输入"要显式区分
- *
- * 空输入的判定**不覆盖**已有处境。理由：宿主第 2 步起 inbox 为空，
- * 那是"这一轮没有新输入"，不是"用户没有表达任何处境"。若让它把处境重置成
- * unknown，工具面就会在 turn 中途变回默认顺序 —— 那正是本次要修的抖动。
- *
- * @param {string} text 本轮输入文本。
- * @returns {object} 判定结果。
- */
-export function judge(text) {
-  const decision = explainSituation(text);
-  decision.text = text;
-  recordDecision(decision);
-  lastDecision = decision;
+  /** 取（或建）一个 agent 的状态槽。 */
+  const ensure = (agent) => {
+    const key = keyOf(agent);
+    let state = states.get(key);
+    if (state === undefined) {
+      state = {
+        /** 当前处境的代号（工具面按它排序）。 */
+        situation: SITUATIONS.unknown,
+        /** 最近一次判定结果（完整可解释记录）。 */
+        decision: null,
+        /** 最近一次**实际提供给 DSH 的引导**；null = 没提供。 */
+        guidance: null,
+        /** 由 tools/result 观察到的模型行为（不是推断）。 */
+        outcome: { calls: [], matched: null },
+      };
+      states.set(key, state);
+    }
+    return state;
+  };
 
-  // 空输入（没有用户文本）→ 不动处境，但仍然记账：
-  // "这一轮没信号"必须可查，否则它与"调度没生效"在观察上同形。
-  if (text.length > 0) {
-    currentSituation = decision.unknown ? SITUATIONS.unknown : decision.situation;
-  }
-  return decision;
+  return {
+    judge(text, agent) {
+      const decision = explainSituation(text);
+      // The raw text is needed only for this call's optional sampling.
+      const snapshot = { ...decision };
+      latestDecision = snapshot;
+      recordDecision(snapshot);
+      if (String(text).length > 0) {
+        const state = ensure(agent);
+        state.decision = snapshot;
+        // ⚠️ 克制闸门：判出但势均力敌（ambiguous）时，处境保持 unknown ——
+        // 于是工具面不动。判断照常记录，**引导不发出**。
+        // 宁可不动，也不要在"两类势均力敌"时把模型推向其中一族。
+        state.situation = decision.unknown || decision.ambiguous ? SITUATIONS.unknown : decision.situation;
+        // 新一轮输入到来 → 上一轮的引导与观察作废（它们是"上一轮"的事实）。
+        state.guidance = null;
+        state.outcome = { calls: [], matched: null };
+      }
+      return { ...decision, text };
+    },
+
+    currentSituationOf(agent) { return stateOf(agent)?.situation ?? SITUATIONS.unknown; },
+
+    lastDecisionOf(agent) { return stateOf(agent)?.decision ?? null; },
+
+    /**
+     * 记账：本轮**实际提供**给 DSH 的引导。
+     *
+     * 由 assemble 监听器在真正重排工具面后调用 —— 注意是"重排之后"，
+     * 不是"判定之后"。判定与提供是两件事：判出了但没重排（unknown /
+     * ambiguous / assemble 事件缺失）时，这里不该有记录。
+     *
+     * @param agent agent 身份。
+     * @param guidance `{situation, arranged, at}`。
+     */
+    recordGuidance(agent, guidance) {
+      const state = ensure(agent);
+      state.guidance = guidance;
+    },
+
+    /** 读本轮实际提供的引导；没提供则为 null。 */
+    guidanceOf(agent) { return stateOf(agent)?.guidance ?? null; },
+
+    /**
+     * 记账：观察到一个工具调用（来自 tools/result）。
+     *
+     * 只记名字，不记参数 —— 参数里可能有路径、密钥、用户数据。
+     *
+     * @param agent agent 身份。
+     * @param toolName 被调用的工具名。
+     */
+    recordToolCall(agent, toolName) {
+      const state = ensure(agent);
+      if (typeof toolName !== 'string' || toolName.length === 0) return;
+      // 有上限：长会话里工具调用会很多，这里只留最近的若干个。
+      state.outcome.calls.push(toolName);
+      if (state.outcome.calls.length > 50) state.outcome.calls.shift();
+      state.outcome.matched = null; // 有新的调用 → 上一轮的比对结论作废
+    },
+
+    /**
+     * 读模型行为观察：`{calls, matched}`。
+     *
+     * `matched` 是 null 表示**还没比对**（或无法比对），不是"没照做"。
+     * 这个区分很重要：把"没观察"报成"没照做"，等于用缺失当阴性证据。
+     */
+    outcomeOf(agent) { return stateOf(agent)?.outcome ?? { calls: [], matched: null }; },
+
+    /** 记一次"引导是否被照做"的比对结论。 */
+    recordFollowed(agent, followed) {
+      const state = ensure(agent);
+      state.outcome.matched = followed;
+    },
+
+    reset() { states = new WeakMap(); unscoped = {}; },
+    force(situation, agent) { ensure(agent).situation = situation; },
+  };
 }
 
-/**
- * 读当前处境（只读）。
- *
- * @returns {string} 处境代号。
- */
-export function currentSituationOf() {
-  return currentSituation;
-}
-
-/**
- * 读最近一次判定（只读）。
- *
- * @returns {object|null} 判定记录；还没有过则 null。
- */
-export function lastDecisionOf() {
-  return lastDecision;
-}
-
-/**
- * 重置模块级状态（仅测试用）。
- *
- * @internal
- */
-export function __resetSituationForTest() {
-  lastDecision = null;
-  currentSituation = SITUATIONS.unknown;
-}
-
-/**
- * 直接设定当前处境（仅测试用）。
- *
- * 存在的理由：真实处境只能由 `judge()` 从输入推出，而 `judge()` 判出
- * unknown 时**不覆盖**已有处境（见上）。测试要构造"处境已知"的状态，
- * 需要一个不经过输入的入口。
- *
- * @param {string} situation 处境代号。
- * @internal
- */
-export function __forceSituationForTest(situation) {
-  currentSituation = situation;
-}
+// Compatibility helpers for direct consumers; plugin instances use their own store.
+const defaultStore = createSituationStore();
+export const judge = (text, agent) => defaultStore.judge(text, agent);
+export const currentSituationOf = (agent) => defaultStore.currentSituationOf(agent);
+export const lastDecisionOf = () => latestDecision;
+export function __resetSituationForTest() { defaultStore.reset(); latestDecision = null; }
+export function __forceSituationForTest(situation) { defaultStore.force(situation); }

@@ -16,6 +16,17 @@ import { mkdir, mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+// 宿主缺席时**跳过**而不是失败：本脚本验证的是"与真宿主协作"，没有宿主就
+// 没有可验证的对象。CI 要求必须有宿主时设 DSH_REQUIRE_HOST=1（缺席即失败）。
+const { resolveDshRoot } = await import(new URL('./src/host.js', import.meta.url).href);
+try {
+	resolveDshRoot(process.env.DSH_INSTALL_DIR);
+} catch (error) {
+	console.log(`SKIP: 找不到 DSH 宿主安装 —— ${error.message}`);
+	console.log('      真跑：DSH_INSTALL_DIR=<宿主目录>；要它成为硬失败：DSH_REQUIRE_HOST=1。');
+	process.exit(process.env.DSH_REQUIRE_HOST === '1' ? 1 : 0);
+}
+
 const mod = await import(new URL('./server.js', import.meta.url).href);
 console.log('exports:', Object.keys(mod).join(','), '| inject:', mod.inject.join(','));
 

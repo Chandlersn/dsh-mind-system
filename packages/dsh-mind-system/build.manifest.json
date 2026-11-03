@@ -1,0 +1,48 @@
+{
+  "$comment": "合成包成员来源声明。由 scripts/build-combined.mjs 消费；不要手改产物，改这里或改源包。",
+  "packageRoot": "packages/dsh-mind-system",
+  "rewritesFile": "scripts/build/rewrites.mjs",
+  "members": [
+    {
+      "package": "dsh-clis",
+      "dir": "clis",
+      "exclude": [
+        {
+          "path": "cordis.patch.yml",
+          "why": "装配统一由合成包根 cordis.patch.yml 的 9 条 insert 表达；成员 patch 一起装会重复装载"
+        },
+        {
+          "path": "reload-core.mjs",
+          "why": "运行时自举：clis/index.js 的 ensureReloadCore() 内嵌 RELOAD_CORE_SOURCE，缺文件时自己写出。独立包那份只是可读参照，合成包不需要"
+        }
+      ]
+    },
+    {
+      "package": "dsh-agent-mind",
+      "dir": "mind",
+      "exclude": [
+        { "path": ".gitignore", "why": "仓库级元数据，产物不是独立仓库" },
+        { "path": "cordis.patch.yml", "why": "装配统一由合成包根 patch 表达" }
+      ]
+    },
+    {
+      "package": "dsh-meta-framework",
+      "dir": "meta",
+      "exclude": [
+        { "path": ".gitignore", "why": "仓库级元数据" },
+        { "path": "cordis.patch.yml", "why": "装配统一由合成包根 patch 表达" },
+        { "path": "package-lock.json", "why": "独立包自己的锁文件；合成包依赖由安装流程决定" },
+        { "path": "REVIEW.md", "why": "独立包的工作文档，不属于发布内容" }
+      ]
+    },
+    {
+      "package": "dsh-memory-manager",
+      "dir": "memory",
+      "exclude": [
+        { "path": ".gitignore", "why": "仓库级元数据" },
+        { "path": "cordis.patch.yml", "why": "装配统一由合成包根 patch 表达" }
+      ]
+    }
+  ],
+  "stamp": "build-stamp.json"
+}

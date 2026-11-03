@@ -1,0 +1,355 @@
+{
+  "generatedBy": "scripts/build-combined.mjs",
+  "manifest": "packages/dsh-mind-system/build.manifest.json",
+  "note": "产物索引，勿手改。重新生成：npm run build",
+  "files": {
+    "clis/LICENSE": {
+      "source": "dsh-clis/LICENSE",
+      "sha256": "0b3d0fee82da5fd9f3afda82b18865591248329d642f678532ff10f500e8f229"
+    },
+    "clis/README.md": {
+      "source": "dsh-clis/README.md",
+      "sha256": "1bd2592dac874fdb15c49ac2ff36d0882824ab70c11e07c0fe951fa03477ade1"
+    },
+    "clis/chunk-2HMO3QIV.js": {
+      "source": "dsh-clis/chunk-2HMO3QIV.js",
+      "sha256": "32daa8996c377136d24bf06d54b431110ea14452af88ba7c3afe33cd41a6eb07"
+    },
+    "clis/chunk-DC3YUXV4.js": {
+      "source": "dsh-clis/chunk-DC3YUXV4.js",
+      "sha256": "aa87f2804d971bf4bc2a721bec1cdbe503d4351a87e8e0c05b1f0a1464dcc7d4"
+    },
+    "clis/chunk-IYFQPRCX.js": {
+      "source": "dsh-clis/chunk-IYFQPRCX.js",
+      "sha256": "23e0d240d21ed1f8381104503cde6dec60343e92a521fa7e68ab618d693a202f"
+    },
+    "clis/chunk-OOJ2ZH5S.js": {
+      "source": "dsh-clis/chunk-OOJ2ZH5S.js",
+      "sha256": "6bc8d0c3959dd9f1acebfbbafb8abc6b6d3f18a0555ee1ca77cd70dd1ae54fe7"
+    },
+    "clis/chunk-RDSPXR43.js": {
+      "source": "dsh-clis/chunk-RDSPXR43.js",
+      "sha256": "d0f8c40c033ec798334ee533f598d668fe6589d1f15de5ecbf8f045253bcee85"
+    },
+    "clis/clis-classifier.js": {
+      "source": "dsh-clis/clis-classifier.js",
+      "sha256": "96905759a67452b5200294205db354bbf2139225d3608925f353bd153810e227"
+    },
+    "clis/clis-feedback.js": {
+      "source": "dsh-clis/clis-feedback.js",
+      "sha256": "8a72cfc1f3b65b6beaa80c07ee0c3607b973402d2eff7acd028cb641a85811b8"
+    },
+    "clis/clis-orchestrator.js": {
+      "source": "dsh-clis/clis-orchestrator.js",
+      "sha256": "9f89266ba4fbca77c4dcd8a847e7a349d6f3d868e555bca78cfcc123f4dcb20f"
+    },
+    "clis/clis-strategy.js": {
+      "source": "dsh-clis/clis-strategy.js",
+      "sha256": "75d1c479772fda090a48e77d3023eb915f1ca8d9ccd57cdf70cb582e48c9707e"
+    },
+    "clis/icon.svg": {
+      "source": "dsh-clis/icon.svg",
+      "sha256": "fedc76e785ce2d01dcdf0bf553afe7896af0dae0f0eee1aa23e026d6a3fcaa2c"
+    },
+    "clis/index.js": {
+      "source": "dsh-clis/index.js",
+      "sha256": "b28a2a6be593362e97c0516ace79621e8f11ca6d5ea0ee8cfc7b1095d3792ffe"
+    },
+    "clis/locale/classifier/en.json": {
+      "source": "dsh-clis/locale/classifier/en.json",
+      "sha256": "8823df93753953040dd6e571cccaaa922e3aa4bc2bb9b625defbd2dea0a7bc0a"
+    },
+    "clis/locale/classifier/zh.json": {
+      "source": "dsh-clis/locale/classifier/zh.json",
+      "sha256": "276fc2edccd289bd2a01a0b5b000afb4ec4a285f97aa0783e09d09ceb1dc302d"
+    },
+    "clis/locale/en.json": {
+      "source": "dsh-clis/locale/en.json",
+      "sha256": "eae2af056c9200b1464c6dce50e6070335a5a1ded1d1dae8c059239f366439ba"
+    },
+    "clis/locale/feedback/en.json": {
+      "source": "dsh-clis/locale/feedback/en.json",
+      "sha256": "b046d20142f281f987d280514851be679772d8b2186756d9163f2f5b96a13d65"
+    },
+    "clis/locale/feedback/zh.json": {
+      "source": "dsh-clis/locale/feedback/zh.json",
+      "sha256": "b2a60e0daf47f20ebc7c9fb6c04aead6e1c8af4951a79cbc1466fe85756311b8"
+    },
+    "clis/locale/orchestrator/en.json": {
+      "source": "dsh-clis/locale/orchestrator/en.json",
+      "sha256": "744ecbb3e47ab4961ddaf4bfbd0e95305d9dfe8178a491deb451164a0ee1d062"
+    },
+    "clis/locale/orchestrator/zh.json": {
+      "source": "dsh-clis/locale/orchestrator/zh.json",
+      "sha256": "fc9e1dacedb993d6ab661b4db7235f12fc5bd6e20dce54dbede0ddd9a4bfab55"
+    },
+    "clis/locale/strategy/en.json": {
+      "source": "dsh-clis/locale/strategy/en.json",
+      "sha256": "ecd4c25d27e7069e3ba86c0324f6af280ac9c8442d485be557c9e395b290540a"
+    },
+    "clis/locale/strategy/zh.json": {
+      "source": "dsh-clis/locale/strategy/zh.json",
+      "sha256": "4ffd146217519bf92fa5e4fa2bcc061a991a77aa0e05146cc955a01ccea069c0"
+    },
+    "clis/locale/zh.json": {
+      "source": "dsh-clis/locale/zh.json",
+      "sha256": "51fa9f68c89d637c8a84b3bdab8a91d39775383073eff604ff126143365430b1"
+    },
+    "clis/package.json": {
+      "source": "dsh-clis/package.json",
+      "sha256": "ae4a685399b04349b2aa818ed0d28275501daa404d88ec3716671bba5768f70e"
+    },
+    "memory/.gitattributes": {
+      "source": "dsh-memory-manager/.gitattributes",
+      "sha256": "eef7f0b7c4060ef43196e373db08cc7a264ece824a151907abe0e6de281202ab"
+    },
+    "memory/LICENSE": {
+      "source": "dsh-memory-manager/LICENSE",
+      "sha256": "dbc4d7a6edeb72afb083460098228720fe5ef0af2761c2df82c2a2a0a2adc59c"
+    },
+    "memory/README.en.md": {
+      "source": "dsh-memory-manager/README.en.md",
+      "sha256": "ba9f4a9873dd1c61c892fd177528643f43daa532b5565ecb58a7d06ef438a1e4"
+    },
+    "memory/README.md": {
+      "source": "dsh-memory-manager/README.md",
+      "sha256": "67539558df34ee0038b3e4efbab1e7fa1a10b1a1ad6691240e60e866ff36473f"
+    },
+    "memory/api-test.mjs": {
+      "source": "dsh-memory-manager/api-test.mjs",
+      "sha256": "6d034a0ffe25921b7347974fa9b919e251e909d57a48c227958a55f5a15ffada"
+    },
+    "memory/client.js": {
+      "source": "dsh-memory-manager/client.js",
+      "sha256": "3b72a5be49056f1667e7b946dc28d1e92880942a0f5a3a512ef94c0befbe33e3"
+    },
+    "memory/harness-test.mjs": {
+      "source": "dsh-memory-manager/harness-test.mjs",
+      "sha256": "2cae6266e5a4abbbf53b18a2a021d322df6bd4b2e414e350dbdb32b8c09ba012"
+    },
+    "memory/health-inbox.js": {
+      "source": "dsh-memory-manager/health-inbox.js",
+      "sha256": "06efa260e60c972d8c5ed39a76cf1f8ab166e3a000d46114668aa419c8cce831"
+    },
+    "memory/icon.svg": {
+      "source": "dsh-memory-manager/icon.svg",
+      "sha256": "282df46545f4f30e02445fdfff6e02dffef3645ccb269a0314eaa4b738b61d9d"
+    },
+    "memory/package.json": {
+      "source": "dsh-memory-manager/package.json",
+      "sha256": "8331cca0d84948cf56d7460d9777a252fbb88b6be927422e99f1e547809d6270"
+    },
+    "memory/server.js": {
+      "source": "dsh-memory-manager/server.js",
+      "sha256": "b0f57b54165f16abcb7f877ae35d8fbc6f4a7c561f603ba2700795893362a411"
+    },
+    "memory/src/constants.js": {
+      "source": "dsh-memory-manager/src/constants.js",
+      "sha256": "0bb385218985d8a30cfface8b598502b47182b8001a3985bd50a160d003a2822"
+    },
+    "memory/src/dao-shape.js": {
+      "source": "dsh-memory-manager/src/dao-shape.js",
+      "sha256": "282fc35a7f73ff20da75bebb408ff3c80a321948a9271c452eed0d48e0cfa023"
+    },
+    "memory/src/host-skill.js": {
+      "source": "dsh-memory-manager/src/host-skill.js",
+      "sha256": "41b500f47f3230cb1ebdd5abe3e3965f0332120e88a23cb17257b44323914655"
+    },
+    "memory/src/host.js": {
+      "source": "dsh-memory-manager/src/host.js",
+      "sha256": "e42ebd804cc66b1e12a4baa4f64e8dc8e4e2d35ea54de762795a62a755a399fd"
+    },
+    "memory/src/layer-gate.js": {
+      "source": "dsh-memory-manager/src/layer-gate.js",
+      "sha256": "256951537ccec73e6e60151c6039a498c12d377957d75e17aca55df5c7f9b8dc"
+    },
+    "memory/src/layer-selfcheck.js": {
+      "source": "dsh-memory-manager/src/layer-selfcheck.js",
+      "sha256": "24bc4466a3b80eec3e05347e8a1b911ba414d57ab9863c4744be6af0ac9e702d"
+    },
+    "memory/src/markdown.js": {
+      "source": "dsh-memory-manager/src/markdown.js",
+      "sha256": "5063bcffcd3953bfee051b9975c7907b825aa6598c2e73146c87d12edb23e51a"
+    },
+    "memory/src/recall.js": {
+      "source": "dsh-memory-manager/src/recall.js",
+      "sha256": "9b15756ffaf05c7e2175f189472004e62420f4f74b8911ad9b28e050bb10d775"
+    },
+    "memory/src/reload.js": {
+      "source": "dsh-memory-manager/src/reload.js",
+      "sha256": "7f1f8029ca4b53553f5aa9f5798f7dee1ae270bbf5990a8fd7cab7dc5248eb7b"
+    },
+    "memory/src/secrets.js": {
+      "source": "dsh-memory-manager/src/secrets.js",
+      "sha256": "a171e95dfd3d45a39b39bde8e59a39a2585ed0f3281d38238e1bbb80c069f0bd"
+    },
+    "memory/src/usage.js": {
+      "source": "dsh-memory-manager/src/usage.js",
+      "sha256": "f42c5cfded518dd3dbbd79140c926ad4a605e2b81c9dadc96f92272d56d20d76"
+    },
+    "memory/src/util.js": {
+      "source": "dsh-memory-manager/src/util.js",
+      "sha256": "4fea25513e5a05d31ab5b8f1763e9daa38269f9c94d5b0e68fbee6050d0f2999"
+    },
+    "memory/tests/coverage.test.js": {
+      "source": "dsh-memory-manager/tests/coverage.test.js",
+      "sha256": "af213c56f5bdfc4dab825ecbbd9774d0ea25a408b04d747cb4be172611da3084"
+    },
+    "memory/tests/dao-shape.test.js": {
+      "source": "dsh-memory-manager/tests/dao-shape.test.js",
+      "sha256": "94455194c08427c00df8d2c420ec696a4631075a4d97348850d11eb442539f6d"
+    },
+    "memory/tests/layer-gate.test.js": {
+      "source": "dsh-memory-manager/tests/layer-gate.test.js",
+      "sha256": "f1f2c9611d9afc564772f3c6d0d5e8eaf06cc77199f95857590f8c3fef5c90db"
+    },
+    "memory/tests/layer-selfcheck.test.js": {
+      "source": "dsh-memory-manager/tests/layer-selfcheck.test.js",
+      "sha256": "cbb18e88c14872123114422f164b9fdb111caf1a077ae8d93f9bc329bb0c27bc"
+    },
+    "memory/ui-test.mjs": {
+      "source": "dsh-memory-manager/ui-test.mjs",
+      "sha256": "5d2dc5966fb037ab7f40c9756d6114827111cce16d1d4ff275542a1ed56db538"
+    },
+    "meta/README.md": {
+      "source": "dsh-meta-framework/README.md",
+      "sha256": "a4a5c3a4ff1c6d62bbe18238da604779bee66b56a7e577031dcfa43d34b0830e"
+    },
+    "meta/index.js": {
+      "source": "dsh-meta-framework/index.js",
+      "sha256": "e35910f53b840974f8b547a7b13a7dc4630dc8a9dd00265013f539603cc4b916"
+    },
+    "meta/package.json": {
+      "source": "dsh-meta-framework/package.json",
+      "sha256": "bc99fe27ec1306653d70e937a810ad7b446a86bbaa6a7f0da6b0b0739173d7bd"
+    },
+    "meta/src/clis.js": {
+      "source": "dsh-meta-framework/src/clis.js",
+      "sha256": "fbe971f4101ef52dc6d5de9171c0ff741090b9120ac95da672e1bab791eeb952"
+    },
+    "meta/src/health.js": {
+      "source": "dsh-meta-framework/src/health.js",
+      "sha256": "8bfafc4f3e6a5d04b6dc39e8d61041aca04058ca9f11c2f0a1e1d6ebd8301980"
+    },
+    "meta/src/host.js": {
+      "source": "dsh-meta-framework/src/host.js",
+      "sha256": "112acc1ab7a6cb86d2458dcb85b11acb20966383e8685b673692f86fa70799b7"
+    },
+    "meta/src/tools.js": {
+      "source": "dsh-meta-framework/src/tools.js",
+      "sha256": "03fbf116f00535ce6713ce9bd374c03e0cffff231dddffe0f3def5acc9ea0eef"
+    },
+    "meta/test/clis-rule.js": {
+      "source": "dsh-meta-framework/test/clis-rule.js",
+      "sha256": "30c15a5017c532c185a19f6678cbef5f74b28c2e0be503d955b3f97e9b6a37fb"
+    },
+    "meta/test/clis-rule.test.js": {
+      "source": "dsh-meta-framework/test/clis-rule.test.js",
+      "sha256": "6c42a5e935544a85789076ce0fdb1d26f881e3afc7f86b3a12c7014db16173a6"
+    },
+    "meta/test/entry.test.js": {
+      "source": "dsh-meta-framework/test/entry.test.js",
+      "sha256": "8cc3b3e6481d43e6ebf0e7cb9db785d3f39a3c08809267385a6f2d6304636c94"
+    },
+    "meta/test/health.test.js": {
+      "source": "dsh-meta-framework/test/health.test.js",
+      "sha256": "243f5dea34af852a9395b6fd2eed9c8beabd5a6fb1a84da57f23787e633aba1e"
+    },
+    "meta/test/host.test.js": {
+      "source": "dsh-meta-framework/test/host.test.js",
+      "sha256": "08b84a64e6b7b193670deaaa66ef0098ed700fe1806907dd9278e93e7b1ee105"
+    },
+    "meta/test/tools.test.js": {
+      "source": "dsh-meta-framework/test/tools.test.js",
+      "sha256": "f96c4de9a9b873d8617387c93b69c6c27d70f0948b227d66908bcdf6b458a9a3"
+    },
+    "mind/README.md": {
+      "source": "dsh-agent-mind/README.md",
+      "sha256": "e8a738f44a125a6bc82afd72f7d0082c570c9662bd0e35e98fecc2db3f0635d1"
+    },
+    "mind/index.js": {
+      "source": "dsh-agent-mind/index.js",
+      "sha256": "279ab8bdbce30cc6923295d30a00da6c9999b60b839fac99127513497992ff3f"
+    },
+    "mind/package.json": {
+      "source": "dsh-agent-mind/package.json",
+      "sha256": "a96fe347df7385b5a1f8fc45b50c115df9a9aede865d66e3f8d5314c1c032014"
+    },
+    "mind/scripts/verify-assembly.mjs": {
+      "source": "dsh-agent-mind/scripts/verify-assembly.mjs",
+      "sha256": "c48f02a5978f6a6737a6603bf977d2ae0c7ad8862e2a3f11342ed1597adc4e03"
+    },
+    "mind/src/dispatch.js": {
+      "source": "dsh-agent-mind/src/dispatch.js",
+      "sha256": "db96b617ee5c338202b4bd51d17d2eb55015afcfb9f5179d401a63f06741d4d3"
+    },
+    "mind/src/hitrate.js": {
+      "source": "dsh-agent-mind/src/hitrate.js",
+      "sha256": "aa46f5ce08e558d8acd5b11ce5a61dd4062c982aa6f65abc7faddbf470b92ffc"
+    },
+    "mind/src/host.js": {
+      "source": "dsh-agent-mind/src/host.js",
+      "sha256": "f1c3a78fe0fc3ffb574f187355f24adce1d0af3f893ed71a26ee87c70eebc4e1"
+    },
+    "mind/src/mind.js": {
+      "source": "dsh-agent-mind/src/mind.js",
+      "sha256": "703ac0629ad6f985682a14329b09808578a6aa3aa715aeb41b9f105b3dd2a7ad"
+    },
+    "mind/src/orchestrate.js": {
+      "source": "dsh-agent-mind/src/orchestrate.js",
+      "sha256": "cd21f3692de1cefaef9a36b01eafdc1f6204422bbf414c42daca3f293af73ebe"
+    },
+    "mind/src/sampling.js": {
+      "source": "dsh-agent-mind/src/sampling.js",
+      "sha256": "32e096cca82f0fa5db59359eaa35485b0eb74d1144bc098924f033f46079f07e"
+    },
+    "mind/src/situation.js": {
+      "source": "dsh-agent-mind/src/situation.js",
+      "sha256": "272cd5e94c254892218470732ff4c884b1b7944b029f15b2cdf301deff00732e"
+    },
+    "mind/test/diagnostics.test.js": {
+      "source": "dsh-agent-mind/test/diagnostics.test.js",
+      "sha256": "b04abdad544839414775864f596b7947c7a62ed36aefb2105fe43bbd894e81ca"
+    },
+    "mind/test/dispatch.test.js": {
+      "source": "dsh-agent-mind/test/dispatch.test.js",
+      "sha256": "b8fa3759295efd83a1e983699fd8ffcc188372e4bb6e0a869c3bc05e4958e75f"
+    },
+    "mind/test/hitrate.test.js": {
+      "source": "dsh-agent-mind/test/hitrate.test.js",
+      "sha256": "302a827840be6d1f50c8844a8ff37d5a360854e3e7240810b27f22ae6a3338c3"
+    },
+    "mind/test/integration.test.js": {
+      "source": "dsh-agent-mind/test/integration.test.js",
+      "sha256": "870040f7635bfb12b7d258019f5556e6ee7d6c6f26cfe0d508f0d3b589df7984"
+    },
+    "mind/test/interfaces.test.js": {
+      "source": "dsh-agent-mind/test/interfaces.test.js",
+      "sha256": "b9aab9693e7b619e7ebedc02adcc0f557bd7f71933567e062d911e13ba569f0e"
+    },
+    "mind/test/mind.test.js": {
+      "source": "dsh-agent-mind/test/mind.test.js",
+      "sha256": "f76f6b2c3c778a5b97995a3e78235e463afbe12dc39a2bf7c9be755ec954eaa2"
+    },
+    "mind/test/orchestrate.test.js": {
+      "source": "dsh-agent-mind/test/orchestrate.test.js",
+      "sha256": "2413ac2d6d4fb896847bde8b27b9ae5c1074b57e4bb12a7b36131aa749b865ea"
+    },
+    "mind/test/policy.test.js": {
+      "source": "dsh-agent-mind/test/policy.test.js",
+      "sha256": "c2e27952a7f925029eb98cc2c7fa955b20e330e21acc422f8c425f02921f8f04"
+    },
+    "mind/test/regressions.test.js": {
+      "source": "dsh-agent-mind/test/regressions.test.js",
+      "sha256": "b7b0b26c69effd13b432f1acf53e60bc5710167d87344b726aca40814d798701"
+    },
+    "mind/test/review-fixes.test.js": {
+      "source": "dsh-agent-mind/test/review-fixes.test.js",
+      "sha256": "756deccb89342369d8f89c27dbf43dd5040f0436a838c1e27bacc5c4a8893a94"
+    },
+    "mind/test/sampling.test.js": {
+      "source": "dsh-agent-mind/test/sampling.test.js",
+      "sha256": "363de3faf6bff23bcde062b5e2c123c63685969b579a723a08a55903abde5b78"
+    }
+  }
+}

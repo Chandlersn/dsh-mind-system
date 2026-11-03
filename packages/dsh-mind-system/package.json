@@ -33,6 +33,7 @@
   "files": [
     "index.js",
     "cordis.patch.yml",
+    "build-stamp.json",
     "clis/",
     "mind/",
     "meta/",

@@ -14,17 +14,12 @@
  *
  * ## 采样记什么（刻意少）
  *
- * 只记 **输入的哈希**、**判出的处境**、**命中/落选的信号名**。
- *
- * **不记输入原文**：采样文件会长期待在磁盘上，原文可能含用户隐私，
- * 而趋势分析只需要"同一句话判成了什么"的幂等键。哈希足够复现趋势，
- * 且不可反推内容。
+ * 只记时间、判出的处境和命中信号名，不记录原文或稳定输入哈希。
+ * 旧版本的历史文件可能仍含哈希；不会自动删除既有数据。
  *
  * ## 判据
  *
- * `hitRate` 判定沿用同一口径（无信号与判错分开计）。采样里的每条都
- * **已经判过了**，所以这里只统计"无信号率"与"判错率"——
- * 命中率 = 1 - 无信号率 - 判错率。
+ * 没有标准标签时只能统计信号覆盖率，不能判断分类是否正确。
  *
  * @module src/sampling
  */
@@ -33,6 +28,7 @@ import { createHash } from 'node:crypto';
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
 
 /** 采样文件相对路径（与记忆层同区，便于一起备份/清理）。 */
 const SAMPLE_REL_PATH = join('storages', 'mind-dispatch-samples.jsonl');
@@ -44,7 +40,7 @@ const SAMPLE_REL_PATH = join('storages', 'mind-dispatch-samples.jsonl');
  * @returns {string} 绝对路径。
  */
 export function sampleFilePath(dshHome) {
-	const root = dshHome ?? process.env.DSH_HOME ?? join(process.env.USERPROFILE ?? '', '.dsh');
+	const root = dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh');
 	return join(root, SAMPLE_REL_PATH);
 }
 
@@ -57,6 +53,24 @@ export function sampleFilePath(dshHome) {
 export function sampleKey(text) {
 	return createHash('sha256').update(String(text ?? ''), 'utf8').digest('hex').slice(0, 16);
 }
+
+/**
+ * 采样写入的串行队列。
+ *
+ * ## 为什么必须串行（2026-11-03 实测发现）
+ *
+ * `recordSample` 是 fire-and-forget（调用方 `void recordSample(...)`），
+ * 于是**两次调用的 `appendFile` 会并发**。同一个文件上的并发 append
+ * 会互相覆盖 —— 实测：一个边界内连发两条用户消息，两次判定都发生了，
+ * 但采样文件里只有 **1 行**。
+ *
+ * 这不只是"丢一条数据"：采样是"调度还灵不灵"的唯一长期读数，
+ * 丢行会让无信号率失真，而失真的方向取决于哪类输入更常被并发处理。
+ *
+ * 修法：把写入排成一条链，后一次等前一次落盘。仍然 fire-and-forget
+ * （调用方不 await），但**不丢**。
+ */
+let writeChain = Promise.resolve();
 
 /**
  * 记一次判定采样。
@@ -81,33 +95,47 @@ export function sampleKey(text) {
  * 变到 100%（动态范围 3 个百分点），而轮次口径从 27% 变到 100%（100 个
  * 百分点）。一个几乎不动的读数不能用来判断被测对象的好坏。
  *
- * 判据：**只有判过内容的判定才进采样**。命中率���单位回到"一次用户输入"。
+ * 判据：**只有判过内容的判定才进采样**。命中率单位回到"一次用户输入"。
+ *
+ * ## 2026-11-03：增加 `reason` 与 `ambiguous`
+ *
+ * 旧采样只存一个 `unknown` 布尔。于是"词表没覆盖"（该扩词表）与
+ * "输入本来就没内容"（不该扩词表）在趋势里完全同形 —— 拿错的样本去扩词表，
+ * 只会把词表撑坏。现在把判定路径一起存下来，趋势能分开统计。
+ *
+ * 仍然**不存原文、不存哈希**。
  *
  * @param {string} dshHome 数据根。
  * @param {object} decision 判定结果（explainSituation 的返回）。
  * @returns {Promise<void>} 永不抛错。
  */
 export async function recordSample(dshHome, decision) {
+	if (process.env.DSH_MIND_SAMPLING === '0') return;
 	const text = decision?.text ?? '';
 	// 空输入 → 不采样。理由见上。
 	if (String(text).length === 0) return;
-	try {
-		const path = sampleFilePath(dshHome);
-		await mkdir(dirname(path), { recursive: true });
-		await appendFile(
-			path,
-			`${JSON.stringify({
-				t: new Date().toISOString(),
-				key: sampleKey(text),
-				situation: decision?.unknown ? null : decision?.situation,
-				unknown: decision?.unknown === true,
-				hits: decision?.hits ?? [],
-			})}\n`,
-			'utf8',
-		);
-	} catch {
-		/* 采样失败不影响调度 */
-	}
+
+	const line = `${JSON.stringify({
+		t: new Date().toISOString(),
+		situation: decision?.unknown ? null : decision?.situation,
+		unknown: decision?.unknown === true,
+		// 判定路径：区分"词表缺口"与"输入没内容"，以及"势均力敌"。
+		...(decision?.reason !== undefined ? { reason: decision.reason } : {}),
+		...(decision?.ambiguous === true ? { ambiguous: true } : {}),
+		hits: decision?.hits ?? [],
+	})}\n`;
+
+	// 排到链尾：前一次写完再写这一次。失败不阻断后续。
+	writeChain = writeChain.then(async () => {
+		try {
+			const path = sampleFilePath(dshHome);
+			await mkdir(dirname(path), { recursive: true });
+			await appendFile(path, line, 'utf8');
+		} catch {
+			/* 采样失败不影响调度 */
+		}
+	});
+	await writeChain;
 }
 
 /**
@@ -188,8 +216,8 @@ export function trendLine(trend) {
 	const lastRate = last?.unknownRate === null || last?.unknownRate === undefined ? null : ((1 - last.unknownRate) * 100).toFixed(0);
 	return (
 		`调度采样：${o.total} 次判定，无信号率 ${(o.unknownRate * 100).toFixed(0)}%` +
-		`（命中率 ${rate}%，近一日 ${lastRate ?? 'n/a'}%）。` +
-		`无信号率高 = 词表跟不上真实说法。`
+		`（信号覆盖率 ${rate}%，近一日 ${lastRate ?? 'n/a'}%）。` +
+		`覆盖率不能衡量分类正确率。`
 	);
 }
 

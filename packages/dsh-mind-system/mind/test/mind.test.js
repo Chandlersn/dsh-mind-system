@@ -65,12 +65,22 @@ test('装载后确实注册了一个分节，名字与 order 都正确', () => {
   assert.equal(typeof ctx.sections[0].text, 'string');
 });
 
-test('order 必须早于具体工具说明（它是目录，该排在章之前）', () => {
-  // 宿主 SECTION_ORDERS：TOOL_GOAL=2400、TOOL_WORKFLOW=2600、
-  // clis 的因果段是 2450。心智索引是"怎么选"的总纲，必须在这些之前。
-  assert.ok(SECTION_ORDER > 2400, `要在 TOOL_GOAL(2400) 之后，实际 ${SECTION_ORDER}`);
-  assert.ok(SECTION_ORDER < 2450, `要在 clis 因果段(2450) 之前，实际 ${SECTION_ORDER}`);
-  assert.ok(SECTION_ORDER < 2600, `要在 TOOL_WORKFLOW(2600) 之前，实际 ${SECTION_ORDER}`);
+test('order 落在宿主的 TOOL_GOAL 与 TOOL_WORKFLOW 之间（只绑宿主常量）', () => {
+  // ⚠️ 2026-11-03 修：旧断言写死了 `2450`（"clis 的因果段"）。
+  // 但 2450 **不是宿主常量** —— 宿主 `SECTION_ORDERS` 里只有
+  // TOOL_GOAL=2400 / TOOL_WORKFLOW=2600（dsh-system-prompt/lib/index.js:10-40），
+  // 2450 是 dsh-clis 自己的私有值（clis/index.js 里的 section order）。
+  //
+  // 把断言绑在**另一个插件的私有数字**上，等于让本包的测试依赖别人不改序：
+  // clis 一旦把 2450 调到 2399，这条断言就变成"必须在 2399 之前"，
+  // 而 2410 会红 —— 失败原因是别人的改动，不是本包退化了。
+  //
+  // 现在只绑宿主常量。与 clis 的相对位置是**部署事实**，不是契约，
+  // 应该由集成测试在真实装配里观察，而不是在单测里写死。
+  const HOST_TOOL_GOAL = 2400;
+  const HOST_TOOL_WORKFLOW = 2600;
+  assert.ok(SECTION_ORDER > HOST_TOOL_GOAL, `要在 TOOL_GOAL(${HOST_TOOL_GOAL}) 之后，实际 ${SECTION_ORDER}`);
+  assert.ok(SECTION_ORDER < HOST_TOOL_WORKFLOW, `要在 TOOL_WORKFLOW(${HOST_TOOL_WORKFLOW}) 之前，实际 ${SECTION_ORDER}`);
 });
 
 test('正文在讲判断顺序，不是在列工具清单', () => {
@@ -137,14 +147,50 @@ test('注册失败时探针必须报错（不能与成功同形）', () => {
   assert.ok(r.findings.some((f) => f.code === PROBE_CODES.sectionMissing));
 });
 
-test('探针零参数、只读、永不抛错', () => {
+test('探针零参数、只读、永不抛错', async () => {
   // 监督层按 exported.probe() 零参调用；探针自己抛错会让监督层一起挂。
   assert.doesNotThrow(() => healthProbe.probe());
   assert.equal(typeof healthProbe.probe, 'function');
-  // 连调两次结果一致：探针不改状态
-  const a = JSON.stringify(healthProbe.probe());
-  const b = JSON.stringify(healthProbe.probe());
-  assert.equal(a, b);
+
+  // ⚠️ 2026-11-03 修：旧断言是"连调两次 JSON 逐字相同"，但它读的是
+  // **全局可变文件**（`$DSH_HOME/storages/mind-dispatch-samples.jsonl`）。
+  // 只要期间有任何写入（包括同一个测试进程里别的用例），两次读数就不同 ——
+  // 实测被并发采样的另一条用例弄红。那是**用例不稳**，不是探针有问题。
+  //
+  // 而且更糟：这条用例在**读真实用户数据**（那次读到 774 条真实采样）。
+  // 测试不该碰用户的数据文件。这里改为隔离的 DSH_HOME。
+  const { mkdtempSync, rmSync, writeFileSync, mkdirSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const home = mkdtempSync(join(tmpdir(), 'mind-probe-'));
+  const previous = process.env.DSH_HOME;
+  process.env.DSH_HOME = home;
+  try {
+    mkdirSync(join(home, 'storages'), { recursive: true });
+    writeFileSync(join(home, 'storages', 'mind-dispatch-samples.jsonl'), '');
+    const a = JSON.stringify(healthProbe.probe());
+    const b = JSON.stringify(healthProbe.probe());
+    assert.equal(a, b, '同一状态下连调两次必须一致（探针不产生副作用）');
+
+    // 正断言：**该出现的出现了** —— 只证"没抛错"不携带信息。
+    const probe = healthProbe.probe();
+    assert.equal(probe.plugin, 'dsh-agent-mind', '探针应标识插件名');
+    assert.ok(Array.isArray(probe.findings) && probe.findings.length > 0, 'findings 非空');
+    assert.ok(
+      probe.findings.every((f) => typeof f.code === 'string' && f.code.startsWith('mind.')),
+      '所有代号都要带 mind. 前缀（监督面按代号检索）',
+    );
+    // ⚠️ 空采样文件时**不该**有 mind.trend：没有样本就没有读数，
+    // 编一个 0% 出来是伪造数据（见 index.js 里"没有可测的样本是事实"）。
+    // 这条断言钉住那个方向 —— 空文件时宁可少一条读数，也不要假读数。
+    assert.ok(
+      !probe.findings.some((f) => f.code === 'mind.trend'),
+      '空采样文件不得报 mind.trend（无样本时不编数字）',
+    );
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous;
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test('正文关掉插值（常驻文本不该被变量替换）', () => {

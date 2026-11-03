@@ -1,27 +1,6 @@
 /**
- * 调度命中率回归 —— 把"调度是否还灵"变成**每次都跑**的断言。
- *
- * ## 为什么必须是回归而不是一次性测量
- *
- * 2026-11-02 客观审查发现：调度在本会话真实输入上命中率只有 20%，
- * 而探针报的是 `mind.no-signal`（看起来正常）。修词表后，
- * 参与修词表的样本跑到 100%，**全新样本只有 50%** —— 拿考题补答案的自欺。
- *
- * 所以这里固定三批样本：
- *
- * - **A 批（历史）**：每日记录里的真实用户原话 —— 真实但偏具体任务
- * - **B 批（当前）**：本会话的真实输入 —— 抽象指令，是当前真实分布
- * - **C 批（留白）**：**未参与任何修词表**的样本 —— 唯一的泛化检验
- *
- * C 批是这三批里最重要的一批：改词表时**不许看它**，只在最后跑一次。
- * 它的数字才是"这个词表对没见过的话有没有用"的答案。
- *
- * ## 判据
- *
- * C 批命中率 ≥ 60%，且 A/B 两批不得低于 50%。
- * 低于阈值 = 词表退化 = 调度失灵，测试必须红。
- *
- * @module test/hitrate.test.js
+ * 固定历史样本的信号覆盖回归。样本无标准标签，也无法证明独立留出；
+ * 这些断言不衡量分类准确率、泛化能力或任务完成质量。
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -54,10 +33,9 @@ const BATCH_B = [
 ];
 
 /**
- * C 批：**留白样本**。
+ * C 批：固定覆盖样本。
  *
- * 改词表时不要看这一批 —— 它是唯一的泛化检验。
- * 措辞刻意与 A/B 批不同（用"隐患/落地/汇总/缓一缓"这类说法）。
+ * 措辞与 A/B 批不同，但它是公开的固定样本，不能证明泛化能力。
  */
 const BATCH_C = [
   '这份设计有没有逻辑漏洞',
@@ -75,20 +53,19 @@ const BATCH_C = [
 const asSamples = (list) => list.map((text) => ({ text, expect: '', source: 'batch' }));
 const THRESHOLD = 0.6;
 
-test('A 批（真实历史原话）命中率 ≥ 50%', () => {
+test('A 批（历史原话）信号覆盖率 ≥ 50%', () => {
   const r = hitRate(asSamples(BATCH_A));
-  assert.ok(r.rate >= 0.5, `${hitRateLine(r)}（A 批是真实但偏具体任务）`);
+  assert.ok(r.coverageRate >= 0.5, `${hitRateLine(r)}（A 批是真实但偏具体任务）`);
 });
 
-test('B 批（本会话真实输入）命中率 ≥ 50%', () => {
+test('B 批（会话输入）信号覆盖率 ≥ 50%', () => {
   const r = hitRate(asSamples(BATCH_B));
-  assert.ok(r.rate >= 0.5, hitRateLine(r));
+  assert.ok(r.coverageRate >= 0.5, hitRateLine(r));
 });
 
-test('C 批（留白样本）命中率 ≥ 60% —— 泛化检验', () => {
-  // 这条是三批里最硬的一条：C 批不参与修词表，它的数字才是泛化能力。
+test('C 批样本信号覆盖率 ≥ 60%（不衡量分类正确率）', () => {
   const r = hitRate(asSamples(BATCH_C));
-  assert.ok(r.rate >= THRESHOLD, `${hitRateLine(r)} —— C 批不参与修词表，低于 ${THRESHOLD} 说明词表只认见过的说法`);
+  assert.ok(r.coverageRate >= THRESHOLD, hitRateLine(r));
 });
 
 test('命中率统计口径：无信号与判错分开计', () => {

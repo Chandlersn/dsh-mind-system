@@ -1,8 +1,8 @@
 /**
  * dsh-agent-mind —— 把"判断顺序"装进系统提示。
  *
- * 本插件很克制：**不注册工具、不持状态、不读写文件**。
- * 它只往系统提示里注入一段常驻文本，内容是"遇到问题先问什么"。
+ * 插件注入判断顺序、按 agent 调整工具顺序，并提供只读信号工具。
+ * 可选采样写入本地文件，不保存用户文本或稳定输入摘要。
  *
  * ## 为什么值得单独成一个插件
  *
@@ -21,19 +21,34 @@
  */
 
 import { registerMindSection, SECTION_NAME, SECTION_ORDER } from './src/mind.js';
-import { arrangeTools, SITUATIONS } from './src/orchestrate.js';
-import { listSignals, registerSignal } from './src/dispatch.js';
+import { arrangeTools, SITUATIONS, familyOf, isFamilyTool } from './src/orchestrate.js';
+import { listSignals, registerSignal, listVetoes, listNormalizationRules, DECISION_REASONS } from './src/dispatch.js';
 import { recordSample, readTrend, readTrendSync } from './src/sampling.js';
 import { benchmarkFromDailyLogs } from './src/hitrate.js';
-import { judge, currentSituationOf, lastDecisionOf, __resetSituationForTest, __forceSituationForTest } from './src/situation.js';
+import { createSituationStore, currentSituationOf, lastDecisionOf, __resetSituationForTest, __forceSituationForTest } from './src/situation.js';
 import { getDefineTool } from './src/host.js';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
+
+/**
+ * 最近一次 `apply()` 建立的诊断函数（探针用）。
+ *
+ * ## 为什么是模块级
+ *
+ * 探针被监督层**零参数**调用（`exported.healthProbe.probe()`），拿不到 ctx，
+ * 也拿不到 agent。所以 `apply()` 把诊断函数挂这里，探针只读。
+ *
+ * 多 agent 时探针只能报"最近活跃的那个 agent"—— 这是**探针接口的限制**，
+ * 不是数据的限制：数据按 agent 分开存，`mind_diagnose` 工具带着 agent
+ * 去读，读到的是那一个的。两者说的事实不同，不能互相冒充。
+ */
+let diagnostics = null;
 
 /** 插件名。必须与 cordis.patch.yml 里的 id 一致。 */
 export const name = 'mind';
 
 /**
- * 服务依赖：只声明 `systemPrompt`。
+ * 服务依赖：`systemPrompt` 与 `tools`。
  *
  * 按 Cordis 规则，**访问任何服务属性都必须先在 inject 里声明**，
  * 哪怕它一定存在 —— `ctx.systemPrompt` 走 Proxy get，未声明就抛
@@ -76,6 +91,10 @@ const PARK_ENABLED = process.env.DSH_MIND_PARK === '1';
  */
 export function apply(ctx) {
   const dispose = registerMindSection(ctx);
+  const situations = createSituationStore();
+  const unscopedAgent = {};
+  const claims = new WeakMap();
+  const agentKey = (agent) => agent && (typeof agent === 'object' || typeof agent === 'function') ? agent : unscopedAgent;
 
   // 没注册成功说明 systemPrompt 服务不在（理论上 inject 已挡住）。
   // 这不是"正常降级"，而是本插件唯一的职责没有履行，必须留下痕迹。
@@ -89,7 +108,7 @@ export function apply(ctx) {
 
   // 只读工具：看调度覆盖了哪些词、谁贡献的、上次判定命中了什么。
   // 没有它，"生态为空"与"生态已长出来"在观察上完全同形。
-  registerSignalsTool(ctx);
+  registerSignalsTool(ctx, situations);
 
   // —— 处境采集：在**工具面定稿之前**判出处境 ——
   //
@@ -117,10 +136,10 @@ export function apply(ctx) {
   let assembleOk = false;
 
   /** 判一次处境并记账（两条信号源共用）。 */
-  const judgeAndSample = (text) => {
-    const decision = judge(text);
+  const judgeAndSample = (text, agent) => {
+    const decision = situations.judge(text, agent);
     // 采样：把这次判定落盘，命中率成为**长期趋势**而不是一次性测量。
-    // 只存输入哈希（不含原文）与判定结果 —— 够算趋势，且不可反推内容。
+    // 只存判定结果，不存输入文本或可用于字典比对的稳定摘要。
     // 空输入不采样（分母口径见 src/sampling.js）。
     void recordSample(dshHomeOf(), decision);
     return decision;
@@ -130,9 +149,23 @@ export function apply(ctx) {
   try {
     ctx.on?.('agent/inbox/claimed', (payload) => {
       try {
+        if (!isUserInput(payload?.message)) return;
         const text = textOfMessage(payload?.message);
         if (text.length === 0) return; // 空输入不判（见 src/situation.js）
-        judgeAndSample(text);
+        orchestration.claimedObserved = true;
+        // ⚠️ 记的是**一批**而不是一条（2026-11-03 修）。
+        // 宿主的 `claim()` 是 `for (const message of claimed) emit(...)`
+        // （dsh-agent-loop/lib/index.js:106），**一个边界内可能连发多条**。
+        // 单槽只留最后一条 → pre-step 去重时前几条匹配不上 →
+        // 同一条消息被重复判定、重复采样一次。
+        const key = agentKey(payload?.agent);
+        const seen = claims.get(key);
+        if (seen !== undefined && seen.turn === payload?.turn) {
+          seen.texts.push(text);
+        } else {
+          claims.set(key, { turn: payload?.turn, texts: [text] });
+        }
+        judgeAndSample(text, payload?.agent);
       } catch {
         /* 采集失败绝不能拖垮主链路 */
       }
@@ -150,11 +183,18 @@ export function apply(ctx) {
     ctx.on?.('agent/pre-step', async (payload, next) => {
       try {
         const text = lastUserText(payload?.messages);
-        // 已经有 inbox/claimed 判过 → 不重复采样（否则同一输入记两次）。
-        if (text.length > 0 && !claimedOk) {
-          judgeAndSample(text);
-        } else if (text.length > 0) {
-          judge(text);
+        // 注册本身不证明老宿主会发 claimed；只跳过**这一轮真的见过**的那条。
+        //
+        // 2026-11-03：比对从"槽里那一条"改成"这一批里的任意一条"。
+        // 一个边界里可能有两条用户消息，只比最后一条会让前一条被重复判定。
+        const claim = claims.get(agentKey(payload?.agent));
+        const alreadyJudged = claim !== undefined
+          && claim.turn === payload?.turn
+          && Array.isArray(claim.texts)
+          && claim.texts.includes(text);
+        if (text.length > 0 && !alreadyJudged) {
+          orchestration.fallbackObserved = true;
+          judgeAndSample(text, payload?.agent);
         }
       } catch {
         /* 判定失败 → 处境保持不变 */
@@ -191,14 +231,31 @@ export function apply(ctx) {
   }
 
   // —— 工具面编排：装配 waterfall 的返回值对 tools 是权威的 ——
+  //
+  // ## 这里同时记账第二级（"已向 DSH 提供引导"）
+  //
+  // 判定（situations.judge）与**提供**（重排装配结果）是两件事，中间隔着
+  // 三个可能不发生的环节：处境是 unknown、处境被判成 ambiguous（克制闸门）、
+  // 或者本事件在宿主里根本不存在。旧实现只记判定，于是"判了但没引导"
+  // 与"判了也引导了"在探针上同形 —— 而那正是任务书要求区分的第一与第二级。
+  //
+  // 所以在**真的重排之后**才写 `recordGuidance`。
   try {
-    ctx.on?.('system-prompt/assemble', async (assembly, _context, next) => {
+    ctx.on?.('system-prompt/assemble', async (assembly, context, next) => {
       const result = await next();
-      const situation = currentSituationOf();
+      const agent = context?.agent;
+      const situation = situations.currentSituationOf(agent);
       // 处境未知 → 原样返回。宁可不动，也不要凭空猜一个顺序。
+      // 这条路径包括 ambiguous：判定照常记录，但不据此引导。
       if (situation === SITUATIONS.unknown) return result;
       try {
-        return { ...result, tools: arrangeTools(result.tools, situation, { park: PARK_ENABLED }) };
+        const arranged = arrangeTools(result.tools, situation, { park: PARK_ENABLED });
+        situations.recordGuidance(agent, {
+          situation,
+          tools: Array.isArray(arranged) ? arranged.length : 0,
+          at: Date.now(),
+        });
+        return { ...result, tools: arranged };
       } catch {
         // 编排失败退回原装配 —— 工具面是主干道，这里绝不中断它。
         return result;
@@ -208,6 +265,76 @@ export function apply(ctx) {
   } catch {
     /* 同上：没有该事件就不做编排 */
   }
+
+  // —— 第三级：模型**实际**用了什么工具（观察，不推断）——
+  //
+  // 任务书要求区分"插件判断了" / "插件提供了引导" / "模型照做了"。
+  // 前两级由本插件自己的记账得到，第三级必须来自**别人**：模型真的调了
+  // 某个工具。宿主提供 `tools/result` 事件（scope 按 agent 分发，
+  // 见 dsh-tools 的 notifyResult），这是唯一不靠猜的落点。
+  //
+  // ⚠️ 只记工具**名**，不记参数：参数里有路径、密钥、用户数据。
+  // ⚠️ 观察失败一律吞掉：这是诊断增强，绝不能影响工具调用本身。
+  try {
+    ctx.on?.('tools/result', (exec) => {
+      try {
+        if (typeof exec?.name !== 'string') return;
+        situations.recordToolCall(exec.agent, exec.name);
+      } catch {
+        /* 观察失败不影响任何东西 */
+      }
+    });
+  } catch {
+    /* 宿主没有该事件 → 第三级只能报"未观察"，不能报"没照做" */
+  }
+
+  /**
+   * 读某 agent 的诊断快照 —— 供 `mind_diagnose` 工具与探针共用。
+   *
+   * 三个字段严格对应任务书要求的三件事，**互不冒充**：
+   * `decision`（判断了什么）、`guidance`（提供了什么）、`observed`（看到什么）。
+   *
+   * @param agent agent 身份。
+   * @returns 诊断对象。
+   */
+  const diagnose = (agent) => {
+    const decision = situations.lastDecisionOf(agent);
+    const guidance = situations.guidanceOf(agent);
+    const outcome = situations.outcomeOf(agent);
+    // followed 的判据：本轮**确实提供了**引导（guidance 非空），且观察到了
+    // 至少一次属于该处境优先族的工具调用。没提供引导时恒为 null ——
+    // "没有引导"不能读成"引导没被遵守"。
+    //
+    // 族判定用 orchestrate 的 `isFamilyTool`（与 `arrangeTools` 同一份族清单）。
+    // 如果这里自己再写一份 `name.startsWith(...)`，两份清单漂移之后，
+    // 诊断会开始谎报"已照做" —— 判据只能一处实现。
+    let followed = null;
+    if (guidance !== null && outcome.calls.length > 0) {
+      followed = outcome.calls.some((name) => isFamilyTool(guidance.situation, name));
+    }
+    return {
+      decision: decision
+        ? {
+            situation: decision.unknown ? null : decision.situation,
+            reason: decision.reason ?? null,
+            ambiguous: decision.ambiguous === true,
+            unknown: decision.unknown === true,
+            hits: decision.hits ?? [],
+            misses: decision.misses ?? [],
+            evidence: decision.evidence ?? {},
+            intents: decision.intents ?? [],
+            vetoed: decision.vetoed ?? [],
+            normalization: decision.normalization ?? null,
+          }
+        : null,
+      guidance: guidance
+        ? { situation: guidance.situation, tools: guidance.tools, at: guidance.at }
+        : null,
+      observed: { tool_calls: outcome.calls, followed },
+      current_situation: situations.currentSituationOf(agent),
+    };
+  };
+  diagnostics = diagnose;
 
   // 注册成功也要记账 —— 探针唯一的事实来源就是这一行。
   // 漏了这一步，探针会永远报 not-applied（写了 record 却没调用，
@@ -246,7 +373,7 @@ export function apply(ctx) {
  * @returns {string} 数据根。
  */
 function dshHomeOf() {
-	return process.env.DSH_HOME ?? join(process.env.USERPROFILE ?? '', '.dsh');
+	return process.env.DSH_HOME ?? join(homedir(), '.dsh');
 }
 
 /**
@@ -278,6 +405,63 @@ function textOfMessage(message) {
 }
 
 /**
+ * 哪些 user-role 消息算"用户表达的意图"。
+ *
+ * ## 为什么需要白名单，而不是只认 `kind === 'user'`（2026-11-03 修）
+ *
+ * 宿主 `MessageSourceMap`（dsh-llm 的类型定义）里，role 为 `user` 的消息
+ * 有十几种来源。旧判据只认 `kind === 'user'` 或不带 source，两种都有缺陷：
+ *
+ * **漏判** `user-question-reply`：用户回答了 `ask_user_question`
+ * （`dsh-user-questions/lib/index.js:498` 附近构造）。那条消息**就是**
+ * 用户本人的表态（"用 A 方案"/"是的"），把它当系统消息丢掉，
+ * 等于用户明确说的那句话没有影响工具面。
+ *
+ * **失效分支** `source === undefined`：在真实链路上**永不成立** ——
+ * dsh-session 对每条 user 消息强制校验 `source.kind` 为非空字符串。
+ * 保留它只为极旧宿主，属于防御而非事实（写在这里免得后人以为它在跑）。
+ *
+ * ## 一条说明白的不可区分
+ *
+ * `kind: 'user'` **不是**"真人输入"专属：subagent 的初始任务注入用的
+ * 就是 `{ kind: 'user' }`（`dsh-subagent/lib/index.js:1461`）。
+ * 所以从 source 上**区分不了**"人说的"与"父 agent 派的任务"。
+ *
+ * 我们**不去区分**它，理由是：子 agent 的任务就是用户任务的分解，
+ * 它的 prompt 表达的是同一件事的意图。为它特判反而会把子 agent 的
+ * 处境判断全部废掉（子 agent 恰恰更需要"先看还是先动手"的判断）。
+ * 这条限制如实写在这里，而不是假装判据能分辨。
+ *
+ * 真正**不该**算用户意图的是系统渲染文本与其他通道：
+ * `schedule`（定时提醒的渲染）、`goal` / `compact-checkpoint` /
+ * `skill-invocation` / `plan-mode` / `runtime-context` / `tool` / `model`。
+ * 判据不是"像不像人话"，而是**这句话是不是此刻有人表达的意图**。
+ */
+const USER_INTENT_SOURCE_KINDS = new Set([
+  /** 真人输入，以及 subagent 的任务注入（两者从 source 上不可区分，见上）。 */
+  'user',
+  /** 用户回答了 agent 的提问 —— 那是用户本人的表态。 */
+  'user-question-reply',
+  /** 远程客户端（user-rpc 的 kind 通常就是 'user'，个别通道会写成自己）。 */
+  'user-rpc',
+]);
+
+/**
+ * 判定一条消息是否代表用户表达的意图。
+ *
+ * @param message 单条消息。
+ * @returns 是则为 true。
+ */
+function isUserInput(message) {
+  if (message?.role !== 'user') return false;
+  const source = message.source;
+  // 极旧宿主没有 source 字段时才按 role 认。真实链路上 source 必有
+  // （dsh-session 强制校验），这一支属于防御。
+  if (source === undefined) return true;
+  return USER_INTENT_SOURCE_KINDS.has(source?.kind);
+}
+
+/**
  * 取最后一条 user 消息的文本。
  *
  * **只取最后一条**：往前的历史带着早已解决的老问题，用它判处境等于让
@@ -290,7 +474,7 @@ function lastUserText(messages) {
   if (!Array.isArray(messages)) return '';
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const m = messages[i];
-    if (m?.role !== 'user') continue;
+    if (!isUserInput(m)) continue;
     const text = textOfMessage(m);
     if (text.length > 0) return text;
   }
@@ -324,6 +508,7 @@ export const PROBE_CODES = {
   sectionMissing: 'mind.section-missing',
   /** 分节在，但工具面编排的事件源不可用 —— 编排静默不生效。 */
   orchestrationMissing: 'mind.orchestration-missing',
+  eventStatus: 'mind.event-status',
   /** 调度已接上，本轮命中处境信号。 */
   dispatched: 'mind.dispatched',
   /** 调度已接上，本轮无信号命中（工具面保持默认顺序，正常状态）。 */
@@ -334,6 +519,16 @@ export const PROBE_CODES = {
   benchmark: 'mind.benchmark',
   /** 信号清单（内置 / 外部贡献各多少条）—— 生态是否长出来的唯一可见证据。 */
   signals: 'mind.signals',
+  /** 第二级：插件**已向 DSH 提供**引导（工具面真的按处境重排了）。 */
+  guidanceIssued: 'mind.guidance-issued',
+  /** 第二级：判出了但**没有提供**引导（unknown / ambiguous / 事件缺失）。 */
+  guidanceWithheld: 'mind.guidance-withheld',
+  /** 第三级：观察到模型采用了引导推荐的工具族。 */
+  guidanceFollowed: 'mind.guidance-followed',
+  /** 第三级：观察到工具调用，但不属于引导推荐的族。 */
+  guidanceNotFollowed: 'mind.guidance-not-followed',
+  /** 第三级：提供了引导，但没观察到任何工具调用 —— 无法判断，不等于没照做。 */
+  guidanceUnobserved: 'mind.guidance-unobserved',
   /** 一切正常。 */
   ok: 'mind.ok',
 };
@@ -342,7 +537,7 @@ export const PROBE_CODES = {
 let registration = { stage: 'not-applied' };
 
 /** 编排事件源的实测结果（同样只读，不推断）。 */
-let orchestration = { listeners: 'not-registered' };
+let orchestration = { listeners: 'not-registered', claimedObserved: false, fallbackObserved: false };
 
 /**
  * 记录 apply 的实测结果（由 apply() 调用，探针只读）。
@@ -353,7 +548,7 @@ let orchestration = { listeners: 'not-registered' };
 function record(stage, listenersOk) {
   registration = { stage };
   if (listenersOk !== undefined) {
-    orchestration = { listeners: listenersOk ? 'ok' : 'unavailable' };
+    orchestration = { listeners: listenersOk ? 'ok' : 'unavailable', claimedObserved: false, fallbackObserved: false };
   }
 }
 
@@ -410,7 +605,7 @@ export function lastDispatchDecision() {
  * @param ctx 插件上下文。
  * @returns 注销函数；未注册时返回 undefined。
  */
-export function registerSignalsTool(ctx) {
+export function registerSignalsTool(ctx, situations) {
   let tool;
   try {
     tool = getDefineTool()({
@@ -424,10 +619,10 @@ export function registerSignalsTool(ctx) {
         schema: { type: 'json' },
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
       },
-      async execute() {
+      async execute(_args, exec) {
         const signals = listSignals();
         const external = signals.filter((s) => s.owner && s.owner !== 'mind');
-        const decision = lastDecisionOf();
+        const decision = situations?.lastDecisionOf(exec?.agent) ?? null;
         return {
           total: signals.length,
           builtin: signals.length - external.length,
@@ -441,16 +636,28 @@ export function registerSignalsTool(ctx) {
             ...(s.counterWords ? { counterWords: s.counterWords } : {}),
           })),
           external_owners: external.map((s) => s.owner),
-          last_decision: decision
-            ? {
-                situation: decision.situation,
-                unknown: decision.unknown,
-                hits: decision.hits,
-                misses: decision.misses,
-                evidence: decision.evidence,
-              }
-            : null,
-          current_situation: currentSituationOf(),
+          // —— 三级诊断：判断 / 提供 / 照做，分开报，不互相冒充 ——
+          //
+          // 这三段**不能**合并成一句"生效了没有"。它们的含义完全不同：
+          //   1. 判出了 diagnose（判断）
+          //   2. 工具面真的按 diagnose 重排了（提供）
+          //   3. 模型用了 clis_* / meta_* 里的工具（照做）
+          // 只报第 1 条就把"判了没引导"读成"引导无效"。
+          diagnosis: typeof diagnostics === 'function' ? diagnostics(exec?.agent) : null,
+          // 判定路径的分布：判不出要分"输入没内容"与"词表没覆盖"，
+          // 否则会拿不该扩词表的样本来扩词表。
+          decision_paths: Object.values(DECISION_REASONS),
+          // 否决规则：用户明确排除过的处境清单（只报处境名与规则条数，
+          // 不报用户原话）。
+          vetoes: listVetoes(),
+          // 归一化规则的当前配置：判断出错时先看这里，再看词表。
+          normalization: listNormalizationRules(),
+          // 各处境优先族（诊断"模型用的是不是我推的那一族"时以它为准，
+          // 不另写一份，避免两份漂移后谎报"已照做"）。
+          tool_families: Object.fromEntries(
+            [SITUATIONS.diagnose, SITUATIONS.execute, SITUATIONS.recall, SITUATIONS.retrieve].map((s) => [s, familyOf(s)]),
+          ),
+          current_situation: situations?.currentSituationOf(exec?.agent) ?? SITUATIONS.unknown,
           trend: await readTrend(dshHomeOf()),
           // 留出基准：拿**从未参与修词表**的真实用户原话去测泛化性。
           // 与 trend 是两个指标：trend 看"真实使用里有多少判不出"，
@@ -527,17 +734,31 @@ function probe() {
       hint: '确认宿主版本支持这两个 waterfall 事件（cordis 4.0.5 起有）。',
     });
   }
+  if (stage === 'ok' && orchestration.listeners === 'ok') {
+    findings.push({
+      code: PROBE_CODES.eventStatus,
+      severity: 'info',
+      message: orchestration.claimedObserved
+        ? '已实际收到 inbox/claimed 用户消息。'
+        : orchestration.fallbackObserved
+          ? '尚未收到 inbox/claimed；已使用 pre-step 兜底，首步可能无法重排。'
+          : '监听器已注册，但尚无用户消息验证事件是否发出。',
+    });
+  }
 
   // 调度"有没有生效"与"这一轮有没有信号"必须可区分 ——
   // 两者在观察上同形（工具面都没变），所以把判定记账报出来。
+  //
+  // ⚠️ 2026-11-03：这一段现在**只报第一级（判断）**，不再冒充后面两级。
+  // 旧版把它当"生效了"的唯一证据，而它其实只是"判出了"。
   const decision = lastDecisionOf();
   if (stage === 'ok' && decision !== null) {
     if (decision.unknown) {
       findings.push({
         code: PROBE_CODES.noSignal,
         severity: 'info',
-        message: '调度已接上，但本轮没有命中任何处境信号（工具面保持默认顺序 —— 正常状态，不是故障）。',
-        hint: `已注册信号 ${listSignals().length} 条；若本该命中却没命中，查信号词表是否覆盖本轮的表述。`,
+        message: `调度已接上，但本轮没有命中任何处境信号（原因：${decision.reason ?? '未知'}）。`,
+        hint: `已注册信号 ${listSignals().length} 条；no-signal 是词表缺口，nothing-actionable 则不该拿去扩词表。`,
       });
     } else {
       findings.push({
@@ -545,6 +766,65 @@ function probe() {
         severity: 'info',
         message: `调度命中：处境「${decision.situation}」，信号 ${decision.hits.join('、') || '无'}。`,
       });
+    }
+  }
+
+  // —— 第二级与第三级：提供与照做 ——
+  //
+  // 这两条必须与上面的"判断"分开报，因为它们的含义完全不同：
+  //   "判出了 diagnose" ≠ "工具面真的重排了" ≠ "模型用了 clis_*"
+  //
+  // 严重度都是 info：引导没被照做**不是故障**。模型可以有自己的判断，
+  // 用户也可能明确要求别用那类工具。报成 warn/error 会让"模型没照做"
+  // 看起来像插件坏了 —— 而那恰恰是本插件只在观察、不在指挥的证据。
+  if (stage === 'ok' && typeof diagnostics === 'function') {
+    try {
+      const d = diagnostics();
+      if (d?.guidance) {
+        findings.push({
+          code: PROBE_CODES.guidanceIssued,
+          severity: 'info',
+          message: `已向 DSH 提供引导：处境「${d.guidance.situation}」，工具面按该处境重排（${d.guidance.tools} 个工具）。`,
+          hint: '这是"插件提供了引导"，不是"模型照做了"。',
+        });
+      } else if (d?.decision) {
+        // 判出来了但没提供引导 —— 必须能看出来，否则会被读成"判定没生效"。
+        findings.push({
+          code: PROBE_CODES.guidanceWithheld,
+          severity: 'info',
+          message:
+            `判定已作出（${d.decision.situation ?? 'unknown'}）但未提供引导：` +
+            `${d.decision.ambiguous ? '两类势均力敌（ambiguous，刻意克制）' : '处境未知或装配事件未接入'}。`,
+          hint: '克制是设计，不是故障；长期只 withholding 才说明词表或判据需要看。',
+        });
+      }
+      if (d?.observed?.followed === true) {
+        findings.push({
+          code: PROBE_CODES.guidanceFollowed,
+          severity: 'info',
+          message: '观察到符合引导的工具调用（模型行为，不是插件的自我证明）。',
+        });
+      } else if (d?.observed?.followed === false) {
+        findings.push({
+          code: PROBE_CODES.guidanceNotFollowed,
+          severity: 'info',
+          message: '观察到工具调用，但都不属于引导推荐的那一族 —— 引导未改变行为（或本就不需要改）。',
+          hint:
+            '**不拉红灯**：模型自有判断、用户也可能明确要求别用那类工具。' +
+            '只有"长期如此"才值得怀疑引导本身有没有用。',
+        });
+      }
+      // 判据：只有真的观察到工具调用，followed 才不是 null。
+      // null 报成"未观察到"，绝不报成"没照做"。
+      if (d?.guidance && d?.observed?.followed === null) {
+        findings.push({
+          code: PROBE_CODES.guidanceUnobserved,
+          severity: 'info',
+          message: '已提供引导，但本轮尚未观察到工具调用 —— 无法判断是否照做（不是"没照做"）。',
+        });
+      }
+    } catch {
+      /* 诊断自身出错不得影响探针其余部分 */
     }
   }
 
@@ -607,7 +887,7 @@ function probe() {
       severity: 'info',
       message:
         `调度采样 ${trend.overall.total} 次：无信号率 ${Math.round(trend.overall.unknownRate * 100)}%` +
-        `（命中率 ${rate}%）。无信号率走高 = 词表跟不上真实说法。`,
+        `（信号覆盖率 ${rate}%）。覆盖率不能衡量分类正确率。`,
     });
   }
 
@@ -624,9 +904,8 @@ function probe() {
       code: PROBE_CODES.benchmark,
       severity: 'info',
       message:
-        `留出基准 ${benchmark.total} 条真实用户原话：命中率 ${Math.round((benchmark.rate ?? 0) * 100)}%` +
-        `（命中 ${benchmark.hit}，判错 ${benchmark.missed}，无信号 ${benchmark.unknown}）。` +
-        `基准样本不参与修词表 —— 它测的是泛化性，不是拟合度。`,
+        `每日记录 ${benchmark.total} 条用户原话：信号覆盖率 ${Math.round((benchmark.coverageRate ?? 0) * 100)}%` +
+        `（无信号 ${benchmark.unknown}）。样本无标准标签，不能衡量正确率或证明留出泛化性。`,
     });
   }
 

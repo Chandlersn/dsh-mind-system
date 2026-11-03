@@ -1,5 +1,5 @@
 /**
- * 调度命中率自测 —— 用**真实用户输入**衡量调度是否真的起作用。
+ * 信号覆盖率与有标签样本的分类准确率。
  *
  * ## 为什么必须有它（2026-11-02 客观审查的结论）
  *
@@ -11,9 +11,7 @@
  * 高频的 no-signal 不是正常，是失灵。这正是「绿灯不携带信息」那条道
  * 描述的病症：读数（no-signal）看着正常，掩盖了命中率低这个事实。
  *
- * 所以自测的产物不是"判对了几条"这句话，而是一个**可读的比率**，
- * 让人和探针都能看见命中率。命中率低 → 词表不行 → 去修词表，
- * 而不是"本轮恰好没信号"。
+ * 无标签样本只能衡量信号覆盖，不能证明分类正确，也不能证明泛化能力。
  *
  * ## 基准从哪来
  *
@@ -43,7 +41,7 @@ import { explainSituation } from './dispatch.js';
  * ## 判据口径
  *
  * - `expect` 非空 → 判成该处境才算命中
- * - `expect` 为空 → **只要求判出某个具体处境**（不算 unknown）。
+ * - `expect` 为空 → 覆盖率统计是否判出具体处境；不计入准确率分母。
  *   理由：真实用户原话里大量是"继续完善其他层级"这种没有单一标签的，
  *   若要求精确标签，基准会失真；但"完全没信号"仍然是明确的失败。
  *
@@ -55,16 +53,25 @@ export function hitRate(samples) {
   let hit = 0;
   let missed = 0;
   let unknown = 0;
+  let covered = 0;
+  let labeled = 0;
+  let correct = 0;
   const misses = [];
   const unknowns = [];
 
   for (const s of samples ?? []) {
     const d = explainSituation(s.text);
+    const hasLabel = typeof s.expect === 'string' && s.expect.length > 0;
+    if (hasLabel) {
+      labeled += 1;
+      if (d.situation === s.expect) correct += 1;
+    }
     if (d.unknown) {
       unknown += 1;
       unknowns.push({ text: s.text, source: s.source });
       continue;
     }
+    covered += 1;
     if (s.expect === '' || d.situation === s.expect) {
       hit += 1;
     } else {
@@ -81,6 +88,10 @@ export function hitRate(samples) {
     // 命中率只算"判出具体处境"的部分 —— unknown 是失灵，不是判错。
     rate: total === 0 ? null : hit / total,
     unknownRate: total === 0 ? null : unknown / total,
+    coverageRate: total === 0 ? null : covered / total,
+    labeled,
+    correct,
+    accuracyRate: labeled === 0 ? null : correct / labeled,
     misses,
     unknowns,
   };
@@ -151,11 +162,11 @@ export function extractUserQuotes(dailyText) {
  * @returns 一行文本。
  */
 export function hitRateLine(r, threshold = 0.6) {
-  if (r.total === 0) return '调度基准：无真实样本可测（每日记录里没有「用户原话」字段）—— 命中率无从谈起';
-  const rate = (r.rate * 100).toFixed(0);
+  if (r.total === 0) return '调度样本：无真实样本可测（每日记录里没有「用户原话」字段）';
+  const rate = (r.coverageRate * 100).toFixed(0);
   const unk = (r.unknownRate * 100).toFixed(0);
-  const verdict = r.rate < threshold ? `低于阈值 ${(threshold * 100).toFixed(0)}% —— 调度基本失灵` : '达到阈值';
-  return `调度命中率 ${rate}%（${r.hit}/${r.total}，判错 ${r.missed}，无信号 ${unk}%）—— ${verdict}`;
+  const accuracy = r.accuracyRate === null ? '无标签，正确率未知' : `有标签样本正确率 ${(r.accuracyRate * 100).toFixed(0)}%（${r.correct}/${r.labeled}）`;
+  return `调度信号覆盖率 ${rate}%（${r.total} 条，无信号 ${unk}%）；${accuracy}。`;
 }
 
 /**
@@ -207,6 +218,8 @@ export function benchmarkFromDailyLogs(memoryRoot, threshold = 0.6) {
     missed: r.missed,
     unknown: r.unknown,
     rate: r.rate,
+    coverageRate: r.coverageRate,
+    accuracyRate: r.accuracyRate,
     line: hitRateLine(r, threshold),
   };
 }

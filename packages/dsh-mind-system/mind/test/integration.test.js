@@ -29,8 +29,25 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const DSH_ROOT = (process.env.DSH_INSTALL_DIR ?? 'D:/dsh').replace(/\/$/, '');
+process.env.DSH_INSTALL_DIR ??= DSH_ROOT;
+
+/**
+ * ⚠️ 整份文件的 `DSH_HOME` 指到临时目录（2026-11-03 修，重要）。
+ *
+ * 本文件大量 `ctx.emit('agent/inbox/claimed', ...)`，每一条都会让插件
+ * 往 `$DSH_HOME/storages/mind-dispatch-samples.jsonl` 写一行采样。
+ * 旧版只在**两个**用例里临时覆盖 `DSH_HOME`，其余用例直接写进了
+ * 用户真实文件 —— 实测污染 186 行。
+ *
+ * 隔离放在文件顶部：覆盖整份文件，而不是"记得加的那几个用例"。
+ */
+const ISOLATED_HOME = mkdtempSync(join(tmpdir(), 'mind-int-home-'));
+process.env.DSH_HOME = ISOLATED_HOME;
 
 /** 从宿主侧解析 cordis —— Service 身份必须与宿主一致。 */
 const hostRequire = createRequire(`${DSH_ROOT}/node_modules/@deepseek-ai/dsh/lib/bin.js`);
@@ -88,7 +105,7 @@ async function setup() {
 
 /** 造一条 user 消息。 */
 function userMsg(text) {
-	return { role: 'user', content: [{ type: 'text', text }] };
+	return { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] };
 }
 
 test('接线：agent/inbox/claimed → 判处境 → assemble 真的重排了工具面', async () => {
@@ -222,6 +239,94 @@ test('接线：分节真的进了装配结果（不是只调用了 section()）'
 		assert.ok(!(mine?.text ?? '').includes('{{'), '正文没有被变量插值破坏');
 	} finally {
 		await ctx.fiber.dispose();
+	}
+});
+
+test('不同 agent 交错运行时处境互不覆盖，工具只暴露自己的判定', async () => {
+	const { ctx } = await setup();
+	const a = { id: 'agent-a' }, b = { id: 'agent-b' };
+	const order = async (agent) => (await ctx.systemPrompt.assemble({ agent, scope: agent })).tools.map(t => t.name);
+	try {
+		ctx.emit('agent/inbox/claimed', { agent: a, turn: 1, message: userMsg('请审查这个问题') });
+		const before = await order(a);
+		assert.ok(before[0].startsWith('clis_') || before[0].startsWith('meta_'));
+		ctx.emit('agent/inbox/claimed', { agent: b, turn: 1, message: userMsg('搜一下最新资料') });
+		assert.deepEqual(await order(a), before, 'B 的输入不得改变 A 的工具面');
+		assert.ok((await order(b))[0].includes('search'));
+		ctx.emit('agent/inbox/claimed', { agent: a, turn: 1, message: { role: 'assistant', content: [{ type: 'text', text: '搜一下最新资料' }] } });
+		assert.deepEqual(await order(a), before, '非用户消息不能更改处境');
+		const injected = { role: 'user', source: { kind: 'plugin:clis' }, content: [{ type: 'text', text: '搜一下最新资料' }] };
+		ctx.emit('agent/inbox/claimed', { agent: a, turn: 1, message: injected });
+		await ctx.waterfall('agent/pre-step', { agent: a, turn: 1, messages: [injected] }, () => Promise.resolve({ kind: 'enter' }));
+		assert.deepEqual(await order(a), before, '插件注入的 user-role 消息不能更改处境');
+		const tool = ctx.tools.registered.find(t => t.name === 'mind_signals');
+		assert.ok(tool, '应注册 mind_signals');
+		const resultA = await tool.execute({}, { agent: a });
+		const resultB = await tool.execute({}, { agent: b });
+		assert.equal(resultA.current_situation, 'diagnose');
+		assert.equal(resultB.current_situation, 'retrieve');
+	} finally { await ctx.fiber.dispose(); }
+});
+
+test('无 agent 身份时，不同插件实例的处境也互不覆盖', async () => {
+	const a = await setup();
+	const b = await setup();
+	try {
+		a.ctx.emit('agent/inbox/claimed', { turn: 1, message: userMsg('请审查问题') });
+		const before = await a.order();
+		b.ctx.emit('agent/inbox/claimed', { turn: 1, message: userMsg('搜一下最新资料') });
+		assert.deepEqual(await a.order(), before);
+		assert.ok((await b.order())[0].includes('search'));
+	} finally { await a.ctx.fiber.dispose(); await b.ctx.fiber.dispose(); }
+});
+
+test('claimed 与 pre-step 对同一消息只采样一次', async () => {
+	const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+	const { tmpdir } = await import('node:os');
+	const { join } = await import('node:path');
+	const home = await mkdtemp(join(tmpdir(), 'mind-dedup-'));
+	const previous = process.env.DSH_HOME;
+	process.env.DSH_HOME = home;
+	const { ctx } = await setup();
+	const agent = { id: 'agent-dedup' }, message = userMsg('请审查这个问题');
+	try {
+		ctx.emit('agent/inbox/claimed', { agent, turn: 1, message });
+		await ctx.waterfall('agent/pre-step', { agent, turn: 1, messages: [message] }, () => Promise.resolve({ kind: 'enter' }));
+		await new Promise(resolve => setTimeout(resolve, 100));
+		const raw = await readFile(join(home, 'storages/mind-dispatch-samples.jsonl'), 'utf8');
+		assert.equal(raw.trim().split('\n').length, 1);
+	} finally {
+		await ctx.fiber.dispose();
+		if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous;
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test('缺少 claimed 事件时 pre-step 仍可采样并在后续装配应用', async () => {
+	const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+	const { tmpdir } = await import('node:os');
+	const { join } = await import('node:path');
+	const home = await mkdtemp(join(tmpdir(), 'mind-fallback-'));
+	const previous = process.env.DSH_HOME;
+	process.env.DSH_HOME = home;
+	const { ctx } = await setup();
+	const agent = { id: 'old-host-agent' };
+	try {
+		assert.match(mindMod.healthProbe.probe().findings.find(f => f.code === 'mind.event-status').message, /尚无用户消息/);
+		await ctx.waterfall('agent/pre-step', { agent, turn: 1, messages: [userMsg('搜一下最新资料')] }, () => Promise.resolve({ kind: 'enter' }));
+		const tools = (await ctx.systemPrompt.assemble({ agent, scope: agent })).tools.map(t => t.name);
+		assert.ok(tools[0].includes('search'), `fallback 应影响后续装配: ${tools.join(',')}`);
+		assert.match(mindMod.healthProbe.probe().findings.find(f => f.code === 'mind.event-status').message, /兜底/);
+		let raw = '';
+		for (let i = 0; i < 40 && !raw; i++) {
+			try { raw = await readFile(join(home, 'storages/mind-dispatch-samples.jsonl'), 'utf8'); }
+			catch { await new Promise(resolve => setTimeout(resolve, 10)); }
+		}
+		assert.equal(raw.trim().split('\n').length, 1, '兜底应实际写入一次采样');
+	} finally {
+		await ctx.fiber.dispose();
+		if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous;
+		await rm(home, { recursive: true, force: true });
 	}
 });
 

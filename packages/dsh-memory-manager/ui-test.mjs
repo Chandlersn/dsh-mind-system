@@ -11,6 +11,9 @@
  * `__internalsForTest` exposes the pure parsing/folding logic.
  */
 import { readFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 let failures = 0;
 const ok = (cond, label) => {
@@ -37,7 +40,39 @@ globalThis.window = { __ModuleLoader__: { load: (m) => (globalThis.__clientModul
 await import(new URL('./client.js', import.meta.url).href);
 const mod = globalThis.__clientModule;
 ok(Boolean(mod) && typeof mod.factory === 'function', 'client module registers a factory');
-ok(mod?.id === 'dsh-memory-manager', `module id = ${mod?.id}`);
+
+/**
+ * 注册 id 必须等于「宿主会为哪个包校验 factories.has(id)」—— 不能写死。
+ *
+ * 同一份面板在合成包里服务 `dsh-mind-system` 这条客户端行，在独立包里服务
+ * `dsh-memory-manager` 那条；聚合包那份的 id 由 scripts/build/rewrites.mjs 在构建时替换。
+ * 写死任一个，都会在换一种装法后变成假绿或假红。
+ *
+ * 为什么取**最外层**那个声明：`memory/package.json` 和合成包根的 package.json
+ * 都把本文件当 exports["./client"]。宿主按"被装载的那个包"建客户端行 ——
+ * 合成包装的是根包、独立包装的是它自己，两种情况下根都是最外层那个。
+ */
+function expectedClientId() {
+	const self = fileURLToPath(new URL('./client.js', import.meta.url));
+	let found;
+	let dir = dirname(self);
+	for (;;) {
+		const pkgFile = join(dir, 'package.json');
+		if (existsSync(pkgFile)) {
+			const pkg = JSON.parse(readFileSync(pkgFile, 'utf8'));
+			const target = pkg.exports?.['./client'];
+			if (typeof target === 'string' && resolve(dir, target) === self) found = pkg.name;
+		}
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	if (found === undefined) throw new Error('没有任何 package.json 把本文件当 exports["./client"]');
+	return found;
+}
+
+const wantId = expectedClientId();
+ok(mod?.id === wantId, `module id = ${mod?.id}（宿主该行期望 ${wantId}）`);
 
 const instance = mod.factory((name) => (name === 'react' ? FakeReact : undefined));
 const T = instance.__internalsForTest;

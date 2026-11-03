@@ -1,15 +1,4 @@
-/**
- * 调度采样测试（2026-11-02）。
- *
- * 采样的目的是让命中率成为**长期趋势**（真实使用持续漂移），而回归
- * 只守"词表没退化"。这两层缺一不可：
- *
- * - 回归（C 批留白样本）：词表对**没见过的句子**还有效吗
- * - 采样（真实发生）：词表对**用户此刻说的话**还有效吗
- *
- * 采样刻意**不记原文**（长期落盘，含隐私），只记输入哈希 —— 够算趋势，
- * 且不可反推内容。这条本身要被测试钉住。
- */
+/** 覆盖趋势、输入隐私和采样失败时的降级行为。 */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
@@ -32,7 +21,7 @@ test('采样文件落在 storages/ 下（与记忆层同区）', () => {
 	}
 });
 
-test('采样只存输入哈希，不存原文', async () => {
+test('采样不存输入原文或可猜测的稳定哈希', async () => {
 	const dir = sandbox();
 	try {
 		const secret = '用户的私人内容-不应出现在磁盘上';
@@ -40,7 +29,7 @@ test('采样只存输入哈希，不存原文', async () => {
 
 		const raw = readFileSync(sampleFilePath(dir), 'utf8');
 		assert.ok(!raw.includes(secret), '原文绝不能落盘');
-		assert.ok(raw.includes(sampleKey(secret)), '但要有同一个幂等键');
+		assert.ok(!raw.includes(sampleKey(secret)), '不应保存可用于字典比对的稳定哈希');
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

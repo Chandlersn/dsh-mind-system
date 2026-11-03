@@ -197,6 +197,34 @@ export function classifySituation(messages) {
 }
 
 /**
+ * 取某处境优先族的**前缀清单**（只读）。
+ *
+ * ## 为什么对外暴露这个
+ *
+ * 诊断要判断"模型用的工具是不是我推到前面的那一族"。如果诊断自己再写一份
+ * 族清单，两份就会漂移 —— 改了排序、忘了改诊断，于是诊断开始谎报
+ * "已照做"。判据只能一处实现，展示层只读不判。
+ *
+ * @param situation 处境代号。
+ * @returns 前缀数组；未知处境返回空数组（= 没有可被"照做"的对象）。
+ */
+export function familyOf(situation) {
+  return PRIORITY_FAMILIES[situation] ?? [];
+}
+
+/**
+ * 判断某工具名是否属于某处境的优先族（与 `arrangeTools` 同一判据）。
+ *
+ * @param situation 处境代号。
+ * @param name 工具名。
+ * @returns 属该族则为 true。
+ */
+export function isFamilyTool(situation, name) {
+  if (typeof name !== 'string' || name.length === 0) return false;
+  return familyOf(situation).some((p) => name.startsWith(p));
+}
+
+/**
  * 按处境给工具面排序（并把异族工具打上 deferLoading，可选）。
  *
  * ## 为什么不删元素
