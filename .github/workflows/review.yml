@@ -10,5 +10,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: "Review dsh-mind-system mind/ for absence-as-negative-evidence bugs"
         run: |
-          echo "This job intentionally fails to hand a review task to superagent."
-          exit 1
+          echo "review handoff job"
+          echo "passing to reset the branch CI dedup"
+
