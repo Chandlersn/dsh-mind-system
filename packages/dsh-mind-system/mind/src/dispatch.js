@@ -401,8 +401,28 @@ const QUOTED_SPANS = [
  * 只剥带 `的话` 收尾的那种：这是汉语里边界最清楚的假设标记。
  * 不带 `的话` 的条件句（「如果要改就改这里」）**不剥** —— 那里的请求
  * 恰恰在从句里，剥掉就把用户要的事弄丢了。宁可少做，不要做错。
+ *
+ * ## 2026-11-03 补：英文假设语气族（`EN_HYPOTHETICAL`）
+ *
+ * 上面那条中文取舍**不适用于英文**，因为两种语言的假设标记不在同一个位置：
+ *
+ * - 中文靠**从句收尾**标记（…的话），标记在句尾，所以能整段切掉；
+ * - 英文靠**句首语气词**标记（maybe / perhaps / what if / I wonder），
+ *   标记在句首，切掉语气词就够了，剩下的「our app should…」是纯偏好陈述，
+ *   本来就不该判成实现请求。
+ *
+ * 所以这里剥的是**语气标记本身**，不是整句 —— 风险比剥整句低。
+ * 实测（`_recon/mind-x-superagent/normalize-test.mjs`）：
+ * `maybe our app should show unread counts like theirs` 旧实现 conditional=0，
+ * 原样 51 字进入匹配，可能被 do-it 捞走。
  */
-const CONDITIONAL_SPANS = [/(?:如果|假如|要是|倘若|万一)[^，。；！？\n]{0,40}?的话/gu];
+const CONDITIONAL_SPANS = [
+  /(?:如果|假如|要是|倘若|万一)[^，。；！？\n]{0,40}?的话/gu,
+  // 英文句首语气词：只吃标记，不吃整句。
+  // 边界排除 `\w . @ - '`：既防 "maybelline"，也防邮箱里的 `maybe@example.com`
+  // （实测：只用 [\w'-] 时该邮箱被判成假设，conditional 1 —— 反例测试抓到的）。
+  /(?<![\w.@'-])(?:maybe|perhaps|possibly|conceivably|i wonder if|i'm wondering if|wondering if|what if|if we ever|if we ever need to|if we later|one day we could|someday we could|it might be nice if|wouldn'?t it be nice if)(?![\w.@'-])/giu,
+];
 
 /**
  * 「软意图」—— 表达的是"我要看"，但常常只是**手段**，不是目的。

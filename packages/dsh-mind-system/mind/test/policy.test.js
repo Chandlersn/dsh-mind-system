@@ -124,6 +124,42 @@ test('条件表达：「如果…的话」是假设，不是请求', () => {
   assert.equal(normalizeForMatching('如果失败的话，再看日志').counts.conditional, 1);
   // 不带"的话"的条件句不剥 —— 那里的请求恰恰在从句里，剥掉就把事弄丢了
   assert.equal(normalizeForMatching('如果要改就改这里').counts.conditional, 0);
+  // 这是**刻意**取舍，不是漏网。上面那条断言就是它的守卫：
+  // 若有人把中文正则放宽成「如果…，」这里会变红，提醒他先想清楚
+  // 「如果要改就改这里」这类句子里的请求该不该留。
+  assert.equal(normalizeForMatching('如果以后要支持暗色模式，我们可以顺便重构一下配色系统').counts.conditional, 0);
+});
+
+test('条件表达：英文假设语气词是标记，剥标记而不剥整句（2026-11-03）', () => {
+  // 跨语言差异：中文的假设标记在句尾（…的话），英文在句首（maybe / what if）。
+  // 英文剥掉语气词即可，剩下的「our app should…」本就是纯偏好陈述。
+  const n = normalizeForMatching('maybe our app should show unread counts like theirs');
+  assert.equal(n.counts.conditional, 1, 'maybe 应被记为假设标记');
+  assert.ok(!n.text.toLowerCase().includes('maybe'), '语气词本身应从可匹配文本移除');
+  assert.ok(n.text.includes('unread counts'), '只剥标记，不剥整句 —— 内容要留给判断');
+});
+
+test('条件表达：英文假设族覆盖多种说法，且不误伤普通词', () => {
+  const marks = [
+    'perhaps we could add a toggle',
+    'what if we renamed this column',
+    'I wonder if the sidebar should collapse',
+    'if we ever support dark mode, we could refactor',
+    "wouldn't it be nice if the table were sortable",
+  ];
+  for (const text of marks) {
+    assert.equal(normalizeForMatching(text).counts.conditional, 1, `应识别为假设：${text}`);
+  }
+  // 反例：这些含 may/if 但**不是**假设标记，不能被剥
+  const notMarks = [
+    'may I ask why this failed',
+    'we may need to bump the version',
+    'if the build fails, fix it',
+    'maybe@example.com is the contact',
+  ];
+  for (const text of notMarks) {
+    assert.equal(normalizeForMatching(text).counts.conditional, 0, `不该误判为假设：${text}`);
+  }
 });
 
 test('多意图：两类同时命中时 intents 里有两条，而不是被压成一个代号', () => {

@@ -23,6 +23,7 @@
 import { registerMindSection, SECTION_NAME, SECTION_ORDER } from './src/mind.js';
 import { arrangeTools, SITUATIONS, familyOf, isFamilyTool } from './src/orchestrate.js';
 import { listSignals, registerSignal, listVetoes, listNormalizationRules, DECISION_REASONS } from './src/dispatch.js';
+import { registerConstraint, listConstraints, evaluate as evaluateConstraints } from './src/constraints.js';
 import { recordSample, readTrend, readTrendSync } from './src/sampling.js';
 import { benchmarkFromDailyLogs } from './src/hitrate.js';
 import { createSituationStore, currentSituationOf, lastDecisionOf, __resetSituationForTest, __forceSituationForTest } from './src/situation.js';
@@ -572,6 +573,38 @@ export function registerSituationSignal(signal) {
 }
 
 /**
+ * 登记一条**授权约束**（处境之外的第二维，2026-11-03）。
+ *
+ * 与 registerSituationSignal 的分工：信号答"这是什么类型的工作"，
+ * 约束答"这件事允不允许做"。约束不吃词表、吃**外部状态** ——
+ * superagent 式部署可以把 Mandate 校验做成一条约束（owner 填自己插件名），
+ * 调度层不需要知道 Mandate 的存在。零配合，与信号同一路径。
+ *
+ * 首版只读：不阻断、不参与排序；`evaluateSituationConstraints` 可查、可解释。
+ *
+ * @param constraint `{name, owner, applies(context) → 'allow'|'deny'|'unavailable'}`。
+ * @returns 注销函数。
+ */
+export function registerSituationConstraint(constraint) {
+  return registerConstraint(constraint);
+}
+
+/** 列出已登记的授权约束（只读）。 */
+export function situationConstraints() {
+  return listConstraints();
+}
+
+/**
+ * 对一条上下文逐一评估全部约束并合成裁决（评估的唯一实现）。
+ *
+ * ⚠️ 没有任何约束登记时返回 `unavailable / no-constraint`，**不是 allow** ——
+ * "没在管"与"检查过没问题"必须不同形（闸门指标须成对报，授权侧的落点）。
+ */
+export function evaluateSituationConstraints(context) {
+  return evaluateConstraints(context);
+}
+
+/**
  * 列出全部已注册信号（内置 + 外部贡献）。
  *
  * @returns 信号列表。
@@ -636,6 +669,17 @@ export function registerSignalsTool(ctx, situations) {
             ...(s.counterWords ? { counterWords: s.counterWords } : {}),
           })),
           external_owners: external.map((s) => s.owner),
+          // —— 授权约束（第二维）：谁登记了、有几条。空表要显式报出来 ——
+          // "机制可用但生态为空"与"生态已长出来"在这里也必须不同形，
+          // 所以报 count 而不是只在有内容时才出现这个字段。
+          constraints: {
+            total: listConstraints().length,
+            owners: [...new Set(listConstraints().map((c) => c.owner))],
+            // 没登记任何约束 ≠ 一切允许：此时 evaluate 返回 no-constraint。
+            note: listConstraints().length === 0
+              ? 'no-constraint：授权侧目前没有单元贡献约束，评估会返回 unavailable（不是 allow）。'
+              : '约束为只读评估（首版不阻断）；evaluateSituationConstraints(context) 查逐条裁决。',
+          },
           // —— 三级诊断：判断 / 提供 / 照做，分开报，不互相冒充 ——
           //
           // 这三段**不能**合并成一句"生效了没有"。它们的含义完全不同：
