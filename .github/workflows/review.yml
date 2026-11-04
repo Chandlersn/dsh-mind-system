@@ -1,0 +1,14 @@
+name: review
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  review-mind-system:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Review dsh-mind-system mind/ for absence-as-negative-evidence bugs"
+        run: |
+          echo "This job intentionally fails to hand a review task to superagent."
+          exit 1
