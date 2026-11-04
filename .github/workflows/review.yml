@@ -11,5 +11,5 @@ jobs:
       - name: "Review dsh-mind-system mind/ for absence-as-negative-evidence bugs"
         run: |
           echo "review handoff job"
-          echo "passing to reset the branch CI dedup"
+          exit 1
 
