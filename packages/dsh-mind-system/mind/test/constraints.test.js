@@ -48,6 +48,30 @@ test('applies 抛错 → unavailable（吞成 allow 或 deny 都是说谎）', (
     assert.equal(r.verdict, VERDICTS.unavailable);
     assert.match(r.reason, /unavailable:explodes/);
     assert.equal(r.by[0].verdict, 'unavailable', '逐条裁决要能看出是谁判不了');
+    // 2026-11-04：异常原因必须留在 by 里，不许连原因一起吞。
+    // 「约束自己返回 unavailable」与「约束崩了」不能同形 —— 那又是一次
+    // 把缺失当阴性证据。变异：把 catch 写回 `catch {}` 不记 failure，本条变红。
+    assert.ok(r.by[0].failure, '抛错时 by 必须带 failure（否则崩了与判不了同形）');
+    assert.match(String(r.by[0].failure), /Mandate 服务没起来/, 'failure 要含原始错误信息');
+  } finally { off(); }
+});
+
+test('主动返回 unavailable 时 by 不带 failure（两种 unavailable 必须不同形）', () => {
+  const off = registerConstraint({ name: 'declines', owner: 'test', applies: () => 'unavailable' });
+  try {
+    const r = evaluate({ origin: { sender: 'alice' } });
+    assert.equal(r.verdict, VERDICTS.unavailable);
+    assert.equal(r.by[0].verdict, 'unavailable');
+    assert.equal(r.by[0].failure, undefined, '自己判不了 ≠ 崩了：这一条不许有 failure');
+  } finally { off(); }
+});
+
+test('返回非法裁决值 → unavailable 且带 failure（不许静默当成判不了）', () => {
+  const off = registerConstraint({ name: 'garbage', owner: 'test', applies: () => 'maybe' });
+  try {
+    const r = evaluate({ origin: { sender: 'alice' } });
+    assert.equal(r.verdict, VERDICTS.unavailable);
+    assert.match(String(r.by[0].failure), /unknown-verdict:maybe/);
   } finally { off(); }
 });
 

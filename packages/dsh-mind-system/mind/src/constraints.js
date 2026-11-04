@@ -108,14 +108,21 @@ export function evaluate(context) {
   let reason = 'all-allow'
   for (const c of active) {
     let v
+    let failure
     try {
       const raw = c.applies(context)
       v = VERDICTS[raw] ? raw : VERDICTS.unavailable
-    } catch {
+      if (!VERDICTS[raw]) failure = `unknown-verdict:${String(raw)}`
+    } catch (error) {
       // applies 抛错 = 判不了，不是拦下也不是放行。吞成 allow/deny 都会说谎。
+      //
+      // ⚠️ 但**不能连原因一起吞**（2026-11-04 源码审查发现：注释写"不吞"，代码却
+      // `catch {}` 空了）。「约束自己返回 unavailable」与「约束崩了」在 by 里
+      // 必须不同形，否则又是一次"把缺失当阴性证据"——本文件其它地方禁止的事。
       v = VERDICTS.unavailable
+      failure = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
     }
-    by.push({ name: c.name, owner: c.owner, verdict: v })
+    by.push({ name: c.name, owner: c.owner, verdict: v, ...(failure === undefined ? {} : { failure }) })
     // 合成只有一条规则：取最保守的（rank 见 VERDICT_RANK），与遍历顺序无关 ——
     // rank 只升不降，deny/unavailable 是吸收态。
     const folded = mostConservative(verdict, v)

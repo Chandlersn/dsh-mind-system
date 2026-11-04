@@ -115,8 +115,38 @@ test('接线：判出 → 提供（guidance 只在真的重排后才出现）', 
 	}
 });
 
-test('接线：ambiguous 时判出但不提供引导（克制闸门）', async () => {
-	const { ctx, order, tool } = await setup();
+test('接线：判出了但工具面没变 → guidance 仍为 null（2026-11-04 源码审查修复）', async () => {
+	// 缺陷原貌：assemble 里 `arrangeTools` 后**无条件** recordGuidance，
+	// 于是「判出了但没重排」与「判出了也重排了」在 guidance 上同形 ——
+	// 正是三级诊断要防的那种同形，却在实现里长回来了。
+	//
+	// 构造：工具表为空。arrangeTools 对空表原样返回，顺序无从改变。
+	const ctx = new host.Context();
+	await ctx.plugin(SystemPrompt);
+	ctx.plugin(ToolsService);
+	ctx.systemPrompt.tools(() => ({ schemas: [] }));   // ← 关键：空工具表
+	await ctx.plugin(mindMod);
+	const agent = { id: 'g-empty-tools' };
+	const tool = () => ctx.tools.registered.find((t) => t.name === 'mind_signals');
+	try {
+		ctx.emit('agent/inbox/claimed', { agent, turn: 1, message: userMsg('请审查这个插件有没有隐患') });
+		let d = await tool().execute({}, { agent });
+		assert.ok(d.diagnosis.decision, '应已判出处境（diagnose）');
+		assert.equal(d.diagnosis.guidance, null, '装配前不得声称已提供引导');
+
+		await ctx.systemPrompt.assemble({ agent, scope: agent });
+
+		d = await tool().execute({}, { agent });
+		assert.ok(d.diagnosis.decision, '判定仍在');
+		// 工具表为空 ⇒ arrangeTools 返回同一数组 ⇒ 没有向 DSH 提供任何顺序变化
+		assert.equal(d.diagnosis.guidance, null,
+			'工具面没变就不能说"已提供引导"（判了 ≠ 提供了），变异：去掉 changed 判断本条变红');
+	} finally {
+		await ctx.fiber.dispose();
+	}
+});
+
+test('接线：ambiguous 时判出但不提供引导（克制闸门）', async () => {	const { ctx, order, tool } = await setup();
 	const agent = { id: 'g-amb' };
 	const baseline = await order(agent);
 	try {

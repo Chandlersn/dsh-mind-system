@@ -251,11 +251,23 @@ export function apply(ctx) {
       if (situation === SITUATIONS.unknown) return result;
       try {
         const arranged = arrangeTools(result.tools, situation, { park: PARK_ENABLED });
-        situations.recordGuidance(agent, {
-          situation,
-          tools: Array.isArray(arranged) ? arranged.length : 0,
-          at: Date.now(),
-        });
+        // ⚠️ 只有在**真的改变了顺序**时才记 guidance（2026-11-04 源码审查发现：
+        // 原实现无条件记录，于是"判出了但没重排"与"判出了也重排了"在 guidance
+        // 上同形 —— 这正是本段注释开头要防的那种同形，在实现里又长回来了）。
+        //
+        // `arrangeTools` 会原样返回的情况：工具表为空、或该处境没有优先族。
+        // 那时**没有向 DSH 提供任何引导**，guidance 必须保持 null。
+        const before = Array.isArray(result.tools) ? result.tools : [];
+        const after = Array.isArray(arranged) ? arranged : [];
+        const changed = after.length !== before.length
+          || after.some((tool, i) => tool !== before[i]);
+        if (changed) {
+          situations.recordGuidance(agent, {
+            situation,
+            tools: after.length,
+            at: Date.now(),
+          });
+        }
         return { ...result, tools: arranged };
       } catch {
         // 编排失败退回原装配 —— 工具面是主干道，这里绝不中断它。
