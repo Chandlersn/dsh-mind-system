@@ -147,7 +147,7 @@ export async function recordSample(dshHome, decision) {
  */
 export async function readTrend(dshHome, days = 30) {
 	const path = sampleFilePath(dshHome);
-	/** @type {Map<string, {total:number, unknown:number, missed:number, situations:Map<string,number>}>} */
+	/** @type {Map<string, {total:number, unknown:number, missed:number, situations:Map<string,number>, reasons:Map<string,number>}>} */
 	const byDay = new Map();
 	try {
 		const raw = await readFile(path, 'utf8');
@@ -162,12 +162,20 @@ export async function readTrend(dshHome, days = 30) {
 				const day = e.t.slice(0, 10);
 				let bucket = byDay.get(day);
 				if (bucket === undefined) {
-					bucket = { total: 0, unknown: 0, missed: 0, situations: new Map() };
+					bucket = { total: 0, unknown: 0, missed: 0, situations: new Map(), reasons: new Map() };
 					byDay.set(day, bucket);
 				}
 				bucket.total += 1;
-				if (e.unknown === true) bucket.unknown += 1;
-				else if (e.situation) {
+				// 按判定路径分账（2026-11-04）：`reason` 早就写进样本了却没人聚合，
+				// 于是文件头声称能分开的「词表没覆盖」与「输入本来没内容」在趋势里
+				// 仍然同形。missed 只数 no-signal：那才是该扩词表的那种。
+				if (typeof e.reason === 'string' && e.reason.length > 0) {
+					bucket.reasons.set(e.reason, (bucket.reasons.get(e.reason) ?? 0) + 1);
+				}
+				if (e.unknown === true) {
+					bucket.unknown += 1;
+					if (e.reason === 'no-signal') bucket.missed += 1;
+				} else if (e.situation) {
 					bucket.situations.set(e.situation, (bucket.situations.get(e.situation) ?? 0) + 1);
 				}
 			} catch {
@@ -185,18 +193,25 @@ export async function readTrend(dshHome, days = 30) {
 			total: b.total,
 			unknown: b.unknown,
 			unknownRate: b.total === 0 ? null : b.unknown / b.total,
+			// missed 与 unknown 分开报：unknown 里还含 nothing-actionable / ambiguous，
+			// 拿它去扩词表会撑坏词表；只有 no-signal 才说明词表缺词。
+			missed: b.missed,
+			missedRate: b.total === 0 ? null : b.missed / b.total,
+			reasons: Object.fromEntries(b.reasons),
 			situations: Object.fromEntries(b.situations),
 		}));
 
 	let total = 0;
 	let unknown = 0;
+	let missed = 0;
 	for (const b of byDay.values()) {
 		total += b.total;
 		unknown += b.unknown;
+		missed += b.missed;
 	}
 	return {
 		days: out,
-		overall: total === 0 ? null : { total, unknown, unknownRate: unknown / total },
+		overall: total === 0 ? null : { total, unknown, missed, unknownRate: unknown / total, missedRate: missed / total },
 	};
 }
 
@@ -244,7 +259,7 @@ export function trendLine(trend) {
  */
 export function readTrendSync(dshHome, days = 30) {
 	const path = sampleFilePath(dshHome);
-	/** @type {Map<string, {total:number, unknown:number, situations:Map<string,number>}>} */
+	/** @type {Map<string, {total:number, unknown:number, missed:number, situations:Map<string,number>, reasons:Map<string,number>}>} */
 	const byDay = new Map();
 	let raw = '';
 	try {
@@ -263,12 +278,18 @@ export function readTrendSync(dshHome, days = 30) {
 			const day = e.t.slice(0, 10);
 			let bucket = byDay.get(day);
 			if (bucket === undefined) {
-				bucket = { total: 0, unknown: 0, situations: new Map() };
+				bucket = { total: 0, unknown: 0, missed: 0, situations: new Map(), reasons: new Map() };
 				byDay.set(day, bucket);
 			}
 			bucket.total += 1;
-			if (e.unknown === true) bucket.unknown += 1;
-			else if (e.situation) {
+			// 与 async 版同一口径：原因分账，missed 只数 no-signal。
+			if (typeof e.reason === 'string' && e.reason.length > 0) {
+				bucket.reasons.set(e.reason, (bucket.reasons.get(e.reason) ?? 0) + 1);
+			}
+			if (e.unknown === true) {
+				bucket.unknown += 1;
+				if (e.reason === 'no-signal') bucket.missed += 1;
+			} else if (e.situation) {
 				bucket.situations.set(e.situation, (bucket.situations.get(e.situation) ?? 0) + 1);
 			}
 		} catch {
@@ -283,17 +304,24 @@ export function readTrendSync(dshHome, days = 30) {
 			total: b.total,
 			unknown: b.unknown,
 			unknownRate: b.total === 0 ? null : b.unknown / b.total,
+			// missed 与 unknown 分开报：unknown 里还含 nothing-actionable / ambiguous，
+			// 拿它去扩词表会撑坏词表；只有 no-signal 才说明词表缺词。
+			missed: b.missed,
+			missedRate: b.total === 0 ? null : b.missed / b.total,
+			reasons: Object.fromEntries(b.reasons),
 			situations: Object.fromEntries(b.situations),
 		}));
 
 	let total = 0;
 	let unknown = 0;
+	let missed = 0;
 	for (const b of byDay.values()) {
 		total += b.total;
 		unknown += b.unknown;
+		missed += b.missed;
 	}
 	return {
 		days: out,
-		overall: total === 0 ? null : { total, unknown, unknownRate: unknown / total },
+		overall: total === 0 ? null : { total, unknown, missed, unknownRate: unknown / total, missedRate: missed / total },
 	};
 }

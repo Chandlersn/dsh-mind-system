@@ -72,9 +72,20 @@ export const inject = ['systemPrompt', 'tools'];
  * 那个 "unknown" 初值是**刻意**的：还没看到任何输入时不该假装知道
  * 该优先什么，保持默认工具顺序最安全。
  *
- * @deprecated 状态现由 `src/situation.js` 持有；此处保留导出以兼容旧调用方。
+ * ⚠️ 2026-11-04：这里原来直接 `export { currentSituationOf }`，而那个符号来自
+ * `src/situation.js` 的**模块级 defaultStore** —— `apply()` 判的是它自己的私有
+ * store，两者从不互通。于是这个对外导出的接口**永远返回 unknown**：
+ * 一个看着能用、其实恒假的门面。
+ *
+ * 现在改为读**活跃实例**的 store。宿主里只有一个 mind 实例，所以取最后 apply
+ * 的那个；在没有实例时（纯单测）退化为 unknown，与旧行为一致但不撒谎。
+ *
+ * @deprecated 新代码请用 `mind_signals` 工具或探针读状态；此处仅为兼容保留。
  */
-export { currentSituationOf };
+export function currentSituationOfView(agent) {
+  return activeStore?.currentSituationOf(agent) ?? SITUATIONS.unknown;
+}
+export { currentSituationOfView as currentSituationOf };
 
 /**
  * 是否给异族工具打 `deferLoading`（缺省关）。
@@ -93,6 +104,9 @@ const PARK_ENABLED = process.env.DSH_MIND_PARK === '1';
 export function apply(ctx) {
   const dispose = registerMindSection(ctx);
   const situations = createSituationStore();
+  // 供对外的兼容读接口使用：模块级导出拿不到 apply 的局部变量，
+  // 但没有这层登记，`currentSituationOf` 就只能读那个永不更新的 defaultStore。
+  activeStore = situations;
   const unscopedAgent = {};
   const claims = new WeakMap();
   const agentKey = (agent) => agent && (typeof agent === 'object' || typeof agent === 'function') ? agent : unscopedAgent;
@@ -551,6 +565,16 @@ let registration = { stage: 'not-applied' };
 
 /** 编排事件源的实测结果（同样只读，不推断）。 */
 let orchestration = { listeners: 'not-registered', claimedObserved: false, fallbackObserved: false };
+
+/**
+ * 当前活跃实例的处境 store（由 `apply()` 登记）。
+ *
+ * 为什么需要：`currentSituationOf` 是模块级导出，拿不到 apply 的局部变量；
+ * 没有这层登记，它只能读 `src/situation.js` 的 defaultStore —— 而那个 store
+ * 在真机上从不被判定写入，导出的接口于是恒返回 unknown（2026-11-04 修复）。
+ * 无实例时保持 null，接口退化为 unknown，与旧行为一致但不撒谎。
+ */
+let activeStore = null;
 
 /**
  * 记录 apply 的实测结果（由 apply() 调用，探针只读）。
