@@ -131,7 +131,21 @@ export function createSituationStore() {
 // Compatibility helpers for direct consumers; plugin instances use their own store.
 const defaultStore = createSituationStore();
 export const judge = (text, agent) => defaultStore.judge(text, agent);
-export const currentSituationOf = (agent) => defaultStore.currentSituationOf(agent);
 export const lastDecisionOf = () => latestDecision;
-export function __resetSituationForTest() { defaultStore.reset(); latestDecision = null; }
+
+// 2026-11-05（审查发现 #4，实测复现）：`apply()` 判进自己私有的 situations
+// store，而对外导出的 `currentSituationOf` 曾固定读 defaultStore —— 发布接口
+// 永远返回 unknown，看起来能用、实际是扇假门。这里让插件实例把自己的 store
+// 登记为 active，导出接口优先读它；没有实例时回落 defaultStore，保证
+// interfaces/regressions 那批直接使用兼容层的测试不受影响。
+let activeStore = null;
+export function setActiveStore(store) { activeStore = store ?? null; }
+export const currentSituationOf = (agent) =>
+	(activeStore ?? defaultStore).currentSituationOf(agent);
+export function __resetSituationForTest() {
+	defaultStore.reset();
+	if (activeStore && activeStore !== defaultStore) activeStore.reset();
+	activeStore = null;
+	latestDecision = null;
+}
 export function __forceSituationForTest(situation) { defaultStore.force(situation); }

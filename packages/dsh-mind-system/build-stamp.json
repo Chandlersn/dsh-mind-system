@@ -285,7 +285,7 @@
     },
     "mind/index.js": {
       "source": "dsh-agent-mind/index.js",
-      "sha256": "279ab8bdbce30cc6923295d30a00da6c9999b60b839fac99127513497992ff3f"
+      "sha256": "4247d31a596700ea695f274f08b34100d7e9e5f949c5740bc7c90c4673cf6b5c"
     },
     "mind/package.json": {
       "source": "dsh-agent-mind/package.json",
@@ -294,6 +294,10 @@
     "mind/scripts/verify-assembly.mjs": {
       "source": "dsh-agent-mind/scripts/verify-assembly.mjs",
       "sha256": "c48f02a5978f6a6737a6603bf977d2ae0c7ad8862e2a3f11342ed1597adc4e03"
+    },
+    "mind/src/constraints.js": {
+      "source": "dsh-agent-mind/src/constraints.js",
+      "sha256": "784fffe6daa4c716bc3a5068fecdfc9deb44da438b6d2ca6ffc10b55f2995fa1"
     },
     "mind/src/dispatch.js": {
       "source": "dsh-agent-mind/src/dispatch.js",
@@ -317,11 +321,19 @@
     },
     "mind/src/sampling.js": {
       "source": "dsh-agent-mind/src/sampling.js",
-      "sha256": "32e096cca82f0fa5db59359eaa35485b0eb74d1144bc098924f033f46079f07e"
+      "sha256": "9a1954c0d2c258fcbc89921a4eba31915d8edfb62a8bc97dfc096a271821e41a"
     },
     "mind/src/situation.js": {
       "source": "dsh-agent-mind/src/situation.js",
-      "sha256": "272cd5e94c254892218470732ff4c884b1b7944b029f15b2cdf301deff00732e"
+      "sha256": "44d55175b82728531beb84584ccac5475e3a8172749298f6c2eb864bf881fc2f"
+    },
+    "mind/test/active-store.test.js": {
+      "source": "dsh-agent-mind/test/active-store.test.js",
+      "sha256": "ecb95177d5ccbbfc86605345a9c5c3d0e60abcc0c6c76a085cd412e69d67c339"
+    },
+    "mind/test/constraints.test.js": {
+      "source": "dsh-agent-mind/test/constraints.test.js",
+      "sha256": "0f0c1c000e75e8d60f1d910df42081e5f445f9e6ddec037c44c86d82436da0e2"
     },
     "mind/test/diagnostics.test.js": {
       "source": "dsh-agent-mind/test/diagnostics.test.js",
@@ -330,6 +342,10 @@
     "mind/test/dispatch.test.js": {
       "source": "dsh-agent-mind/test/dispatch.test.js",
       "sha256": "b8fa3759295efd83a1e983699fd8ffcc188372e4bb6e0a869c3bc05e4958e75f"
+    },
+    "mind/test/fixes-2026-11-04.test.js": {
+      "source": "dsh-agent-mind/test/fixes-2026-11-04.test.js",
+      "sha256": "61ae2499a66173107359b0a67088d6ac1afe4c6df3455e617507238ca7e6978d"
     },
     "mind/test/hitrate.test.js": {
       "source": "dsh-agent-mind/test/hitrate.test.js",

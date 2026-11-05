@@ -25,7 +25,7 @@ import { arrangeTools, SITUATIONS, familyOf, isFamilyTool } from './src/orchestr
 import { listSignals, registerSignal, listVetoes, listNormalizationRules, DECISION_REASONS } from './src/dispatch.js';
 import { recordSample, readTrend, readTrendSync } from './src/sampling.js';
 import { benchmarkFromDailyLogs } from './src/hitrate.js';
-import { createSituationStore, currentSituationOf, lastDecisionOf, __resetSituationForTest, __forceSituationForTest } from './src/situation.js';
+import { createSituationStore, currentSituationOf, lastDecisionOf, setActiveStore, __resetSituationForTest, __forceSituationForTest } from './src/situation.js';
 import { getDefineTool } from './src/host.js';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -92,6 +92,9 @@ const PARK_ENABLED = process.env.DSH_MIND_PARK === '1';
 export function apply(ctx) {
   const dispose = registerMindSection(ctx);
   const situations = createSituationStore();
+  // 让对外导出的 currentSituationOf 读到**本实例**的判定结果，而不是那个
+  // 永远没人写、恒为 unknown 的 defaultStore（审查发现 #4，实测复现）。
+  setActiveStore(situations);
   const unscopedAgent = {};
   const claims = new WeakMap();
   const agentKey = (agent) => agent && (typeof agent === 'object' || typeof agent === 'function') ? agent : unscopedAgent;

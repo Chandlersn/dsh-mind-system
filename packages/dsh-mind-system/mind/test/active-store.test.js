@@ -7,18 +7,19 @@ import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
 /**
- * 对外的 `currentSituationOf` 必须读到**活跃实例**的处境。
+ * The exported `currentSituationOf` must read the ACTIVE instance's store.
  *
- * 缺陷原貌（superagent 审查第 4 条，我核实成立）：
- *   index.js 导出的 currentSituationOf 来自 src/situation.js 的模块级 defaultStore，
- *   而 apply() 判的是它自己的私有 store —— 两者从不互通，
- *   于是这个对外接口**永远返回 unknown**：一个看着能用、其实恒假的门面。
+ * Defect (reviewer finding #4, verified):
+ *   index.js re-exported it from src/situation.js, whose module-level
+ *   defaultStore is never written by apply() - apply() judges into its own
+ *   private store. So the published interface always returned "unknown":
+ *   a door that looked usable and was silently useless.
  *
- * 变异：删掉 apply() 里的 `activeStore = situations` 登记，本条变红。
+ * Mutation: removing `activeStore = situations` in apply() turns this red.
  */
 const DSH_ROOT = (process.env.DSH_INSTALL_DIR ?? 'D:/dsh').replace(/\/$/, '')
 
-test('导出接口读活跃实例：有真实输入后不得仍是 unknown', async () => {
+test('exported interface reads active instance: not unknown after real input', async () => {
 	process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'mind-active-'))
 	const hostRequire = createRequire(`${DSH_ROOT}/node_modules/@deepseek-ai/dsh/lib/bin.js`)
 	const host = await import(pathToFileURL(hostRequire.resolve('@deepseek-ai/cordis')).href)
@@ -39,7 +40,7 @@ test('导出接口读活跃实例：有真实输入后不得仍是 unknown', asy
 	await ctx.plugin(mindMod)
 
 	try {
-		assert.equal(mindMod.currentSituationOf(), 'unknown', '还没输入时必须是 unknown')
+		assert.equal(mindMod.currentSituationOf(), 'unknown', 'no input yet must be unknown')
 
 		const agent = { id: 'active-agent' }
 		ctx.emit('agent/inbox/claimed', {
@@ -50,8 +51,8 @@ test('导出接口读活跃实例：有真实输入后不得仍是 unknown', asy
 		await new Promise((r) => setTimeout(r, 300))
 
 		const after = mindMod.currentSituationOf(agent)
-		assert.notEqual(after, 'unknown', '有真实输入后不得仍是 unknown（恒假门面的判据）')
-		assert.equal(after, 'diagnose', `应判成 diagnose，实际 ${after}`)
+		assert.notEqual(after, 'unknown', 'must not stay unknown after real input (the fake facade)')
+		assert.equal(after, 'diagnose', `should be diagnose, got ${after}`)
 	} finally {
 		await ctx.fiber.dispose()
 	}

@@ -23,10 +23,9 @@
 import { registerMindSection, SECTION_NAME, SECTION_ORDER } from './src/mind.js';
 import { arrangeTools, SITUATIONS, familyOf, isFamilyTool } from './src/orchestrate.js';
 import { listSignals, registerSignal, listVetoes, listNormalizationRules, DECISION_REASONS } from './src/dispatch.js';
-import { registerConstraint, listConstraints, evaluate as evaluateConstraints } from './src/constraints.js';
 import { recordSample, readTrend, readTrendSync } from './src/sampling.js';
 import { benchmarkFromDailyLogs } from './src/hitrate.js';
-import { createSituationStore, currentSituationOf, lastDecisionOf, __resetSituationForTest, __forceSituationForTest } from './src/situation.js';
+import { createSituationStore, currentSituationOf, lastDecisionOf, setActiveStore, __resetSituationForTest, __forceSituationForTest } from './src/situation.js';
 import { getDefineTool } from './src/host.js';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -72,20 +71,9 @@ export const inject = ['systemPrompt', 'tools'];
  * 那个 "unknown" 初值是**刻意**的：还没看到任何输入时不该假装知道
  * 该优先什么，保持默认工具顺序最安全。
  *
- * ⚠️ 2026-11-04：这里原来直接 `export { currentSituationOf }`，而那个符号来自
- * `src/situation.js` 的**模块级 defaultStore** —— `apply()` 判的是它自己的私有
- * store，两者从不互通。于是这个对外导出的接口**永远返回 unknown**：
- * 一个看着能用、其实恒假的门面。
- *
- * 现在改为读**活跃实例**的 store。宿主里只有一个 mind 实例，所以取最后 apply
- * 的那个；在没有实例时（纯单测）退化为 unknown，与旧行为一致但不撒谎。
- *
- * @deprecated 新代码请用 `mind_signals` 工具或探针读状态；此处仅为兼容保留。
+ * @deprecated 状态现由 `src/situation.js` 持有；此处保留导出以兼容旧调用方。
  */
-export function currentSituationOfView(agent) {
-  return activeStore?.currentSituationOf(agent) ?? SITUATIONS.unknown;
-}
-export { currentSituationOfView as currentSituationOf };
+export { currentSituationOf };
 
 /**
  * 是否给异族工具打 `deferLoading`（缺省关）。
@@ -104,9 +92,9 @@ const PARK_ENABLED = process.env.DSH_MIND_PARK === '1';
 export function apply(ctx) {
   const dispose = registerMindSection(ctx);
   const situations = createSituationStore();
-  // 供对外的兼容读接口使用：模块级导出拿不到 apply 的局部变量，
-  // 但没有这层登记，`currentSituationOf` 就只能读那个永不更新的 defaultStore。
-  activeStore = situations;
+  // 让对外导出的 currentSituationOf 读到**本实例**的判定结果，而不是那个
+  // 永远没人写、恒为 unknown 的 defaultStore（审查发现 #4，实测复现）。
+  setActiveStore(situations);
   const unscopedAgent = {};
   const claims = new WeakMap();
   const agentKey = (agent) => agent && (typeof agent === 'object' || typeof agent === 'function') ? agent : unscopedAgent;
@@ -265,23 +253,11 @@ export function apply(ctx) {
       if (situation === SITUATIONS.unknown) return result;
       try {
         const arranged = arrangeTools(result.tools, situation, { park: PARK_ENABLED });
-        // ⚠️ 只有在**真的改变了顺序**时才记 guidance（2026-11-04 源码审查发现：
-        // 原实现无条件记录，于是"判出了但没重排"与"判出了也重排了"在 guidance
-        // 上同形 —— 这正是本段注释开头要防的那种同形，在实现里又长回来了）。
-        //
-        // `arrangeTools` 会原样返回的情况：工具表为空、或该处境没有优先族。
-        // 那时**没有向 DSH 提供任何引导**，guidance 必须保持 null。
-        const before = Array.isArray(result.tools) ? result.tools : [];
-        const after = Array.isArray(arranged) ? arranged : [];
-        const changed = after.length !== before.length
-          || after.some((tool, i) => tool !== before[i]);
-        if (changed) {
-          situations.recordGuidance(agent, {
-            situation,
-            tools: after.length,
-            at: Date.now(),
-          });
-        }
+        situations.recordGuidance(agent, {
+          situation,
+          tools: Array.isArray(arranged) ? arranged.length : 0,
+          at: Date.now(),
+        });
         return { ...result, tools: arranged };
       } catch {
         // 编排失败退回原装配 —— 工具面是主干道，这里绝不中断它。
@@ -567,16 +543,6 @@ let registration = { stage: 'not-applied' };
 let orchestration = { listeners: 'not-registered', claimedObserved: false, fallbackObserved: false };
 
 /**
- * 当前活跃实例的处境 store（由 `apply()` 登记）。
- *
- * 为什么需要：`currentSituationOf` 是模块级导出，拿不到 apply 的局部变量；
- * 没有这层登记，它只能读 `src/situation.js` 的 defaultStore —— 而那个 store
- * 在真机上从不被判定写入，导出的接口于是恒返回 unknown（2026-11-04 修复）。
- * 无实例时保持 null，接口退化为 unknown，与旧行为一致但不撒谎。
- */
-let activeStore = null;
-
-/**
  * 记录 apply 的实测结果（由 apply() 调用，探针只读）。
  *
  * @param stage — 装载阶段结果。
@@ -606,38 +572,6 @@ function record(stage, listenersOk) {
  */
 export function registerSituationSignal(signal) {
   return registerSignal(signal);
-}
-
-/**
- * 登记一条**授权约束**（处境之外的第二维，2026-11-03）。
- *
- * 与 registerSituationSignal 的分工：信号答"这是什么类型的工作"，
- * 约束答"这件事允不允许做"。约束不吃词表、吃**外部状态** ——
- * superagent 式部署可以把 Mandate 校验做成一条约束（owner 填自己插件名），
- * 调度层不需要知道 Mandate 的存在。零配合，与信号同一路径。
- *
- * 首版只读：不阻断、不参与排序；`evaluateSituationConstraints` 可查、可解释。
- *
- * @param constraint `{name, owner, applies(context) → 'allow'|'deny'|'unavailable'}`。
- * @returns 注销函数。
- */
-export function registerSituationConstraint(constraint) {
-  return registerConstraint(constraint);
-}
-
-/** 列出已登记的授权约束（只读）。 */
-export function situationConstraints() {
-  return listConstraints();
-}
-
-/**
- * 对一条上下文逐一评估全部约束并合成裁决（评估的唯一实现）。
- *
- * ⚠️ 没有任何约束登记时返回 `unavailable / no-constraint`，**不是 allow** ——
- * "没在管"与"检查过没问题"必须不同形（闸门指标须成对报，授权侧的落点）。
- */
-export function evaluateSituationConstraints(context) {
-  return evaluateConstraints(context);
 }
 
 /**
@@ -705,17 +639,6 @@ export function registerSignalsTool(ctx, situations) {
             ...(s.counterWords ? { counterWords: s.counterWords } : {}),
           })),
           external_owners: external.map((s) => s.owner),
-          // —— 授权约束（第二维）：谁登记了、有几条。空表要显式报出来 ——
-          // "机制可用但生态为空"与"生态已长出来"在这里也必须不同形，
-          // 所以报 count 而不是只在有内容时才出现这个字段。
-          constraints: {
-            total: listConstraints().length,
-            owners: [...new Set(listConstraints().map((c) => c.owner))],
-            // 没登记任何约束 ≠ 一切允许：此时 evaluate 返回 no-constraint。
-            note: listConstraints().length === 0
-              ? 'no-constraint：授权侧目前没有单元贡献约束，评估会返回 unavailable（不是 allow）。'
-              : '约束为只读评估（首版不阻断）；evaluateSituationConstraints(context) 查逐条裁决。',
-          },
           // —— 三级诊断：判断 / 提供 / 照做，分开报，不互相冒充 ——
           //
           // 这三段**不能**合并成一句"生效了没有"。它们的含义完全不同：
