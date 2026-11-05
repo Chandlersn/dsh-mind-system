@@ -544,6 +544,13 @@ ok(
 	`package.json (description) claims ${enWord} tools`,
 );
 
+// 头部注释曾写死 "Twelve tools"，十四工具时代仍无人改：四处文档守卫都只盯
+// README / package.json / 纪律，没读 server.js。现在注释改成指向 apply() 的
+// 注册清单（唯一真值源），守卫改为禁止任何数量词回潮。
+const serverHead = (await readFile(path.join(pluginDir, 'server.js'), 'utf8')).slice(0, 1600);
+const staleCountWords = /\b(ten|eleven|twelve|thirteen|fourteen|fifteen|[十十一二三四五]+)个?(记忆)?工具\b|Twelve tools|Fourteen tools/i;
+ok(!staleCountWords.test(serverHead), 'server.js 头部注释不得再写死工具数量（注册清单才是唯一真值源）');
+
 // 工具表成员级核对：README 的每一行工具以 `| \`memory_x\` |` 起头。
 const documented = [...readmeCn.matchAll(/^\| `(memory_\w+)`/gm)].map((m) => m[1]).sort();
 const undocumented = toolNames.filter((n) => !documented.includes(n));

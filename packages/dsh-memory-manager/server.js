@@ -9,10 +9,10 @@
  *   MEMORY.md     = the index: four one-line-summary tables + consensus + env constants
  *   YYYY-MM-DD.md = the RAW daily layer (free-form, model-maintained)
  *
- * Twelve tools (read / search / capability / write / index / insight / fold /
- * rename / check / usage / federation / skill), an injected discipline section,
- * a budgeted pre-step recall hook (RRF-fused ranking + decision repair), and a
- * read-only HTTP API (`/api/memory-org/*`) consumed by the bundled Web panel.
+ * The memory tools (see the registration list in apply() — it is the single
+ * source of truth for the count), an injected discipline section, a budgeted
+ * pre-step recall hook (RRF-fused ranking + decision repair), and a read-only
+ * HTTP API (`/api/memory-org/*`) consumed by the bundled Web panel.
  *
  * This file is the plugin ENTRY (apply + tool registration + hooks). The pure
  * layers live in ./src — see the import block below for the map.
@@ -63,10 +63,16 @@ import { checkDaoBody, philosophicalShape } from './src/dao-shape.js';
  * 多返回了一个未声明的 selfCheck，整个回执被宿主拒收（写成功了、回执报错，
  * 最容易被误当成“写失败”）。同一条教训在 5.11.3 出现过（trust 字段），
  * 这次是它在自检字段上重演 —— schema 与 execute 的返回必须成对维护。
+ *
+ * ⚠️ 2026-11-05：这里**不能**写 `required: true`。宿主的 defineTool 编译器把
+ * 「属性节点上的 required:true」理解为「该属性必填」，会把 selfCheck 塞进每个
+ * 复用本常量的工具的 output 顶层 required 数组。结果：所有不返回 selfCheck 的
+ * 分支（list / read / candidates / activate / retire / delete）回执整条被拒。
+ * 内部字段的 required:true 保留 —— 那是校验 selfCheck 自身结构，不是声明本属性
+ * 必填。两个语义在宿主方言里共用同一个关键字，别混。
  */
 const SELF_CHECK_SCHEMA = {
 	type: 'object',
-	required: true,
 	additionalProperties: false,
 	properties: {
 		ok: { type: 'boolean', required: true },
@@ -1990,7 +1996,8 @@ function memorySkillTool(opts, hooks = {}) {
 								// 5.11.3 lesson, applied BEFORE shipping, not after a
 								// silent-write + rejected-receipt surprise.
 								scope: { type: 'string' },
-								published: { type: 'boolean' },
+						owned: { type: 'boolean' },
+						published: { type: 'boolean' },
 							},
 						},
 					},
@@ -4701,30 +4708,28 @@ export function resolveRecallBudget(configured) {
 }
 
 /**
- * 健康探针工厂 —— **DSH 插件封装标准的自愿接口**（与 `inject` / `Config` 同族）。
+ * 健康探针 —— **DSH 插件封装标准的自愿接口**（与 `inject` / `Config` 同族）。
  *
  * 监督者（CLIS）从模块根具名导出里自动发现它，不需要 emit、不需要注册、
  * 不需要改 patch。见 D:/个人开发/CLIS/docs/PLUGIN-STANDARD.md。
  *
- * 为什么是**工厂**而不是现成对象：探针需要 runHealthCheck / 默认阈值等
- * 模块级依赖，工厂让监督者拿到一个已装配好的探针，而插件自己也不必在
- * 模块加载期做任何 I/O（监督者调用时才真正读盘）。
+ * 导出形状必须是**带 probe() 的对象**（不是工厂函数）：监督层读的是
+ * `ns.healthProbe.probe`，工厂函数会让 `.probe` 为 undefined → 调用即
+ * TypeError，插件从监督视野里静默消失（2026-11-05 审查发现）。装配本身
+ * 不做 I/O —— 只有 probe() 被调用时才真正读盘。
+ *
+ * 用 DEFAULTS 而非 apply() 里的 opts：监督者不知道本插件的 config，
+ * 而检查项（索引体积/迭代块/链接/冷记忆）按默认阈值判断即可。
  *
  * 契约要点（标准要求）：
  * - **只读**：probe() 不修改任何数据；
- * - **不抛错**：内部失败转成 finding，而非 throw；
+ * - **不抛错**：内部失败转成 finding，而非 throw（见 health-inbox.js）；
  * - **code 稳定**：`memory.R14` 这类代号用于去重，不随内容变化。
- *
- * @returns 符合 HealthProbe 契约的探针。
  */
-export function healthProbe() {
-	// 用 DEFAULTS 而非 apply() 里的 opts：监督者不知道本插件的 config，
-	// 而检查项（索引体积/迭代块/链接/冷记忆）按默认阈值判断即可。
-	return createHealthProbe({
-		runHealthCheck,
-		resolveRoot,
-		opts: { ...DEFAULTS },
-	});
-}
+export const healthProbe = createHealthProbe({
+	runHealthCheck,
+	resolveRoot,
+	opts: { ...DEFAULTS },
+});
 
 export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, buildRecallMessage, decisionRepairTargets, indexRowsOf, captureLineFor, insightTrust, DEFAULTS, DISCIPLINE_TEXT };

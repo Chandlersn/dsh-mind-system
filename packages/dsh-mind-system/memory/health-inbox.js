@@ -116,13 +116,29 @@ export function findingsOf(health) {
 export function createHealthProbe({ runHealthCheck, resolveRoot, opts }) {
   return {
     async probe() {
-      const health = await runHealthCheck(resolveRoot(opts), opts);
-      const findings = findingsOf(health);
-      return {
-        plugin: 'dsh-memory-manager',
-        status: statusOf(health.results),
-        findings,
-      };
+      // 监督层反复调用 probe()，它必须只读、且**绝不抛错**：自身检查失败时
+      // 抛错会让自己从监督视野里消失，而坏掉的探针恰恰最该被发现。把任何
+      // 内部异常转成 severity:'error' 的 finding，code 稳定以便去重。
+      try {
+        const health = await runHealthCheck(resolveRoot(opts), opts);
+        const findings = findingsOf(health);
+        return {
+          plugin: 'dsh-memory-manager',
+          status: statusOf(health.results),
+          findings,
+        };
+      } catch (error) {
+        return {
+          plugin: 'dsh-memory-manager',
+          status: 'failing',
+          findings: [{
+            code: 'memory.probe-error',
+            severity: 'error',
+            message: `健康探针自身执行失败：${error?.message ?? String(error)}`,
+            hint: '检查记忆根是否可读、runHealthCheck 是否被正确注入',
+          }],
+        };
+      }
     },
   };
 }

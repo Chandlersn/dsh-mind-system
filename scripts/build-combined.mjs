@@ -12,8 +12,8 @@
  *
  * @module scripts/build-combined
  */
-import { lstatSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { lstatSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { computeTargets, compare, repoRoot } from './build/plan.mjs';
 
 const argv = new Set(process.argv.slice(2));
@@ -55,6 +55,10 @@ function findLinkedInstall(pkgRoot) {
  * @param {Buffer} bytes 内容。
  */
 function writeAtomic(abs, bytes) {
+	// 新增子目录（如某成员第一次带 locale/）时父目录还不存在，必须先建；
+	// 否则 writeFileSync 抛 ENOENT，构建在半途停下一一已写入的文件与未写入的
+	// 混在一起，正是「半改产物比没改更难查」的形态。
+	mkdirSync(dirname(abs), { recursive: true });
 	const tmp = `${abs}.tmp-${process.pid}`;
 	try {
 		writeFileSync(tmp, bytes);

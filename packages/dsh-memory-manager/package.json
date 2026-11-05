@@ -32,11 +32,12 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "test": "node tests/layer-gate.test.js && node tests/layer-selfcheck.test.js && node tests/dao-shape.test.js && node tests/coverage.test.js && node harness-test.mjs && node api-test.mjs && node ui-test.mjs"
+    "test": "node tests/run-all.mjs"
   },
   "exports": {
     ".": "./server.js",
     "./client": "./client.js",
+    "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
@@ -44,6 +45,7 @@
     "health-inbox.js",
     "src/",
     "client.js",
+    "locale/",
     "icon.svg",
     "README.md",
     "README.en.md",
