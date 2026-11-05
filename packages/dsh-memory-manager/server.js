@@ -933,7 +933,13 @@ async function runHealthCheck(root, opts) {
 		// execute 从不读写 MEMORY.md（memory_index 的 zone 枚举也只有 functions/insights）。
 		// 于是每条道都得靠人手工登记，漏登记时没有任何东西会说话——道写进去了、体检全绿、
 		// 而索引里查不到它。这条把那个静默缺口变成可见的。
-		const unindexed = liveDao.filter(({ slug }) => !memText.includes(`dao/${slug}.md`)).map(({ slug }) => slug);
+		// 2026-11-05：判据与 R5 **同一实现**。此前用 `memText.includes('dao/x.md')`
+		// 裸子串——共识区里随口提一句该路径（非登记行）也算"已登记"，于是 R5 报
+		// orphan、R24 沉默，同一个问题两处检查给出相反结论。改用 R5 解析索引得到
+		// 的 indexedHrefs / indexedByZone（同一份解析结果，不另起一套）。
+		const unindexed = liveDao
+			.filter(({ slug }) => !indexedHrefs.has(`dao/${slug}.md`) && !indexedByZone.dao?.has(slug))
+			.map(({ slug }) => slug);
 		if (unindexed.length) {
 			add(
 				'WARN',

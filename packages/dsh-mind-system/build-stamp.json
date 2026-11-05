@@ -125,7 +125,7 @@
     },
     "memory/harness-test.mjs": {
       "source": "dsh-memory-manager/harness-test.mjs",
-      "sha256": "2cae6266e5a4abbbf53b18a2a021d322df6bd4b2e414e350dbdb32b8c09ba012"
+      "sha256": "89fc5f2cb2c07ae19949d74326620ae805c2c66f1f2ec111f4f89ff1765261f5"
     },
     "memory/health-inbox.js": {
       "source": "dsh-memory-manager/health-inbox.js",
@@ -149,7 +149,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "3681607e28ddac1c029e4c3f675f86c710d14bc56bd9f8108cf42a362fc921e8"
+      "sha256": "70cba5d25ed649052b5f1a481392e6300bc393533572e5e56012f19f29be8ba7"
     },
     "memory/src/constants.js": {
       "source": "dsh-memory-manager/src/constants.js",
@@ -169,11 +169,11 @@
     },
     "memory/src/layer-gate.js": {
       "source": "dsh-memory-manager/src/layer-gate.js",
-      "sha256": "256951537ccec73e6e60151c6039a498c12d377957d75e17aca55df5c7f9b8dc"
+      "sha256": "b8c642ec6f5dddf86722a426ee33252379b5c06b39d1c79a38d4661bf39079b6"
     },
     "memory/src/layer-selfcheck.js": {
       "source": "dsh-memory-manager/src/layer-selfcheck.js",
-      "sha256": "24bc4466a3b80eec3e05347e8a1b911ba414d57ab9863c4744be6af0ac9e702d"
+      "sha256": "aaf530b34ea65ac0a37f0ee166b652101a2437905dea5de215dc436a993bf24c"
     },
     "memory/src/markdown.js": {
       "source": "dsh-memory-manager/src/markdown.js",
@@ -201,7 +201,7 @@
     },
     "memory/tests/coverage.test.js": {
       "source": "dsh-memory-manager/tests/coverage.test.js",
-      "sha256": "af213c56f5bdfc4dab825ecbbd9774d0ea25a408b04d747cb4be172611da3084"
+      "sha256": "bf8216d7cc759e0afab1c82c51a2d92cd90229aa58b11ef8687ea1ed6004c4ec"
     },
     "memory/tests/dao-shape.test.js": {
       "source": "dsh-memory-manager/tests/dao-shape.test.js",

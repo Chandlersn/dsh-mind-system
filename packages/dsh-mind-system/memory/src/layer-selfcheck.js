@@ -31,7 +31,7 @@
  * 不碰文件系统（读字节由调用方做），所以可穷举测试。
  */
 
-import { concreteMarkersOf, looksLikeProcedure, daoSourceSlugs, MIN_DAO_SOURCES, MIN_FA_SOURCES } from './layer-gate.js';
+import { concreteMarkersOf, looksLikeProcedure, daoSourceSlugs, MIN_DAO_SOURCES, MIN_FA_SOURCES, maxUnrelatedSubset } from './layer-gate.js';
 import { checkDaoBody } from './dao-shape.js';
 
 /** 各层定义里的硬阈值（与体检 R14 同源，改一处要同时改体检）。 */
@@ -228,13 +228,16 @@ export function checkArtifact(input) {
 			// 计数必须**按来源域去重**：真实的 `> 来源：` 行里同一个域出现两次
 			// （链接标签 + href），按出现次数会算成 2 个来源 —— 单源的专项会被
 			// 误判成法。判据落在 slug 集合上，与 R24(d) 的认领统计同一口径。
-			const slugs = [...srcLine.matchAll(/(?:\.\.\/)?functions\/([^/()\s、]+?)\.md/g)].map((m) => m[1]);
-			const count = new Set(slugs).size;
-			if (count === 0) fail('no-source-link', '「> 来源：」行里没有任何 functions/*.md 回链');
-			else if (count < MIN_FA_SOURCES) {
-				// 单源**不失败**：它落在「专项」是定义允许的落点。但要说清它
-				// 不是普适原则 —— 否则下一步就会有人拿它去萃道、跨域引用。
-				note('downgraded-special', `只有 ${count} 个来源域 → 它是「专项」不是「法」：不要跨域引用，也不得作为道的萃取来源`);
+			const slugs = [...new Set([...srcLine.matchAll(/(?:\.\.\/)?functions\/([^/()\s、]+?)\.md/g)].map((m) => m[1]))];
+			// 2026-11-05：判据必须与 gateFa **同一实现**——此前这里只数去重后的
+			// 个数，从不判"无关"，于是同族双源在写入闸门被判「专项」、落盘回执
+			// 却 ok=true 无提示（同一规则两处实现、结论相反）。改为复用精确解。
+			const independent = maxUnrelatedSubset(slugs);
+			if (slugs.length === 0) fail('no-source-link', '「> 来源：」行里没有任何 functions/*.md 回链');
+			else if (independent < MIN_FA_SOURCES) {
+				// 单源/同族多源**不失败**：它落在「专项」是定义允许的落点。但要说清
+				// 它不是普适原则 —— 否则下一步就会有人拿它去萃道、跨域引用。
+				note('downgraded-special', `${slugs.length} 个来源域里只有 ${independent} 个互相无关 → 它是「专项」不是「法」：不要跨域引用，也不得作为道的萃取来源`);
 			}
 		}
 		const principle = content.match(/^##\s*核心原则\s*\n+\s*[-*]\s*([^\n]+)/mu)?.[1] ?? '';
@@ -332,19 +335,35 @@ export function checkArtifact(input) {
 		// 登记信息，**正文里没有步骤**的技能根本没法被"照做"——它只是一个名字。
 		//
 		// ⚠️ 不能用 `\b`：中文与标点之间没有词边界，`## 步骤\b` 永远不匹配（实测踩过）。
-		const hasHeading = (names) =>
-			content.split('\n').some((l) => /^##\s+/u.test(l) && names.some((n) => l.includes(n)));
-		if (!hasHeading(['Procedure', '步骤', '做法', 'Steps'])) {
-			fail(
-				'no-procedure',
-				'缺步骤节（「## Procedure」/「## 步骤」）：技能是可调用程序，没有步骤它就不是技能，只是一段说明',
-			);
+		// 2026-11-05：只验「标题存在」是覆盖缺口——标题下空空如也照样 ok=true。
+		// 技能的定义是"可调用程序"，必须真有可照做的步骤与可判定的验证。
+		const sectionBody = (names) => {
+			const lines = content.split('\n');
+			let start = -1;
+			for (let i = 0; i < lines.length; i++) {
+				if (/^##\s+/u.test(lines[i]) && names.some((n) => lines[i].includes(n))) { start = i; break; }
+			}
+			if (start === -1) return null; // 无此节
+			let end = start + 1;
+			while (end < lines.length && !lines[end].startsWith('## ')) end++;
+			return lines.slice(start + 1, end).join('\n');
+		};
+		// 一条「非空步骤」= 列表项 / 有序项 / 一行非空白且非纯注释的正文。
+		const hasStep = (body) => body !== null && body.split('\n').some((l) => {
+			const t = l.trim();
+			return t.length > 0 && !/^<!--/.test(t) && (/^[-*+]\s+\S/u.test(t) || /^\d+[.)、]\s+\S/u.test(t) || (!/^#/.test(t) && t.length >= 4));
+		});
+		const proc = sectionBody(['Procedure', '步骤', '做法', 'Steps']);
+		if (proc === null) {
+			fail('no-procedure', '缺步骤节（「## Procedure」/「## 步骤」）：技能是可调用程序，没有步骤它就不是技能，只是一段说明');
+		} else if (!hasStep(proc)) {
+			fail('empty-procedure', '步骤节下没有可执行的步骤（只有标题/空行）：技能必须能被人照着做一遍，而不是只有一个名字');
 		}
-		if (!hasHeading(['Verification', '验证', '检查'])) {
-			fail(
-				'no-verification',
-				'缺验证节（「## Verification」/「## 验证」）：说不出"怎么算做成了"，下次无法判断该不该信它',
-			);
+		const ver = sectionBody(['Verification', '验证', '检查']);
+		if (ver === null) {
+			fail('no-verification', '缺验证节（「## Verification」/「## 验证」）：说不出"怎么算做成了"，下次无法判断该不该信它');
+		} else if (!hasStep(ver)) {
+			fail('empty-verification', '验证节下没有判据（只有标题/空行）：必须写出"怎么算执行成功"，否则无法判断该不该信它');
 		}
 	}
 

@@ -9,13 +9,51 @@
  * @module scripts/verify-combined
  */
 import { computeTargets, compare } from './build/plan.mjs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { createRequire } from 'node:module';
 
 const { manifest, pkgRoot, files } = await computeTargets();
 const diff = compare(pkgRoot, files, manifest.stamp ?? 'build-stamp.json');
 const total = diff.missing.length + diff.changed.length + diff.extra.length;
 
-if (total === 0) {
-	console.log(`verify-combined: ALL PASS（${files.size} 个产物文件与源一致）`);
+// ---------------------------------------------------------------------------
+// 独立断言：运行必需的第三方依赖必须真的在包里、且可解析。
+//
+// 为什么单独一条：`plan.mjs` 的 walkFiles 跳过 node_modules，这些文件既不进
+// build-stamp（不生成哈希）也不进 extra 检测。于是删掉 meta/node_modules 里的
+// 40 个 .js，构建照样报「已经是最新」、verify 照样全绿 —— 部署回执全对，
+// 运行却崩。这正是「拷贝式打包不重建中间产物」的形状：绿灯来自一条根本没
+// 检查过依赖的回路。这里不把依赖纳入构建管辖（第三方产物不该被改写），
+// 只让校验显式看一眼它们是否还在、是否可用。
+// ---------------------------------------------------------------------------
+const DEPENDENCIES = [
+	{
+		label: 'meta/node_modules/@causal-layers/meta-framework',
+		pkg: join(pkgRoot, 'meta', 'node_modules', '@causal-layers', 'meta-framework', 'package.json'),
+		entry: join(pkgRoot, 'meta', 'node_modules', '@causal-layers', 'meta-framework', 'dist', 'src', 'index.js'),
+	},
+];
+const depFailures = [];
+for (const dep of DEPENDENCIES) {
+	if (!existsSync(dep.pkg)) { depFailures.push(`${dep.label} 缺 package.json`); continue; }
+	if (!existsSync(dep.entry)) { depFailures.push(`${dep.label} 缺入口 dist/src/index.js`); continue; }
+	try {
+		const pkg = JSON.parse(readFileSync(dep.pkg, 'utf8'));
+		if (!pkg.version) depFailures.push(`${dep.label} 的 package.json 没有 version（包被掏空）`);
+		// 静态解析：入口能被 Node 找到（不执行它，避免校验带副作用）。
+		createRequire(dep.entry).resolve(dep.entry);
+	} catch (error) {
+		depFailures.push(`${dep.label} 无法解析：${error?.message ?? error}`);
+	}
+}
+if (depFailures.length) {
+	console.error('verify-combined: 运行依赖缺失/损坏（构建指纹看不到它们，故单独报）\n');
+	for (const f of depFailures) console.error(`  - ${f}`);
+}
+
+if (total === 0 && depFailures.length === 0) {
+	console.log(`verify-combined: ALL PASS（${files.size} 个产物文件与源一致；${DEPENDENCIES.length} 个运行依赖在位且可解析）`);
 	process.exit(0);
 }
 

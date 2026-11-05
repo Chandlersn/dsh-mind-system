@@ -1196,6 +1196,34 @@ for (const [form, bullet] of [
 	await rm(daoIdx, { recursive: true, force: true });
 }
 
+// 2026-11-05：反向分叉反例。R24 曾用 `memText.includes('dao/x.md')` 裸子串，
+// 于是「共识区里随口提到该路径」也算已登记 —— R5（结构化解析）报 orphan、
+// R24 沉默，同一个问题两处检查结论相反。现在两者必须都报未登记。
+{
+	const ghostRoot = await mkdtemp(path.join(tmpdir(), 'dsh-r24ghost-'));
+	await mkdir(path.join(ghostRoot, 'dao'), { recursive: true });
+	await writeFile(
+		path.join(ghostRoot, 'dao', '幽灵之道.md'),
+		'# 道\n\n> 性质：道层。\n\n## 命题\n\n命题是一句话\n\n## 来源法\n\n- [a](../insights/a.md)\n- [b](../insights/b.md)\n- [c](../insights/c.md)\n- [d](../insights/d.md)\n- [e](../insights/e.md)\n',
+		'utf8',
+	);
+	// 只在共识区提一句路径，道层小节里没有任何登记行。
+	await writeFile(
+		path.join(ghostRoot, 'MEMORY.md'),
+		['# 索引', '', '## 道层（`dao/`）', '', '## 决策共识 / 规范', '', '- 讨论时提到过 dao/幽灵之道.md，但没有登记它', ''].join('\n'),
+		'utf8',
+	);
+	const gh = await mod.runHealthCheck(ghostRoot, { ...mod.DEFAULTS, newFeatureGraceDays: 0 });
+	ok(gh.results.some((r) => r.rule === 'R5' && r.message.includes('幽灵之道')), 'R5 报 orphan：共识区随口一提不算索引行');
+	// 必须匹配「没有写进 MEMORY.md」这条特定措辞：只查文件名会被 R24 的
+	// 「依据不足」告警误命中，那种断言在自己骗自己（绿灯不携带信息）。
+	ok(
+		gh.results.some((r) => r.rule === 'R24' && r.message.includes('没有写进 MEMORY.md') && r.message.includes('幽灵之道')),
+		'R24 也报未登记——与 R5 同源，不再沉默（旧裸子串会漏）',
+	);
+	await rm(ghostRoot, { recursive: true, force: true });
+}
+
 // 22d) memory_dao 的**写入路径**：此前 execute 从未被任何测试调用过——重复来源能凑数、
 // 上限口径与 R24 不一致、description 承诺写 MEMORY.md 却不写，三者都因此长期无人发现。
 {

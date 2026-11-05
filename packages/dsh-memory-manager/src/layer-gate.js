@@ -220,7 +220,44 @@ export function unrelatedSources(a, b) {
 	let common = 0;
 	while (common < shortLen && x[common] === y[common]) common++;
 	if (common >= Math.max(2, Math.floor(shortLen / 2))) return false;
+	// 2026-11-05：只判共同前缀会漏掉「同族但前缀不同」——`视频渲染` / `渲染管线`
+	// 明显同一实践面，却因首个字不同被判无关，可凑成一条「法」。补一条共享词干
+	// 判据：任一方含长度 ≥2 的公共连续子串（中文按字、英文按词元），视为同源归因。
+	// 只取「较长串里的一个片段在较短串里出现」且长度 ≥2，避免单字噪声（"的"/"与"）。
+	for (let len = Math.min(4, shortLen); len >= 2; len--) {
+		for (let i = 0; i + len <= x.length; i++) {
+			if (y.includes(x.slice(i, i + len))) return false;
+		}
+	}
 	return true;
+}
+
+/**
+ * 求最大无关子集的大小（精确解，不随输入顺序变化）。
+ *
+ * `unrelatedSources` 是**非传递**关系（A~B、B~C 但 A≁C 完全可能），贪心"从
+ * 第一个开始挑"会让同一组来源换个顺序就得到不同 tier —— 层的归属不该由调用
+ * 方传参顺序决定。这里用回溯枚举所有候选子集，取两两无关的最大者；来源数
+ * 通常 <10，指数级完全够用，且结果可复现。
+ *
+ * @param sources 去重后的来源域 slug 列表。
+ * @returns 最大无关子集的大小。
+ */
+export function maxUnrelatedSubset(sources) {
+	let best = 0;
+	const n = sources.length;
+	const walk = (start, picked) => {
+		if (picked.length > best) best = picked.length;
+		// 剪枝：剩下的全加上也超不过当前最好，提前返回
+		if (picked.length + (n - start) <= best) return;
+		for (let i = start; i < n; i++) {
+			if (picked.every((p) => unrelatedSources(p, sources[i]))) {
+				walk(i + 1, [...picked, sources[i]]);
+			}
+		}
+	};
+	walk(0, []);
+	return best;
 }
 export function gateFa(input) {
 	const warnings = [];
@@ -243,12 +280,8 @@ export function gateFa(input) {
 	let tier = sources.length >= MIN_FA_SOURCES ? '法' : '专项';
 	let independentCount = sources.length;
 	if (sources.length >= MIN_FA_SOURCES) {
-		// 取最大无关子集（贪心：任选一个起点，逐个看能否加入）
-		const picked = [];
-		for (const s of sources) {
-			if (picked.every((p) => unrelatedSources(p, s))) picked.push(s);
-		}
-		independentCount = picked.length;
+		// 精确求最大无关子集（关系非传递，贪心会随输入顺序给出不同结论）。
+		independentCount = maxUnrelatedSubset(sources);
 		if (independentCount < MIN_FA_SOURCES) {
 			tier = '专项';
 			warnings.push(
