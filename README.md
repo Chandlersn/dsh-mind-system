@@ -409,8 +409,8 @@ npm test
 
 | 包 | 测试文件 | 用例/断言 |
 |---|---|---|
-| `dsh-agent-mind` | 11 | 124 |
-| `dsh-memory-manager` | 4 | 131 |
+| `dsh-agent-mind` | 14 | 138 |
+| `dsh-memory-manager` | 5 | 153 |
 | `dsh-clis`（源仓库） | 41 | 617 |
 
 ### 关键命令
@@ -534,10 +534,10 @@ npm run install:profile -- --dry-run   # 只说做什么
 
 | 包 | 规模 |
 |---|---|
-| `dsh-agent-mind` | 20 文件 / 5570 行 |
+| `dsh-agent-mind` | 20 文件 / 5615 行 |
 | `dsh-clis` | 源仓库 45 个 .ts / 9458 行 |
 | `dsh-meta-framework` | 10 文件 / 3230 行 |
-| `dsh-memory-manager` | 4 文件 / 5747 行 |
+| `dsh-memory-manager` | 4 文件 / 5810 行 |
 
 memory-manager 只计常改的 4 个文件（`server.js` + 三个判据模块），不是全包。
 
