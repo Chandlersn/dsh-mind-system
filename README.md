@@ -126,7 +126,7 @@ dsh plugin --profile web add dsh-mind-system
 分节点名六件工具：`clis_classify` / `clis_run` / `clis_plan`（判结构）、
 `memory_read` / `memory_search`（先查再动）、`meta_reframe`（重定义）。
 
-### 五种处境（调度判定的结果）
+### 五种处境（编排判定的结果）
 
 | 处境 | 何时进入 | 工具面怎么变 |
 |---|---|---|
