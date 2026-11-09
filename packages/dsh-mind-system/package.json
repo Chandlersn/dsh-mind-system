@@ -26,6 +26,7 @@
     "./clis": "./clis/index.js",
     "./agent-mind": "./mind/index.js",
     "./meta-framework": "./meta/index.js",
+    "./valves": "./valves/index.js",
     "./memory-manager": "./memory/server.js",
     "./client": "./memory/client.js",
     "./package.json": "./package.json"
@@ -38,6 +39,7 @@
     "mind/",
     "meta/",
     "memory/",
+    "valves/",
     "README.md",
     "LICENSE"
   ],

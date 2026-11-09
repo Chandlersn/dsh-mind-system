@@ -149,7 +149,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "70cba5d25ed649052b5f1a481392e6300bc393533572e5e56012f19f29be8ba7"
+      "sha256": "390c7c4bb5c5e727ab34677b8650e7db63f52919a7d8b287d72200362228b4af"
     },
     "memory/src/constants.js": {
       "source": "dsh-memory-manager/src/constants.js",
@@ -198,6 +198,10 @@
     "memory/src/util.js": {
       "source": "dsh-memory-manager/src/util.js",
       "sha256": "4fea25513e5a05d31ab5b8f1763e9daa38269f9c94d5b0e68fbee6050d0f2999"
+    },
+    "memory/src/valves-bridge.js": {
+      "source": "dsh-memory-manager/src/valves-bridge.js",
+      "sha256": "2b4715ddc1ffcf490ecacd55d24efb97c83bebefbd3e8420789b506967321c63"
     },
     "memory/tests/coverage.test.js": {
       "source": "dsh-memory-manager/tests/coverage.test.js",
@@ -382,6 +386,46 @@
     "mind/test/sampling.test.js": {
       "source": "dsh-agent-mind/test/sampling.test.js",
       "sha256": "363de3faf6bff23bcde062b5e2c123c63685969b579a723a08a55903abde5b78"
+    },
+    "valves/README.md": {
+      "source": "dsh-valves/README.md",
+      "sha256": "a8876b0739aedeaa666e3e02175e1c979da335ea2ebf1bdf27de7f1bd2361fae"
+    },
+    "valves/index.js": {
+      "source": "dsh-valves/index.js",
+      "sha256": "26fc19e2e0f493b09b4fbaca9dc5d6c7cf23c363e03d9bf6f0af1029b1042425"
+    },
+    "valves/package.json": {
+      "source": "dsh-valves/package.json",
+      "sha256": "6518ca0701ab5325e197cfec81438005d2bc4ff24bc91caa73dcbd1765750275"
+    },
+    "valves/src/predicates.js": {
+      "source": "dsh-valves/src/predicates.js",
+      "sha256": "74d8b996f110b28894551c4777eb2c16bf18b89046306b175952c5a484a96340"
+    },
+    "valves/src/store.js": {
+      "source": "dsh-valves/src/store.js",
+      "sha256": "2645ef07d0fc87a219ee8aada4bc14fd8fb6995e465eac78a3c1f922181dc270"
+    },
+    "valves/src/thresholds.js": {
+      "source": "dsh-valves/src/thresholds.js",
+      "sha256": "d9fe54fe9ac8be513dfcc9de6f5767fad4629fffd4c06970de6e8b2131ad06c8"
+    },
+    "valves/test/entry.test.js": {
+      "source": "dsh-valves/test/entry.test.js",
+      "sha256": "3be3c64cb985bfd2e69d2010bb9cef3436b2c752cd92d412703b5f0bfc813563"
+    },
+    "valves/test/mutation-check.mjs": {
+      "source": "dsh-valves/test/mutation-check.mjs",
+      "sha256": "2f14da7eae4da18a26344436f6634ae7d47aa8e4edeffeb667351f6034aa9965"
+    },
+    "valves/test/predicates.test.js": {
+      "source": "dsh-valves/test/predicates.test.js",
+      "sha256": "9abb8b0b399ab5fb69752ed5f9ef462d161c88ff051548126a94d4327c1af4c8"
+    },
+    "valves/test/store.test.js": {
+      "source": "dsh-valves/test/store.test.js",
+      "sha256": "bfceb9520a15f6d7cae573c939621c691a8cd2e93ed7fb3f56974587edac22d8"
     }
   }
 }

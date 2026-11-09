@@ -51,6 +51,7 @@ const suites = [
   // clis：无独立测试目录（其契约由 mind-system 清单测试 + mind 的接口测试覆盖）
   { name: 'agent-mind', files: readdirSync(join(pkgRoot, 'mind', 'test')).filter((f) => f.endsWith('.test.js')).map((f) => `mind/test/${f}`) },
   { name: 'meta-framework', files: readdirSync(join(pkgRoot, 'meta', 'test')).filter((f) => f.endsWith('.test.js')).map((f) => `meta/test/${f}`) },
+  { name: 'valves', files: readdirSync(join(pkgRoot, 'valves', 'test')).filter((f) => f.endsWith('.test.js')).map((f) => `valves/test/${f}`) },
   { name: 'memory-manager tests/', files: readdirSync(join(pkgRoot, 'memory', 'tests')).filter((f) => f.endsWith('.test.js')).map((f) => `memory/tests/${f}`) },
 ];
 

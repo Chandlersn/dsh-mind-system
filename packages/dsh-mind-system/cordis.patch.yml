@@ -4,8 +4,9 @@
     # 1. clis 四组件 → clis 工具包（工具包 inject 依赖那四个服务，
     #    服务没就位时工具包不激活）
     # 2. meta-framework → 依赖 clis 的分类器（ctx.get 取服务）
-    # 3. memory-manager → 自足
-    # 4. mind → 最后（需要 tools 与 systemPrompt 都已就位）
+    # 3. valves → 发布 'valves' 服务（memory 经 ctx.get 可选探测）
+    # 4. memory-manager → 自足（valves 缺了照常工作）
+    # 5. mind → 最后（需要 tools 与 systemPrompt 都已就位）
     # 插件 id（面板/探针显示）来自各入口模块的 name 导出，保持不变。
     - id: clis-classifier
       name: 'dsh-mind-system/clis-classifier'
@@ -24,6 +25,9 @@
       config: {}
     - id: meta-framework
       name: 'dsh-mind-system/meta-framework'
+      config: {}
+    - id: valves
+      name: 'dsh-mind-system/valves'
       config: {}
     - id: memory-manager
       name: 'dsh-mind-system/memory-manager'

@@ -59,6 +59,12 @@ const PACKAGES = {
 		tools: [['server.js', /name:\s*'(memory_\w+)'/g]],
 		testDir: 'tests',
 	},
+	'dsh-valves': {
+		// 工具名的单一真值源是 TOOL_NAMES 常量块，从块里取全部 'valve_*' 字面量
+		tools: [['index.js', /TOOL_NAMES = \{[^}]*'(valve_\w+)'[^}]*\}/gs]],
+		probes: [['index.js', /PROBE_CODES = \{([\s\S]*?)\n\}/g]],
+		testDir: 'test',
+	},
 	'dsh-mind-system': {
 		tools: [],
 		testDir: null,
@@ -73,7 +79,14 @@ for (const [pkg, spec] of Object.entries(PACKAGES)) {
 	// ---- 工具：提到的必须真实，且真实的必须被提到 ----
 	const realTools = new Set();
 	for (const [file, re] of spec.tools ?? []) {
-		for (const m of read(join(pkgs, pkg, file)).matchAll(re)) realTools.add(m[1]);
+		for (const m of read(join(pkgs, pkg, file)).matchAll(re)) {
+			// 块型正则（如 valves 的 TOOL_NAMES）：从整块里取全部 valve_*/mind_* 等字面量
+			if (m[0].includes('= {')) {
+				for (const k of m[0].matchAll(/'([a-z]+_\w+)'/g)) realTools.add(k[1]);
+			} else if (m[1] !== undefined) {
+				realTools.add(m[1]);
+			}
+		}
 	}
 	if (realTools.size > 0) {
 		for (const t of realTools) {

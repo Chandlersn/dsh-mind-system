@@ -1,0 +1,60 @@
+{
+  "name": "dsh-valves",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "DSH 插件：心智系统两类阀门（下行准入 + 上行准入）——判据纯函数、双侧账本、负向规则库与人工确认通道。阈值暂定，待实测分布校准。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "valves",
+    "governance",
+    "negative-rules"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./predicates": "./src/predicates.js",
+    "./store": "./src/store.js",
+    "./thresholds": "./src/thresholds.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "src/",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chandlersn/dsh-mind-system.git",
+    "directory": "packages/dsh-valves"
+  }
+}

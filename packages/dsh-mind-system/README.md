@@ -1,8 +1,8 @@
 # dsh-mind-system
 
-**DeepSeek Harness 心智系统** —— 一次装齐四个插件，让 agent 知道"遇到什么问题先问什么"。
+**DeepSeek Harness 心智系统** —— 一次装齐五个插件，让 agent 知道"遇到什么问题先问什么"。
 
-不是四个工具的清单，是一条链：
+不是五个工具的清单，是一条链：
 
 ```
 用户的问题
@@ -48,7 +48,7 @@ DSH 的工具面是**平铺**的：几十个工具并排躺在提示里，每个
 
 ## 安装
 
-聚合包**装载四个成员**，是它们唯一的装载入口。
+聚合包**装载五个成员**，是它们唯一的装载入口。
 
 ```bash
 dsh plugin --profile web add dsh-mind-system
@@ -58,7 +58,7 @@ dsh plugin --profile web add dsh-mind-system
 
 ### ⚠️ 别再单独装其中一家
 
-聚合包已经装载了四家。再单独装某家，那家会被**装载两次**：同一 id 的装载点
+聚合包已经装载了五家。再单独装某家，那家会被**装载两次**：同一 id 的装载点
 由后者覆盖，仍能工作，但行为取决于装载顺序（实测：聚合包自己会被挤掉）。
 
 只想要其中一家的能力时，从聚合包的 `bundles` 里移除其余即可 ——
@@ -66,7 +66,7 @@ dsh plugin --profile web add dsh-mind-system
 
 ### 也可以分别安装
 
-若你不想用聚合包，四家各自独立可用（各自有各自的 bundle patch）：
+若你不想用聚合包，五家各自独立可用（各自有各自的 bundle patch）：
 
 ```bash
 dsh plugin --profile web add dsh-agent-mind
@@ -120,13 +120,13 @@ dsh plugin --profile web add dsh-memory-manager
 
 | 形态 | 实测结果 |
 |---|---|
-| 聚合包不装载四家 | 单独装 = 四家全都不在（`clis_probe` 消失） |
-| 聚合包装载 + 四家也在 `bundles` | 双装载，**聚合包自己被挤掉**（user_plugins 14，mind-system 消失） |
-| **聚合包装载 + 四家不在 `bundles`** | **唯一入口、零重复** ← 采用 |
+| 聚合包不装载五家 | 单独装 = 五家全都不在（`clis_probe` 消失） |
+| 聚合包装载 + 五家也在 `bundles` | 双装载，**聚合包自己被挤掉**（user_plugins 14，mind-system 消失） |
+| **聚合包装载 + 五家不在 `bundles`** | **唯一入口、零重复** ← 采用 |
 
 ---
 
-## 四家各做什么
+## 五家各做什么
 
 ### dsh-agent-mind —— 调度层
 
@@ -164,6 +164,16 @@ dsh plugin --profile web add dsh-memory-manager
 - 写入**前**拒绝 + 写入**后**回读复核，回执带 `selfCheck`
 - 25 条体检判据（R0–R25 + F/TEMP）
 - 向调度层广播记忆词汇（`memory-recall`）
+- 装了 dsh-valves 时：召回自动注入命中的已确认**负向规则**，insight/dao 写入送阀门账本留痕（缺了照常工作）
+
+### dsh-valves —— 两类阀门
+
+下行准入（原则是否已具体化）+ 上行准入（反例是否够格改上层），三工具：`valve_check` / `valve_confirm` / `valve_metrics`。
+
+- 判据纯函数一处实现；阈值**全部暂定**，`valve_metrics` 的双侧分布（evaluated/skipped/missRate）即将来校准的原料
+- 成败只认外部证据（self_report 拒）；法→道不设量化门，永远人工
+- 负向规则唯一生效通道是人工确认（`valve_confirm`）；生效后下行拦截与 memory 召回零配合自动使用
+- 层级写入闸门仍归 memory（判据单一实现）：valves 只补负向通道与漏判分母
 
 ---
 
@@ -192,7 +202,7 @@ dsh plugin --profile web add dsh-memory-manager
 
 聚合包导出 `healthProbe`（供 dsh-clis 的监督层自动发现）。
 
-聚合包**不提供任何能力** —— 它只是四家成员的共同装载点。但"某个成员没装上"
+聚合包**不提供任何能力** —— 它只是五家成员的共同装载点。但"某个成员没装上"
 这件事此前**完全不可见**：宿主不报错（少装一家只是降级），聚合包自己没有
 探针，`apply()` 又是纯 no-op。于是"装了个残缺的聚合包"没人知道。
 
@@ -211,7 +221,7 @@ dsh plugin --profile web add dsh-memory-manager
 
 | 症状 | 多半是 | 怎么办 |
 |---|---|---|
-| 聚合包装了，但四家都不在 | 聚合包与单独安装互斥 | 从 `bundles` 里去掉单独装的那家，或去掉聚合包 |
+| 聚合包装了，但五家都不在 | 聚合包与单独安装互斥 | 从 `bundles` 里去掉单独装的那家，或去掉聚合包 |
 | `clis_probe` 报 `unknown tool` | CLIS 没装载成功 | 看宿主启动日志的 "did not activate"；多半是 `inject` 的依赖服务没就位 |
 | 调度命中但工具面没变 | 一拍延迟（结构性） | 处境在下一轮生效，不是 bug |
 | `mind_signals` 工具调不到 | 宿主没有 `dsh-tools` | 看 `mind` 的 warn 日志；工具降级但其它功能不受影响 |
@@ -265,7 +275,7 @@ dsh plugin --profile web add dsh-memory-manager
 node scripts/publish-check.mjs
 ```
 
-验四组：装载点能被宿主解析、依赖声明完整、唯一入口形态（四家不在 `bundles` 里）、
+验四组：装载点能被宿主解析、依赖声明完整、唯一入口形态（五家不在 `bundles` 里）、
 版本区间与本机实际版本对得上。
 
 ---

@@ -55,7 +55,7 @@ dsh plugin --profile web add dsh-mind-system
 
 装完**重启宿主**（server 半边需要重新装载）。
 
-聚合包 `dsh-mind-system` **装载四个成员**，是它们唯一的装载入口 —— 再单独装其中一家就会双装载。
+聚合包 `dsh-mind-system` **装载五个成员**，是它们唯一的装载入口 —— 再单独装其中一家就会双装载。
 
 ### 只想用其中一家的能力
 
@@ -72,9 +72,9 @@ dsh plugin --profile web add dsh-mind-system
 
 | 形态 | 实测结果 |
 |---|---|
-| 聚合包不装载四家 | 单独装 = 四家全都不在（`clis_probe` 消失） |
-| 聚合包装载 + 四家也在 `bundles` | 双装载，**聚合包自己被挤掉**（user_plugins 14，mind-system 消失） |
-| **聚合包装载 + 四家不在 `bundles`** | **唯一入口、零重复** ← 采用 |
+| 聚合包不装载五家 | 单独装 = 五家全都不在（`clis_probe` 消失） |
+| 聚合包装载 + 五家也在 `bundles` | 双装载，**聚合包自己被挤掉**（user_plugins 14，mind-system 消失） |
+| **聚合包装载 + 五家不在 `bundles`** | **唯一入口、零重复** ← 采用 |
 
 ---
 
@@ -352,7 +352,7 @@ CLIS 的真正源码在独立仓 `Chandlersn/dsh-clis`（多包 workspace：`@ca
 |---|---|---|
 | 改了插件代码，行为没变，也没报错 | 该包**不是** junction（是拷贝），或不在 HMR `root` 里 | 先 `Get-Item ...node_modules/dsh-mind-system -Force` 看 `LinkType`：不是 `Junction` 就按下面「装进 profile」一节改；`root` 要写**仓库真实路径**（本机已配），不要写 `node_modules` 路径 —— `**/node_modules` 默认被过滤 |
 | `clis_probe` 报 `unknown tool` | CLIS 没装载成功 | 看宿主启动日志的 "did not activate"；多半是 `inject` 的依赖服务没就位 |
-| 聚合包装了，但四家都不在 | 聚合包与单独安装互斥 | 从 `bundles` 里去掉单独装的那家，或去掉聚合包 |
+| 聚合包装了，但五家都不在 | 聚合包与单独安装互斥 | 从 `bundles` 里去掉单独装的那家，或去掉聚合包 |
 | 调度命中但工具面没变 | 一拍延迟（结构性） | 处境在下一轮生效，不是 bug |
 | `mind_signals` 工具调不到 | 宿主没有 `dsh-tools` | 看 `mind` 的 warn 日志；工具降级但其它功能不受影响 |
 | `memory_check` 报 R5 孤儿文件 | 新建了分区文件但没进索引 | 用 `memory_index` 收一行；不收就等于召回不到 |
@@ -440,7 +440,7 @@ node scripts/install-profile.mjs
 node scripts/install-profile.mjs --dry-run
 ```
 
-### 聚合包是产物，四个成员包才是源
+### 聚合包是产物，五个成员包才是源
 
 `packages/dsh-mind-system/{clis,mind,meta,memory}/` 下的 84 个文件全部由
 `scripts/build-combined.mjs` 生成。规则只有两处：
@@ -537,7 +537,7 @@ npm run install:profile -- --dry-run   # 只说做什么
 | `dsh-agent-mind` | 20 文件 / 5615 行 |
 | `dsh-clis` | 源仓库 45 个 .ts / 9458 行 |
 | `dsh-meta-framework` | 10 文件 / 3230 行 |
-| `dsh-memory-manager` | 4 文件 / 5810 行 |
+| `dsh-memory-manager` | 4 文件 / 5877 行 |
 
 memory-manager 只计常改的 4 个文件（`server.js` + 三个判据模块），不是全包。
 
@@ -550,6 +550,7 @@ packages/dsh-agent-mind       → npm: dsh-agent-mind
 packages/dsh-clis             → npm: dsh-clis
 packages/dsh-meta-framework   → npm: dsh-meta-framework
 packages/dsh-memory-manager   → npm: dsh-memory-manager
+packages/dsh-valves           → npm: dsh-valves
 packages/dsh-mind-system      → npm: dsh-mind-system（聚合包）
 ```
 

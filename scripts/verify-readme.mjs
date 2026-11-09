@@ -57,6 +57,7 @@ const toolSpecs = [
 	['dsh-clis', 'index.js', /name:\s*"(clis_\w+)"/g],
 	['dsh-meta-framework', 'src/tools.js', /TOOL_NAME\s*=\s*'(\w+)'/g],
 	['dsh-memory-manager', 'server.js', /name:\s*'(memory_\w+)'/g],
+	['dsh-valves', 'index.js', /'(valve_\w+)'/g],
 ];
 let toolTotal = 0;
 for (const [pkg, file, re] of toolSpecs) {
@@ -68,7 +69,7 @@ for (const [pkg, file, re] of toolSpecs) {
 		ok(pkgReadme.includes(n), `${n} 在 ${pkg}/README.md 里`);
 	}
 }
-console.log(`  · 四包共 ${toolTotal} 个工具，逐个出处见各包 README`);
+console.log(`  · ${toolSpecs.length} 包共 ${toolTotal} 个工具，逐个出处见各包 README`);
 
 // ---------------------------------------------------------------------------
 console.log('\n--- 2. 判据数（memory_check 实际检查的）---');

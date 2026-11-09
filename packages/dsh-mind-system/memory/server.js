@@ -54,6 +54,9 @@ import { gateDao, gateFa, concreteMarkersOf, MIN_DAO_SOURCES, MAX_DAO_ENTRIES, d
 // 与 layer-gate（写入前准入）分工：准入看输入，自检看**磁盘上的产物**。
 import { checkArtifact, selfCheckLine, selfCheckWarnings } from './src/layer-selfcheck.js';
 import { checkDaoBody, philosophicalShape } from './src/dao-shape.js';
+// 阀门桥（2026-11-09）：对 dsh-valves 的可选依赖——负向规则召回注入 + 上行评估留痕。
+// 缺 valves 时全部返回 undefined，既有行为一分不变（N4 降级）。
+import { relevantNegativeRules, recordUpwardWrite, upwardEntryFromWrite } from './src/valves-bridge.js';
 
 /**
  * 层级自检结果的输出形状（2026-11-02）。
@@ -2597,6 +2600,21 @@ function memoryInsightTool(opts) {
 				type: 'string',
 				description: '可选：被本思想取代的旧主题 slug（须已存在于 insights/）。自动给旧文件加“已取代”头部并链接到本主题（不删除，保留历史）。',
 			},
+			valve_evidence: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					evidence: { type: 'array', items: { type: 'string' }, description: '反例/trace 引用列表。' },
+					verifiable_by: { type: 'string', description: '用什么外部手段可推翻本原则（J1 防伪）。' },
+					skill_coverage: { type: 'integer', description: '覆盖独立技能数。' },
+					scenario_coverage: { type: 'integer', description: '覆盖场景数。' },
+					anti_example_count: { type: 'integer', description: '可外部检验的反例数。' },
+					predict_rate: { type: 'number', description: '预测新场景成功率（0–1）。' },
+					overlap: { type: 'number', description: '与已有判据的重叠度（0–1）。' },
+				},
+				description:
+					'可选：上行阀门的量化证据（装了 dsh-valves 才消费；只留痕，不影响写入判定）。不给则账本如实记"证据不足"。',
+			},
 			date: { type: 'string', description: 'YYYY-MM-DD；缺省今天。' },
 		},
 		output: {
@@ -2731,6 +2749,16 @@ function memoryInsightTool(opts) {
 			const onDiskInsight = (await readIfExists(p)) ?? '';
 			const selfCheck = checkArtifact({ layer: '法', content: onDiskInsight, relPath: `insights/${theme}.md` });
 			warnings.push(...selfCheckWarnings(selfCheck));
+			// 上行评估留痕（2026-11-09）：写入成功后把证据送 valves 账本。
+			// 只留痕不改结果——生效判据仍是上面的 gateFa（判据单一实现），
+			// 账本记的是"这次写入带没带可外部检验的证据"，是校准阈值的分布原料。
+			const valveTrace = recordUpwardWrite(
+				opts.ctx,
+				upwardEntryFromWrite('criterion', args, linked.map((s) => `functions/${s}.md`)),
+			);
+			if (valveTrace && (valveTrace.action === 'downgrade' || valveTrace.action === 'reject')) {
+				warnings.push(`valves 上行评估：${valveTrace.action}（${valveTrace.reason}）——不影响本次写入（gateFa 已过），但证据链在阀门账本里记为不足`);
+			}
 			const out = {
 				insightFile: p,
 				linkedSources: linked.map((s) => `functions/${s}.md`),
@@ -2768,6 +2796,15 @@ function memoryDaoTool(opts) {
 			body: { type: 'string', required: true, description: '正文（Markdown）：三种形态 / 推理用法 / 依据展开 / 边界。命题一句话在这里展开成可用的推理前提。**不要再写「## 来源法」标题**——那一节由本工具按 extractedFrom 追加并读取，正文再写一个会被静默忽略（该用「## 依据展开」）。' },
 			date: { type: 'string', description: 'YYYY-MM-DD；缺省今天。' },
 			supersedes: { type: 'string', description: '可选：被本道取代的旧道名。旧文件保留并打取代标记。' },
+			valve_evidence: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					evidence: { type: 'array', items: { type: 'string' }, description: '来源法/反例引用列表。' },
+					verifiable_by: { type: 'string', description: '人工判断的依据说明。' },
+				},
+				description: '可选：上行阀门证据。法→道在阀门侧永远人工闸门，这里只留痕。',
+			},
 		},
 		output: {
 			schema: {
@@ -2949,6 +2986,10 @@ function memoryDaoTool(opts) {
 			const onDisk = (await readIfExists(targetPath)) ?? '';
 			const selfCheck = checkArtifact({ layer: '道', content: onDisk, relPath: `dao/${name}.md` });
 			warnings.push(...selfCheckWarnings(selfCheck));
+
+			// 上行评估留痕（2026-11-09）：法→道在 valves 侧永远 human_gate（不量化），
+			// 这里只把"又一条道经人工闸门落盘"记进账本，供 valve_metrics 汇总。
+			recordUpwardWrite(opts.ctx, upwardEntryFromWrite('axiom', args, existingLaws.map((s) => `insights/${s}.md`)));
 
 			return {
 				daoFile: targetPath,
@@ -4357,6 +4398,9 @@ export function apply(ctx, config) {
 	loadHost();
 
 	const opts = {
+		// 阀门桥要经 ctx.get('valves') 运行时探测（可选依赖，不进 inject——
+		// 声明了就变成硬依赖，没装 valves 的宿主上 memory 永不装载）。
+		ctx,
 		memoryRoot: typeof config?.memoryRoot === 'string' && config.memoryRoot.trim() ? config.memoryRoot.trim() : undefined,
 		// Where skill bundles live. Defaults to <dshHome>/skills (the host's own
 		// user skill root); tests override it so they never touch the real catalog.
@@ -4603,12 +4647,35 @@ export function apply(ctx, config) {
 						recallServed.delete(recallServed.keys().next().value);
 					}
 					recallServed.set(payload.agent.id, signature);
-					if (!rows.length) return null;
+					// 负向规则注入（2026-11-09，阀门下行通道的零配合落点）：
+					// 已人工确认的禁令若关键词命中本轮输入，即使记忆索引一行都
+					// 没匹配上也要注入——"什么不能做"必须在动手前到达上下文。
+					// 桥失败/服务不在 → undefined → 行为与旧版完全一致。
+					let negativeLines = [];
+					try {
+						const hits = await relevantNegativeRules(opts.ctx, userText);
+						if (Array.isArray(hits)) negativeLines = hits;
+					} catch {
+						negativeLines = [];
+					}
+					if (!rows.length && !negativeLines.length) return null;
 					// Usage signal: what recall actually put in front of the model is
 					// the demand side of the memory's popularity. Fire and forget —
 					// logging must never delay or break the step.
 					for (const r of rows) void appendUsage(resolveRoot(opts), { href: r.href, kind: 'recall' });
-					return createUserMessage(buildRecallMessage(rows));
+					const message = rows.length
+						? buildRecallMessage(rows)
+						: { role: 'user', content: [{ type: 'text', text: '' }], source: { kind: 'memory-manager/recall', form: 'recall' } };
+					if (negativeLines.length) {
+						const block = [
+							'### ⛔ 负向规则（valves · 已人工确认）',
+							'',
+							'以下禁令与本轮输入相关，动手前先核对，命中即换路径：',
+							...negativeLines.map((r) => `- [${r.id}] ${r.statement}`),
+						].join('\n');
+						message.content = [{ type: 'text', text: `${message.content[0]?.text ? message.content[0].text + '\n\n' : ''}${block}` }];
+					}
+					return createUserMessage(message);
 				};
 				// Absolute budget: whichever settles first wins. A timeout injects
 				// nothing (silence), never a slow or partial recall.

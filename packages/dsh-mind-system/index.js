@@ -38,7 +38,8 @@ export const inject = [];
  *
  * 顺序的依据：服务提供者先于消费者——
  * clis 四组件 → clis 工具包（inject 依赖那四服务）→
- * meta-framework（依赖 clis 分类器）→ memory-manager（自足）→
+ * meta-framework（依赖 clis 分类器）→ valves（发布 'valves' 服务）→
+ * memory-manager（经 ctx.get 可选探测 valves，晚装也能命中但不依赖顺序）→
  * mind（需要 tools 与 systemPrompt 都已就位）→ 本包最后收口。
  */
 export const MEMBERS = [
@@ -48,15 +49,16 @@ export const MEMBERS = [
   'dsh-mind-system/clis-orchestrator',
   'dsh-mind-system/clis',
   'dsh-mind-system/meta-framework',
+  'dsh-mind-system/valves',
   'dsh-mind-system/memory-manager',
   'dsh-mind-system/agent-mind',
 ];
 
 /**
- * 四个成员的**子目录名**（包内，与 MEMBERS 一一对应去重）。
+ * 五个成员的**子目录名**（包内，与 MEMBERS 一一对应去重）。
  * 用于探针的磁盘检查：目录在 = 源码并入完成。
  */
-export const MEMBER_PACKAGES = ['clis', 'meta', 'memory', 'mind'];
+export const MEMBER_PACKAGES = ['clis', 'meta', 'memory', 'mind', 'valves'];
 
 /** clis 的四个子组件（装载点形态，缺一工具包不激活）。 */
 export const CLIS_COMPONENTS = [

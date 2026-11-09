@@ -117,6 +117,7 @@ const MEMBER_ENTRY = {
   meta: ['index.js', join('src', 'tools.js')],
   memory: ['server.js', 'health-inbox.js', 'client.js'],
   mind: ['index.js', join('src', 'orchestrate.js')],
+  valves: ['index.js', join('src', 'predicates.js'), join('src', 'store.js'), join('src', 'thresholds.js')],
 };
 for (const dir of MEMBER_PACKAGES) {
   ok(existsSync(join(pkgRoot, dir)), `成员子目录 ${dir}/ 在包内`);

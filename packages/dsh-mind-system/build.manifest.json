@@ -42,6 +42,13 @@
         { "path": ".gitignore", "why": "仓库级元数据" },
         { "path": "cordis.patch.yml", "why": "装配统一由合成包根 patch 表达" }
       ]
+    },
+    {
+      "package": "dsh-valves",
+      "dir": "valves",
+      "exclude": [
+        { "path": "cordis.patch.yml", "why": "装配统一由合成包根 patch 表达" }
+      ]
     }
   ],
   "stamp": "build-stamp.json"
