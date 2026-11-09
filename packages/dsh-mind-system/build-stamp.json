@@ -149,7 +149,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "8b0e2f18f1e7bb31462f8bd95b29031f4afb749f80560d13f769523319394625"
+      "sha256": "cb75f501d60ab959ef31650ea733b4f08aafed786587a8ff59855c5551c64bbd"
     },
     "memory/src/constants.js": {
       "source": "dsh-memory-manager/src/constants.js",
