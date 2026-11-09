@@ -11,7 +11,7 @@
 
 本包补这两件，判据是纯函数、双侧记账、生效必须人工确认。
 
-## 四个工具
+## 五个工具
 
 | 工具 | 做什么 | 不做什么 |
 |---|---|---|
@@ -19,6 +19,13 @@
 | `valve_confirm` | 人工确认后写负向规则库（唯一生效通道） | 未经用户确认不得调用 |
 | `valve_metrics` | 双侧账本：evaluated/admitted/skipped + missRate + reason/gate/origin 分布 + dailyCount | 不自评"阀门在工作"——分布给读的人判 |
 | `valve_nominate` | 自动提名器（阶段 II）：负向吃 clis 失败账本重复签名、正向吃 memory 使用聚合；check=true 立即送阀落账。channel=clis_trace 消费 clis-history 提名+裁决成对留痕（幂等，账本当游标）；channel=criteria 从真实 insights 来源回链数覆盖喂五门 | 只提名不生效；不编造成功率与反例数（数不出的留空，阀门如实拒/downgrade——那是设计：先人工补外部证据） |
+| `valve_govern` | 治理循环单轮（阶段 III）：账本→受检原则体检（引用覆盖率+反例四判据）→失效出改定义提议；归类提名代码校验（置信度 <0.7 转人工） | 不执行任务、不改规则库——提议生效走人工；不自动枚举全部原则 |
+
+### 覆盖率口径（III-2，单一真值源 src/governance.js）
+
+- **引用覆盖率**（默认，可代码算）：引用原则的判定数 / 窗口内日常判定数。"引用"= 账本行显式 `principle_refs`（valve_check 的 data 里声明）；**不猜语义关联**。
+- **语义覆盖率**：只能人工判读后显式传 `semantic_coverage`，报告标注 basis=human_semantic。
+- **小样本保护**：窗口内样本 <10（暂定）不出覆盖率（null → checkPrinciple 走 uncertain）——3 条里 1 条引用的 0.33 是噪声不是失效。
 
 ### 样本口径（origin）
 
@@ -78,6 +85,6 @@ node test/mutation-check.mjs  # 变异验证：改坏判据必须红
 
 - 负向匹配是关键词包含，不是语义相似度（§4.8 的 embedder 是后续可选增强，缺了降级不阻断）。
 - 技能闸门的"高置信度快速通道"未开：v1 全部转人工，等真实分布出来再放。
-- 外层治理循环只落了判据核（checkPrinciple），归类与定时巡检未建。
+- 外层治理循环有单轮体（valve_govern：归类校验+原则体检+提议），定时巡检未建（III-7）；受检原则由调用方指定，不自动枚举。
 - 灰度放量/批量回滚/层修改流程未建（说明书阶段 D/G，按路线后做）。
 - 提名器正向侧需要调用方传入 usage 聚合（不反向 import memory）；未传时如实报"本次未查"。

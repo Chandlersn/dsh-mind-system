@@ -136,9 +136,10 @@ test('apply：三工具注册、探针 ok', () => {
 	}
 });
 
-test('apply：真实宿主 defineTool 编译三份 schema（宿主方言最严格端）', async () => {
+test('apply：真实宿主 defineTool 编译全部 schema（宿主方言最严格端）', async () => {
 	// harness-test 抓到过的坑：object 参数缺 additionalProperties 声明会被
 	// 宿主 JsonSchemaError 拒编——stub 测试全绿也挡不住。这条用真编译器。
+	// 数量断言绑定 TOOL_NAMES（单一真值源），加工具不用改这里。
 	let realDefine;
 	try {
 		const { loadDefineTool } = await import('../index.js');
@@ -152,7 +153,7 @@ test('apply：真实宿主 defineTool 编译三份 schema（宿主方言最严�
 	const { dir, cleanup } = tempDir();
 	try {
 		apply(ctx, { storageDir: dir }, { loadDefineTool: () => realDefine });
-		assert.equal(fakeCtx.registered.length, 4, '四份 schema 都必须过宿主编译');
+		assert.equal(fakeCtx.registered.length, Object.keys(TOOL_NAMES).length, '全部 schema 都必须过宿主编译');
 	} finally {
 		cleanup();
 	}

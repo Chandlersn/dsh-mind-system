@@ -31,6 +31,11 @@ MUTATIONS.push(
 	{ file: 'src/clis-bridge.js', find: "if (text.includes('⚠️ 已被取代')) continue;", replace: '', label: '已取代原则重新进入候选' },
 	{ file: 'src/clis-bridge.js', find: "const ve = parseValveEvidenceSection(text);", replace: 'const ve = undefined;', label: '证据节永不读回（补证白补，永远 downgrade）' },
 	{ file: 'src/clis-bridge.js', find: "const section = text.split('## 阀门证据')[1]?.split(/\\n## /)[0];", replace: "const section = text.split('## 阀门证据')[1];", label: '证据节越界（下一节的行混入量化）' },
+	{ file: 'src/governance.js', find: 'coverage: total >= minSample ? Number((cited / total).toFixed(3)) : null,', replace: 'coverage: total ? Number((cited / total).toFixed(3)) : null,', label: '覆盖率小样本保护失效（3 条也出数触发假失效）' },
+	{ file: 'src/governance.js', find: "if (!origins.has(origin)) continue;", replace: '', label: '覆盖率 origin 过滤失效（验证样本灌分母）' },
+	{ file: 'src/governance.js', find: 'if (nomination.confidence < minConfidence) {', replace: 'if (false) {', label: '归类置信度门槛失效（低置信度不转人工）' },
+	{ file: 'src/governance.js', find: "human_gate_required: humanGate || proposals.length > 0,", replace: 'human_gate_required: false,', label: '改定义提议绕过人工闸门' },
+	{ file: 'src/governance.js', find: 'const effectiveCoverage = coldStart ? null : coverage;', replace: 'const effectiveCoverage = coverage;', label: '冷启动保护失效（无 refs 历史被判假失效）' },
 );
 
 let red = 0;
@@ -49,7 +54,7 @@ for (const m of MUTATIONS) {
 			continue;
 		}
 		writeFileSync(target, text.replace(m.find, m.replace), 'utf8');
-		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js'], { cwd: dir, encoding: 'utf8' });
+		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js', 'test/governance.test.js'], { cwd: dir, encoding: 'utf8' });
 		const killed = r.status !== 0;
 		console.log(`${killed ? 'RED ' : 'GREEN(!!)'} ${m.label}`);
 		if (killed) red++;

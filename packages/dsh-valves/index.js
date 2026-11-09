@@ -43,6 +43,7 @@ import {
 } from './src/store.js';
 import { nominateFromDisk } from './src/nominate.js';
 import { readClisHistory, consumeClisHistory, criterionEvidenceFromInsights } from './src/clis-bridge.js';
+import { governanceRound, referenceCoverage, validateClassification } from './src/governance.js';
 
 export const name = 'valves';
 
@@ -151,6 +152,11 @@ export function createRuntime(options = {}) {
 			to: input?.to,
 			candidate_id: input?.candidate_id,
 			...(input?.origin === undefined ? {} : { origin: input.origin }),
+			// III-2：调用方显式声明"这次判定依据了哪些原则"——覆盖率只数
+			// 显式引用，不猜语义关联。形状不合（非字符串数组）如实丢弃。
+			...(Array.isArray(input?.principle_refs) && input.principle_refs.every((r) => typeof r === 'string' && r)
+				? { principle_refs: input.principle_refs }
+				: {}),
 		});
 		return decision;
 	};
@@ -160,7 +166,7 @@ export function createRuntime(options = {}) {
 		thresholds,
 		layers,
 		downward(from, to, data) {
-			return record(`downward_${from}_${to}`, 'down', admitDownward(from, to, data, { layers, thresholds }), { from, to, origin: data?.origin });
+			return record(`downward_${from}_${to}`, 'down', admitDownward(from, to, data, { layers, thresholds }), { from, to, origin: data?.origin, principle_refs: data?.principle_refs });
 		},
 		upward(from, to, candidate) {
 			return record(`upward_${from}_${to}`, 'up', admitUpward(from, to, candidate, { layers, thresholds }), {
@@ -168,6 +174,7 @@ export function createRuntime(options = {}) {
 				to,
 				candidate_id: candidate?.candidate_id ?? candidate?.rule_id,
 				origin: candidate?.origin,
+				principle_refs: candidate?.principle_refs,
 			});
 		},
 		principle(stats) {
@@ -297,11 +304,36 @@ export function createRuntime(options = {}) {
 			const verdicts = candidates.map((c) => ({ candidate_id: c.candidate_id, ...this.upward('L2', 'L1', c) }));
 			return { candidates, verdicts };
 		},
+		/**
+		 * III-1：治理循环单轮。账本从盘上读（调用方不传 entries），
+		 * 原则清单由调用方给（agent 提名哪些原则受检——治理不自动枚举全部原则，
+		 * 那会把没被用过的原则也判 uncertain 刷屏）。结果落账 gate=governance。
+		 */
+		async govern(input = {}) {
+			const entries = await readDecisions(storageDir);
+			if (entries === undefined) {
+				reportFinding(PROBE_CODES.storeUnreadable, 'warn', '治理循环读账本失败。');
+				return { error: 'ledger_unreadable' };
+			}
+			const result = governanceRound(
+				{ ...input, entries },
+				{ thresholds, layers, windowDays: input.window_days, minSampleSize: input.min_sample_size },
+			);
+			void appendDecision(storageDir, {
+				gate: 'governance',
+				direction: 'governance',
+				outcome: result.human_gate_required ? 'skipped' : 'admitted',
+				action: result.terminated_by,
+				reason: result.redefinition_proposals.map((p) => p.principle_id).join('+') || result.terminated_by,
+				origin: input.origin ?? 'daily',
+			});
+			return result;
+		},
 	};
 }
 
 /** 工具名。 */
-export const TOOL_NAMES = { check: 'valve_check', confirm: 'valve_confirm', metrics: 'valve_metrics', nominate: 'valve_nominate' };
+export const TOOL_NAMES = { check: 'valve_check', confirm: 'valve_confirm', metrics: 'valve_metrics', nominate: 'valve_nominate', govern: 'valve_govern' };
 
 export function apply(ctx, config = {}, overrides = {}) {
 	const logger = overrides.logger ?? ctx.logger?.('valves');
@@ -491,7 +523,67 @@ export function apply(ctx, config = {}, overrides = {}) {
 		},
 	});
 
-	for (const tool of [checkTool, confirmTool, metricsTool, nominateTool]) {
+	const governTool = defineTool({
+		name: TOOL_NAMES.govern,
+		description:
+			'外层治理循环单轮（阶段 III）：读阀门账本 → 对指定原则做体检（引用覆盖率 + 反例四判据）→ 失效则出改定义提议。' +
+			'**不执行任务、不修改规则库**——提议生效走人工闸门。覆盖率口径：只数账本行显式 principle_refs 引用（不猜语义关联）；' +
+			'窗口内日常样本 <10 条不出覆盖率（小样本噪声不触发失效，判 uncertain）。' +
+			'归类提名（classification）由调用方给，代码只校验形态与置信度（<0.7 转人工）。' +
+			'原则清单由调用方指定受检对象——不自动枚举全部原则（没用过的原则判 uncertain 只会刷屏）。',
+		parameters: {
+			principles: {
+				type: 'array',
+				required: true,
+				items: {
+					type: 'object',
+					additionalProperties: false,
+					properties: {
+						principle_id: { type: 'string', required: true, description: '原则标识（与账本 principle_refs 精确匹配）。' },
+						statement: { type: 'string', description: '原则陈述（进提议用）。' },
+						anti_examples: {
+							type: 'array',
+							items: {
+								type: 'object',
+								additionalProperties: false,
+								properties: {
+									source: { type: 'string', description: '反例来源（任务类型/域）。' },
+									trace_ref: { type: 'string', required: true, description: '可回查的 trace/账本引用。' },
+								},
+							},
+							description: '可外部检验的反例列表。',
+						},
+						conflict_with_upper: { type: 'boolean', description: '与上层原则存在可判别冲突。' },
+						semantic_coverage: { type: 'number', description: '人工判读的语义覆盖率 0–1（显式给才用，覆盖引用口径）。' },
+					},
+				},
+				description: '本轮受检原则清单。',
+			},
+			classification: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					layer: { type: 'string', description: '提名的起始层。' },
+					confidence: { type: 'number', description: '提名置信度 0–1。' },
+					evidence: { type: 'array', items: { type: 'string' }, description: '归类依据。' },
+				},
+				description: '可选：当前问题的归类提名（LLM 给，代码校验）。',
+			},
+			window_days: { type: 'number', description: '覆盖率统计窗口（天）；缺省全量。' },
+			min_sample_size: { type: 'number', description: '覆盖率最小样本数（缺省 10，暂定）。' },
+			origin: { type: 'string', enum: ['daily', 'verification', 'drill'], description: '本轮治理判定的样本标记（缺省 daily）。' },
+		},
+		output: { schema: { type: 'json' }, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }] },
+		async execute(args) {
+			try {
+				return await runtime.govern(args ?? {});
+			} catch (error) {
+				return { error: 'valve_govern 执行失败', reason: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	});
+
+	for (const tool of [checkTool, confirmTool, metricsTool, nominateTool, governTool]) {
 		ctx.tools.register(tool);
 		facts.registeredTools.push(tool.name ?? '(unnamed)');
 	}
@@ -511,11 +603,11 @@ export function probe() {
 	if (!facts.loaded) {
 		findings.push({ code: PROBE_CODES.notLoaded, severity: 'error', message: 'valves 未装载（apply 未执行）。', hint: '查宿主启动日志。' });
 	} else {
-		if (facts.registeredTools.length < 4) {
+		if (facts.registeredTools.length < 5) {
 			findings.push({
 				code: PROBE_CODES.toolMissing,
 				severity: 'error',
-				message: `工具只注册了 ${facts.registeredTools.length}/4：${facts.loadError ?? '原因未知'}`,
+				message: `工具只注册了 ${facts.registeredTools.length}/5：${facts.loadError ?? '原因未知'}`,
 				hint: '多为宿主定位失败；设 DSH_INSTALL_DIR 或 config.dshRoot。',
 			});
 		}
@@ -537,4 +629,4 @@ export function probe() {
 
 export const healthProbe = { probe };
 
-export { admitDownward, admitUpward, checkPrinciple, isExternallyVerifiable, mergeThresholds, DEFAULT_LAYERS, DEFAULT_THRESHOLDS };
+export { admitDownward, admitUpward, checkPrinciple, isExternallyVerifiable, mergeThresholds, DEFAULT_LAYERS, DEFAULT_THRESHOLDS, governanceRound, referenceCoverage, validateClassification };
