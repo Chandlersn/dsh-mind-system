@@ -64,9 +64,9 @@
 | :--- | :--- | :--- | :--- | :--- |
 | II-1 器→术自动提名 | 从 clis-interventions.jsonl + .usage.jsonl 聚合重复操作序列，产出 CandidateRule（不生效） | 一条真实候选由数据聚合产生（非手写）；valve_check up 判定落账 | F4, F8 | 🔶 valve_nominate 落地：真实 usage 聚合产出 4 条候选（dsh插件开发 25 次等），送阀全拒 malformed_skill_evidence（设计：无外部成功率证据不放行），落账 origin=nomination。**缺**：人工补外部证据过门 + 第二次任务真用上 |
 | II-2 器→术负向自动提名 | 失败 trace（退出码非零 + 同签名 ≥2）自动产出 forbidden_skill 候选 | 真实失败两次后候选出现；人工确认前不拦截 | F14 | 🔶 真实账本产出 1 条候选（pwsh 泛化签名 41 次，如实标 degraded_signature 假重复警告）；human_gate 落账、生效库仍空（不自动生效已验）；真机 valve_nominate 重启后实调通过。**缺**：回查原始记录判泛化签名是否真同一模式 |
-| II-3 术→法量化门实数据 | 用真实 skill_coverage/scenario_coverage 喂 criterion 五门（当前只有合成用例） | 一条真实候选判据走完五门流程（含 downgrade 分支） | F5, F17 | ⬜ |
-| II-4 技能快速通道分级 | 高置信度（阈值由阶段 I 分布定）候选走"确认即生效+抽样审计"；审计比率可配 | 快速通道生效一条 + 抽样审计记录在账本；变异测试：置信度不足必走人工 | F11 | ⬜ |
-| II-5 CLIS 提名接阀门 | clis_classify 的四问结果作为 valve_check 的因果输入留痕（提名与裁决分离已有，补留痕链） | 一次真实因果判断的提名+裁决双双出现在账本/trace | F9 | ⬜ |
+| II-3 术→法量化门实数据 | 用真实 skill_coverage/scenario_coverage 喂 criterion 五门（当前只有合成用例） | 一条真实候选判据走完五门流程（含 downgrade 分支） | F5, F17 | 🔶 channel=criteria 落地：真实 12 个 insights → 11 条候选（1 已取代跳过），来源回链数覆盖（形状按最严格边界写 3 源最高）；全部 downgrade not_externally_verifiable——如实暴露"原则文件没写可检验路径"这一真实缺口。**缺**：人工为头部原则补 verifiable_by + 反例后过门 |
+| II-4 技能快速通道分级 | 高置信度（阈值由阶段 I 分布定）候选走"确认即生效+抽样审计"；审计比率可配 | 快速通道生效一条 + 抽样审计记录在账本；变异测试：置信度不足必走人工 | F11 | ⬜（按 D4 等阶段 I 分布） |
+| II-5 CLIS 提名接阀门 | clis_classify 的四问结果作为 valve_check 的因果输入留痕（提名与裁决分离已有，补留痕链） | 一次真实因果判断的提名+裁决双双出现在账本/trace | F9 | ✅ channel=clis_trace 落地：真实历史 44 条全量消费，提名+裁决成对落账（gate=clis_nomination，44 条 nominated_type+verdict+evidence 指纹可回查）；二跑 newly=0 幂等（账本当游标）；误判线索 1 条单独列出（第三次调价仍反弹）；统计如实：achieved=0 不编有效性。变异 3 条守卫（幂等/白名单/取代跳过）全红 |
 
 **阶段 II 验收**：第二次同类任务用上第一条自动提名+人工确认的技能（F4）；负向候选能拦真实失败路径（F14）。⬜
 
@@ -121,7 +121,7 @@
 | F6 | 法→道正向提炼 | ✅ | memory_dao 硬闸门（≥5 法+形态检查）实战出过 1 条道；valves 侧永远 human_gate | 已达成 |
 | F7 | 自循环验证 | 🔶 | 测试环境闭环已证；**真实任务**上待 I-2 | I |
 | F8 | 自成长逐层不跳层 | ✅ | 谓词拒跳层 + 变异红；memory 层级闸门实战 | 已达成 |
-| F9 | CLIS 提名与裁决分离 | 🔶 | clis_classify 结构已分离；账本留痕链未接 | II |
+| F9 | CLIS 提名与裁决分离 | ✅ | clis_classify 结构分离 + clisTrace 成对落账（44 条真实历史，nominated_type/verdict/evidence 齐全，幂等验证二跑 newly=0） | 已达成 |
 | F10 | 三道缰绳 | ⬜ | 未建（见阶段划分理由） | III |
 | F11 | 人工闸门分级 | 🔶 | 三级闸门在；快速通道与限速未建 | II/IV |
 | F12 | 反例检验强制 | ✅ | 无证据拒入库 + 变异红；真机落账 | 已达成 |

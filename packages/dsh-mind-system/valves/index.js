@@ -42,6 +42,7 @@ import {
 	matchNegativeRules,
 } from './src/store.js';
 import { nominateFromDisk } from './src/nominate.js';
+import { readClisHistory, consumeClisHistory, criterionEvidenceFromInsights } from './src/clis-bridge.js';
 
 export const name = 'valves';
 
@@ -253,6 +254,49 @@ export function createRuntime(options = {}) {
 			}
 			return out;
 		},
+		/**
+		 * II-5：消费 clis 历史，提名+裁决成对落账（零配合——读现成文件）。
+		 * 首次消费全量；之后按落账里的 fingerprint@at 去重（账本自身是
+		 * 游标，不另建第二份状态）。misjudged 线索单独返回给人工核。
+		 */
+		async clisTrace() {
+			const history = await readClisHistory(storageDir);
+			const consumed = consumeClisHistory(history);
+			if (consumed.error) return consumed;
+			const ledger = await readDecisions(storageDir);
+			const seen = new Set(
+				(ledger ?? [])
+					.filter((e) => e?.gate === 'clis_nomination' && e.candidate_id)
+					.map((e) => e.candidate_id),
+			);
+			let recorded = 0;
+			for (const n of consumed.nominations) {
+				const key = `${n.fingerprint}@${n.at}`;
+				if (seen.has(key)) continue;
+				seen.add(key);
+				recorded++;
+				void appendDecision(storageDir, {
+					gate: 'clis_nomination',
+					direction: 'trace',
+					outcome: n.verdict === 'accepted' ? 'admitted' : 'skipped',
+					action: n.verdict,
+					reason: n.reason,
+					candidate_id: key,
+					nominated_type: n.nominated_type,
+					origin: 'nomination',
+				});
+			}
+			return { ...consumed, newly_recorded: recorded };
+		},
+		/**
+		 * II-3：真实 insights 覆盖数据喂 criterion 五门。
+		 * insightFiles 由调用方读盘传入（不反向 import memory）。
+		 */
+		async criteria(insightFiles) {
+			const candidates = criterionEvidenceFromInsights(insightFiles);
+			const verdicts = candidates.map((c) => ({ candidate_id: c.candidate_id, ...this.upward('L2', 'L1', c) }));
+			return { candidates, verdicts };
+		},
 	};
 }
 
@@ -412,15 +456,34 @@ export function apply(ctx, config = {}, overrides = {}) {
 			'自动提名器（阶段 II）：从既有真实账本聚合候选——负向吃 clis-interventions.jsonl 的重复失败签名（≥阈值才提名），' +
 			'正向吃 memory 使用聚合（高频功能域值得结晶技能）。**只提名不生效**：候选交 valve_check 裁决、人工确认后生效。' +
 			'正向候选不编造成功率（usage 账本没有外部成败证据），如实标 needs_external_evidence；' +
-			'泛化失败签名标 degraded_signature（可能是假重复，确认前须回查原始记录）。',
+			'泛化失败签名标 degraded_signature（可能是假重复，确认前须回查原始记录）。' +
+			'channel=clis_trace：消费 clis-history 提名+裁决成对留痕（幂等，账本当游标）；' +
+			'channel=criteria：真实 insights 来源回链喂判据五门（数不出的留空，阀门如实 downgrade）。',
 		parameters: {
-			channel: { type: 'string', enum: ['forbidden', 'skills', 'both'], description: '提名通道：负向/正向/两侧。缺省 both。' },
+			channel: { type: 'string', enum: ['forbidden', 'skills', 'criteria', 'clis_trace', 'both'], description: '提名通道：负向/正向技能/判据五门/CLIS历史留痕/两侧。缺省 both。' },
 			window_days: { type: 'number', description: '负向统计窗口（天）；缺省不限（全量账本）。' },
 			check: { type: 'boolean', description: 'true 时把每条候选立即送 valve_check 裁决并落账（origin=nomination）；缺省 false 只列候选。' },
+			insight_files: {
+				type: 'array',
+				items: {
+					type: 'object',
+					additionalProperties: false,
+					properties: {
+						theme: { type: 'string', required: true, description: 'insight 文件名（不含 .md）。' },
+						text: { type: 'string', required: true, description: 'insight 正文（调用方经 memory_read 读盘传入）。' },
+					},
+				},
+				description: 'channel=criteria 时必给：真实 insights 正文，从来源回链数覆盖、喂五门（数不出的字段留空，阀门如实 downgrade）。',
+			},
 		},
 		output: { schema: { type: 'json' }, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }] },
 		async execute(args) {
 			try {
+				if (args?.channel === 'clis_trace') return await runtime.clisTrace();
+				if (args?.channel === 'criteria') {
+					if (!Array.isArray(args?.insight_files)) return { error: 'channel=criteria 需要 insight_files（经 memory_read 读盘传入）' };
+					return await runtime.criteria(args.insight_files);
+				}
 				return await runtime.nominate(args ?? {});
 			} catch (error) {
 				return { error: 'valve_nominate 执行失败', reason: error instanceof Error ? error.message : String(error) };

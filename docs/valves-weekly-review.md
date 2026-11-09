@@ -45,6 +45,30 @@
 - 泛化签名候选：人工确认前须回查 41 条原始记录是否真同一失败模式（签名塌缩教训的下游核对）。
 - 正向候选补外部证据：从 dsh插件开发（engagement 最高）开始，按 memory_skill 流程结晶并跑真实任务验证。
 
+## 2026-11-09 · II-3 / II-5 落地（同日第三轮）
+
+### II-5 clisTrace 真实数据读数
+
+- 真实 clis-history：41 指纹 / 44 条 entries，全量消费成对落账（gate=clis_nomination）；二跑 newly_recorded=0（幂等，账本当游标，不建第二份状态）。
+- 类型分布：nested 28 / cyclic 8 / unidirectional 8；off_contract=0。
+- **有效性如实**：baseline 41、achieved **0**、非 baseline ineffective 2、type_misjudged 1（"第三次调价后需求依然反弹"——单独列给人工核）。achieved=0 不编有效性统计。
+
+### II-3 criteria 真实数据读数
+
+- 真实 insights 12 个文件 → 11 条候选（1 个已取代跳过）；来源覆盖最高：形状按最严格边界写（3 源）。
+- 五门判定：**11 条全 downgrade not_externally_verifiable**——真实缺口曝光：原则文件都没写 verifiable_by。这正是账本该记的：补证据的优先级清单就是这份 downgrade 列表。
+- 测试期抓到的口径修正：J1 在量化门**之前**（证据不可检验时量覆盖无意义）；records:null 会被 typeof null==='object' 放行，已显式挡（读坏了说读坏了）。
+
+### 验证
+
+- 53 例全绿；变异 **12/12 红**（新增 3：幂等失效/离契约放行/已取代复活）；仓库 npm test 退出码 0；verify 四脚本全绿。
+- 测试期缺陷如实记：CAISAL_TYPES 笔误 1 处（ ReferenceError 一轮修复）；两个测试断言与实现口径不符，核对后修断言/修实现各一。
+
+### 待办移交（更新）
+
+- 头部原则补 verifiable_by：从「形状按最严格边界写」（3 源）开始，人工写可检验路径后重跑 channel=criteria。
+- misjudged 线索人工核：指纹 598378fc 前后（调价反弹那条为历史链路验证用例，非真实业务失败——核实时注意区分）。
+
 ## 周检记录（每周一 10:00 reminder 触发后追加）
 
 （暂无）

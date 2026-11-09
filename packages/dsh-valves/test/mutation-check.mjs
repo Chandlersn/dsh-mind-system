@@ -26,6 +26,9 @@ MUTATIONS.push(
 	{ file: 'src/nominate.js', find: "if (!href.startsWith('functions/')) continue;", replace: '', label: '正向提名越层（insights 也被提名）' },
 	{ file: 'src/nominate.js', find: "success_evidence: 'self_report',", replace: "success_evidence: 'external',", label: '提名器伪造外部证据级别' },
 	{ file: 'src/store.js', find: "if (origin === 'daily') dailyCount++;", replace: 'dailyCount++;', label: 'origin 口径失效（验证样本灌进日常计数）' },
+	{ file: 'index.js', find: 'if (seen.has(key)) continue;', replace: '', label: 'clisTrace 幂等失效（重复消费重复落账）' },
+	{ file: 'src/clis-bridge.js', find: "const inContract = CAUSAL_TYPES.includes(type);", replace: 'const inContract = true;', label: '离契约类型被当合规提名放行' },
+	{ file: 'src/clis-bridge.js', find: "if (text.includes('⚠️ 已被取代')) continue;", replace: '', label: '已取代原则重新进入候选' },
 );
 
 let red = 0;
@@ -44,7 +47,7 @@ for (const m of MUTATIONS) {
 			continue;
 		}
 		writeFileSync(target, text.replace(m.find, m.replace), 'utf8');
-		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js'], { cwd: dir, encoding: 'utf8' });
+		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js'], { cwd: dir, encoding: 'utf8' });
 		const killed = r.status !== 0;
 		console.log(`${killed ? 'RED ' : 'GREEN(!!)'} ${m.label}`);
 		if (killed) red++;
