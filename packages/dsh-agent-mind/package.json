@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": false,
   "type": "module",
-  "description": "DSH 调度层：把\"判断顺序\"装进系统提示，并按当前处境重排工具面（只重排不删除）。",
+  "description": "DSH 编排系统（心智系统的编排成员）：把\"判断顺序\"装进系统提示，并按当前处境重排工具面（只重排不删除）。",
   "keywords": [
     "dsh",
     "dsh-plugin",

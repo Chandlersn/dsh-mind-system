@@ -52,7 +52,7 @@ test('判定可解释：命中的信号名与落选的都能查', () => {
   assert.equal(d.evidence['no-effect'] >= 1, true, '要有证据计数');
 });
 
-test('外部单元可以登记自己的信号（零配合：调度层不必改代码）', () => {
+test('外部单元可以登记自己的信号（零配合：编排系统不必改代码）', () => {
   __clearSignalsForTest();
   const before = listSignals().length;
   const dispose = registerSignal({

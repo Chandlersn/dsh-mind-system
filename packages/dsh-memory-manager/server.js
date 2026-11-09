@@ -4833,9 +4833,9 @@ export function apply(ctx, config) {
 		}),
 	);
 
-	// —— 向调度层贡献本领域的处境信号（2026-11-02）——
+	// —— 向编排系统贡献本领域的处境信号（2026-11-02）——
 	//
-	// 调度层（dsh-agent-mind）判断"此刻该先看什么"。它原本只有自己写的词表，
+	// 编排系统（dsh-agent-mind）判断"此刻该先看什么"。它原本只有自己写的词表，
 	// 于是**本领域的词汇全是盲区**：实测「沉淀」「蒸馏」「五层」「判据属于哪层」
 	// 全部无信号 —— 而这些正是"该先查记忆"的时刻。
 	//
@@ -4857,7 +4857,7 @@ export function apply(ctx, config) {
 			],
 		});
 	} catch {
-		/* 没有调度层 → 广播无人接收，memory 照常工作 */
+		/* 没有编排系统 → 广播无人接收，memory 照常工作 */
 	}
 
 	// Panel API: optional — without a web server the tools keep working and the

@@ -9,7 +9,7 @@
  * ## 为什么不能依赖 memory-manager 的 host.js
  *
  * memory 的 `./src/host.js` 确实提供了 `defineTool`，但依赖它会让
- * mind → memory 形成一条**不该有的依赖**：调度层是给所有插件用的，
+ * mind → memory 形成一条**不该有的依赖**：编排系统是给所有插件用的，
  * 不该挂在记忆系统下面（缺 memory 时 mind 仍要能工作）。
  *
  * 所以这里自建一份精简版：只做"从安装目录 require 一个宿主包"这一件事，

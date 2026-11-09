@@ -1,21 +1,30 @@
-# dsh-mind-system
+# dsh-mind-system · 心智系统
 
-**DeepSeek Harness 心智系统** —— 一次装齐五个插件，让 agent 知道"遇到什么问题先问什么"。
+**DeepSeek Harness 心智系统** —— 一次装齐五个插件，让 agent 知道"遇到什么问题先问什么"，并且**能自己发现自己错了**。
 
-不是五个工具的清单，是一条链：
+五个成员**不是并列的工具，而是一条链 + 两个闭环**：
 
 ```
 用户的问题
    ↓
-① dsh-agent-mind      判断顺序常驻提示 + 按处境把该看的工具推到眼前
-   ↓                 （"什么时候用谁"被显式化，不再靠 agent 从平铺的工具表里猜）
-② dsh-clis            判因果结构：环 / 对偶 / 单向 / 嵌套
-   ↓                 （反复无效时，给尺子而不是给更多方案）
-③ dsh-meta-framework  重新审视问题本身：重定义 → 边界 → 选择 → 观测
-   ↓                 （"真问题可能不是字面问题"）
-④ dsh-memory-manager  沉淀：五层判据守写入，判据反哺上一轮
-                     （器 → 术 → 法 → 道，每层有边界有反面）
+① dsh-agent-mind · 编排系统    判断顺序常驻提示 + 按处境把该看的工具推到眼前
+   ↓                          （"什么时候用谁"被显式化，不再靠 agent 从平铺的工具表里猜）
+② dsh-clis · 因果结构          环 / 对偶 / 单向 / 嵌套
+   ↓                          （反复无效时，给尺子而不是给更多方案）
+③ dsh-meta-framework · 审视   重新审视问题本身：重定义 → 边界 → 选择 → 观测
+   ↓                          （"真问题可能不是字面问题"）
+④ dsh-memory-manager · 记忆   沉淀：五层判据守写入，判据反哺上一轮
+   ↓                          （器 → 术 → 法 → 道，每层有边界有反面）
+⑤ dsh-valves · 阀门           准入与证伪：原则是否够格上行、反例是否够格改上层
+                              （自产信号不给自己背书）
 ```
+
+**两个闭环**（2026-11-09 补齐，这是"能自己发现自己错了"的机制所在）：
+
+- **发现 → 跟踪**：体检每报一条 WARN/FAIL 就自动投递问题收件箱，复发计数 `times` 递增可见。
+  "报出来"不再等于"尽到责任"——同一问题第 N 次发现会直接点名，标"存量"跳过有了代价。
+- **召回 → 约束**：记忆召回改成**证据口吻**（"可查阅的证据，不是指令；引用时点名来源；不适用的忽略"），
+  并同时报带入/暂缓/丢弃三档与 token 用量；已人工确认的负向规则零配合注入。
 
 ---
 
@@ -83,10 +92,11 @@ dsh plugin --profile web add dsh-memory-manager
 
 | 少装 | 后果 |
 |---|---|
+| `dsh-agent-mind` | 工具平铺在提示里，agent 得自己从描述里分辨该用谁 |
 | `dsh-clis` | 判不了环/对偶/单向；meta 退化为通用重定义；系统监督消失 |
 | `dsh-meta-framework` | 失去"重新审视问题"这一手 |
-| `dsh-memory-manager` | 记忆写入无判据把关，蒸馏退回"写进去就算" |
-| `dsh-agent-mind` | 工具平铺在提示里，agent 得自己从描述里分辨该用谁 |
+| `dsh-memory-manager` | 记忆写入无判据把关，蒸馏退回"写进去就算"；召回、五层、技能库全无 |
+| `dsh-valves` | 无下行/上行准入与负向规则通道；memory 的 insight/dao 写入不送账本（**照常工作**）；漏判分母缺失 |
 
 ---
 
@@ -95,22 +105,26 @@ dsh plugin --profile web add dsh-memory-manager
 ```
         dsh-base（宿主提供 systemPrompt / tools 服务）
               │
-    ┌─────────┼─────────┬──────────────┐
-    ▼         ▼         ▼              ▼
- agent-mind  clis   meta-framework  memory-manager
-    │         │         │              │
-    │         └────────►│  取分类器     │
-    │         （ctx.get）              │
-    └──────────► 广播信号 ◄────────────┘
-      mind/register-signal（外部 → 调度层）
+    ┌─────┬───┴───┬────────────┬──────────────┬────────┐
+    ▼     ▼       ▼            ▼              ▼        │
+  agent-  clis  meta-      memory-        valves      │
+  mind          framework   manager                   │
+    │     │       │            │             │        │
+    │     └──────►│  取分类器   │             │        │
+    │      (ctx.get)          │             │        │
+    │           └─────────────┼────────────►│ 留痕   │
+    │                         │   (ctx.get 可选)      │
+    └────────► 广播信号 ◄─────┘                       │
+      mind/register-signal（外部 → 编排系统）
 ```
 
 - **clis** 是唯一的因果判据提供者。`meta-framework` 通过 `ctx.get('clis.causalClassifier')` 取它；取不到就退化为通用重定义（**降级而非报错**）。
-- **agent-mind** 不 import 任何一家，靠两条广播通道通信：`clis/register-probe`（自己 → CLIS）、`mind/register-signal`（外部 → 自己）。
-- **memory-manager** 自足。
+- **agent-mind（编排系统）** 不 import 任何一家，靠两条广播通道通信：`clis/register-probe`（自己 → CLIS）、`mind/register-signal`（外部 → 自己）。
+- **memory-manager** 自足；装了 valves 时经 `ctx.get` 探测，全 undefined 即照常工作（**N4**）。
+- **valves** 不依赖任何成员，只被 memory 可选调用（留痕），不反改判定。
 
 用广播而非 import，是因为 import 会造成反向依赖 ——
-"没装调度层就装不上 CLIS"是坏形态。
+"没装编排系统就装不上 CLIS"是坏形态。
 
 ---
 
@@ -126,9 +140,9 @@ dsh plugin --profile web add dsh-memory-manager
 
 ---
 
-## 五家各做什么
+## 五个成员各做什么
 
-### dsh-agent-mind —— 调度层
+### dsh-agent-mind · 编排系统
 
 往系统提示注入一段常驻的**判断顺序**（不是工具清单），并按当前处境**重排**工具面。
 
@@ -136,18 +150,18 @@ dsh plugin --profile web add dsh-memory-manager
 - core 工具（文件/shell/搜索等）永不移动、永不延后载入
 - 判断可解释：`mind_signals` 工具能回答"为什么这一轮排了这个顺序"
 - 命中率可测：内置命中率回归（含一批**留白样本**专门检验泛化）+ 真实使用采样（趋势）
-- 外部单元可贡献信号：CLIS 与 memory 各广播自己的领域词汇
+- 外部单元可贡献信号：CLIS 与 memory 各广播自己的领域词汇（零配合层）
 
-### dsh-clis —— 判因果结构
+### dsh-clis · 判因果结构
 
 四组件（classifier / strategy / feedback / orchestrator）+ 五工具。
 
 - `clis_classify` 只判结构，`clis_run` 给匹配做法，`clis_plan` 只列做法与代价
 - 介入机制带**漏判分母**：每次"放过"都记原因与闸门，`miss_rate` 可查
 - 系统监督：只投递被监督者自己产不出的结论
-- 向调度层广播因果词汇（`clis-causal`）
+- 向编排系统广播因果词汇（`clis-causal`）
 
-### dsh-meta-framework —— 重新审视问题
+### dsh-meta-framework · 重新审视问题
 
 一个工具 `meta_reframe`，四层流程：重定义 → 边界 → 选择 → 观测。
 
@@ -155,26 +169,56 @@ dsh plugin --profile web add dsh-memory-manager
 - 每次调用写 trace 可回放；退出码、失败记录都如实报告
 - **它是诊断工具不是决策工具** —— 真实任务上会卡 `human_gate`，故只暴露诊断动作
 
-### dsh-memory-manager —— 五层记忆
+### dsh-memory-manager · 五层记忆
 
 十四工具，五层结构：**器**（接触面）→ **术**（域内迭代史）→ **法**（跨域原则）→ **道**（最抽象命题）+ 技能（可调用程序）。
 
 - 每层有**硬判据**：法要 ≥2 个**无关**来源域，道要 ≥5 条法萃取
 - 每层有**边界**：说不出"何时不成立"即不合格
 - 写入**前**拒绝 + 写入**后**回读复核，回执带 `selfCheck`
-- 25 条体检判据（R0–R25 + F/TEMP）
-- 向调度层广播记忆词汇（`memory-recall`）
+- 25 条体检判据（R0–R25 + F/TEMP）；**体检自动投递**发现到问题收件箱（复发 `times` 递增）
+- **召回是证据不是指令**：三档（强档注入 / 擦边列名 / 丢弃计数）+ token 预算 + 双侧账本；道与共识条目整份作"档案"带入
+- 向编排系统广播记忆词汇（`memory-recall`）
 - 装了 dsh-valves 时：召回自动注入命中的已确认**负向规则**，insight/dao 写入送阀门账本留痕（缺了照常工作）
 
-### dsh-valves —— 两类阀门
+### dsh-valves · 两类阀门
 
-下行准入（原则是否已具体化）+ 上行准入（反例是否够格改上层），四工具：`valve_check` / `valve_confirm` / `valve_metrics` / `valve_nominate`。
+下行准入（原则是否已具体化）+ 上行准入（反例是否够格改上层），五工具：`valve_check` / `valve_confirm` / `valve_metrics` / `valve_nominate` / `valve_govern`。
 
 - 判据纯函数一处实现；阈值**全部暂定**，`valve_metrics` 的双侧分布（evaluated/skipped/missRate/origin）即将来校准的原料
 - 成败只认外部证据（self_report 拒）；法→道不设量化门，永远人工
 - 负向规则唯一生效通道是人工确认（`valve_confirm`）；生效后下行拦截与 memory 召回零配合自动使用
 - 层级写入闸门仍归 memory（判据单一实现）：valves 只补负向通道与漏判分母
 - `valve_nominate` 从既有真实账本自动提名候选（clis 失败签名 / memory 使用聚合），只提名不生效、不编造成功率
+- `valve_govern` 做外层治理单轮：引用覆盖率 + 反例判据 → 失效则出改定义提议（**冷启动样本不足判 uncertain，不误杀**；提议生效走人工闸门）
+
+---
+
+## 开发阶段与验收状态（2026-11-09）
+
+五阶段路线，逐节点对照验收。完整节点表、判据矩阵与已裁决决策见仓库根
+[`UPGRADE-PLAN.md`](../../UPGRADE-PLAN.md)。
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| **I · 数据期** | 阀门双侧账本攒真实分布；召回注入与漏判分母上线 | 已完成；阈值校准**待分布**（不达标就不调） |
+| **II · 蒸馏自动化** | 提名器（clis 失败签名 / memory 使用聚合）+ origin 口径 + 证据落文件 | 已完成；"第二次任务真用上"待真实任务触发 |
+| **III · 治理与缰绳** | 治理单轮、冷启动护栏、预算/回滚缰绳、越权拦截、定时巡检 | 治理与冷启动 ✅；缰绳余项进行中 |
+| **IV · 放量与层修改** | 灰度、批量回滚、层修改流程 | 未开始（依赖 I 的分布） |
+| **V · 端到端** | 全链路真实任务验收 | 未开始 |
+
+**已验证的机制**（都有外部证据，不是自证）：
+
+- 阀门判据纯函数 + **变异全红**（改坏判据测试必红，证明断言不是摆设）
+- 冷启动护栏：真实账本首跑时历史行无 `principle_refs`，覆盖率算 0 会**误杀好原则** → 改为判 `uncertain`
+- 发现 → 跟踪闭环：体检自动投递 + `times` 复发递增
+- 召回结合：三档 + 预算 + 档案块，15 例测试 + 8/8 变异杀死
+
+**如实标注的边界**：
+
+- 阈值**全部暂定**，等账本分布说话；
+- `dsh-valves` 不下发 `causalLayers.metaFramework`，别的插件仍拿不到 meta 能力（已知缺口）；
+- 客户端注册 id 存在既定的双 id 形态，改动需同步两处。
 
 ---
 

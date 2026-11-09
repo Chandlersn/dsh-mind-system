@@ -9,7 +9,7 @@
     },
     "clis/README.md": {
       "source": "dsh-clis/README.md",
-      "sha256": "1bd2592dac874fdb15c49ac2ff36d0882824ab70c11e07c0fe951fa03477ade1"
+      "sha256": "181bf0d4f97547cf550d5a0f5caeaac310377f71d4b3503f5c26eb290a207586"
     },
     "clis/chunk-2HMO3QIV.js": {
       "source": "dsh-clis/chunk-2HMO3QIV.js",
@@ -149,7 +149,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "eb98ef295ecc7c13b37bd5bf5ff164731ee2b8fdf0c8936b69d75bfbb102279d"
+      "sha256": "cb74feb17d80a206298a77b9dd181f11dddb9a49690cdb91de7e5778f2c97dcf"
     },
     "memory/src/constants.js": {
       "source": "dsh-memory-manager/src/constants.js",
@@ -297,15 +297,15 @@
     },
     "mind/README.md": {
       "source": "dsh-agent-mind/README.md",
-      "sha256": "b5a697c6d3681cfe47331f7ac0100aada123e48df021ec8fd0e5ff89e4ba51fd"
+      "sha256": "d79ada9f753b8ce46d9bc3194ce4418f7aee91b2a709dd12923ca79222be622a"
     },
     "mind/index.js": {
       "source": "dsh-agent-mind/index.js",
-      "sha256": "4247d31a596700ea695f274f08b34100d7e9e5f949c5740bc7c90c4673cf6b5c"
+      "sha256": "c021c93ddaf442a8a4be4dd74d33924ff71cb69b74a2f8bd351293ef74c7879d"
     },
     "mind/package.json": {
       "source": "dsh-agent-mind/package.json",
-      "sha256": "a96fe347df7385b5a1f8fc45b50c115df9a9aede865d66e3f8d5314c1c032014"
+      "sha256": "6c196001291216ba96b0eba0f0e147ef927528ca19577178409439f75c7c5e4a"
     },
     "mind/scripts/verify-assembly.mjs": {
       "source": "dsh-agent-mind/scripts/verify-assembly.mjs",
@@ -317,7 +317,7 @@
     },
     "mind/src/dispatch.js": {
       "source": "dsh-agent-mind/src/dispatch.js",
-      "sha256": "db96b617ee5c338202b4bd51d17d2eb55015afcfb9f5179d401a63f06741d4d3"
+      "sha256": "3d27c0ca3c8863c08f4aaf0b2019c642d58ecc7eb03af8e0a3be2813fd9b02d4"
     },
     "mind/src/hitrate.js": {
       "source": "dsh-agent-mind/src/hitrate.js",
@@ -325,7 +325,7 @@
     },
     "mind/src/host.js": {
       "source": "dsh-agent-mind/src/host.js",
-      "sha256": "f1c3a78fe0fc3ffb574f187355f24adce1d0af3f893ed71a26ee87c70eebc4e1"
+      "sha256": "733ce9527bd13c043c77281f5a0aa5b06528b3a076105672b39b239063d5f6eb"
     },
     "mind/src/mind.js": {
       "source": "dsh-agent-mind/src/mind.js",
@@ -357,7 +357,7 @@
     },
     "mind/test/dispatch.test.js": {
       "source": "dsh-agent-mind/test/dispatch.test.js",
-      "sha256": "b8fa3759295efd83a1e983699fd8ffcc188372e4bb6e0a869c3bc05e4958e75f"
+      "sha256": "9a85e323218b53d5b78779dbdb4d53721061f414cb666aed8f56c7c68d03f0f8"
     },
     "mind/test/fixes-2026-11-04.test.js": {
       "source": "dsh-agent-mind/test/fixes-2026-11-04.test.js",

@@ -11,7 +11,7 @@
 
 | 包 | 目录 | 说明 |
 |---|---|---|
-| `dsh-agent-mind` | `packages/dsh-agent-mind` | 调度层：判断顺序分节 + 按处境重排工具面 + 命中率回归与采样 |
+| `dsh-agent-mind` | `packages/dsh-agent-mind` | 编排系统：判断顺序分节 + 按处境重排工具面 + 命中率回归与采样 |
 | `dsh-clis` | `packages/dsh-clis` | 因果结构判据 + 系统监督 + 介入漏判分母 |
 | `dsh-meta-framework` | `packages/dsh-meta-framework` | 重定义 → 边界 → 选择 → 观测 |
 | `dsh-memory-manager` | `packages/dsh-memory-manager` | 五层记忆判据 + 写入前拒绝 + 落盘后回读复核 |
@@ -229,6 +229,6 @@ this.ctx.logger.info("reload plugin at %C", path);  // L1120  ← 成功的直�
 
 ```bash
 node packages/dsh-mind-system/scripts/publish-check.mjs   # 聚合包发布前检查
-node packages/dsh-agent-mind/test/*.test.js               # 调度层 53 例
+node packages/dsh-agent-mind/test/*.test.js               # 编排系统 53 例
 node packages/dsh-agent-mind/scripts/verify-assembly.mjs   # 真实 cordis 装配验证
 ```
