@@ -3679,7 +3679,7 @@ function renderInbox(args, value) {
 	return [{ type: 'text', text: lines.join('\n') }];
 }
 
-function memoryCheckTool(opts) {	return defineTool({
+function memoryCheckTool(opts, inbox) {	return defineTool({
 		name: 'memory_check',
 		description:
 			'Lint the memory root (read-only): MEMORY.md size caps + rows missing one-line summaries + zone files with NO index row (R5 orphan — an unindexed file is invisible to recall), dangling / root-escaping links (R10), function files reverse-linking to MEMORY.md detail (R8), function-file size (R9), over-detailed iteration blocks and index rows that were not distilled (R14), duplicated index rows or table sections (R15), head stable-state summary older than the newest iteration block or missing (R3), env-constant absolute paths that no longer exist (R16), a function area corrected over 40% of the time in the last 7 days (R18 circuit breaker), iteration date tags not append-ordered (R3), legacy/ files missing the 历史原貌 header (R13), credential material or personal identifiers in memory files (R21 memory defence), the insight layer’s retirement budget — count over cap, too many single-source principles, dangling .usage.jsonl hrefs (R23). Guarded files (🛡 守护型) are exempt from the cold-memory rule. Run it after batch memory edits or when memory_check has never run on this root.',
@@ -3705,18 +3705,66 @@ function memoryCheckTool(opts) {	return defineTool({
 					},
 					warnCount: { type: 'integer', required: true },
 					failCount: { type: 'integer', required: true },
+					tracked: {
+						type: 'array',
+						items: {
+							type: 'object',
+							additionalProperties: false,
+							properties: {
+								rule: { type: 'string', required: true },
+								times: { type: 'integer', required: true },
+								status: { type: 'string', required: true },
+								fingerprint: { type: 'string', required: true },
+							},
+						},
+						description: '每条 WARN/FAIL 在问题收件箱里的跟踪状态（times=累计发现次数）。',
+					},
 				},
 			},
 			render: (_args, v) => {
 				const lines = [`memory_check — ${v.root}：${v.failCount} FAIL，${v.warnCount} WARN`];
-				for (const r of v.results) lines.push(`  [${r.level}] ${r.rule}: ${r.message}`);
+				const timesByRule = new Map((v.tracked ?? []).map((t) => [t.rule, t]));
+				for (const r of v.results) {
+					const t = timesByRule.get(r.rule);
+					// 复发计数是打破"报出来=尽到责任"回路的阻尼：同一问题第 N 次
+					// 发现必须可见且递增，"存量"不再是无代价的口头标签。
+					const recur = t && t.times >= 2 && t.status !== 'resolved' ? `（第 ${t.times} 次发现，仍 ${t.status}——处置或说明为何搁置，不要再标"存量"跳过）` : '';
+					lines.push(`  [${r.level}] ${r.rule}: ${r.message}${recur}`);
+				}
 				if (!v.results.length) lines.push('  全部通过');
 				return [{ type: 'text', text: lines.join('\n') }];
 			},
 		},
 		presentCall: (args) => ({ card: 'generic', title: 'Lint memory structure', kind: 'other', rawInput: args }),
 		async execute(_args, exec) {
-			return runHealthCheck(resolveRoot(opts), opts);
+			const root = resolveRoot(opts);
+			const report = await runHealthCheck(root, opts);
+			// 发现→跟踪零配合闭环（2026-11-09 用户质问"发现了为啥跳过"后加）：
+			// 每条 WARN/FAIL 自动投递收件箱（指纹去重，复发 times+1）。
+			// 投递失败不影响体检回执（跟踪是附加能力，缺了降级）；
+			// 但 resolved 条目不清除——问题复现时 post 会自动重新 open。
+			//
+			// 污染守卫：只对**默认全局根**投递。测试套件用 opts.memoryRoot 注入
+			// 临时根（造出 25 个假功能域/假 WARN），那些是测试夹具不是真实问题，
+			// 绝不能进全局收件箱把复发计数灌水。opts.memoryRoot 存在即测试态。
+			const tracked = [];
+			if (inbox && !opts.memoryRoot) {
+				for (const r of report.results ?? []) {
+					try {
+						const { item } = await inbox.post({
+							from: 'memory-manager',
+							code: r.rule,
+							severity: r.level === 'FAIL' ? 'error' : 'warn',
+							message: r.message,
+							hint: '体检自动投递：处置后 memory_inbox update resolved，或说明搁置理由',
+						});
+						tracked.push({ rule: r.rule, times: item.times, status: item.status, fingerprint: item.fingerprint });
+					} catch {
+						/* 跟踪失败不阻断体检 */
+					}
+				}
+			}
+			return { ...report, ...(tracked.length ? { tracked } : {}) };
 		},
 	});
 }
@@ -4476,6 +4524,9 @@ export function apply(ctx, config) {
 		reload: () => selfReload(ctx, { logger: ctx.logger ?? console }),
 	};
 
+	// 收件箱先建：memory_check 的自动投递要用它（发现→跟踪零配合）。
+	const inbox = new MemoryInbox(dshHome);
+
 	const disposers = [
 		ctx.tools.register(memoryReadTool(opts)),
 		ctx.tools.register(memorySearchTool(opts)),
@@ -4486,7 +4537,7 @@ export function apply(ctx, config) {
 		ctx.tools.register(memoryDaoTool(opts)),
 		ctx.tools.register(memoryFoldTool(opts)),
 		ctx.tools.register(memoryRenameTool(opts)),
-		ctx.tools.register(memoryCheckTool(opts)),
+		ctx.tools.register(memoryCheckTool(opts, inbox)),
 		ctx.tools.register(memoryUsageTool(opts)),
 		ctx.tools.register(memoryFederationTool(opts)),
 	];
@@ -4496,11 +4547,12 @@ export function apply(ctx, config) {
 	// 为什么让记忆管理收：它本来就是"全局长期记忆"的持有者，问题清单也是
 	// 需要长期跟踪的状态。放在这里不必新建一套存储与面板。
 	//
-	// 三类投递来源：
+	// 四类投递来源：
 	// 1. 其他插件通过 Cordis 事件 `clis/health-finding` 自动投递（本文件订阅）；
 	// 2. agent 用 memory_inbox 工具主动报告；
-	// 3. 用户直接要求在记忆里留一条待跟踪问题。
-	const inbox = new MemoryInbox(dshHome);
+	// 3. 用户直接要求在记忆里留一条待跟踪问题；
+	// 4. memory_check 每次体检自动投递 WARN/FAIL（2026-11-09：发现与跟踪
+	//    间接轨——"报出来"不再等于"尽到责任"，复发 times 可见递增）。
 	disposers.push(
 		ctx.tools.register(memoryInboxTool(opts, inbox)),
 	);

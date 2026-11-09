@@ -149,7 +149,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "cb75f501d60ab959ef31650ea733b4f08aafed786587a8ff59855c5551c64bbd"
+      "sha256": "e08465ab9bcf4cb1dfd0b22615ee6175e05178badc36c1eea8895f9daad847c7"
     },
     "memory/src/constants.js": {
       "source": "dsh-memory-manager/src/constants.js",
@@ -202,6 +202,10 @@
     "memory/src/valves-bridge.js": {
       "source": "dsh-memory-manager/src/valves-bridge.js",
       "sha256": "2b4715ddc1ffcf490ecacd55d24efb97c83bebefbd3e8420789b506967321c63"
+    },
+    "memory/tests/check-inbox-loop.test.js": {
+      "source": "dsh-memory-manager/tests/check-inbox-loop.test.js",
+      "sha256": "09f478999e19387062a50b10dfa80bfc4438428301534b5d6c23223fb24241c6"
     },
     "memory/tests/coverage.test.js": {
       "source": "dsh-memory-manager/tests/coverage.test.js",
