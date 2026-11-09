@@ -69,12 +69,19 @@ export async function readDecisions(storageDir) {
  * 双侧汇总：admitted/skipped/评估总数 + 按 reason 分布。
  * missRate 语义与 clis_metrics 一致：skipped / evaluated。
  * 它接近 1 = 阀门几乎全拒（可能在误杀），接近 0 = 几乎全放（可能没在管）。
+ *
+ * origin 口径（2026-11-09）：验证/演练/提名样本**计入总分布**（它们也是
+ * 真实判定），但单独报 byOrigin 与 dailyCount——阈值校准与 I-1 计数
+ * 只认日常样本，验证样本不得给校准分布灌水。历史行无 origin 字段，
+ * 如实归入 untagged（不猜它是日常还是验证）。
  */
 export function summarizeDecisions(entries) {
 	const byReason = {};
 	const byGate = {};
+	const byOrigin = {};
 	let admitted = 0;
 	let skipped = 0;
+	let dailyCount = 0;
 	for (const e of entries) {
 		if (e?.outcome === 'admitted') admitted++;
 		else if (e?.outcome === 'skipped') skipped++;
@@ -83,6 +90,9 @@ export function summarizeDecisions(entries) {
 		byReason[reason] = (byReason[reason] ?? 0) + 1;
 		const gate = String(e.gate ?? 'unknown');
 		byGate[gate] = (byGate[gate] ?? 0) + 1;
+		const origin = typeof e.origin === 'string' && e.origin ? e.origin : 'untagged';
+		byOrigin[origin] = (byOrigin[origin] ?? 0) + 1;
+		if (origin === 'daily') dailyCount++;
 	}
 	const evaluated = admitted + skipped;
 	return {
@@ -92,6 +102,8 @@ export function summarizeDecisions(entries) {
 		missRate: evaluated ? Number((skipped / evaluated).toFixed(3)) : null,
 		byReason,
 		byGate,
+		byOrigin,
+		dailyCount,
 	};
 }
 

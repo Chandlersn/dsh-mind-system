@@ -152,7 +152,7 @@ test('apply：真实宿主 defineTool 编译三份 schema（宿主方言最严�
 	const { dir, cleanup } = tempDir();
 	try {
 		apply(ctx, { storageDir: dir }, { loadDefineTool: () => realDefine });
-		assert.equal(fakeCtx.registered.length, 3, '三份 schema 都必须过宿主编译');
+		assert.equal(fakeCtx.registered.length, 4, '四份 schema 都必须过宿主编译');
 	} finally {
 		cleanup();
 	}

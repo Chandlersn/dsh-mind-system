@@ -168,12 +168,13 @@ dsh plugin --profile web add dsh-memory-manager
 
 ### dsh-valves —— 两类阀门
 
-下行准入（原则是否已具体化）+ 上行准入（反例是否够格改上层），三工具：`valve_check` / `valve_confirm` / `valve_metrics`。
+下行准入（原则是否已具体化）+ 上行准入（反例是否够格改上层），四工具：`valve_check` / `valve_confirm` / `valve_metrics` / `valve_nominate`。
 
-- 判据纯函数一处实现；阈值**全部暂定**，`valve_metrics` 的双侧分布（evaluated/skipped/missRate）即将来校准的原料
+- 判据纯函数一处实现；阈值**全部暂定**，`valve_metrics` 的双侧分布（evaluated/skipped/missRate/origin）即将来校准的原料
 - 成败只认外部证据（self_report 拒）；法→道不设量化门，永远人工
 - 负向规则唯一生效通道是人工确认（`valve_confirm`）；生效后下行拦截与 memory 召回零配合自动使用
 - 层级写入闸门仍归 memory（判据单一实现）：valves 只补负向通道与漏判分母
+- `valve_nominate` 从既有真实账本自动提名候选（clis 失败签名 / memory 使用聚合），只提名不生效、不编造成功率
 
 ---
 

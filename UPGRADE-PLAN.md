@@ -50,7 +50,7 @@
 
 | 节点 | 动作 | 完成标志（可外部检验） | 关联验收 | 状态 |
 | :--- | :--- | :--- | :--- | :--- |
-| I-1 日常使用自然过阀 | 每次 memory_insight/memory_dao 写入照常（桥自动留痕）；遇反复失败模式时走 valve_check 提名 | 账本 ≥30 条**非部署验证**记录；byReason 分布可读 | F12 | 🔶 周检已建（周一 10:00 reminder）；计数 0/30，见 docs/valves-weekly-review.md 口径注 |
+| I-1 日常使用自然过阀 | 每次 memory_insight/memory_dao 写入照常（桥自动留痕）；遇反复失败模式时走 valve_check 提名 | 账本 ≥30 条**非部署验证**记录；byReason 分布可读 | F12 | 🔶 周检已建；**origin 口径已落地**（daily/verification/drill/nomination，metrics 报 byOrigin+dailyCount，历史行归 untagged 不猜）；dailyCount 0/30 |
 | I-2 首条真实负向规则 | 用户确认一条真实禁令 → valve_confirm 生效 → 下一轮相关任务召回注入 | 生效库 ≥1 条；一次真实召回注入可在会话转录中找到；同关键词下行 deny | F14, F7 | 🔶 规则已生效（forbidden-inspect-query-explicit-input）；下行对照 deny/allow 已验；**召回注入待下轮真实任务**。证据：docs/valves-weekly-review.md §I-2 |
 | I-3 阈值首轮校准 | 读 valve_metrics 分布：downgrade 占比高 → 补证据提示；某 reason 从未出现 → 检查判据是否可达；按分布调 thresholds 并记录调整理由 | 至少一次有数据依据的阈值调整（或书面结论"分布不足以调"）；调整前后 missRate 对照 | F17 | ✅ 首轮结论"分布不足以调"（真实判定仅 1 组）；读数与依据落 docs/valves-weekly-review.md 2026-11-09 节 |
 | I-4 valve_evidence 填写率观察 | 统计 insight 写入中带 verifiable_by 的比例 | 比例数字落账本分析；<20% 则改工具描述引导（不是改判据） | F3 | 🔶 基线 0 样本（桥今日上线）；周检自动统计 |
@@ -62,8 +62,8 @@
 
 | 节点 | 动作 | 完成标志 | 关联验收 | 状态 |
 | :--- | :--- | :--- | :--- | :--- |
-| II-1 器→术自动提名 | 从 clis-interventions.jsonl + .usage.jsonl 聚合重复操作序列，产出 CandidateRule（不生效） | 一条真实候选由数据聚合产生（非手写）；valve_check up 判定落账 | F4, F8 | ⬜ |
-| II-2 器→术负向自动提名 | 失败 trace（退出码非零 + 同签名 ≥2）自动产出 forbidden_skill 候选 | 真实失败两次后候选出现；人工确认前不拦截 | F14 | ⬜ |
+| II-1 器→术自动提名 | 从 clis-interventions.jsonl + .usage.jsonl 聚合重复操作序列，产出 CandidateRule（不生效） | 一条真实候选由数据聚合产生（非手写）；valve_check up 判定落账 | F4, F8 | 🔶 valve_nominate 落地：真实 usage 聚合产出 4 条候选（dsh插件开发 25 次等），送阀全拒 malformed_skill_evidence（设计：无外部成功率证据不放行），落账 origin=nomination。**缺**：人工补外部证据过门 + 第二次任务真用上 |
+| II-2 器→术负向自动提名 | 失败 trace（退出码非零 + 同签名 ≥2）自动产出 forbidden_skill 候选 | 真实失败两次后候选出现；人工确认前不拦截 | F14 | 🔶 真实账本产出 1 条候选（pwsh 泛化签名 41 次，如实标 degraded_signature 假重复警告）；human_gate 落账、生效库仍空（不自动生效已验）；真机 valve_nominate 重启后实调通过。**缺**：回查原始记录判泛化签名是否真同一模式 |
 | II-3 术→法量化门实数据 | 用真实 skill_coverage/scenario_coverage 喂 criterion 五门（当前只有合成用例） | 一条真实候选判据走完五门流程（含 downgrade 分支） | F5, F17 | ⬜ |
 | II-4 技能快速通道分级 | 高置信度（阈值由阶段 I 分布定）候选走"确认即生效+抽样审计"；审计比率可配 | 快速通道生效一条 + 抽样审计记录在账本；变异测试：置信度不足必走人工 | F11 | ⬜ |
 | II-5 CLIS 提名接阀门 | clis_classify 的四问结果作为 valve_check 的因果输入留痕（提名与裁决分离已有，补留痕链） | 一次真实因果判断的提名+裁决双双出现在账本/trace | F9 | ⬜ |

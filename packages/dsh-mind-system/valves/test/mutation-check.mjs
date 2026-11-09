@@ -20,6 +20,13 @@ const MUTATIONS = [
 ];
 // 第 5 条真正的变异在 index.js（记账侧）
 MUTATIONS[4] = { file: 'index.js', find: "const outcome = decision.action === 'deny' || decision.action === 'reject' ? 'skipped' : 'admitted';", replace: "const outcome = 'admitted';", label: '拒绝侧不落 skipped（漏判分母消失）' };
+// 提名器变异（阶段 II）：
+MUTATIONS.push(
+	{ file: 'src/nominate.js', find: 'if (agg.count < t.forbiddenMinFailures) continue;', replace: '', label: '负向提名阈值失效（1 次失败也提名）' },
+	{ file: 'src/nominate.js', find: "if (!href.startsWith('functions/')) continue;", replace: '', label: '正向提名越层（insights 也被提名）' },
+	{ file: 'src/nominate.js', find: "success_evidence: 'self_report',", replace: "success_evidence: 'external',", label: '提名器伪造外部证据级别' },
+	{ file: 'src/store.js', find: "if (origin === 'daily') dailyCount++;", replace: 'dailyCount++;', label: 'origin 口径失效（验证样本灌进日常计数）' },
+);
 
 let red = 0;
 for (const m of MUTATIONS) {
@@ -37,7 +44,7 @@ for (const m of MUTATIONS) {
 			continue;
 		}
 		writeFileSync(target, text.replace(m.find, m.replace), 'utf8');
-		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js'], { cwd: dir, encoding: 'utf8' });
+		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js'], { cwd: dir, encoding: 'utf8' });
 		const killed = r.status !== 0;
 		console.log(`${killed ? 'RED ' : 'GREEN(!!)'} ${m.label}`);
 		if (killed) red++;

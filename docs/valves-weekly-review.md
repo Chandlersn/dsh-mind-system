@@ -27,9 +27,23 @@
 4. **首版关键词误杀实测**：关键词选工具名（cordis_inspect_query）导致合规路径也 deny——两条对照路径全拦。同 id 修订为行为短语（"必须显式传 input"等）后：违规路径 deny、合规路径 allow。**教训入 §6：负向关键词选行为短语，不选工具名。**
 5. 剩余验收缺口：召回注入在**下一轮真实任务**中出现才算 I-2 全闭环（本轮是同会话验证）。
 
-### 已知口径缺口（待阶段 II 处理）
+### 已知口径缺口（已修，2026-11-09 同日）
 
-- 账本无 sample_kind 字段区分部署验证/闭环验证/日常样本 → I-1 计数只能靠时间戳切分。最小修：appendDecision 加 origin 字段（阶段 II 顺手做，不单独立项）。
+- ~~账本无 sample_kind 字段~~ → **origin 字段已落地**：daily/verification/drill/nomination 四类；metrics 报 byOrigin + dailyCount；历史行归 untagged（不猜）。变异守卫：去掉 daily 过滤立刻红。
+
+## 2026-11-09 · 阶段 II 提名器落地（同日追加）
+
+### 读数（valve_nominate 真机实调，宿主重启 PID 40040→20476 后）
+
+- 负向：真实 clis 账本（641 行）产出 1 条候选——pwsh 泛化签名 41 次，`degraded_signature: true` 如实警告"可能是无关错误攒的假重复"。human_gate 落账，生效库仍 1 条（不自动生效验证通过）。
+- 正向：真实 usage 聚合（1695 行）产出 4 条候选（dsh插件开发 25/memory-manager 14/宣传片制作 11/批印坊 6），送阀**全拒 malformed_skill_evidence**——设计如此：usage 账本没有外部成败证据，提名器不编造成功率，人工补证后再提阀。
+- 账本新增 5 条 origin=nomination 记录；evaluated=15，missRate=0.667。
+- 测试：45 例全绿；变异 9/9 红（新增 4 条：提名阈值失效/越层提名/伪造证据级别/origin 口径失效）；仓库 npm test 退出码 0。
+
+### 待办移交
+
+- 泛化签名候选：人工确认前须回查 41 条原始记录是否真同一失败模式（签名塌缩教训的下游核对）。
+- 正向候选补外部证据：从 dsh插件开发（engagement 最高）开始，按 memory_skill 流程结晶并跑真实任务验证。
 
 ## 周检记录（每周一 10:00 reminder 触发后追加）
 

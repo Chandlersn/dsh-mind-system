@@ -41,6 +41,7 @@ import {
 	confirmNegativeRule,
 	matchNegativeRules,
 } from './src/store.js';
+import { nominateFromDisk } from './src/nominate.js';
 
 export const name = 'valves';
 
@@ -148,6 +149,7 @@ export function createRuntime(options = {}) {
 			from: input?.from,
 			to: input?.to,
 			candidate_id: input?.candidate_id,
+			...(input?.origin === undefined ? {} : { origin: input.origin }),
 		});
 		return decision;
 	};
@@ -157,13 +159,14 @@ export function createRuntime(options = {}) {
 		thresholds,
 		layers,
 		downward(from, to, data) {
-			return record(`downward_${from}_${to}`, 'down', admitDownward(from, to, data, { layers, thresholds }), { from, to });
+			return record(`downward_${from}_${to}`, 'down', admitDownward(from, to, data, { layers, thresholds }), { from, to, origin: data?.origin });
 		},
 		upward(from, to, candidate) {
 			return record(`upward_${from}_${to}`, 'up', admitUpward(from, to, candidate, { layers, thresholds }), {
 				from,
 				to,
 				candidate_id: candidate?.candidate_id ?? candidate?.rule_id,
+				origin: candidate?.origin,
 			});
 		},
 		principle(stats) {
@@ -174,6 +177,7 @@ export function createRuntime(options = {}) {
 				outcome: verdict.status === 'invalid' ? 'skipped' : 'admitted',
 				action: verdict.status,
 				reason: verdict.triggered.join('+') || verdict.status,
+				...(stats?.origin === undefined ? {} : { origin: stats.origin }),
 			});
 			return verdict;
 		},
@@ -217,11 +221,43 @@ export function createRuntime(options = {}) {
 				thresholds_status: '暂定（待实测分布校准）',
 			};
 		},
+		/**
+		 * II-1/II-2 自动提名。usageItems 由调用方（memory 桥或周检脚本）
+		 * 聚合后传入——本包不反向 import memory（依赖方向纪律）。
+		 * 不传则 skills 侧如实返回 skipped（不是空候选假装查过）。
+		 */
+		async nominate(args = {}) {
+			const channel = args.channel ?? 'both';
+			const rules = await readNegativeRules(storageDir);
+			const result = await nominateFromDisk(
+				{
+					storageDir,
+					interventionsPath: args.interventionsPath,
+					usageItems: channel === 'forbidden' ? [] : args.usageItems,
+				},
+				{ thresholds, existingRuleIds: Array.isArray(rules) ? rules.map((r) => r?.id) : [], windowDays: args.window_days },
+			);
+			const out = {
+				forbidden: channel === 'skills' ? null : result.forbidden ?? null,
+				skills: channel === 'forbidden' ? null : result.skills ?? null,
+				...(result.forbidden === undefined && channel !== 'skills' ? { forbidden_error: 'clis-interventions.jsonl 读取失败' } : {}),
+				...(channel !== 'forbidden' && args.usageItems === undefined ? { skills_note: '未提供 usage 聚合（调用方经 memory summarizeUsage 传入），正向侧本次未查' } : {}),
+			};
+			if (args.check === true) {
+				out.verdicts = [];
+				for (const c of [...(out.forbidden ?? []), ...(out.skills ?? [])]) {
+					// 器→术：候选都在 L3 原料层，目标 L2。
+					const decision = this.upward('L3', 'L2', c);
+					out.verdicts.push({ candidate_id: c.candidate_id, ...decision });
+				}
+			}
+			return out;
+		},
 	};
 }
 
 /** 工具名。 */
-export const TOOL_NAMES = { check: 'valve_check', confirm: 'valve_confirm', metrics: 'valve_metrics' };
+export const TOOL_NAMES = { check: 'valve_check', confirm: 'valve_confirm', metrics: 'valve_metrics', nominate: 'valve_nominate' };
 
 export function apply(ctx, config = {}, overrides = {}) {
 	const logger = overrides.logger ?? ctx.logger?.('valves');
@@ -278,6 +314,9 @@ export function apply(ctx, config = {}, overrides = {}) {
 				type: 'object',
 				additionalProperties: false,
 				properties: {
+					// 样本口径（可选）：验证/演练样本显式标记，日常样本缺省不标。
+					// I-1 计数只数无 origin 或 origin=daily 的行——验证样本不得灌进校准分布。
+					origin: { type: 'string', enum: ['daily', 'verification', 'drill', 'nomination'], description: '样本类型：daily=日常（缺省）；verification=部署/闭环验证；drill=演练；nomination=自动提名器产物。' },
 					// down
 					constraints: { type: 'array', items: { type: 'string' }, description: 'down：已具体化的可执行约束（空 = 未具体化，拒）。' },
 					touches_axiom: { type: 'boolean', description: 'down：是否触及公理语义（true → human_gate）。' },
@@ -367,7 +406,29 @@ export function apply(ctx, config = {}, overrides = {}) {
 		},
 	});
 
-	for (const tool of [checkTool, confirmTool, metricsTool]) {
+	const nominateTool = defineTool({
+		name: TOOL_NAMES.nominate,
+		description:
+			'自动提名器（阶段 II）：从既有真实账本聚合候选——负向吃 clis-interventions.jsonl 的重复失败签名（≥阈值才提名），' +
+			'正向吃 memory 使用聚合（高频功能域值得结晶技能）。**只提名不生效**：候选交 valve_check 裁决、人工确认后生效。' +
+			'正向候选不编造成功率（usage 账本没有外部成败证据），如实标 needs_external_evidence；' +
+			'泛化失败签名标 degraded_signature（可能是假重复，确认前须回查原始记录）。',
+		parameters: {
+			channel: { type: 'string', enum: ['forbidden', 'skills', 'both'], description: '提名通道：负向/正向/两侧。缺省 both。' },
+			window_days: { type: 'number', description: '负向统计窗口（天）；缺省不限（全量账本）。' },
+			check: { type: 'boolean', description: 'true 时把每条候选立即送 valve_check 裁决并落账（origin=nomination）；缺省 false 只列候选。' },
+		},
+		output: { schema: { type: 'json' }, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }] },
+		async execute(args) {
+			try {
+				return await runtime.nominate(args ?? {});
+			} catch (error) {
+				return { error: 'valve_nominate 执行失败', reason: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	});
+
+	for (const tool of [checkTool, confirmTool, metricsTool, nominateTool]) {
 		ctx.tools.register(tool);
 		facts.registeredTools.push(tool.name ?? '(unnamed)');
 	}
@@ -387,11 +448,11 @@ export function probe() {
 	if (!facts.loaded) {
 		findings.push({ code: PROBE_CODES.notLoaded, severity: 'error', message: 'valves 未装载（apply 未执行）。', hint: '查宿主启动日志。' });
 	} else {
-		if (facts.registeredTools.length < 3) {
+		if (facts.registeredTools.length < 4) {
 			findings.push({
 				code: PROBE_CODES.toolMissing,
 				severity: 'error',
-				message: `工具只注册了 ${facts.registeredTools.length}/3：${facts.loadError ?? '原因未知'}`,
+				message: `工具只注册了 ${facts.registeredTools.length}/4：${facts.loadError ?? '原因未知'}`,
 				hint: '多为宿主定位失败；设 DSH_INSTALL_DIR 或 config.dshRoot。',
 			});
 		}

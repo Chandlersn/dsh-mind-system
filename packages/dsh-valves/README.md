@@ -11,13 +11,18 @@
 
 本包补这两件，判据是纯函数、双侧记账、生效必须人工确认。
 
-## 三个工具
+## 四个工具
 
 | 工具 | 做什么 | 不做什么 |
 |---|---|---|
 | `valve_check` | 提名→代码裁决→留痕：down（具体化+黑名单+禁跳层）/ up（J1 防伪+量化阈值）/ principle（原则失效四判据） | 判定 accept/human_gate **不等于生效** |
 | `valve_confirm` | 人工确认后写负向规则库（唯一生效通道） | 未经用户确认不得调用 |
-| `valve_metrics` | 双侧账本：evaluated/admitted/skipped + missRate + reason/gate 分布 | 不自评"阀门在工作"——分布给读的人判 |
+| `valve_metrics` | 双侧账本：evaluated/admitted/skipped + missRate + reason/gate/origin 分布 + dailyCount | 不自评"阀门在工作"——分布给读的人判 |
+| `valve_nominate` | 自动提名器（阶段 II）：负向吃 clis 失败账本重复签名、正向吃 memory 使用聚合；check=true 立即送阀落账 | 只提名不生效；不编造成功率（正向如实标 needs_external_evidence，送阀会被拒——那是设计：先人工补外部证据） |
+
+### 样本口径（origin）
+
+判定可标 origin：daily（日常，缺省语义）/ verification（部署验证）/ drill（演练）/ nomination（提名器产物）。总分布含全部样本，但 `dailyCount` 只数显式 daily——阈值校准与阶段 I 计数不拿验证样本灌水。历史行无 origin 归 untagged（不猜）。
 
 ## 与 memory 的分工（判据单一实现）
 
@@ -75,3 +80,4 @@ node test/mutation-check.mjs  # 变异验证：改坏判据必须红
 - 技能闸门的"高置信度快速通道"未开：v1 全部转人工，等真实分布出来再放。
 - 外层治理循环只落了判据核（checkPrinciple），归类与定时巡检未建。
 - 灰度放量/批量回滚/层修改流程未建（说明书阶段 D/G，按路线后做）。
+- 提名器正向侧需要调用方传入 usage 聚合（不反向 import memory）；未传时如实报"本次未查"。

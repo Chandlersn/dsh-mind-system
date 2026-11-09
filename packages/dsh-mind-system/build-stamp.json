@@ -389,15 +389,19 @@
     },
     "valves/README.md": {
       "source": "dsh-valves/README.md",
-      "sha256": "a8876b0739aedeaa666e3e02175e1c979da335ea2ebf1bdf27de7f1bd2361fae"
+      "sha256": "02fb493914472061ad666ec090b6246070a4c56327370effd8b875b6a4ac6e16"
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
-      "sha256": "26fc19e2e0f493b09b4fbaca9dc5d6c7cf23c363e03d9bf6f0af1029b1042425"
+      "sha256": "299403358ea72193bbb0e01ec14adfdcf7f17ea056cff8ed7ced1f00de8daca7"
     },
     "valves/package.json": {
       "source": "dsh-valves/package.json",
       "sha256": "6518ca0701ab5325e197cfec81438005d2bc4ff24bc91caa73dcbd1765750275"
+    },
+    "valves/src/nominate.js": {
+      "source": "dsh-valves/src/nominate.js",
+      "sha256": "22411cf0bea8423c5414499b27b5b35eb9ecd95e84a043b75d3be86c440d8b9f"
     },
     "valves/src/predicates.js": {
       "source": "dsh-valves/src/predicates.js",
@@ -405,7 +409,7 @@
     },
     "valves/src/store.js": {
       "source": "dsh-valves/src/store.js",
-      "sha256": "2645ef07d0fc87a219ee8aada4bc14fd8fb6995e465eac78a3c1f922181dc270"
+      "sha256": "162e327357d22660c76431d0be296a52f19687f7c4007ed6a35589ba97a5f561"
     },
     "valves/src/thresholds.js": {
       "source": "dsh-valves/src/thresholds.js",
@@ -413,11 +417,15 @@
     },
     "valves/test/entry.test.js": {
       "source": "dsh-valves/test/entry.test.js",
-      "sha256": "3be3c64cb985bfd2e69d2010bb9cef3436b2c752cd92d412703b5f0bfc813563"
+      "sha256": "0b52df700ff67d7dc66cb9348a4ae87a160d2ed657161c6e616d725d9089c368"
     },
     "valves/test/mutation-check.mjs": {
       "source": "dsh-valves/test/mutation-check.mjs",
-      "sha256": "2f14da7eae4da18a26344436f6634ae7d47aa8e4edeffeb667351f6034aa9965"
+      "sha256": "d6627f3ec51aa948db2c46224f7ee52b4c7c0df0a0fdad8901a10743db76af2e"
+    },
+    "valves/test/nominate.test.js": {
+      "source": "dsh-valves/test/nominate.test.js",
+      "sha256": "6570463ba85dacd0ae21f0e41ecdbaa7e714570e74e95dc380b3c36a05f7d29c"
     },
     "valves/test/predicates.test.js": {
       "source": "dsh-valves/test/predicates.test.js",
