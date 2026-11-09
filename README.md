@@ -537,7 +537,7 @@ npm run install:profile -- --dry-run   # 只说做什么
 | `dsh-agent-mind` | 20 文件 / 5615 行 |
 | `dsh-clis` | 源仓库 45 个 .ts / 9458 行 |
 | `dsh-meta-framework` | 10 文件 / 3230 行 |
-| `dsh-memory-manager` | 4 文件 / 5877 行 |
+| `dsh-memory-manager` | 4 文件 / 5905 行 |
 
 memory-manager 只计常改的 4 个文件（`server.js` + 三个判据模块），不是全包。
 

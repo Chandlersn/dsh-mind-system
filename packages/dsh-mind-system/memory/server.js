@@ -2670,6 +2670,25 @@ function memoryInsightTool(opts) {
 				else skipped.push(s);
 			}
 			if (skipped.length) warnings.push(`来源不存在，未回链：${skipped.join('、')}（先用 memory_write 建立功能文件）`);
+			// 阀门证据落盘（2026-11-09 II-3 收口）：valve_evidence 此前只进账本
+			// 不进文件——criteria 通道从磁盘重跑时读不到它，头部原则永远
+			// downgrade（补了证据也白补）。现在持久化为「## 阀门证据」节：
+			// verifiable_by 一行 + 量化字段一行 JSON + 证据引用列表。
+			// 只在显式提供时写；不提供不动既有节（更新原则不冲掉旧证据）。
+			const ve = args.valve_evidence && typeof args.valve_evidence === 'object' ? args.valve_evidence : undefined;
+			const evidenceSection = (v) => {
+				const lines = [];
+				if (typeof v.verifiable_by === 'string' && v.verifiable_by.trim()) lines.push(`- 可检验路径：${oneLine(v.verifiable_by)}`);
+				const quant = {};
+				for (const k of ['skill_coverage', 'scenario_coverage', 'anti_example_count', 'predict_rate', 'overlap']) {
+					if (v[k] !== undefined) quant[k] = v[k];
+				}
+				if (Object.keys(quant).length) lines.push(`- 量化：${JSON.stringify(quant)}`);
+				for (const e of Array.isArray(v.evidence) ? v.evidence : []) {
+					if (typeof e === 'string' && e.trim()) lines.push(`- 证据：${oneLine(e)}`);
+				}
+				return lines.join('\n');
+			};
 			// 层级准入闸门（src/layer-gate.js 的 gateFa）—— 判据是**函数**，
 			// 不在这个工具里内联正则。法层对「≥2 无关来源域」只降级不拒绝
 			// （单源是合法的专项经验），但必须让调用方知道它进了哪一层。
@@ -2698,6 +2717,15 @@ function memoryInsightTool(opts) {
 					text = replaceSection(text, '## 适用面', `- ${oneLine(args.applicability)}`);
 				}
 				if (args.open !== undefined && oneLine(args.open)) text = appendUnderHeading(text, '## 待观察', `- ${oneLine(args.open)}`).text;
+			}
+			// 阀门证据节：显式提供才写/替换；节不存在则追加到文件末尾。
+			if (ve) {
+				const body = evidenceSection(ve);
+				if (body) {
+					text = text.includes('## 阀门证据')
+						? replaceSection(text, '## 阀门证据', body)
+						: `${text.replace(/\n*$/, '\n')}\n## 阀门证据\n\n${body}\n`;
+				}
 			}
 			// Trust refresh (Hindsight-borrowed: beliefs carry proof counts and are
 			// REFINED, never silently replaced): recompute from .usage.jsonl on every

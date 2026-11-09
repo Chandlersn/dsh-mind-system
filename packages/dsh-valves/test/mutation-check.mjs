@@ -29,6 +29,8 @@ MUTATIONS.push(
 	{ file: 'index.js', find: 'if (seen.has(key)) continue;', replace: '', label: 'clisTrace 幂等失效（重复消费重复落账）' },
 	{ file: 'src/clis-bridge.js', find: "const inContract = CAUSAL_TYPES.includes(type);", replace: 'const inContract = true;', label: '离契约类型被当合规提名放行' },
 	{ file: 'src/clis-bridge.js', find: "if (text.includes('⚠️ 已被取代')) continue;", replace: '', label: '已取代原则重新进入候选' },
+	{ file: 'src/clis-bridge.js', find: "const ve = parseValveEvidenceSection(text);", replace: 'const ve = undefined;', label: '证据节永不读回（补证白补，永远 downgrade）' },
+	{ file: 'src/clis-bridge.js', find: "const section = text.split('## 阀门证据')[1]?.split(/\\n## /)[0];", replace: "const section = text.split('## 阀门证据')[1];", label: '证据节越界（下一节的行混入量化）' },
 );
 
 let red = 0;

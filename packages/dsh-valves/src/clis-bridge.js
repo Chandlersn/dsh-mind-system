@@ -115,8 +115,37 @@ export function consumeClisHistory(history) {
  *   不编造"场景"计数，README 里如实声明这是下界）
  * - anti_example_count / predict_rate ← 无数据源，缺省不填（阀门会 downgrade）
  *
+ * 「## 阀门证据」节（2026-11-09 II-3 收口）：memory_insight 显式提供的
+ * valve_evidence 持久化在该节（可检验路径/量化 JSON/证据引用）。这里读回：
+ * - 可检验路径 → verifiable_by（人工写的，不是编的）
+ * - 量化 JSON → 白名单字段覆盖（人工声明优先于回链下界）
+ * - 证据引用 → 并入 evidence（保留回链，去重）
+ * 节不存在 → 行为与旧版一致（downgrade not_externally_verifiable）。
+ *
  * 这不替代人工判断——它把"可以从磁盘数出来的"数出来，把数不出来的留空。
  */
+export function parseValveEvidenceSection(text) {
+	const section = text.split('## 阀门证据')[1]?.split(/\n## /)[0];
+	if (!section) return undefined;
+	const out = {};
+	const by = /^- 可检验路径：(.+)$/m.exec(section)?.[1];
+	if (by?.trim()) out.verifiable_by = by.trim();
+	const quantRaw = /^- 量化：(.+)$/m.exec(section)?.[1];
+	if (quantRaw) {
+		try {
+			const quant = JSON.parse(quantRaw);
+			for (const k of ['skill_coverage', 'scenario_coverage', 'anti_example_count', 'predict_rate', 'overlap']) {
+				if (quant[k] !== undefined) out[k] = quant[k];
+			}
+		} catch {
+			/* 量化行坏了就当没有——不猜数字 */
+		}
+	}
+	const refs = [...section.matchAll(/^- 证据：(.+)$/gm)].map((m) => m[1].trim()).filter(Boolean);
+	if (refs.length) out.evidence = refs;
+	return Object.keys(out).length ? out : undefined;
+}
+
 export function criterionEvidenceFromInsights(insightFiles) {
 	const out = [];
 	for (const { theme, text } of insightFiles ?? []) {
@@ -127,16 +156,22 @@ export function criterionEvidenceFromInsights(insightFiles) {
 		const sources = [...srcLine.matchAll(/functions\/([^)\s\]]+)\.md/g)].map((m) => m[1]);
 		const unique = [...new Set(sources)];
 		const principle = /^- (.+)$/m.exec(text.split('## 核心原则')[1]?.split('##')[0] ?? '')?.[1];
+		const ve = parseValveEvidenceSection(text);
+		const evidence = [...new Set([...unique.map((s) => `functions/${s}.md`), ...(ve?.evidence ?? [])])];
 		out.push({
 			candidate_id: `nom-criterion-${String(theme).slice(0, 48)}`,
 			kind: 'positive',
 			rule_type: 'criterion',
 			statement: principle ?? String(theme),
-			skill_coverage: unique.length,
-			scenario_coverage: unique.length, // 保守下界，见函数头
-			evidence: unique.map((s) => `functions/${s}.md`),
-			// verifiable_by 留空：磁盘数不出"怎么推翻这条原则"——那要人工写。
+			skill_coverage: ve?.skill_coverage ?? unique.length,
+			scenario_coverage: ve?.scenario_coverage ?? unique.length, // 保守下界，见函数头
+			evidence,
+			// 无阀门证据节时留空：磁盘数不出"怎么推翻这条原则"——那要人工写。
 			// 阀门会如实 downgrade(not_externally_verifiable)，正是该记的账。
+			...(ve?.verifiable_by === undefined ? {} : { verifiable_by: ve.verifiable_by }),
+			...(ve?.anti_example_count === undefined ? {} : { anti_example_count: ve.anti_example_count }),
+			...(ve?.predict_rate === undefined ? {} : { predict_rate: ve.predict_rate }),
+			...(ve?.overlap === undefined ? {} : { overlap: ve.overlap }),
 			origin: 'nomination',
 		});
 	}

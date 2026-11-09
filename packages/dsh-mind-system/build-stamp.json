@@ -149,7 +149,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "390c7c4bb5c5e727ab34677b8650e7db63f52919a7d8b287d72200362228b4af"
+      "sha256": "d43bca0de59d2d8677c18ad84a040ca0300f81a784bab45b5c220b0a14d99f9a"
     },
     "memory/src/constants.js": {
       "source": "dsh-memory-manager/src/constants.js",
@@ -389,7 +389,7 @@
     },
     "valves/README.md": {
       "source": "dsh-valves/README.md",
-      "sha256": "02fb493914472061ad666ec090b6246070a4c56327370effd8b875b6a4ac6e16"
+      "sha256": "8fdfa042de944572292a53f17eaa2627465028177aa0c923b833f30dbb77ea0a"
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
@@ -401,7 +401,7 @@
     },
     "valves/src/clis-bridge.js": {
       "source": "dsh-valves/src/clis-bridge.js",
-      "sha256": "e8f1cd2d32877807887f638ba5d86f76f005058a9a12ccf7112e4b74f5716eb3"
+      "sha256": "11a79d97cf57103a2720eedf3446ab1ea7b097ae95697681366561db87eda5e7"
     },
     "valves/src/nominate.js": {
       "source": "dsh-valves/src/nominate.js",
@@ -421,7 +421,7 @@
     },
     "valves/test/clis-bridge.test.js": {
       "source": "dsh-valves/test/clis-bridge.test.js",
-      "sha256": "79ea7a80465de55e8dfca09df319dfb1194983de65079e1c239bb6f7863072ee"
+      "sha256": "ba7469f8e31086a6746f95e8cf65829b010180ab0c044362eb7fbc66c56b9a77"
     },
     "valves/test/entry.test.js": {
       "source": "dsh-valves/test/entry.test.js",
@@ -429,7 +429,7 @@
     },
     "valves/test/mutation-check.mjs": {
       "source": "dsh-valves/test/mutation-check.mjs",
-      "sha256": "2663d2c238a9cf1d5195bafeda58194d4463e9b569272f3d3c6831d4bd9b95e3"
+      "sha256": "32acbe8dd825f032c2f812e865f6e7a323985a46067b9b4654da053a30c15a1c"
     },
     "valves/test/nominate.test.js": {
       "source": "dsh-valves/test/nominate.test.js",

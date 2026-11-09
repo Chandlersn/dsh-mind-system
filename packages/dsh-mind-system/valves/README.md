@@ -18,7 +18,7 @@
 | `valve_check` | 提名→代码裁决→留痕：down（具体化+黑名单+禁跳层）/ up（J1 防伪+量化阈值）/ principle（原则失效四判据） | 判定 accept/human_gate **不等于生效** |
 | `valve_confirm` | 人工确认后写负向规则库（唯一生效通道） | 未经用户确认不得调用 |
 | `valve_metrics` | 双侧账本：evaluated/admitted/skipped + missRate + reason/gate/origin 分布 + dailyCount | 不自评"阀门在工作"——分布给读的人判 |
-| `valve_nominate` | 自动提名器（阶段 II）：负向吃 clis 失败账本重复签名、正向吃 memory 使用聚合；check=true 立即送阀落账 | 只提名不生效；不编造成功率（正向如实标 needs_external_evidence，送阀会被拒——那是设计：先人工补外部证据） |
+| `valve_nominate` | 自动提名器（阶段 II）：负向吃 clis 失败账本重复签名、正向吃 memory 使用聚合；check=true 立即送阀落账。channel=clis_trace 消费 clis-history 提名+裁决成对留痕（幂等，账本当游标）；channel=criteria 从真实 insights 来源回链数覆盖喂五门 | 只提名不生效；不编造成功率与反例数（数不出的留空，阀门如实拒/downgrade——那是设计：先人工补外部证据） |
 
 ### 样本口径（origin）
 

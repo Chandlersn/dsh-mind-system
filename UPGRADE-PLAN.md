@@ -64,7 +64,7 @@
 | :--- | :--- | :--- | :--- | :--- |
 | II-1 器→术自动提名 | 从 clis-interventions.jsonl + .usage.jsonl 聚合重复操作序列，产出 CandidateRule（不生效） | 一条真实候选由数据聚合产生（非手写）；valve_check up 判定落账 | F4, F8 | 🔶 valve_nominate 落地：真实 usage 聚合产出 4 条候选（dsh插件开发 25 次等），送阀全拒 malformed_skill_evidence（设计：无外部成功率证据不放行），落账 origin=nomination。**缺**：人工补外部证据过门 + 第二次任务真用上 |
 | II-2 器→术负向自动提名 | 失败 trace（退出码非零 + 同签名 ≥2）自动产出 forbidden_skill 候选 | 真实失败两次后候选出现；人工确认前不拦截 | F14 | 🔶 真实账本产出 1 条候选（pwsh 泛化签名 41 次，如实标 degraded_signature 假重复警告）；human_gate 落账、生效库仍空（不自动生效已验）；真机 valve_nominate 重启后实调通过。**缺**：回查原始记录判泛化签名是否真同一模式 |
-| II-3 术→法量化门实数据 | 用真实 skill_coverage/scenario_coverage 喂 criterion 五门（当前只有合成用例） | 一条真实候选判据走完五门流程（含 downgrade 分支） | F5, F17 | 🔶 channel=criteria 落地：真实 12 个 insights → 11 条候选（1 已取代跳过），来源回链数覆盖（形状按最严格边界写 3 源最高）；全部 downgrade not_externally_verifiable——如实暴露"原则文件没写可检验路径"这一真实缺口。**缺**：人工为头部原则补 verifiable_by + 反例后过门 |
+| II-3 术→法量化门实数据 | 用真实 skill_coverage/scenario_coverage 喂 criterion 五门（当前只有合成用例） | 一条真实候选判据走完五门流程（含 downgrade 分支） | F5, F17 | ✅ 全链收口：valve_evidence 持久化为「## 阀门证据」节（memory 写盘 + criteria 读回，节边界截断有变异守卫）；两条头部原则（形状按最严格边界写/闸门指标须成对报）补证后从磁盘重跑 **human_gate:criterion_thresholds_met**，其余 9 条如实 downgrade（补证优先级清单）。真机 bridge 落账 human_gate 可查；56 例 + 14/14 变异红 |
 | II-4 技能快速通道分级 | 高置信度（阈值由阶段 I 分布定）候选走"确认即生效+抽样审计"；审计比率可配 | 快速通道生效一条 + 抽样审计记录在账本；变异测试：置信度不足必走人工 | F11 | ⬜（按 D4 等阶段 I 分布） |
 | II-5 CLIS 提名接阀门 | clis_classify 的四问结果作为 valve_check 的因果输入留痕（提名与裁决分离已有，补留痕链） | 一次真实因果判断的提名+裁决双双出现在账本/trace | F9 | ✅ channel=clis_trace 落地：真实历史 44 条全量消费，提名+裁决成对落账（gate=clis_nomination，44 条 nominated_type+verdict+evidence 指纹可回查）；二跑 newly=0 幂等（账本当游标）；误判线索 1 条单独列出（第三次调价仍反弹）；统计如实：achieved=0 不编有效性。变异 3 条守卫（幂等/白名单/取代跳过）全红 |
 
@@ -117,7 +117,7 @@
 | F2 | 下行准入完整跑通 L0→L3 | 🔶 | 单层真机已验；全链 layer_path 未建 | V |
 | F3 | 上行准入完整跑通 L3→L0 | 🔶 | L3→L2/L2→L1 谓词已验；全链 trace 未建 | V |
 | F4 | 器→术正向提炼 | 🔶 | memory_skill 提名靠 usage 信号；trace 驱动自动候选未建 | II |
-| F5 | 术→法正向提炼 | 🔶 | gateFa 实战中；五量化门只有合成用例 | II |
+| F5 | 术→法正向提炼 | ✅ | gateFa 实战 + 两条真实原则补证后过五门 human_gate（证据节持久化，磁盘重跑可验证） | 已达成 |
 | F6 | 法→道正向提炼 | ✅ | memory_dao 硬闸门（≥5 法+形态检查）实战出过 1 条道；valves 侧永远 human_gate | 已达成 |
 | F7 | 自循环验证 | 🔶 | 测试环境闭环已证；**真实任务**上待 I-2 | I |
 | F8 | 自成长逐层不跳层 | ✅ | 谓词拒跳层 + 变异红；memory 层级闸门实战 | 已达成 |
@@ -129,7 +129,7 @@
 | F14 | 负向规则蒸馏 | 🔶 | 确认→拦截→召回已通；自动提名与沉底未建 | I/II/IV |
 | F15 | 灰度放量 | ⬜ | | IV |
 | F16 | 批量回滚 | ⬜ | | IV |
-| F17 | 术→法量化判据 | 🔶 | 五门谓词+测试在；真实数据未过门 | II |
+| F17 | 术→法量化判据 | ✅ | 五门谓词 + 真实数据过门（2 human_gate / 9 downgrade，缺口即补证清单）；14/14 变异红 | 已达成 |
 | F18 | 语义越权检测 | ⬜ | | III |
 | F19 | 原则失效判定 | 🔶 | 判据核真机已验；数据源（账本聚合）未接 | III |
 

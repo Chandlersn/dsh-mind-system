@@ -128,3 +128,77 @@ test('criterion 真实形状过五门：覆盖不足 reject；≥2 源但不可�
 test('CAUSAL_TYPES 与契约镜像一致（四确定 + unknown）', () => {
 	assert.deepEqual(CAUSAL_TYPES, ['structural_duality', 'cyclic', 'unidirectional', 'nested', 'unknown']);
 });
+
+// —— 「## 阀门证据」节读回（II-3 收口）——
+
+import { parseValveEvidenceSection } from '../src/clis-bridge.js';
+
+const withSection = (base, section) => `${base}\n## 阀门证据\n\n${section}\n`;
+
+test('证据节解析：三行形态读回；坏量化行不猜数字；无节返回 undefined', () => {
+	const base = insightText(['x', 'y', 'z']);
+	assert.equal(parseValveEvidenceSection(base), undefined);
+	const full = withSection(base, [
+		'- 可检验路径：本地过、远端拒即证伪',
+		'- 量化：{"skill_coverage":3,"anti_example_count":2,"predict_rate":0.8}',
+		'- 证据：functions/x.md 2026-11-09 实证',
+	].join('\n'));
+	const ve = parseValveEvidenceSection(full);
+	assert.equal(ve.verifiable_by, '本地过、远端拒即证伪');
+	assert.equal(ve.anti_example_count, 2);
+	assert.equal(ve.predict_rate, 0.8);
+	assert.deepEqual(ve.evidence, ['functions/x.md 2026-11-09 实证']);
+	// 坏 JSON：量化字段缺席但其余仍读回（不猜数字）
+	const bad = withSection(base, '- 可检验路径：重放\n- 量化：{broken\n');
+	const veBad = parseValveEvidenceSection(bad);
+	assert.equal(veBad.verifiable_by, '重放');
+	assert.equal(veBad.skill_coverage, undefined);
+	// 白名单外的键不得混入
+	const evil = withSection(base, '- 量化：{"made_up":1,"skill_coverage":4}');
+	assert.equal(parseValveEvidenceSection(evil).made_up, undefined);
+	assert.equal(parseValveEvidenceSection(evil).skill_coverage, 4);
+});
+
+test('证据节改变五门结果：补证后从 downgrade 变 human_gate（II-3 闭环）', async () => {
+	const { createRuntime } = await import('../index.js');
+	const dir = mkdtempSync(join(tmpdir(), 'dsh-clisb-'));
+	try {
+		const rt = createRuntime({ storageDir: dir });
+		const base = insightText(['x', 'y', 'z']);
+		// 无节：J1 downgrade
+		const [before] = criterionEvidenceFromInsights([{ theme: 'a', text: base }]);
+		assert.equal(rt.upward('L2', 'L1', before).reason, 'not_externally_verifiable');
+		// 有节但缺反例与预测率：过 J1 后 downgrade 在量化门
+		const partial = withSection(base, '- 可检验路径：新场景对照重放');
+		const [mid] = criterionEvidenceFromInsights([{ theme: 'a', text: partial }]);
+		assert.equal(mid.verifiable_by, '新场景对照重放');
+		assert.equal(rt.upward('L2', 'L1', mid).reason, 'insufficient_anti_examples');
+		// 全证据：human_gate（不自动生效）
+		const full = withSection(base, [
+			'- 可检验路径：新场景对照重放',
+			'- 量化：{"anti_example_count":1,"predict_rate":0.7}',
+			'- 证据：反例 R1 可重放',
+		].join('\n'));
+		const [after] = criterionEvidenceFromInsights([{ theme: 'a', text: full }]);
+		const d = rt.upward('L2', 'L1', after);
+		assert.equal(d.action, 'human_gate');
+		assert.equal(d.reason, 'criterion_thresholds_met');
+		assert.ok(after.evidence.includes('反例 R1 可重放'), '证据引用并入');
+		assert.ok(after.evidence.includes('functions/x.md'), '回链保留');
+		// 生效侧不动：human_gate 不写任何库
+		assert.deepEqual(await rt.negativeRules(), []);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('证据节截断边界：下一节的证据引用与量化行不混入（首行锚救不了列表行）', () => {
+	const base = insightText(['x']);
+	const text = `${base}\n## 阀门证据\n\n- 可检验路径：真路径\n- 量化：{"anti_example_count":1}\n\n## 待观察\n\n- 证据：别节的引用混入\n- 量化：{"anti_example_count":99}\n`;
+	const ve = parseValveEvidenceSection(text);
+	assert.equal(ve.verifiable_by, '真路径');
+	// 列表行是 multiline 锚：不截断时下一节的「- 证据」会进数组、
+	// 下一节的「- 量化」首行锚仍取本节但证据数组已污染——两侧都断言。
+	assert.equal(ve.evidence, undefined, '下一节的证据引用不得混入（本节无证据行→字段缺席）');
+	assert.equal(ve.anti_example_count, 1, '量化取本节首行，不被后节覆盖');
+});

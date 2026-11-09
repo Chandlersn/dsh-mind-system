@@ -66,8 +66,26 @@
 
 ### 待办移交（更新）
 
-- 头部原则补 verifiable_by：从「形状按最严格边界写」（3 源）开始，人工写可检验路径后重跑 channel=criteria。
-- misjudged 线索人工核：指纹 598378fc 前后（调价反弹那条为历史链路验证用例，非真实业务失败——核实时注意区分）。
+- ~~头部原则补 verifiable_by~~ → **已收口**（见下节）。
+- misjudged 线索人工核：指纹 ac330b1c（调价反弹那条为历史链路验证用例，非真实业务失败——核实时注意区分）。
+
+## 2026-11-09 · II-3 收口（同日第四轮）
+
+### 缺口修复：证据只进账本不进文件
+
+valve_evidence 此前只送账本不持久化——criteria 从磁盘重跑永远 downgrade（补证白补）。修复：memory_insight 写「## 阀门证据」节（可检验路径/量化 JSON/证据引用），criteria 通道 parseValveEvidenceSection 读回；节边界截断（下一节的列表行不混入）——首版边界测试杀不死越界变异（首行锚救不了 multiline 列表行），加强断言后 14/14 全红。
+
+### 真实数据判定（宿主重启 PID 20476→46804 后）
+
+- 两条头部原则经 memory_insight 补证 → 真机 bridge 落账 **human_gate:criterion_thresholds_met**。
+- 磁盘重跑 criteria：11 条候选 = **2 human_gate + 9 downgrade not_externally_verifiable**。downgrade 列表就是剩余补证优先级。
+- 真机 valve_nominate channel=clis_trace 实调：44 条历史、newly_recorded=0（幂等在真宿主验证）。
+- 56 例全绿；14/14 变异红；仓库 npm test 退出码 0（README 行数守卫抓到 5877→5905 已同步）。
+
+### 遗留
+
+- 9 条 downgrade 原则的补证按周检节奏推进（每周 1–2 条，不批量灌）。
+- II-1 的"第二次任务真用上技能"与 II-2 的泛化签名回查仍待真实任务触发。
 
 ## 周检记录（每周一 10:00 reminder 触发后追加）
 
