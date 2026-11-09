@@ -191,7 +191,13 @@ const rankIndex = [
 ].join('\n');
 const ranked = mod.matchIndexRows(rankIndex, mod.tokensOf('记忆 面板 逐帧 渲染'));
 ok(ranked[0]?.name === '戊域', `IDF ranking prefers the rare-token row (${ranked[0]?.name})`);
-ok(ranked.length >= 2, `relative threshold keeps the strong common row too (${ranked.length} rows)`);
+// 三档设计：强档注入、擦边档列名可见（不带内容）、丢弃档只计数。
+// 断言"通用词行进了擦边档"而非"被注入"——这才是新判据的意图。
+ok(
+	ranked.heldRows.some((h) => h.name === '甲域') && ranked.stats.held >= 1,
+	`擦边档保留可见的通用词行，不带内容 (held=${ranked.stats?.held})`,
+);
+ok(ranked.stats.injected >= 1 && ranked.stats.matched >= ranked.stats.injected, '双侧统计：matched ≥ injected，且强档至少一条');
 
 // 3c) Decision-repair (MemOS borrow ④): the recent-correction signal that only
 // fed R18's circuit breaker now also decides what gets force-recalled NEXT step.
@@ -1479,7 +1485,7 @@ const idxAfterAct = (await T.memory_read.execute({ kind: 'index' }, exec)).conte
 const rowsActive = mod.matchIndexRows(idxAfterAct, qTok);
 ok(rowsActive.some((r) => r.zone === 'skill' && r.name === 'detached-restart'), 'active skill is recallable (identified by bundle dir name)');
 const actMsgText = mod.buildRecallMessage(rowsActive).content[0].text;
-ok(actMsgText.includes('⭐ 已结晶技能') && actMsgText.includes('按步骤走'), 'recall message marks the active skill with a do-not-rederive hint');
+ok(actMsgText.includes('⭐ 已结晶技能') && actMsgText.includes('按程序步骤执行'), 'recall message marks the active skill with a do-not-rederive hint');
 const skRet = await T.memory_skill.execute({ action: 'retire', name: 'detached-restart', note: '宿主改为热重载，程序失效' }, exec);
 ok(skRet.status === 'retired', 'retire flips lifecycle to retired');
 const idxAfterRet = (await T.memory_read.execute({ kind: 'index' }, exec)).content;

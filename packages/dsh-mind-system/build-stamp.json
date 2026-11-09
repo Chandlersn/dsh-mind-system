@@ -125,11 +125,11 @@
     },
     "memory/harness-test.mjs": {
       "source": "dsh-memory-manager/harness-test.mjs",
-      "sha256": "89fc5f2cb2c07ae19949d74326620ae805c2c66f1f2ec111f4f89ff1765261f5"
+      "sha256": "1eafe918b1a3330e9398f7a0c0841b7a4a6c23803ddd2310b714501490c1b1db"
     },
     "memory/health-inbox.js": {
       "source": "dsh-memory-manager/health-inbox.js",
-      "sha256": "85548c2162172d17146980dfb67677f637a18373035cf01e496cbb15f3c9e1ed"
+      "sha256": "941795fc60267b45e4bef73a6a245ef6a496530df30261dcafce3321f2f232a6"
     },
     "memory/icon.svg": {
       "source": "dsh-memory-manager/icon.svg",
@@ -149,7 +149,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "e08465ab9bcf4cb1dfd0b22615ee6175e05178badc36c1eea8895f9daad847c7"
+      "sha256": "eb98ef295ecc7c13b37bd5bf5ff164731ee2b8fdf0c8936b69d75bfbb102279d"
     },
     "memory/src/constants.js": {
       "source": "dsh-memory-manager/src/constants.js",
@@ -181,7 +181,7 @@
     },
     "memory/src/recall.js": {
       "source": "dsh-memory-manager/src/recall.js",
-      "sha256": "9b15756ffaf05c7e2175f189472004e62420f4f74b8911ad9b28e050bb10d775"
+      "sha256": "a8d3b735351cc38ae90e271878186213f763fdd343ac981cc279a28d9e73ebbc"
     },
     "memory/src/reload.js": {
       "source": "dsh-memory-manager/src/reload.js",
@@ -223,9 +223,17 @@
       "source": "dsh-memory-manager/tests/layer-selfcheck.test.js",
       "sha256": "cbb18e88c14872123114422f164b9fdb111caf1a077ae8d93f9bc329bb0c27bc"
     },
+    "memory/tests/recall-combined.test.js": {
+      "source": "dsh-memory-manager/tests/recall-combined.test.js",
+      "sha256": "8f2295f3d5d893884c2cb7014b073e1a7e939f7719fb23d8265bd5be1602f58b"
+    },
+    "memory/tests/recall-mutation.mjs": {
+      "source": "dsh-memory-manager/tests/recall-mutation.mjs",
+      "sha256": "432471dff892c53e308dc44ca986db618e36f55ae1742359f18181c0abde82f3"
+    },
     "memory/tests/run-all.mjs": {
       "source": "dsh-memory-manager/tests/run-all.mjs",
-      "sha256": "75c8612f51ede487fa5c41bd92cae2f6edf29aba86a812445a70f6c6529e471f"
+      "sha256": "4b8b350a9f41a1a2a0540861a62f508a6e20df4f875fdce6a296b1e1ef40145d"
     },
     "memory/tests/schema-contract.test.js": {
       "source": "dsh-memory-manager/tests/schema-contract.test.js",

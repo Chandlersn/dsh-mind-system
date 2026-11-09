@@ -47,7 +47,7 @@ import {
 	dropIndexRow, rowSlug,
 } from './src/markdown.js';
 import { selfReload, isReloading } from './src/reload.js';
-import { tokensOf, matchIndexRows, buildRecallMessage, skillNameOf } from './src/recall.js';
+import { tokensOf, matchIndexRows, buildRecallMessage, skillNameOf, archiveBlocks } from './src/recall.js';
 import { redactSecrets, scanSecrets } from './src/secrets.js';
 import { gateDao, gateFa, concreteMarkersOf, MIN_DAO_SOURCES, MAX_DAO_ENTRIES, daoSourceSlugs, daoReservedHeadingCollisions } from './src/layer-gate.js';
 // 层级自检（2026-11-02 用户要求）：落盘后回读产物，按该层自己的定义核一遍。
@@ -4466,6 +4466,9 @@ function memoryPanelApi(opts, connection, inbox) {
 	};
 }
 
+/** 当前 apply() 实例的召回账本汇总 getter（模块级，供零参数探针读取）。 */
+let liveRecallSummary = () => ({ rounds: 0 });
+
 export function apply(ctx, config) {
 	// The Host install may be pointed at explicitly; otherwise it is discovered
 	// (env / CLI entry / cwd / profile). Loading eagerly fails fast with an
@@ -4590,7 +4593,7 @@ export function apply(ctx, config) {
 	//
 	// 探针用默认配置（DEFAULTS）：监督者不知道本插件的 config，
 	// 而检查项（索引体积/迭代块/链接）用默认阈值判断即可。
-	const probe = createHealthProbe({ runHealthCheck, resolveRoot, opts });
+	const probe = createHealthProbe({ runHealthCheck, resolveRoot, opts, recallLedger: () => liveRecallSummary() });
 	if (typeof ctx.set === 'function') {
 		try {
 			ctx.set('memory.healthProbe', probe);
@@ -4627,6 +4630,26 @@ export function apply(ctx, config) {
 	// nothing matches or the batch was already served a recall (per-agent
 	// signature dedupe). Registration is global; dispatch is agent-scoped.
 	const recallServed = new Map(); // agentId -> signature of last served batch
+	// 召回双侧账本（2026-11-09）：有界环形缓冲，记录最近 N 轮召回的
+	// 注入/暂缓/丢弃/预算用量。探针只读汇总，不落盘（曝光数据不是记忆）。
+	const RECALL_LEDGER_CAP = 50;
+	const recallLedger = [];
+	const recordRecall = (stats) => {
+		if (!stats) return;
+		recallLedger.push({ injected: stats.injected, held: stats.held, dropped: stats.dropped, budget: stats.budget, used: stats.usedTokens });
+		if (recallLedger.length > RECALL_LEDGER_CAP) recallLedger.shift();
+	};
+	const recallLedgerSummary = () => {
+		if (!recallLedger.length) return { rounds: 0 };
+		const sum = (k) => recallLedger.reduce((n, e) => n + e[k], 0);
+		return {
+			rounds: recallLedger.length,
+			injected: sum('injected'), held: sum('held'), dropped: sum('dropped'),
+			budget: recallLedger[0].budget,
+			peakUsed: Math.max(...recallLedger.map((e) => e.used)),
+		};
+	};
+	liveRecallSummary = recallLedgerSummary; // 零参数探针读同一个汇总
 	// The recall reads MEMORY.md with a 10s cache and .usage.jsonl with 60s.
 	// TTL alone meant a memory_index row stayed UNRECALLABLE for up to 10s after
 	// its own tool call wrote it (audit #10: the discipline says "write then
@@ -4694,7 +4717,15 @@ export function apply(ctx, config) {
 					// matchIndexRows). Signals already exist in .usage.jsonl;
 					// without this they were collected but never used to rank.
 					const usage = await readUsageCached();
-					const base = matchIndexRows(indexText, tokensOf(userText), 3, usage)
+					const qTokens = tokensOf(userText);
+					// 档案块：共识/道条目整份带入（独立通道，不与索引行 IDF 争名额）。
+					const archives = archiveBlocks(indexText, qTokens);
+					const matchedRows = matchIndexRows(indexText, qTokens, 3, usage);
+					// 三档 + 双侧账本挂在返回数组上，filter 会丢掉自定义属性，先取下来。
+					const recallStats = matchedRows.stats ?? null;
+					const recallHeld = matchedRows.heldRows ?? [];
+					recordRecall(recallStats); // 双侧账本（只读汇总给探针）
+					const base = matchedRows
 						// Pointer dedupe: when the user's own text already cites a memory
 						// file (they quoted an earlier recall or wrote the link), re-
 						// injecting the same row just echoes what is already on screen.
@@ -4738,13 +4769,13 @@ export function apply(ctx, config) {
 					} catch {
 						negativeLines = [];
 					}
-					if (!rows.length && !negativeLines.length) return null;
+					if (!rows.length && !negativeLines.length && !archives.length) return null;
 					// Usage signal: what recall actually put in front of the model is
 					// the demand side of the memory's popularity. Fire and forget —
 					// logging must never delay or break the step.
 					for (const r of rows) void appendUsage(resolveRoot(opts), { href: r.href, kind: 'recall' });
-					const message = rows.length
-						? buildRecallMessage(rows)
+					const message = rows.length || archives.length
+						? buildRecallMessage(rows, recallHeld, recallStats, archives)
 						: { role: 'user', content: [{ type: 'text', text: '' }], source: { kind: 'memory-manager/recall', form: 'recall' } };
 					if (negativeLines.length) {
 						const block = [
@@ -4883,6 +4914,7 @@ export const healthProbe = createHealthProbe({
 	runHealthCheck,
 	resolveRoot,
 	opts: { ...DEFAULTS },
+	recallLedger: () => liveRecallSummary(),
 });
 
 export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, buildRecallMessage, decisionRepairTargets, indexRowsOf, captureLineFor, insightTrust, DEFAULTS, DISCIPLINE_TEXT };

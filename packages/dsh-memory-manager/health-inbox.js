@@ -113,7 +113,7 @@ export function findingsOf(health) {
  * @param opts 传给 runHealthCheck 的选项。
  * @returns 符合 HealthProbe 契约的对象（结构类型，不依赖 CLIS 的包）。
  */
-export function createHealthProbe({ runHealthCheck, resolveRoot, opts }) {
+export function createHealthProbe({ runHealthCheck, resolveRoot, opts, recallLedger }) {
   return {
     async probe() {
       // 监督层反复调用 probe()，它必须只读、且**绝不抛错**：自身检查失败时
@@ -122,6 +122,22 @@ export function createHealthProbe({ runHealthCheck, resolveRoot, opts }) {
       try {
         const health = await runHealthCheck(resolveRoot(opts), opts);
         const findings = findingsOf(health);
+        // 召回双侧账本（2026-11-09）：把最近窗口的 注入/暂缓/丢弃 汇总成一条
+        // info finding，让"被放过的"在监督视野里也可见（指标须成对报）。
+        // 只读 getter，探针本身不产生也不修改账本。
+        if (typeof recallLedger === 'function') {
+          try {
+            const agg = recallLedger();
+            if (agg && agg.rounds > 0) {
+              findings.push({
+                code: 'memory.recall-dual-side',
+                severity: 'info',
+                message: `召回双侧（近 ${agg.rounds} 轮）：带入 ${agg.injected} · 暂缓 ${agg.held} · 丢弃 ${agg.dropped}；预算 ${agg.budget} tok/轮，峰值用量 ${agg.peakUsed}`,
+                hint: '暂缓/丢弃侧不为 0 是正常的（闸门在过滤）；若长期全带入说明强档线可能过低',
+              });
+            }
+          } catch { /* 账本不可读不影响体检 */ }
+        }
         return {
           plugin: 'dsh-memory-manager',
           status: statusOf(health.results),

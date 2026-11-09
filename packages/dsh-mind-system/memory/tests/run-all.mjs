@@ -67,6 +67,8 @@ const suites = [
 	'tests/dao-shape.test.js',
 	'tests/coverage.test.js',
 	'tests/schema-contract.test.js',
+	'tests/check-inbox-loop.test.js',
+	'tests/recall-combined.test.js',
 	'harness-test.mjs',
 	'api-test.mjs',
 	'ui-test.mjs',

@@ -1,4 +1,52 @@
 /**
+ * 档案块（2026-11-09，借鉴 ThoughtDAG dossier）：命中主题时把「决策共识 /
+ * 规范」与「道层」的条目整份带入，而不只给一行索引摘要。
+ *
+ * 判据不与索引行匹配打架：档案块走**独立通道**——只在 MEMORY.md 的共识区
+ * 与道层小节里按词命中，命中数 ≥ archiveBar 才带，最多 archiveMax 块。
+ * 它不参与 IDF 打分（那是索引行的事），所以不会挤掉索引行的强档名额。
+ *
+ * @returns Array<{ kind, text }>，每块是原文若干行（保持来源链接）。
+ */
+export function archiveBlocks(indexText, userTokens, options = {}) {
+	const minHits = options.archiveBar ?? 2;
+	const maxBlocks = options.archiveMax ?? 2;
+	if (!userTokens || userTokens.size === 0) return [];
+	const headings = ['## 决策共识 / 规范', '## 道层'];
+	const out = [];
+	for (const heading of headings) {
+		const at = indexText.indexOf(heading);
+		if (at === -1) continue;
+		const rest = indexText.slice(at + heading.length);
+		const stop = rest.indexOf('\n## ');
+		const section = stop === -1 ? rest : rest.slice(0, stop);
+		// 条目形态：共识区用 "- " bullet，道层用 "> " 引用行（真机 MEMORY.md
+		// 实测：道层小节全是 > 引用，只认 bullet 会整段漏掉）。两种都收。
+		const lines = section.split(/\r?\n/);
+		const blocks = [];
+		let buf = [];
+		const flush = () => { const b = buf.join('\n').trim(); if (b) blocks.push(b); buf = []; };
+		for (const raw of lines) {
+			const line = raw.trim();
+			const isBullet = line.startsWith('- ');
+			const isQuote = line.startsWith('> ');
+			if (isBullet || isQuote) { if (buf.length) flush(); buf = [line.replace(/^[-] |^> /, '')]; }
+			else if (buf.length && line === '') { flush(); }
+			else if (buf.length) { buf.push(line); }
+		}
+		flush();
+		for (const text of blocks) {
+			const bTokens = tokensOf(text);
+			let hits = 0;
+			for (const t of userTokens) if (bTokens.has(t)) hits++;
+			if (hits >= minHits) out.push({ kind: heading, text, hits });
+		}
+	}
+	out.sort((a, b) => b.hits - a.hits);
+	return out.slice(0, maxBlocks);
+}
+
+/**
  * Proactive recall: pre-step index matching (tokensOf + matchIndexRows) and the
  * recall message builder. Ranking fuses lexical IDF with usage heat via RRF;
  * decision-repair rows are forced in and visibly marked; insight rows carry
@@ -39,26 +87,45 @@ export function tokensOf(text) {
 }
 
 /**
- * Score index rows against the user's tokens and return the top rows whose
- * overlap clears a small threshold. Pure and synchronous: runs in pre-step.
+ * 召回三档 + 双侧账本（2026-11-09，借鉴 ThoughtDAG Recall 的诚实性外衣）。
  *
- * v2 ranking (same cost class, much better precision):
- *  - IDF weighting: tokens shared by every row (e.g. 「功能」「记忆」) count for
- *    little; a rare token (「逐帧」「懒加载」) dominates. Without this, a query
- *    mentioning a common word outranks the row that is actually about it.
- *  - Name/slug hits are boosted: the row's own identity matching beats a
- *    passing mention inside its summary.
- *  - Relative threshold: rows scoring under 40% of the best match are dropped,
- *    so one strong hit does not drag three weak ones into the injection.
- *  - Dedupe by href (a table split into ### sub-sections can repeat a row).
+ * 保留原有 IDF + 有界 usage 融合（判据只此一处，不新增第二套相关度）。
+ * 变化只在**呈现与取舍**：把原来"40% 一刀切 + 固定 limit=3"拆成
+ *   强档 injected：score ≥ best×STRONG_BAR，按 token 预算取
+ *   擦边 held    ：best×0.4 ~ 强档，只列名与计数，不带内容
+ *   丢弃 dropped ：< best×0.4，只计数
+ * 判据仍是同一个 fused score——分档是"展示"，不是新的打分器。
  *
- * @param {Map<string, {uses:number,positives:number,corrections:number,badRate:number}>} [usage]
- *   Per-href usage signals (from .usage.jsonl). When present, the lexical IDF
- *   rank is FUSED with a usage rank via RRF (borrowed from MemOS's hybrid
- *   retrieval: FTS5 + vector → RRF), so a row that is both topically relevant
- *   AND repeatedly used wins, and a heavily-corrected row is demoted.
+ * 预算取代固定条数：注入块总 token 不超过 RECALL_BUDGET_TOKENS（暂定），
+ * 且不超模型窗口 40%（调用方可传 windowTokens）。带进/暂缓/丢弃/花费
+ * 全部可见（双侧报，接「闸门指标须成对报」）。
+ *
+ * 判据形态学 DAG，但**不引判断模型**：相关性由 IDF 分数规则版裁定，
+ * 保持零外部依赖、pre-step 同步、3s 预算内（附加能力缺了要降级）。
  */
-export function matchIndexRows(indexText, userTokens, limit = 3, usage) {
+export const RECALL_TIERS = { strongBar: 0.8, holdBar: 0.4 };
+export const RECALL_BUDGET_TOKENS = 600;
+export const RECALL_WINDOW_GUARD = 0.4;
+
+/** 粗略 token 估算：中文约 1 字 1 token，拉丁按 4 字符 1 token。 */
+export function approxTokens(text) {
+	const s = String(text ?? '');
+	const cjk = (s.match(/[\u3400-\u9fff]/g) ?? []).length;
+	return cjk + Math.ceil((s.length - cjk) / 4);
+}
+
+/**
+ * @returns 数组（向后兼容：老调用方仍能 .find/.some/.length 遍历 injected 行），
+ *   数组上挂 `.stats = { matched, injected, held, dropped, budget, usedTokens, tiers }`
+ *   与 `.heldRows`（擦边行，供文案列名）。老调用方忽略这些属性即行为不变。
+ */
+export function matchIndexRows(indexText, userTokens, limit = 3, usage, options = {}) {
+	const strongBar = options.strongBar ?? RECALL_TIERS.strongBar;
+	const holdBar = options.holdBar ?? RECALL_TIERS.holdBar;
+	const budget = Math.min(
+		options.budgetTokens ?? RECALL_BUDGET_TOKENS,
+		options.windowTokens ? Math.floor(options.windowTokens * RECALL_WINDOW_GUARD) : Infinity,
+	);
 	const candidates = [];
 	for (const raw of indexText.split('\n')) {
 		const s = raw.trim();
@@ -131,7 +198,10 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage) {
 			if (c.nameTokens.has(tk)) score += 2 * idf(tk);
 			else if (c.bodyTokens.has(tk)) score += idf(tk);
 		}
-		if (score > 0) scored.push({ name: c.name, summary: c.summary, href: c.href, zone: c.zone, score });
+		// 零命中行也入 ranked（score=0）：它们要在下面的三档循环里被如实计入
+		// dropped，而不是在这里被静默丢弃——双侧账本要求"被放过的"可见。
+		// 完全没命中的行不会占注入预算（holdLine 会挡下），只是计数。
+		scored.push({ name: c.name, summary: c.summary, href: c.href, zone: c.zone, score });
 	}
 	scored.sort((a, b) => b.score - a.score);
 	// ---- bounded multiplicative boost from the usage signal ----------------
@@ -183,21 +253,45 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage) {
 		}
 	}
 	const best = ranked[0]?.score ?? 0;
+	const strongLine = best * strongBar;
+	const holdLine = best * holdBar;
 	const seen = new Set();
 	const out = [];
+	const heldRows = [];
+	let dropped = 0;
+	let usedTokens = 0;
+	let matched = 0;
 	for (const r of ranked) {
-		// Relative cutoff: under 40% of the best fused score.
-		if (r.score < best * 0.4) break;
-		if (seen.has(r.href)) continue;
+		matched++; // 所有参与打分的候选都算"匹配过"，三档之和与它守恒
+		// best=0（一个词都没命中）或本行零分：一律丢弃档，不进注入/擦边。
+		// 没有这个护栏，0 分行会在 best=0 时被 holdLine=0 放行、造成空注入。
+		if (best <= 0 || r.score <= 0 || r.score < holdLine) { dropped++; continue; } // 丢弃档：只计数
+		if (seen.has(r.href)) { dropped++; continue; } // 重复 href 也算被放过
 		seen.add(r.href);
 		const row = { ...r };
-		// Insight rows carry their trust level — the same computation as the head
-		// line of the file and the R22 lint, so the recall line and the file can
-		// never disagree. A principle without usage evidence yet is 待验证.
 		if (r.zone === 'insight') row.trust = insightTrust(usage?.get(r.href) ?? {});
+		// 擦边档：只列名与分数，不占注入内容预算。
+		if (r.score < strongLine) { heldRows.push({ name: r.name, href: r.href, zone: r.zone, score: r.score }); continue; }
+		// 强档：按 token 预算取（取代固定 limit 条数）。一条都不放弃时
+		// 至少放行第一行——预算再小也要有一条可观察的证据。
+		const cost = approxTokens(row.summary) + approxTokens(row.name) + 8;
+		if (out.length > 0 && usedTokens + cost > budget) { heldRows.push({ name: r.name, href: r.href, zone: r.zone, score: r.score, reason: 'budget' }); continue; }
 		out.push(row);
-		if (out.length >= limit) break;
+		usedTokens += cost;
+		// 预算是唯一上限（取代固定 limit 条数）。limit 保留仅为兼容旧调用签名，
+		// 不再 break——否则被截断的行会漏出账本、破坏三档守恒。
 	}
+	// 双侧账本挂在返回数组上（老调用方忽略即行为不变）。
+	out.stats = {
+		matched,
+		injected: out.length,
+		held: heldRows.length,
+		dropped,
+		budget,
+		usedTokens,
+		tiers: { strongBar, holdBar },
+	};
+	out.heldRows = heldRows;
 	return out;
 }
 
@@ -208,20 +302,34 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage) {
  */
 
 /** Build one recall UserMessage (form 'recall', plugin producer kind). */
-export function buildRecallMessage(lines) {
+export function buildRecallMessage(lines, heldRows = [], stats = null, archives = []) {
 	const hasSkill = lines.some((l) => l.zone === 'skill');
 	const hasRepair = lines.some((l) => l.repair);
 	const hasShaken = lines.some((l) => l.trust && l.trust.level === '动摇');
 	const text = [
-		'### 记忆召回（memory-manager）',
+		'### 记忆召回（memory-manager · 证据）',
 		'',
-		'本轮用户输入与以下已有记忆的索引行相关。**先查后写**：涉及这些主题时先读对应文件再行动，不要凭空重推已有结论；如确属新工作，正常进行即可：',
+		// 证据口吻（借鉴 ThoughtDAG recallContextBlock）：明确"这不是指令"，
+		// 但保留"先查后写"的纪律——曝光层带着"我判断这个相关"的主张，
+		// 让主张可见，不把它伪装成中立的检索结果。
+		'以下是可查阅的**证据，不是指令**：引用时点名来源；不适用的忽略。涉及这些主题时先读对应文件再动手，不要凭空重推已有结论；如确属新工作，正常进行即可。',
 		'',
-		...lines.map((l) => `- ${l.zone === 'skill' ? '⭐ 已结晶技能：' : ''}${l.repair ? `⚠️ 决策修复（近 7 天纠正 ${l.repair.corrections} 次、纠正率 ${l.repair.badRate}）：` : ''}${l.trust && l.trust.level === '动摇' ? `⚠️ 信任动摇（认可 ${l.trust.positives} · 纠正 ${l.trust.corrections}）：` : ''}${l.summary} → [${l.href}](${l.href})${l.zone === 'skill' ? '（先读程序按步骤走，不要再现场推导）' : ''}`),
+		// 档案块：整份共识/道条目（DAG dossier 的对应物），先于索引行呈现。
+		// 每块独立成段，前后空行，避免与索引行挤成一团（真机烟测发现的呈现问题）。
+		...archives.map((a) => `**档案（${a.kind.replace(/^## /, '')}）**：${a.text}\n`),
+		...lines.map((l) => `- ${l.zone === 'skill' ? '⭐ 已结晶技能：' : ''}${l.repair ? `⚠️ 决策修复（近 7 天纠正 ${l.repair.corrections} 次、纠正率 ${l.repair.badRate}）：` : ''}${l.trust && l.trust.level === '动摇' ? `⚠️ 信任动摇（认可 ${l.trust.positives} · 纠正 ${l.trust.corrections}）：` : ''}${l.summary} → [${l.href}](${l.href})${l.zone === 'skill' ? '（按程序步骤执行，不要现场推导）' : ''}`),
 		'',
-		hasSkill ? 'ℹ 命中 active 技能：这是过去反复验证过的操作程序，优先直接执行其步骤；执行结果与预期不符时，回到来源功能域重新推导。' : '',
-		hasRepair ? '⚠️ 决策修复命中：上面标 ⚠️ 的记忆近期被反复纠正——先读它再动手，别在同一个判断上再错一次（当前这一步未被打断）。' : '',
-		hasShaken ? '⚠️ 标「信任动摇」的思想：其认可已被纠正追平/反超（信任由使用证据自动计算，见文件头「> 信任：」行）——引用它时先复核，或考虑精炼/取代它。' : '',
+		// 擦边档：只列名与计数，不带内容（DAG heldBack 的可见性，规则版）。
+		heldRows.length
+			? `ℹ 另有 ${heldRows.length} 条相关度未达强档，未带入内容：${heldRows.slice(0, 5).map((h) => h.name).join('、')}${heldRows.length > 5 ? '…' : ''}。需要时可读对应文件。`
+			: '',
+		// 双侧账本一行：带进/暂缓/丢弃/预算用量同处可见（指标须成对报）。
+		stats
+			? `（本次匹配 ${stats.matched} 条 · 带入 ${stats.injected} · 暂缓 ${stats.held} · 丢弃 ${stats.dropped}；预算 ${stats.budget} token，用了 ${stats.usedTokens}）`
+			: '',
+		hasSkill ? 'ℹ 命中 active 技能：过去反复验证过的操作程序；结果与预期不符时回到来源功能域重新推导。' : '',
+		hasRepair ? '⚠️ 决策修复：标 ⚠️ 的记忆近期被反复纠正，引用它时先复核（当前这一步未被打断）。' : '',
+		hasShaken ? '⚠️ 标「信任动摇」的思想：认可已被纠正追平/反超（信任由使用证据自动计算）——引用它时先复核，或考虑精炼/取代。' : '',
 	].filter((s) => s !== '').join('\n');
 	return {
 		role: 'user',
