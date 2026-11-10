@@ -89,20 +89,25 @@ const iii1 = plan.split('\n').find((l) => l.startsWith('| III-1 '));
 ok(iii1 !== undefined, 'III-1 行存在');
 ok(!iii1.includes('✅'), 'III-1 治理循环尚未走完一次真实闭环，不得标 ✅（若确实走完，请同步删除本守卫）');
 
-// 进度汇总行与节点行必须一致（最容易漏的一处）
-const summaryRow = plan.split('\n').find((l) => l.startsWith('| III · 治理与缰绳 |'));
-ok(summaryRow !== undefined, '进度汇总含 III 行');
-if (summaryRow) {
-	for (const node of ['III-1', 'III-2', 'III-3', 'III-4', 'III-5', 'III-6', 'III-7']) {
-		const row = plan.split('\n').find((l) => l.startsWith(`| ${node} `));
-		const nodeDone = row?.includes('✅');
-		// 汇总里该节点的标记：`III-x ✅` / `III-x 🔶` / `III-x ⬜`
-		const m = new RegExp(`${node}\\s*([✅🔶⬜])`).exec(summaryRow);
-		ok(m !== null, `汇总行含 ${node} 的状态`);
-		if (m) {
-			const summaryDone = m[1] === '✅';
-			ok(summaryDone === nodeDone, `${node} 汇总(${m[1]}) 与节点行(${nodeDone ? '✅' : '非✅'}) 一致`);
-		}
+// Check exact status for every explicitly listed node, not only done/not-done.
+// Alternation is necessary: 🔶 is a surrogate pair and a character class would
+// match only half of it without Unicode mode.
+for (const [stage, nodes] of [
+	['I', ['I-1', 'I-2', 'I-3', 'I-4', 'I-5']],
+	['II', ['II-1', 'II-2', 'II-3', 'II-4', 'II-5']],
+	['III', ['III-1', 'III-2', 'III-3', 'III-4', 'III-5', 'III-6', 'III-7']],
+	['IV', ['IV-1', 'IV-2', 'IV-3', 'IV-4', 'IV-5']],
+]) {
+	const summaryRow = plan.split('\n').find((line) => line.startsWith(`| ${stage} · `));
+	ok(summaryRow !== undefined, `进度汇总含 ${stage} 行`);
+	if (!summaryRow) continue;
+	for (const node of nodes) {
+		const row = plan.split('\n').find((line) => line.startsWith(`| ${node} `));
+		const m = new RegExp(`${node}\\s*(✅|🔶|⬜)`, 'u').exec(summaryRow);
+		const cells = row?.split('|').map((cell) => cell.trim()) ?? [];
+		const nodeStatus = /^(✅|🔶|⬜)/u.exec(cells.at(-2) ?? '')?.[1];
+		ok(m !== null && nodeStatus !== undefined, `${node} 汇总和节点均有状态`);
+		if (m && nodeStatus) ok(m[1] === nodeStatus, `${node} 汇总(${m[1]}) 与节点(${nodeStatus})一致`);
 	}
 }
 

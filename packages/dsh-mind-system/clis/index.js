@@ -1,30 +1,31 @@
 import {
   classifyProblem
-} from "./chunk-2HMO3QIV.js";
+} from "./chunk-BQ5VQ24B.js";
 import {
   STRATEGY_LIBRARY,
   STRATEGY_LIBRARY_VERSION,
   executePath,
   matchPaths
-} from "./chunk-OOJ2ZH5S.js";
+} from "./chunk-GBYINFLD.js";
 import {
   FEEDBACK_RULES_VERSION,
   detectSignal
-} from "./chunk-RDSPXR43.js";
+} from "./chunk-ABIG4ZRO.js";
 import {
   ROLLBACK_LIMIT_DEFAULT,
   TYPE_LOCK_ROUNDS_DEFAULT,
   decide
-} from "./chunk-IYFQPRCX.js";
+} from "./chunk-I4YFDO37.js";
 import {
   deriveStatus,
   getCreateUserMessage,
   getDefineTool,
-  initialState
-} from "./chunk-DC3YUXV4.js";
+  initialState,
+  loadHost
+} from "./chunk-I67UV77L.js";
 
 // packages/clis-plugin/src/index.ts
-import { join as join6 } from "node:path";
+import { join as join5 } from "node:path";
 
 // packages/clis-plugin/src/history.ts
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -557,9 +558,9 @@ async function ensureReloadCore(installDir) {
     if (coreVersionOf(existing) > CORE_VERSION) return fileUrl(target);
   } catch {
   }
-  const { writeFile: writeFile22, mkdir: mkdir4 } = await import("node:fs/promises");
-  await mkdir4(installDir, { recursive: true });
-  await writeFile22(target, RELOAD_CORE_SOURCE, "utf8");
+  const { writeFile: writeFile2, mkdir: mkdir3 } = await import("node:fs/promises");
+  await mkdir3(installDir, { recursive: true });
+  await writeFile2(target, RELOAD_CORE_SOURCE, "utf8");
   return fileUrl(target);
 }
 var CORE_VERSION = 2;
@@ -568,8 +569,8 @@ function coreVersionOf(source) {
   return match === null ? 0 : Number(match[1]);
 }
 async function readFile2(path) {
-  const { readFile: readFile5 } = await import("node:fs/promises");
-  return readFile5(path, "utf8");
+  const { readFile: readFile4 } = await import("node:fs/promises");
+  return readFile4(path, "utf8");
 }
 function fileUrl(path) {
   return "file:///" + path.replace(/\\/gu, "/").replace(/^\//u, "");
@@ -1201,8 +1202,8 @@ function registerPromptSection(ctx) {
 }
 
 // packages/clis-plugin/src/tools.ts
-import { homedir as homedir3 } from "node:os";
-import { join as join5 } from "node:path";
+import { homedir as homedir2 } from "node:os";
+import { join as join4 } from "node:path";
 
 // packages/clis-plugin/src/executor.ts
 var ACTION_SIDE_EFFECTS = {
@@ -1308,8 +1309,8 @@ function deriveNotices(outcome, uncovered, persisting = []) {
     notices.push({
       code: "structure.recurring",
       severity: "warn",
-      message: `${persisting.length} \u6761\u95EE\u9898\u5728\u4E0A\u4E00\u8F6E\u5DF2\u7ECF\u62A5\u8FC7\u3001\u8FD9\u4E00\u8F6E\u4ECD\u7136\u5B58\u5728\uFF1A\u4E0A\u4E00\u8F6E\u7684\u4FEE\u590D\u6CA1\u6709\u751F\u6548\uFF0C\u6216\u8005\u6839\u672C\u6CA1\u6709\u88AB\u6267\u884C`,
-      hint: "\u4E0D\u8981\u7528\u540C\u6837\u7684\u65B9\u5F0F\u518D\u4FEE\u4E00\u904D\uFF1A\u5148\u786E\u8BA4\u4E0A\u4E00\u8F6E\u7684\u5224\u65AD\u662F\u5426\u6210\u7ACB\uFF0C\u6216\u8005\u6362\u4E00\u4E2A\u4F5C\u7528\u70B9",
+      message: `${persisting.length} \u4E2A\u95EE\u9898\u6807\u8BC6\u5728\u4E0A\u6B21\u6210\u529F\u68C0\u67E5\u548C\u672C\u6B21\u68C0\u67E5\u4E2D\u5747\u51FA\u73B0\uFF1B\u8FD9\u4E0D\u8BC1\u660E\u5DF2\u6267\u884C\u4FEE\u590D\uFF0C\u4E5F\u4E0D\u8BC1\u660E\u5B58\u5728\u53CD\u9988\u56DE\u8DEF`,
+      hint: "\u5148\u6838\u5BF9\u662F\u5426\u4E3A\u540C\u4E00\u5BF9\u8C61\u53CA\u671F\u95F4\u53D1\u751F\u4E86\u4EC0\u4E48\uFF0C\u518D\u5224\u65AD\u5982\u4F55\u5904\u7406",
       plugins: [...new Set(outcome.grouped.flatMap((item) => item.plugins))],
       evidence: persisting.map((code) => `\u8DE8\u8F6E\u4ECD\u5728\uFF1A${code}`),
       targets: [...new Set(outcome.grouped.flatMap((item) => item.plugins))]
@@ -1327,7 +1328,7 @@ function deriveNotices(outcome, uncovered, persisting = []) {
     });
   }
   const analysis = outcome.analysis;
-  if (analysis !== void 0 && outcome.grouped.length > 1) {
+  if (analysis !== void 0 && analysis.causalType !== "unknown" && outcome.grouped.length > 1) {
     const evidence = outcome.grouped.map(
       (item) => `${item.code} \xD7${item.count}\uFF08${item.plugins.join("\u3001")}\uFF09`
     );
@@ -1362,7 +1363,8 @@ var HealthNotifier = class {
    */
   notify(notices) {
     let notifiedPlugins = 0;
-    for (const notice of notices) {
+    const actionable = notices.filter((notice) => notice.code !== "structure.unknown");
+    for (const notice of actionable) {
       try {
         this.ctx.emit(
           HEALTH_FINDING_EVENT,
@@ -1382,7 +1384,7 @@ var HealthNotifier = class {
       } catch {
       }
     }
-    return { notifiedPlugins, forUser: notices };
+    return { notifiedPlugins, forUser: actionable };
   }
 };
 function shapeForAgent(outcome, grouped) {
@@ -1391,7 +1393,7 @@ function shapeForAgent(outcome, grouped) {
   const parts = [];
   if (structural.length > 0) parts.push(`${structural.length} \u6761\u7ED3\u6784\u8BCA\u65AD`);
   if (coverage.length > 0) parts.push(`${coverage.length} \u6761\u8986\u76D6\u7F3A\u53E3`);
-  if (parts.length === 0) parts.push("\u65E0\u7ED3\u6784\u6027\u95EE\u9898");
+  if (parts.length === 0) parts.push("\u6CA1\u6709\u53EF\u6295\u9012\u7684\u7ED3\u6784\u8BCA\u65AD\u6216\u8986\u76D6\u7F3A\u53E3");
   return {
     structural_count: structural.length,
     coverage_gap_count: coverage.length,
@@ -1405,90 +1407,43 @@ function shapeForAgent(outcome, grouped) {
   };
 }
 
-// packages/clis-plugin/src/health-seen.ts
-import { mkdir as mkdir3, readFile as readFile4, rename as rename2, writeFile as writeFile2 } from "node:fs/promises";
-import { homedir as homedir2 } from "node:os";
-import { dirname as dirname3, join as join4 } from "node:path";
-var SEEN_VERSION = 1;
-var SEEN_REL_PATH = join4("storages", "clis-health-seen.json");
-function seenFilePath() {
-  const root = process.env.DSH_HOME ?? join4(homedir2(), ".dsh");
-  return join4(root, SEEN_REL_PATH);
-}
-async function readSeenState() {
-  try {
-    const raw = await readFile4(seenFilePath(), "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed !== null && typeof parsed === "object" && parsed.version === SEEN_VERSION && typeof parsed.findings === "object") {
-      return parsed;
-    }
-  } catch {
+// packages/clis-plugin/src/health-report.ts
+function normalizeHealthReport(raw, plugin) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("\u63A2\u9488\u62A5\u544A\u5FC5\u987B\u662F\u5BF9\u8C61");
   }
-  return { version: SEEN_VERSION, findings: {} };
-}
-async function writeSeenState(state) {
-  const path = seenFilePath();
-  try {
-    await mkdir3(dirname3(path), { recursive: true });
-    const tmp = `${path}.${process.pid}.tmp`;
-    await writeFile2(tmp, JSON.stringify(state, null, 2), "utf8");
-    await rename2(tmp, path);
-  } catch {
+  const value = raw;
+  if (value.status !== "ok" && value.status !== "degraded" && value.status !== "failing") {
+    throw new Error("\u63A2\u9488\u62A5\u544A status \u65E0\u6548");
   }
-}
-function reconcileFindings(groupedCodes, previous, escalateAfter = 2, now = (/* @__PURE__ */ new Date()).toISOString()) {
-  const dispositions = [];
-  const nextFindings = {};
-  const seenCodes = /* @__PURE__ */ new Set();
-  for (const item of groupedCodes) {
-    seenCodes.add(item.code);
-    const prior = previous.findings[item.code];
-    if (prior === void 0) {
-      dispositions.push({
-        ...item,
-        disposition: "new",
-        roundsUnresolved: 1,
-        alreadyEscalated: false
-      });
-      nextFindings[item.code] = {
-        code: item.code,
-        firstSeenAt: now,
-        lastSeenAt: now,
-        roundsUnresolved: 1,
-        escalated: false
-      };
-      continue;
+  if (!Array.isArray(value.findings)) throw new Error("\u63A2\u9488\u62A5\u544A findings \u5FC5\u987B\u662F\u6570\u7EC4");
+  const findings = Array.from(value.findings, (item, index) => {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`\u63A2\u9488\u62A5\u544A findings[${index}] \u5FC5\u987B\u662F\u5BF9\u8C61`);
     }
-    const rounds = prior.roundsUnresolved + 1;
-    const shouldEscalate = rounds >= escalateAfter && !prior.escalated;
-    dispositions.push({
-      ...item,
-      disposition: shouldEscalate ? "escalate" : "unresolved",
-      roundsUnresolved: rounds,
-      alreadyEscalated: prior.escalated
-    });
-    nextFindings[item.code] = {
-      code: item.code,
-      firstSeenAt: prior.firstSeenAt,
-      lastSeenAt: now,
-      roundsUnresolved: rounds,
-      escalated: prior.escalated || shouldEscalate
+    const finding = item;
+    if (typeof finding.code !== "string" || !finding.code.trim()) throw new Error(`\u63A2\u9488\u62A5\u544A findings[${index}].code \u65E0\u6548`);
+    if (finding.severity !== "info" && finding.severity !== "warn" && finding.severity !== "error") {
+      throw new Error(`\u63A2\u9488\u62A5\u544A findings[${index}].severity \u65E0\u6548`);
+    }
+    if (typeof finding.message !== "string" || !finding.message.trim()) throw new Error(`\u63A2\u9488\u62A5\u544A findings[${index}].message \u65E0\u6548`);
+    if (finding.location !== void 0 && typeof finding.location !== "string") throw new Error(`\u63A2\u9488\u62A5\u544A findings[${index}].location \u65E0\u6548`);
+    if (finding.hint !== void 0 && typeof finding.hint !== "string") throw new Error(`\u63A2\u9488\u62A5\u544A findings[${index}].hint \u65E0\u6548`);
+    return {
+      code: finding.code,
+      severity: finding.severity,
+      message: finding.message,
+      ...finding.location !== void 0 ? { location: finding.location } : {},
+      ...finding.hint !== void 0 ? { hint: finding.hint } : {}
     };
+  });
+  if (value.status === "ok" && findings.some((f) => f.severity !== "info")) {
+    throw new Error("\u63A2\u9488\u62A5\u544A status=ok \u4E0E warn/error \u53D1\u73B0\u77DB\u76FE");
   }
-  for (const code of Object.keys(previous.findings)) {
-    if (seenCodes.has(code)) continue;
-    dispositions.push({
-      code,
-      severity: "info",
-      message: `\u6B64\u524D\u7684 ${code} \u95EE\u9898\u5DF2\u6D88\u5931`,
-      plugins: [],
-      count: 0,
-      disposition: "resolved",
-      roundsUnresolved: 0,
-      alreadyEscalated: previous.findings[code]?.escalated ?? false
-    });
+  if (value.status === "degraded" && findings.some((f) => f.severity === "error")) {
+    throw new Error("\u63A2\u9488\u62A5\u544A status=degraded \u4E0E error \u53D1\u73B0\u77DB\u76FE");
   }
-  return { dispositions, next: { version: SEEN_VERSION, findings: nextFindings } };
+  return { plugin, status: value.status, findings };
 }
 
 // packages/clis-plugin/src/plugin-scope.ts
@@ -1740,32 +1695,14 @@ function wrapExportedProbe(pluginId, exported) {
   return {
     plugin: pluginId,
     probe: async () => {
-      try {
-        let raw;
-        if (typeof exported === "function") {
-          const first = await exported();
-          raw = first !== null && typeof first === "object" && typeof first.probe === "function" ? await first.probe() : first;
-        } else {
-          raw = await exported.probe();
-        }
-        const report = raw;
-        const findings = Array.isArray(report?.findings) ? report.findings : [];
-        const status = report?.status === "ok" || report?.status === "degraded" || report?.status === "failing" ? report.status : findings.length > 0 ? "degraded" : "ok";
-        return { plugin: pluginId, status, findings };
-      } catch (error) {
-        return {
-          plugin: pluginId,
-          status: "failing",
-          findings: [
-            {
-              code: "auto.probe-broken",
-              severity: "error",
-              message: `${pluginId} \u5BFC\u51FA\u7684\u63A2\u9488\u81EA\u8EAB\u629B\u9519\uFF1A${String(error?.message ?? error).slice(0, 160)}`,
-              hint: "\u63A2\u9488\u574F\u4E86\u4F1A\u8BA9\u8BE5\u63D2\u4EF6\u7684\u95EE\u9898\u5B8C\u5168\u4E0D\u53EF\u89C2\u6D4B\uFF0C\u6BD4\u5B83\u539F\u672C\u8981\u62A5\u7684\u95EE\u9898\u66F4\u8BE5\u5148\u4FEE"
-            }
-          ]
-        };
+      let raw;
+      if (typeof exported === "function") {
+        const first = await exported();
+        raw = first !== null && typeof first === "object" && typeof first.probe === "function" ? await first.probe() : first;
+      } else {
+        raw = await exported.probe();
       }
+      return normalizeHealthReport(raw, pluginId);
     }
   };
 }
@@ -1830,7 +1767,7 @@ var HealthSupervisor = class {
     const probeErrors = [];
     for (const source of this.sources) {
       try {
-        reports.push(await source.probe());
+        reports.push(normalizeHealthReport(await source.probe(), source.plugin));
       } catch (error) {
         probeErrors.push({
           plugin: source.plugin,
@@ -1844,55 +1781,46 @@ var HealthSupervisor = class {
     return { reports, grouped, status, probeErrors, ...analysis !== void 0 ? { analysis } : {} };
   }
   /**
-   * 让分类器判断这些问题的因果结构。
-   *
-   * 判据是**从聚合结果推断**的，不是人工写死的：
-   * - 同一 code 反复出现（count>1）⇒ 有反馈环：出现→修补→再出现
-   * - 多个 code 指向同一 location ⇒ 互为定义/同一根因
-   * - 探针自身抛错 ⇒ 需要先修观测能力，不是业务问题
-   *
-   * @param grouped 聚合后的发现。
-   * @param probeErrors 探针失败记录。
-   * @returns 结构分析；无法判断时 undefined。
+   * 单轮探针只描述问题和来源，没有关系、时间及不可逆性证据。
+   * 四问均保持 unknown；跨轮持续由独立通知报告，并不等同于反馈回路。
+   * 无发现时不产生分析；分类器不可用时仍如实返回 unknown。
    */
   async analyse(grouped, probeErrors) {
     if (grouped.length === 0 && probeErrors.length === 0) return void 0;
-    const getter = this.ctx.get;
-    const classifier = typeof getter === "function" ? getter.call(this.ctx, "clis.causalClassifier") : void 0;
-    if (classifier === void 0) return void 0;
-    const errorCount = grouped.filter((item) => item.severity === "error").length;
-    const hasProbeFailure = probeErrors.length > 0;
-    const hasSameOrigin = grouped.length > 1 && sameLocation(grouped);
-    const isSinglePoint = grouped.length === 1 && !hasProbeFailure;
-    const questions = {
-      q1_simultaneous_mutual_definition: !hasProbeFailure && hasSameOrigin ? "yes" : "no",
-      // 见规则二：回路只能由跨轮数据判定，此处不作断言
-      q2_delayed_mutual_influence: "no",
-      q3_strict_irreversible_order: isSinglePoint ? "yes" : "no",
-      // Q4 多结构并存：既有探针故障又有业务问题
-      q4_coexisting_causal_structures: probeErrors.length > 0 && grouped.length > 0 ? "yes" : "no"
-    };
+    let classifier;
     try {
-      const result = await classifier.classify({
-        description: `\u63D2\u4EF6\u4F53\u68C0\u53D1\u73B0 ${grouped.length} \u7C7B\u95EE\u9898\uFF08${errorCount} \u4E2A error\uFF09`,
-        answers: questions
-      });
-      return {
-        causalType: result.causal_type,
-        confidence: result.confidence,
-        questions,
-        summary: summarise(result.causal_type, grouped, probeErrors),
-        ...directionFor(result.causal_type) !== void 0 ? { direction: directionFor(result.causal_type) } : {}
-      };
+      const getter = this.ctx.get;
+      classifier = typeof getter === "function" ? getter.call(this.ctx, "clis.causalClassifier") : void 0;
     } catch {
-      return void 0;
     }
+    const errorCount = grouped.filter((item) => item.severity === "error").length;
+    const questions = {
+      q1_simultaneous_mutual_definition: "unknown",
+      q2_delayed_mutual_influence: "unknown",
+      q3_strict_irreversible_order: "unknown",
+      q4_coexisting_causal_structures: "unknown"
+    };
+    let confidence = 0;
+    try {
+      if (classifier !== void 0) {
+        const result = await classifier.classify({
+          description: `\u63D2\u4EF6\u4F53\u68C0\u53D1\u73B0 ${grouped.length} \u7C7B\u95EE\u9898\uFF08${errorCount} \u4E2A error\uFF09`,
+          answers: questions
+        });
+        if (result.causal_type === "unknown" && Number.isFinite(result.confidence)) {
+          confidence = Math.max(0, Math.min(0.9, result.confidence));
+        }
+      }
+    } catch {
+    }
+    return {
+      causalType: "unknown",
+      confidence,
+      questions,
+      summary: `\u53D1\u73B0 ${grouped.length} \u7C7B\u95EE\u9898\uFF0C\u4F46\u4FE1\u606F\u4E0D\u8DB3\u4EE5\u5224\u65AD\u7ED3\u6784`
+    };
   }
 };
-function sameLocation(grouped) {
-  const locations = new Set(grouped.map((item) => item.plugins.join(",")));
-  return locations.size === 1;
-}
 function groupFindings(reports) {
   const table = /* @__PURE__ */ new Map();
   for (const report of reports) {
@@ -1924,36 +1852,6 @@ function overallStatus(reports, probeErrors) {
   if (reports.some((item) => item.status === "failing")) return "failing";
   if (reports.some((item) => item.status === "degraded")) return "degraded";
   return "ok";
-}
-function summarise(causalType, grouped, probeErrors) {
-  switch (causalType) {
-    // 注意：这里不再声称"反复出现" —— 轮内数据判不出回路（见 analyse 的
-    // 规则二）。回路由 deriveNotices 用跨轮数据单独报 `structure.recurring`。
-    case "cyclic":
-      return `\u8FD9 ${grouped.length} \u7C7B\u95EE\u9898\u53EF\u80FD\u76F8\u4E92\u7275\u52A8\uFF0C\u9010\u6761\u4FEE\u672A\u5FC5\u6709\u6548`;
-    case "structural_duality":
-      return `\u8FD9 ${grouped.length} \u7C7B\u95EE\u9898\u540C\u5C5E\u4E00\u4E2A\u63D2\u4EF6\u6216\u4E00\u5904\u4F4D\u7F6E\uFF0C\u53EF\u80FD\u662F\u540C\u4E00\u4E2A\u4EA7\u751F\u73AF\u8282\u7684\u4E0D\u540C\u8868\u73B0`;
-    case "nested":
-      return `\u5B58\u5728\u591A\u79CD\u7ED3\u6784\u5E76\u5B58${probeErrors.length > 0 ? "\uFF08\u542B\u63A2\u9488\u81EA\u8EAB\u6545\u969C\uFF09" : ""}\uFF1A\u9700\u62C6\u5F00\u5206\u522B\u5904\u7406\uFF0C\u5148\u4FEE\u89C2\u6D4B\u80FD\u529B\u518D\u770B\u4E1A\u52A1\u95EE\u9898`;
-    case "unidirectional":
-      return "\u8FD9\u662F\u5355\u70B9\u95EE\u9898\uFF0C\u76F4\u63A5\u5904\u7406\u5373\u53EF";
-    default:
-      return `\u53D1\u73B0 ${grouped.length} \u7C7B\u95EE\u9898\uFF0C\u4F46\u4FE1\u606F\u4E0D\u8DB3\u4EE5\u5224\u65AD\u7ED3\u6784`;
-  }
-}
-function directionFor(causalType) {
-  switch (causalType) {
-    case "cyclic":
-      return "\u8FD9\u4E9B\u95EE\u9898\u53EF\u80FD\u76F8\u4E92\u7275\u52A8\uFF0C\u9010\u6761\u4FEE\u672A\u5FC5\u6709\u6548\uFF1B\u5148\u770B\u5B83\u4EEC\u662F\u5426\u5171\u4EAB\u540C\u4E00\u4E2A\u4EA7\u751F\u73AF\u8282";
-    case "structural_duality":
-      return "\u5148\u786E\u8BA4\u8FD9\u51E0\u7C7B\u95EE\u9898\u662F\u5426\u51FA\u81EA\u540C\u4E00\u4E2A\u4EA7\u751F\u73AF\u8282\uFF1A\u82E5\u540C\u6E90\uFF0C\u53EA\u6539\u5176\u4E2D\u4E00\u7C7B\u5269\u4E0B\u7684\u4ECD\u5728";
-    case "nested":
-      return "\u5148\u4FEE\u63A2\u9488/\u89C2\u6D4B\u80FD\u529B\uFF0C\u518D\u5904\u7406\u4E1A\u52A1\u95EE\u9898\uFF1A\u89C2\u6D4B\u574F\u4E86\u4F1A\u63A9\u76D6\u771F\u5B9E\u75C5\u7076";
-    case "unidirectional":
-      return "\u5B9A\u4F4D\u6700\u65E9\u53EF\u5E72\u9884\u7684\u90A3\u4E2A\u56E0\uFF0C\u4E00\u6B21\u6539\u5230";
-    default:
-      return void 0;
-  }
 }
 
 // packages/clis-plugin/src/tool-json.ts
@@ -2232,133 +2130,231 @@ function registerTools(ctx, healthSources = () => []) {
       }
     })
   );
-  toolRuntime(ctx).register(
-    defineTool({
-      name: "clis_probe",
-      description: '\u7CFB\u7EDF\u7EA7\u63D2\u4EF6\u76D1\u7763\uFF1A\u679A\u4E3E\u5BBF\u4E3B\u5168\u90E8\u63D2\u4EF6\uFF0C\u6536\u96C6\u5404\u81EA\u5065\u5EB7\u63A2\u9488\u7684\u539F\u59CB\u4FE1\u53F7\uFF0C\u7528\u56E0\u679C\u7ED3\u6784\u5206\u6790\u5224\u65AD"\u8FD9\u4E9B\u6563\u4E71\u95EE\u9898\u4E4B\u95F4\u662F\u4EC0\u4E48\u5173\u7CFB"\uFF0C\u5E76\u53EA\u6295\u9012\u5BF9\u65B9\u81EA\u67E5\u62A5\u4E0D\u51FA\u6765\u7684\u7ED3\u8BBA\uFF08\u7ED3\u6784\u8BCA\u65AD + \u8986\u76D6\u7F3A\u53E3\uFF09\u3002**\u4E0D\u8F6C\u53D1\u5BF9\u65B9\u81EA\u5DF1\u5DF2\u7ECF\u663E\u793A\u7684\u9010\u6761\u8B66\u544A** \u2014\u2014 \u90A3\u4E9B\u5728\u5404\u81EA\u9762\u677F\u91CC\u5DF2\u6709\uFF0C\u91CD\u590D\u642C\u8FD0\u53EA\u662F\u566A\u97F3\u3002\u7528\u4E8E\u56DE\u7B54"\u67D0\u4E2A\u63D2\u4EF6\u53CD\u590D\u51FA\u95EE\u9898\u3001\u4FEE\u4E86\u53C8\u56DE\u6765\uFF0C\u5230\u5E95\u662F\u51E0\u4E2A\u95EE\u9898\u8FD8\u662F\u4E00\u4E2A\u73AF"\u8FD9\u7C7B\u8DE8\u95EE\u9898\u5224\u65AD\u3002',
-      parameters: {
-        only: {
-          type: "array",
-          description: "\u53EF\u9009\uFF1A\u53EA\u76D1\u7763\u8FD9\u4E9B\u63D2\u4EF6 id\uFF1B\u7701\u7565\u5219\u679A\u4E3E\u5BBF\u4E3B\u5168\u90E8\u6D3B\u52A8\u63D2\u4EF6\u3002",
-          items: { type: "string" }
-        }
-      },
-      output: {
-        schema: { type: "json" },
-        render: (_args, value) => [{ type: "text", text: JSON.stringify(value, null, 2) }]
-      },
-      async execute(rawArgs) {
-        const plugins = listPlugins(ctx);
-        const explicit = healthSources();
-        const auto = autoSources(ctx, plugins, explicit);
-        const { activeTotal } = buildScope(plugins, explicit);
-        const only = rawArgs.only;
-        const sources = only === void 0 ? auto.sources : auto.sources.filter((item) => only.some((id) => id === item.plugin));
-        const supervision = {
-          active_plugins: activeTotal,
-          user_plugins: auto.total,
-          supervised: sources.length,
-          domain_probes: auto.domainCovered,
-          structural_only: auto.structuralOnly
-        };
-        if (sources.length === 0) {
-          return toToolJson({
-            status: "ok",
-            supervision,
-            message: "\u6CA1\u6709\u53EF\u76D1\u7763\u7684\u975E\u5185\u5EFA\u63D2\u4EF6",
-            notices: []
-          });
-        }
-        const supervisor = new HealthSupervisor(ctx, sources);
-        const outcome = await supervisor.run();
-        const previous = await readSeenState();
-        const presentCodes = new Set(outcome.grouped.map((item) => item.code));
-        const persisting = Object.values(previous.findings).filter((item) => presentCodes.has(item.code)).map((item) => item.code);
-        const notices = deriveNotices(outcome, [], persisting);
-        const escalateAfter = 2;
-        const dispositionInput = notices.map((notice) => ({
-          code: notice.code,
-          severity: notice.severity,
-          message: notice.message,
-          plugins: notice.plugins,
-          count: notice.evidence.length
-        }));
-        const { dispositions, next } = reconcileFindings(
-          dispositionInput,
-          previous,
-          escalateAfter
-        );
-        await writeSeenState(next);
-        const notifier = new HealthNotifier(ctx);
-        const notified = notifier.notify(notices);
-        const shaped = shapeForAgent(notified, outcome.grouped);
+  const probeDefinition = defineTool({
+    name: "clis_probe",
+    description: '\u7CFB\u7EDF\u7EA7\u63D2\u4EF6\u76D1\u7763\uFF1A\u679A\u4E3E\u5BBF\u4E3B\u5168\u90E8\u63D2\u4EF6\uFF0C\u6536\u96C6\u5404\u81EA\u5065\u5EB7\u63A2\u9488\u7684\u539F\u59CB\u4FE1\u53F7\uFF0C\u7528\u56E0\u679C\u7ED3\u6784\u5206\u6790\u5224\u65AD"\u8FD9\u4E9B\u6563\u4E71\u95EE\u9898\u4E4B\u95F4\u662F\u4EC0\u4E48\u5173\u7CFB"\uFF0C\u5E76\u53EA\u6295\u9012\u5BF9\u65B9\u81EA\u67E5\u62A5\u4E0D\u51FA\u6765\u7684\u7ED3\u8BBA\uFF08\u7ED3\u6784\u8BCA\u65AD + \u8986\u76D6\u7F3A\u53E3\uFF09\u3002**\u4E0D\u8F6C\u53D1\u5BF9\u65B9\u81EA\u5DF1\u5DF2\u7ECF\u663E\u793A\u7684\u9010\u6761\u8B66\u544A** \u2014\u2014 \u90A3\u4E9B\u5728\u5404\u81EA\u9762\u677F\u91CC\u5DF2\u6709\uFF0C\u91CD\u590D\u642C\u8FD0\u53EA\u662F\u566A\u97F3\u3002\u7528\u4E8E\u56DE\u7B54"\u67D0\u4E2A\u63D2\u4EF6\u53CD\u590D\u51FA\u95EE\u9898\u3001\u4FEE\u4E86\u53C8\u56DE\u6765\uFF0C\u5230\u5E95\u662F\u51E0\u4E2A\u95EE\u9898\u8FD8\u662F\u4E00\u4E2A\u73AF"\u8FD9\u7C7B\u8DE8\u95EE\u9898\u5224\u65AD\u3002',
+    parameters: {
+      only: {
+        type: "array",
+        description: "\u53EF\u9009\uFF1A\u53EA\u76D1\u7763\u8FD9\u4E9B\u63D2\u4EF6 id\uFF1B\u7701\u7565\u5219\u679A\u4E3E\u5BBF\u4E3B\u5168\u90E8\u6D3B\u52A8\u63D2\u4EF6\u3002",
+        items: { type: "string" }
+      }
+    },
+    output: {
+      schema: { type: "json" },
+      render: (_args, value) => [{ type: "text", text: JSON.stringify(value, null, 2) }]
+    },
+    async execute(rawArgs) {
+      const plugins = listPlugins(ctx);
+      const explicit = healthSources();
+      const auto = autoSources(ctx, plugins, explicit);
+      const { activeTotal } = buildScope(plugins, explicit);
+      const only = rawArgs.only;
+      const sources = only === void 0 ? auto.sources : auto.sources.filter((item) => only.some((id) => id === item.plugin));
+      const supervision = {
+        active_plugins: activeTotal,
+        user_plugins: auto.total,
+        supervised: sources.length,
+        domain_probes: auto.domainCovered,
+        structural_only: auto.structuralOnly
+      };
+      if (sources.length === 0) {
         return toToolJson({
-          status: outcome.status,
-          // 监督覆盖面：用户一眼看到"全系统有多少插件、多少在被监督"
+          status: "ok",
           supervision,
-          probed: sources.map((item) => item.plugin),
-          probe_errors: outcome.probeErrors,
-          // 结构判断（CLIS 的核心产出）
-          analysis: outcome.analysis,
-          // 注意：分组计数保留，但它只是**证据**，不是投递项
-          evidence: outcome.grouped.map((item) => ({
-            code: item.code,
-            count: item.count,
-            plugins: item.plugins
-          })),
-          notices: shaped,
-          dispositions: dispositions.map((item) => ({
-            code: item.code,
-            disposition: item.disposition,
-            rounds: item.roundsUnresolved
-          }))
+          message: "\u6CA1\u6709\u53EF\u76D1\u7763\u7684\u975E\u5185\u5EFA\u63D2\u4EF6",
+          notices: []
         });
       }
-    })
-  );
-  toolRuntime(ctx).register(
-    defineTool({
-      name: "clis_metrics",
-      description: 'Read intervention-effectiveness metrics for CLIS, including its own miss rate. hinted = failure-feedback hints actually injected into the agent loop; adopted = the agent then called clis_run/clis_classify; adoptionRate = adopted/hinted. skipped = failures the gate evaluated and deliberately passed over, with reason and gate breakdown; missRate = skipped/evaluated. Read hinted alone and "the gate is working" looks identical to "nobody is watching" \u2014 missRate is the denominator that separates them. A missRate near 1 means the gate passes everything (effectively off); near 0 means it is nagging. Read-only; no experiment required to collect.',
-      parameters: {
-        window_days: {
-          type: "number",
-          description: "\u6C47\u603B\u7A97\u53E3\uFF08\u5929\uFF09\uFF1B\u7F3A\u7701 30\u3002"
+      const supervisor = new HealthSupervisor(ctx, sources);
+      const outcome = await supervisor.run();
+      const notices = deriveNotices(outcome, []);
+      const notifier = new HealthNotifier(ctx);
+      const notified = notifier.notify(notices);
+      const shaped = shapeForAgent(notified, outcome.grouped);
+      return toToolJson({
+        status: outcome.status,
+        // 监督覆盖面：用户一眼看到"全系统有多少插件、多少在被监督"
+        supervision,
+        probed: sources.map((item) => item.plugin),
+        probe_errors: outcome.probeErrors,
+        // 结构判断（CLIS 的核心产出）
+        analysis: outcome.analysis,
+        // 注意：分组计数保留，但它只是**证据**，不是投递项
+        evidence: outcome.grouped.map((item) => ({
+          code: item.code,
+          count: item.count,
+          plugins: item.plugins
+        })),
+        notices: shaped,
+        dispositions: [],
+        history_status: "\u8DE8\u8F6E\u8DDF\u8E2A\u6682\u4E0D\u53EF\u7528\uFF1A\u63A2\u9488\u5C1A\u672A\u63D0\u4F9B\u53EF\u9A8C\u8BC1\u7684\u5BF9\u8C61\u8EAB\u4EFD\u4E0E\u68C0\u67E5\u5B8C\u6574\u6027\u3002"
+      });
+    }
+  });
+  toolRuntime(ctx).register(probeDefinition);
+  const metricsDefinition = defineTool({
+    name: "clis_metrics",
+    description: 'Read intervention-effectiveness metrics for CLIS, including its own miss rate. hinted = failure-feedback hints actually injected into the agent loop; adopted = the agent then called clis_run/clis_classify; adoptionRate = adopted/hinted. skipped = failures the gate evaluated and deliberately passed over, with reason and gate breakdown; missRate = skipped/evaluated. Read hinted alone and "the gate is working" looks identical to "nobody is watching" \u2014 missRate is the denominator that separates them. A missRate near 1 means the gate passes everything (effectively off); near 0 means it is nagging. Read-only metrics also include a bounded, synthetic in-memory probe self-test for the current calling scope.',
+    parameters: {
+      window_days: {
+        type: "number",
+        description: "\u6C47\u603B\u7A97\u53E3\uFF08\u5929\uFF09\uFF1B\u7F3A\u7701 30\u3002"
+      },
+      probe_self_test: {
+        type: "boolean",
+        description: "\u53EF\u9009\uFF1A\u53EA\u8BFB\u8FD0\u884C\u9694\u79BB\u63A2\u9488\u81EA\u68C0\uFF0C\u4E0D\u8BFB\u53D6\u771F\u5B9E\u63A2\u9488\u3001\u5386\u53F2\u6216\u6536\u4EF6\u7BB1\uFF1B\u5F00\u542F\u65F6\u4EC5\u8FD4\u56DE\u81EA\u68C0\u7ED3\u679C\u3002"
+      }
+    },
+    output: {
+      schema: { type: "json" },
+      render: (_args, value) => [{ type: "text", text: JSON.stringify(value, null, 2) }]
+    },
+    async execute(rawArgs, execution) {
+      const selfTest = await boundedProbeSelfTest(ctx, execution?.agent, probeDefinition, metricsDefinition);
+      if (rawArgs.probe_self_test === true) return toToolJson({ probe_self_test: selfTest });
+      const days = Math.min(Math.max(1, Number(rawArgs.window_days) || 30), 365);
+      const summary = await summarizeMetrics(dshHomeOf(), days);
+      return toToolJson({
+        window_days: days,
+        probe_self_test: selfTest,
+        hinted: summary.hinted,
+        adopted: summary.adopted,
+        adoption_rate: summary.adoptionRate,
+        // 与提示无关的自主调用：单列，**不进分子**。
+        spontaneous: summary.spontaneous,
+        // —— 漏判分母（2026-11-02）——
+        // 没有这三个字段时，hinted 单独读起来"正常"与"根本没在管"同形。
+        skipped: summary.skipped,
+        evaluated: summary.evaluated,
+        miss_rate: summary.missRate,
+        skipped_by_reason: summary.skippedByReason,
+        skipped_by_gate: summary.skippedByGate,
+        // 判读指引：数字本身不说明好坏，解释框架要给足。
+        reading: summarizeReading(summary),
+        // 采纳口径说明：adopted 是**有条件**的（同一 agent 此前 30 分钟内有提示）。
+        // 不写这句，读者会以为 adopted 只是"调过 CLIS 的次数"。
+        definition: "adopted \u53EA\u7EDF\u8BA1\u300C\u540C\u4E00 agent \u6B64\u524D 30 \u5206\u949F\u5185\u6536\u5230\u8FC7\u63D0\u793A\u300D\u7684 CLIS \u8C03\u7528\uFF1Bspontaneous \u662F\u6CA1\u6709\u4EFB\u4F55\u524D\u63D0\u63D0\u793A\u7684\u81EA\u4E3B\u8C03\u7528\uFF0C\u4E0D\u8BA1\u5165\u5206\u5B50\u3002evaluated = hinted + skipped\uFF08\u673A\u5236\u771F\u6B63\u770B\u8FC7\u7684\u5931\u8D25\u6570\uFF09\uFF1BmissRate = skipped/evaluated\u3002"
+      });
+    }
+  });
+  toolRuntime(ctx).register(metricsDefinition);
+}
+async function boundedProbeSelfTest(ctx, agent, probeDefinition, metricsDefinition) {
+  const registry = {
+    probe: "unavailable",
+    metrics: "unavailable"
+  };
+  if (agent !== void 0 && agent !== null) {
+    const sample = (name2, expected) => {
+      try {
+        const runtime = toolRuntime(ctx);
+        if (typeof runtime.get !== "function") return "unavailable";
+        const visible = runtime.get(name2, agent);
+        return visible === void 0 || visible === null ? "unavailable" : visible === expected ? "match" : "mismatch";
+      } catch {
+        return "unavailable";
+      }
+    };
+    registry.probe = sample("clis_probe", probeDefinition);
+    registry.metrics = sample("clis_metrics", metricsDefinition);
+  }
+  let timer;
+  try {
+    const diagnostic = await Promise.race([
+      probeSelfTest(ctx),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("self-test timeout")), 250);
+      })
+    ]);
+    return { registry, ...diagnostic };
+  } catch (error) {
+    return { registry, status: "unavailable", error: String(error?.message ?? error).slice(0, 200) };
+  } finally {
+    if (timer !== void 0) clearTimeout(timer);
+  }
+}
+async function probeSelfTest(ctx) {
+  const classifier = { service: "missing", calls: 0, outcome: "not_called" };
+  let service;
+  try {
+    const getter = ctx.get;
+    const candidate = typeof getter === "function" ? getter.call(ctx, SERVICE_CLASSIFIER) : void 0;
+    if (candidate !== void 0 && candidate !== null) {
+      service = candidate;
+      classifier.service = typeof service?.classify === "function" ? "available" : "invalid";
+    }
+  } catch (error) {
+    classifier.service = "error";
+    classifier.error = String(error?.message ?? error).slice(0, 200);
+  }
+  const proxy = classifier.service === "available" ? {
+    async classify(problem) {
+      classifier.calls++;
+      try {
+        const result = await service.classify.call(service, problem);
+        classifier.outcome = "returned";
+        try {
+          const snapshot = loadHost("@deepseek-ai/dsh-util-values").snapshotJsonValue;
+          const copy = snapshot(result);
+          if (copy === void 0) classifier.result_status = "not_lossless_json";
+          else {
+            classifier.result = copy;
+            classifier.result_status = "available";
+          }
+        } catch {
+          classifier.result_status = "not_lossless_json";
         }
-      },
-      output: {
-        schema: { type: "json" },
-        render: (_args, value) => [{ type: "text", text: JSON.stringify(value, null, 2) }]
-      },
-      async execute(rawArgs) {
-        const days = Math.min(Math.max(1, Number(rawArgs.window_days) || 30), 365);
-        const summary = await summarizeMetrics(dshHomeOf(), days);
-        return toToolJson({
-          window_days: days,
-          hinted: summary.hinted,
-          adopted: summary.adopted,
-          adoption_rate: summary.adoptionRate,
-          // 与提示无关的自主调用：单列，**不进分子**。
-          spontaneous: summary.spontaneous,
-          // —— 漏判分母（2026-11-02）——
-          // 没有这三个字段时，hinted 单独读起来"正常"与"根本没在管"同形。
-          skipped: summary.skipped,
-          evaluated: summary.evaluated,
-          miss_rate: summary.missRate,
-          skipped_by_reason: summary.skippedByReason,
-          skipped_by_gate: summary.skippedByGate,
-          // 判读指引：数字本身不说明好坏，解释框架要给足。
-          reading: summarizeReading(summary),
-          // 采纳口径说明：adopted 是**有条件**的（同一 agent 此前 30 分钟内有提示）。
-          // 不写这句，读者会以为 adopted 只是"调过 CLIS 的次数"。
-          definition: "adopted \u53EA\u7EDF\u8BA1\u300C\u540C\u4E00 agent \u6B64\u524D 30 \u5206\u949F\u5185\u6536\u5230\u8FC7\u63D0\u793A\u300D\u7684 CLIS \u8C03\u7528\uFF1Bspontaneous \u662F\u6CA1\u6709\u4EFB\u4F55\u524D\u63D0\u63D0\u793A\u7684\u81EA\u4E3B\u8C03\u7528\uFF0C\u4E0D\u8BA1\u5165\u5206\u5B50\u3002evaluated = hinted + skipped\uFF08\u673A\u5236\u771F\u6B63\u770B\u8FC7\u7684\u5931\u8D25\u6570\uFF09\uFF1BmissRate = skipped/evaluated\u3002"
-        });
+        return result;
+      } catch (error) {
+        classifier.outcome = "threw";
+        classifier.error = String(error?.message ?? error).slice(0, 200);
+        throw error;
       }
-    })
-  );
+    }
+  } : void 0;
+  const isolatedCtx = { get: (name2) => name2 === SERVICE_CLASSIFIER ? proxy : void 0 };
+  const syntheticPlugin = (id, value) => ({
+    id,
+    state: 2,
+    external: true,
+    disabled: false,
+    declaredInject: [],
+    moduleLoaded: true,
+    exportForm: "apply",
+    isGroup: false,
+    importing: false,
+    live: void 0,
+    probeExport: { probe: async () => value }
+  });
+  const wrapped = autoSources(isolatedCtx, [
+    syntheticPlugin("synthetic-malformed", { status: "ok", findings: "not-an-array" }),
+    syntheticPlugin("synthetic-business", { plugin: "forged-source", status: "failing", findings: [{ code: "test.business", severity: "error", message: "synthetic business failure" }] })
+  ]);
+  const outcome = await new HealthSupervisor(isolatedCtx, [
+    { plugin: "synthetic-valid", probe: async () => ({ plugin: "synthetic-valid", status: "degraded", findings: [{ code: "test.warning", severity: "warn", message: "synthetic finding" }] }) },
+    ...wrapped.sources
+  ]).run();
+  const events = [];
+  const notifier = new HealthNotifier({ emit: (name2, payload) => events.push({ name: name2, code: payload.code }) });
+  notifier.notify([{ code: "structure.unknown", severity: "info", message: "synthetic unknown", plugins: [], targets: [], evidence: [] }]);
+  const unknownEvents = events.length;
+  notifier.notify(deriveNotices(outcome, []).filter((notice) => notice.code === "structure.probe-broken"));
+  return {
+    classifier,
+    supervisor: outcome.analysis ?? null,
+    malformed_probe: { wrapper: "autoSources", status: outcome.status, probe_errors: outcome.probeErrors },
+    business_probe: {
+      status: outcome.reports.find((r) => r.plugin === "synthetic-business")?.status ?? null,
+      plugin: outcome.reports.find((r) => r.plugin === "synthetic-business")?.plugin ?? null,
+      report: outcome.reports.find((r) => r.plugin === "synthetic-business") ?? null,
+      probe_errors: outcome.probeErrors.filter((e) => e.plugin === "synthetic-business")
+    },
+    notifier: { unknown_events: unknownEvents, control_events: events.length - unknownEvents, control_code: events[0]?.code ?? null }
+  };
 }
 function dshHomeOf() {
-  return process.env.DSH_HOME ?? join5(homedir3(), ".dsh");
+  return process.env.DSH_HOME ?? join4(homedir2(), ".dsh");
 }
 function summarizeReading(s) {
   if (s.evaluated === 0) {
@@ -2378,7 +2374,7 @@ function summarizeReading(s) {
 
 // packages/clis-plugin/src/index.ts
 function dshHomeForMetrics() {
-  return process.env.DSH_HOME ?? join6(process.env.USERPROFILE ?? "", ".dsh");
+  return process.env.DSH_HOME ?? join5(process.env.USERPROFILE ?? "", ".dsh");
 }
 var HOT_RELOAD_KEY = /* @__PURE__ */ Symbol.for("dsh-clis.hot-reload-started");
 var PLUGIN_VERSION = "0.3.0";

@@ -92,8 +92,8 @@ export function dailyTemplate(date) {
 	return [
 		`# ${date} 记录`,
 		'',
-		'> 本文件是原始层：任务与对话过程的第一手数据，内容与格式由你（模型/harness）自主决策，插件不做任何约束。蒸馏时插件从这里归纳功能划分——记录得越真实，功能域的依据越扎实。',
-		'> 只有一条轻过滤：执行式日志（命令输出、PID、退出码、耗时流水）别抄——会话与日志文件里本来就有，抄进来只会稀释蒸馏原料。值得记的是日志里没有的：判断与取舍、用户原话、踩坑的因果、待验证的下一步。',
+		'> 本文件是原始层，只能通过插件采集写入，不可直接使用编辑工具。当前可选采集仅提取用户原话并脱敏、截断，不自动记录助手的判断与取舍；未启用采集时如实报告缺口。',
+		'> 执行式日志通常已有原始记录，不应机械重复；助手判断、取舍和踩坑因果目前缺少采集通道，不能直接补写或事后编造。',
 		'',
 	].join('\n');
 }
@@ -450,8 +450,8 @@ export async function resolveOpenItems(root, feature, sinceDate, today) {
 				touched.push(f);
 			}
 		}
-	} catch {
-		/* root absent */
+	} catch (err) {
+		throw new Error(`每日记录更新失败（已完成 ${touched.length} 个文件${touched.length ? `：${touched.join('、')}` : ''}）：${String(err?.message ?? err)}`, { cause: err });
 	}
 	return touched;
 }

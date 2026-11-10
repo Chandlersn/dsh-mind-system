@@ -1,3 +1,88 @@
+import path from 'node:path';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { Buffer } from 'node:buffer';
+import { parseSkillText } from './host-skill.js';
+
+// Both recall channels must interpret links the same way. Normalize before
+// classifying so ./, dot segments and URL-encoded separators cannot make an
+// inactive dao directory look like an active one.
+function normalizedTarget(target) {
+	let value = String(target ?? '').trim().replace(/^<|>$/g, '');
+	value = value.replace(/\\([ ()<>])/g, '$1').replace(/&(?:#(\d+)|#x([\da-f]+)|amp|sol|period|lowbar);/gi, (m, dec, hex) => {
+		if (dec || hex) {
+			const n = Number.parseInt(dec || hex, dec ? 10 : 16);
+			return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : m;
+		}
+		return ({ '&amp;': '&', '&sol;': '/', '&period;': '.', '&lowbar;': '_' })[m.toLowerCase()] ?? m;
+	});
+	// Split literal URL query/fragment before decoding: %23 and %3F can be
+	// part of a legitimate filename, rather than an actual URL delimiter.
+	value = value.split(/[?#]/, 1)[0];
+	// Multiple encoding layers can occur when a Markdown link was copied from a URL.
+	for (let i = 0; i < 16; i++) {
+		let next;
+		try { next = decodeURIComponent(value); }
+		catch { next = value.replace(/%([\da-f]{2})/gi, (m, h) => Number.parseInt(h, 16) < 128 ? String.fromCharCode(Number.parseInt(h, 16)) : m); }
+		if (next === value) break;
+		value = next;
+	}
+	value = value.replace(/\\/g, '/');
+	return path.posix.normalize(value);
+}
+
+function markdownDefinitions(text) {
+	const defs = new Map();
+	for (const m of String(text ?? '').matchAll(/^\s{0,3}\[([^\]]+)\]:\s*(?:<([^>\n]+)>|((?:\\.|[^\s])+))/gm)) {
+		const key = m[1].trim().replace(/\s+/g, ' ').toLowerCase();
+		if (!defs.has(key)) defs.set(key, m[2] ?? m[3]);
+	}
+	return defs;
+}
+
+function markdownTargets(text, defs) {
+	const targets = [];
+	const input = String(text ?? '');
+	for (const m of input.matchAll(/\]\(\s*/g)) {
+		let i = m.index + m[0].length;
+		let target = '';
+		if (input[i] === '<') {
+			i++;
+			while (i < input.length && input[i] !== '>' && input[i] !== '\n') target += input[i++];
+			if (input[i] !== '>') continue;
+			i++;
+		} else {
+			let depth = 0;
+			while (i < input.length) {
+				const c = input[i];
+				if (c === '\\' && i + 1 < input.length) { target += input.slice(i, i + 2); i += 2; continue; }
+				if (c === '(') depth++;
+				else if (c === ')') { if (depth === 0) break; depth--; }
+				else if (/\s/.test(c) && depth === 0) break;
+				target += c; i++;
+			}
+			if (depth !== 0) continue;
+		}
+		// A destination may be followed by an optional Markdown title.
+		if (target && /^\s*(?:(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\))\s*)?\)/.test(input.slice(i))) targets.push(target);
+	}
+	for (const m of String(text ?? '').matchAll(/\[([^\]]+)\]\[([^\]]*)\]/g)) {
+		const key = (m[2] || m[1]).trim().replace(/\s+/g, ' ').toLowerCase();
+		if (defs.has(key)) targets.push(defs.get(key));
+	}
+	// Markdown also permits [label] as a shortcut reference to [label]: ... .
+	for (const m of String(text ?? '').matchAll(/(?<!!)\[([^\]\n]+)\](?![\[(])/g)) {
+		const key = m[1].trim().replace(/\s+/g, ' ').toLowerCase();
+		if (defs.has(key)) targets.push(defs.get(key));
+	}
+	return targets;
+}
+
+function isInactiveDaoTarget(target) {
+	const parts = normalizedTarget(target).split('/').filter(Boolean).map((s) => s.toLowerCase());
+	return parts.some((s, i) => s === 'dao' && parts.slice(i + 1).some((p) => /^(?:_?candidates?|_?rejected|_?deleted)$/.test(p)));
+}
+
 /**
  * 档案块（2026-11-09，借鉴 ThoughtDAG dossier）：命中主题时把「决策共识 /
  * 规范」与「道层」的条目整份带入，而不只给一行索引摘要。
@@ -13,6 +98,7 @@ export function archiveBlocks(indexText, userTokens, options = {}) {
 	const maxBlocks = options.archiveMax ?? 2;
 	if (!userTokens || userTokens.size === 0) return [];
 	const headings = ['## 决策共识 / 规范', '## 道层'];
+	const defs = markdownDefinitions(indexText);
 	const out = [];
 	for (const heading of headings) {
 		const at = indexText.indexOf(heading);
@@ -36,6 +122,8 @@ export function archiveBlocks(indexText, userTokens, options = {}) {
 		}
 		flush();
 		for (const text of blocks) {
+			// A mixed block is not safe to inject piecemeal: drop the whole block.
+			if (markdownTargets(text, defs).some(isInactiveDaoTarget)) continue;
 			const bTokens = tokensOf(text);
 			let hits = 0;
 			for (const t of userTokens) if (bTokens.has(t)) hits++;
@@ -115,19 +203,42 @@ export function approxTokens(text) {
 }
 
 /**
- * @returns 数组（向后兼容：老调用方仍能 .find/.some/.length 遍历 injected 行），
- *   数组上挂 `.stats = { matched, injected, held, dropped, budget, usedTokens, tiers }`
- *   与 `.heldRows`（擦边行，供文案列名）。老调用方忽略这些属性即行为不变。
+ * Read the authoritative bundle metadata. Index skill rows only contain name,
+ * summary and lifecycle status, not scope; a missing/unreadable bundle cannot
+ * prove that an otherwise active skill is global. Legacy skills/<name>.md
+ * requires an explicitly supplied memoryRoot and is also checked fail-closed.
  */
-export function matchIndexRows(indexText, userTokens, limit = 3, usage, options = {}) {
-	const strongBar = options.strongBar ?? RECALL_TIERS.strongBar;
-	const holdBar = options.holdBar ?? RECALL_TIERS.holdBar;
-	const budget = Math.min(
-		options.budgetTokens ?? RECALL_BUDGET_TOKENS,
-		options.windowTokens ? Math.floor(options.windowTokens * RECALL_WINDOW_GUARD) : Infinity,
-	);
+function skillScope(href, options) {
+	try {
+		let file;
+		if (/^file:\/\//i.test(href)) {
+			const url = new URL(href);
+			if (url.hostname && url.hostname !== 'localhost') return null;
+			url.hash = ''; url.search = '';
+			file = fileURLToPath(url);
+		} else if (/^skills\/[^/]+\.md$/i.test(href) && typeof options.memoryRoot === 'string' && options.memoryRoot) {
+			const leaf = decodeURIComponent(href.slice('skills/'.length));
+			if (/[\\/]/.test(leaf) || leaf === '.' || leaf === '..') return null;
+			file = path.join(options.memoryRoot, 'skills', leaf);
+		} else return null;
+		return parseSkillText(readFileSync(file, 'utf8')).fields;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Parse the same eligible index rows for ranked recall and decision repair.
+ * Only active index rows with an authoritative global scope are admitted by
+ * default. A project skill also requires options.project to match its bundle's
+ * scope_project exactly. Missing/unreadable/unknown scope is not eligible.
+ *
+ * @returns Array<{name:string, summary:string, href:string, zone:string}>
+ */
+export function eligibleIndexRows(indexText, options = {}) {
 	const candidates = [];
-	for (const raw of indexText.split('\n')) {
+	const defs = markdownDefinitions(indexText);
+	for (const raw of String(indexText ?? '').split('\n')) {
 		const s = raw.trim();
 		if (!s.startsWith('|') || s.includes('---')) continue;
 		const cells = s.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
@@ -143,7 +254,12 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage, options 
 		// row must still be recognized). A SKILL.md href IS a skill, whatever its
 		// parent directories are called; the legacy `skills/<name>.md` form is
 		// accepted too so an old root keeps recalling.
-		const anyHref = cells.map((c) => /\(([^)\s]+\.md)\)/.exec(c)?.[1]).find(Boolean);
+		const targets = markdownTargets(s, defs);
+		// Do not expose the summary of a row with any inactive-axiom link, even
+		// when another (active) link appears first in the same row.
+		if (targets.some(isInactiveDaoTarget)) continue;
+		const firstTarget = targets.find((target) => /\.md$/i.test(normalizedTarget(target)));
+		const anyHref = firstTarget && (/^file:\/\//i.test(firstTarget) ? firstTarget : normalizedTarget(firstTarget).replace(/ /g, '%20').replace(/#/g, '%23').replace(/\?/g, '%3F'));
 		const isSkillHref = Boolean(anyHref) && (/^skills\//.test(anyHref) || /(?:^|\/)SKILL\.md$/.test(anyHref));
 		// Zone → row kind, from ONE map. `dao/` was absent from the old inline
 		// allow-list, so a dao row (if anyone hand-wrote one) was dropped here: the
@@ -157,32 +273,51 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage, options 
 		if (!zone) continue;
 		// A skill row carries its lifecycle in a status cell. Only ACTIVE skills
 		// are recallable — a candidate is an unverified procedure and must not
-		// shadow the reasoning it was distilled from. The status cell is the one
-		// holding exactly one of the three lifecycle words (works for both the
-		// 4-column and the 3-column shape).
+		// shadow the reasoning it was distilled from. Both real index table
+		// generations put the status in the final column; don't mistake a
+		// summary whose literal text is "active" for lifecycle evidence.
 		// FAIL-CLOSED (5.27.0, adversarial audit): the old condition was
 		// `statusCell && statusCell !== 'active'` — a skill row WITHOUT a status
 		// cell (hand-edited, legacy shape) defaulted to trusted and entered recall
 		// as ⭐ "follow it, do not re-derive". Missing evidence is evidence of
 		// nothing; the bundle-vs-row agreement is re-checked by the health lint
 		// (R20e), so the row must prove 'active' to fire.
-		const statusCell = cells.find((c) => /^(candidate|active|retired)$/.test(c));
-		if (zone === 'skill' && statusCell !== 'active') continue;
+		// Both supported skill table generations put status in the final cell.
+		if (zone === 'skill') {
+			if (cells.at(-1) !== 'active') continue;
+			const fields = skillScope(href, options);
+			// The row and the bundle must agree on lifecycle. Project scope is
+			// authorized only with explicit, exact project context.
+			if (!fields || fields.status !== 'active') continue;
+			const scope = String(fields.scope ?? '').toLowerCase();
+			if (scope !== 'global' && !(scope === 'project' && typeof options.project === 'string' && options.project.length > 0 && (fields.scope_project ?? fields.scopeProject) === options.project)) continue;
+		}
 		// The skill's identity: a bundle href ends <name>/SKILL.md (take the
 		// parent directory); the LEGACY `skills/<name>.md` form takes the file
 		// basename. The old slice(-2)[0] gave 'skills' for two-segment legacy
 		// hrefs — every legacy row then shared one bogus name and name-hit
 		// scoring matched nothing real (audit finding; tested with a legacy row).
-		const name = zone === 'skill' ? skillNameOf(href) : href.split('/').pop().replace(/\.md$/, '');
-		candidates.push({
-			name,
-			summary: cells[1],
-			href,
-			zone,
-			nameTokens: tokensOf(name),
-			bodyTokens: tokensOf(cells.slice(1).join(' ')),
-		});
+		const rawName = zone === 'skill' ? skillNameOf(href) : href.split('/').pop().replace(/\.md$/i, '');
+		let name = rawName;
+		try { name = decodeURIComponent(rawName); } catch { /* keep an invalid escape visible */ }
+		const row = { name, summary: cells[1], href, zone };
+		Object.defineProperty(row, 'bodyText', { value: cells.slice(1).join(' '), enumerable: false });
+		candidates.push(row);
 	}
+	return candidates;
+}
+
+/** Ranked recall uses the same admission gate as decision repair. */
+export function matchIndexRows(indexText, userTokens, limit = 3, usage, options = {}) {
+	const strongBar = options.strongBar ?? RECALL_TIERS.strongBar;
+	const holdBar = options.holdBar ?? RECALL_TIERS.holdBar;
+	const budget = Math.min(
+		options.budgetTokens ?? RECALL_BUDGET_TOKENS,
+		options.windowTokens ? Math.floor(options.windowTokens * RECALL_WINDOW_GUARD) : Infinity,
+	);
+	const candidates = eligibleIndexRows(indexText, options).map((row) => ({
+		...row, nameTokens: tokensOf(row.name), bodyTokens: tokensOf(row.bodyText),
+	}));
 	if (!candidates.length) return [];
 	// Document frequency per token across rows → IDF weights.
 	const df = new Map();
@@ -301,8 +436,13 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage, options 
  * decision-repair target into a recallable row.
  */
 
+function recallRowText(l) {
+	return `- ${l.zone === 'skill' ? '⭐ 已结晶技能：' : ''}${l.repair ? `⚠️ 决策修复（近 7 天纠正 ${l.repair.corrections} 次、纠正率 ${l.repair.badRate}）：` : ''}${l.trust && l.trust.level === '动摇' ? `⚠️ 信任动摇（认可 ${l.trust.positives} · 纠正 ${l.trust.corrections}）：` : ''}${l.summary} → [${l.href}](${l.href})${l.zone === 'skill' ? '（按程序步骤执行，不要现场推导）' : ''}`;
+}
+
 /** Build one recall UserMessage (form 'recall', plugin producer kind). */
-export function buildRecallMessage(lines, heldRows = [], stats = null, archives = []) {
+export function buildRecallMessage(lines, heldRows = [], stats = null, archives = [], options) {
+	if (options?.optionalBudgetBytes !== undefined) return buildBudgetedRecall(lines, heldRows, stats, archives, { maxOptionalBytes: options.optionalBudgetBytes }).message;
 	const hasSkill = lines.some((l) => l.zone === 'skill');
 	const hasRepair = lines.some((l) => l.repair);
 	const hasShaken = lines.some((l) => l.trust && l.trust.level === '动摇');
@@ -317,7 +457,7 @@ export function buildRecallMessage(lines, heldRows = [], stats = null, archives 
 		// 档案块：整份共识/道条目（DAG dossier 的对应物），先于索引行呈现。
 		// 每块独立成段，前后空行，避免与索引行挤成一团（真机烟测发现的呈现问题）。
 		...archives.map((a) => `**档案（${a.kind.replace(/^## /, '')}）**：${a.text}\n`),
-		...lines.map((l) => `- ${l.zone === 'skill' ? '⭐ 已结晶技能：' : ''}${l.repair ? `⚠️ 决策修复（近 7 天纠正 ${l.repair.corrections} 次、纠正率 ${l.repair.badRate}）：` : ''}${l.trust && l.trust.level === '动摇' ? `⚠️ 信任动摇（认可 ${l.trust.positives} · 纠正 ${l.trust.corrections}）：` : ''}${l.summary} → [${l.href}](${l.href})${l.zone === 'skill' ? '（按程序步骤执行，不要现场推导）' : ''}`),
+		...lines.map(recallRowText),
 		'',
 		// 擦边档：只列名与计数，不带内容（DAG heldBack 的可见性，规则版）。
 		heldRows.length
@@ -325,7 +465,7 @@ export function buildRecallMessage(lines, heldRows = [], stats = null, archives 
 			: '',
 		// 双侧账本一行：带进/暂缓/丢弃/预算用量同处可见（指标须成对报）。
 		stats
-			? `（本次匹配 ${stats.matched} 条 · 带入 ${stats.injected} · 暂缓 ${stats.held} · 丢弃 ${stats.dropped}；预算 ${stats.budget} token，用了 ${stats.usedTokens}）`
+			? `（索引分档 ${stats.matched} 条：强档 ${stats.injected} · 暂缓 ${stats.held} · 丢弃 ${stats.dropped}；最终带入 ${lines.length} 条索引/修复项。强档摘要估算 ${stats.usedTokens}/${stats.budget} token；不含档案、规则与格式，首条可能超额）`
 			: '',
 		hasSkill ? 'ℹ 命中 active 技能：过去反复验证过的操作程序；结果与预期不符时回到来源功能域重新推导。' : '',
 		hasRepair ? '⚠️ 决策修复：标 ⚠️ 的记忆近期被反复纠正，引用它时先复核（当前这一步未被打断）。' : '',
@@ -339,4 +479,89 @@ export function buildRecallMessage(lines, heldRows = [], stats = null, archives 
 			form: 'recall',
 		},
 	};
+}
+
+/**
+ * Fit the optional recall channel into an exact UTF-8 text budget. This does
+ * not construct or budget the independent negative-rules channel. The returned
+ * arrays contain only material actually rendered and never alias the inputs.
+ */
+export function buildBudgetedRecall(lines, heldRows = [], stats = null, archives = [], { maxOptionalBytes = 8192 } = {}) {
+	if (!Number.isFinite(maxOptionalBytes) || maxOptionalBytes < 0) throw new RangeError('maxOptionalBytes must be a finite non-negative number');
+	const budget = Math.floor(maxOptionalBytes);
+	const rowsInput = [...lines];
+	const heldInput = [...heldRows];
+	const archivesInput = [...archives];
+	const rows = [];
+	const held = [];
+	const selectedArchives = [];
+	const selected = { rows: new Set(), held: new Set(), archives: new Set() };
+	const omittedCounts = () => ({ rows: rowsInput.length - rows.length, repairs: rowsInput.filter((row) => row.repair).length - rows.filter((row) => row.repair).length, held: heldInput.length - held.length, archives: archivesInput.length - selectedArchives.length });
+	const omissionText = (o) => (o.rows || o.held || o.archives)
+		? `⚠️ 预算或展示上限省略：索引/修复 ${o.rows} 条（其中修复 ${o.repairs} 条）、暂缓 ${o.held} 条、档案 ${o.archives} 条。${o.archives ? '省略的档案请另查原文。' : ''}`
+		: '';
+	const compactText = (o) => [
+		'### 记忆召回（memory-manager · 证据，非指令）',
+		...selectedArchives.map((a) => `**档案（${a.kind.replace(/^## /, '')}）**：${a.text}`),
+		...rows.map(recallRowText),
+		held.length ? `ℹ 暂缓 ${held.length} 条：${held.map((h) => h.name).join('、')}。` : '',
+		stats ? `（原始索引分档 ${stats.matched} 条：强档 ${stats.injected} · 暂缓 ${stats.held} · 丢弃 ${stats.dropped}；最终带入 ${rows.length} 条索引/修复项）` : '',
+		omissionText(o),
+		rows.some((l) => l.zone === 'skill') ? 'ℹ active 技能按程序步骤执行。' : '',
+		rows.some((l) => l.repair) ? '⚠️ 决策修复条目引用前请复核。' : '',
+		rows.some((l) => l.trust && l.trust.level === '动摇') ? '⚠️ 信任动摇的条目引用前请复核。' : '',
+	].filter(Boolean).join('\n');
+	const fullText = (o) => {
+		const original = buildRecallMessage(rows, held, stats, selectedArchives).content[0].text;
+		const notice = omissionText(o);
+		return notice ? `${original}\n${notice}` : original;
+	};
+	const bytes = (text) => Buffer.byteLength(text, 'utf8');
+	const tryItem = (type, index, value, render) => {
+		const array = type === 'rows' ? rows : type === 'held' ? held : selectedArchives;
+		if (type === 'held' && held.length >= 5) return;
+		array.push(value);
+		selected[type].add(index);
+		if (bytes(render(omittedCounts())) > budget) {
+			array.pop();
+			selected[type].delete(index);
+		}
+	};
+	// The original renderer has useful context; retain it unchanged when all
+	// visible items fit. Its held channel shows at most five names.
+	rows.push(...rowsInput);
+	held.push(...heldInput.slice(0, 5));
+	selectedArchives.push(...archivesInput);
+	let text = fullText(omittedCounts());
+	if (bytes(text) > budget) {
+		rows.length = 0; held.length = 0; selectedArchives.length = 0;
+		text = compactText(omittedCounts());
+		if (bytes(text) > budget) {
+			// If the full header cannot fit, still report omissions when the
+			// notice itself fits; below that size an empty text is the only
+			// truthful representation within the requested bound.
+			const notice = omissionText(omittedCounts());
+			text = bytes(notice) <= budget ? notice : '';
+		} else {
+			// Preserve source order inside each output array while giving consensus
+			// and dao archives and decision-repair rows the first chance to fit.
+			const priorityArchives = [];
+			const otherArchives = [];
+			archivesInput.forEach((a, i) => (/共识|规范|道层|\bdao\b/i.test(String(a.kind)) ? priorityArchives : otherArchives).push(i));
+			const repairRows = [], otherRows = [];
+			rowsInput.forEach((r, i) => (r.repair ? repairRows : otherRows).push(i));
+			for (const i of priorityArchives) tryItem('archives', i, archivesInput[i], compactText);
+			for (const i of repairRows) tryItem('rows', i, rowsInput[i], compactText);
+			for (const i of otherArchives) tryItem('archives', i, archivesInput[i], compactText);
+			for (const i of otherRows) tryItem('rows', i, rowsInput[i], compactText);
+			for (let i = 0; i < heldInput.length; i++) tryItem('held', i, heldInput[i], compactText);
+			// Reconstruct in input order; the length and byte budget are unchanged.
+			rows.splice(0, rows.length, ...rowsInput.filter((_, i) => selected.rows.has(i)));
+			held.splice(0, held.length, ...heldInput.filter((_, i) => selected.held.has(i)));
+			selectedArchives.splice(0, selectedArchives.length, ...archivesInput.filter((_, i) => selected.archives.has(i)));
+			text = compactText(omittedCounts());
+		}
+	}
+	const message = { role: 'user', content: [{ type: 'text', text }], source: { kind: 'memory-manager/recall', form: 'recall' } };
+	return { message, rows, heldRows: held, archives: selectedArchives, omitted: omittedCounts(), optionalBytes: bytes(text) };
 }

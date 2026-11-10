@@ -14,7 +14,7 @@ discipline injected into its system prompt.
 
 - fourteen memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a read-only Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
-- Mechanical lint rules (R0–R25 plus temperature analysis; rule numbers grow, so no fixed count is claimed), so rot gets detected instead of remembered
+- Mechanical lint rules (R0–R27 plus temperature analysis; rule numbers grow, so no fixed count is claimed), so rot gets detected instead of remembered
 - **Capability ledger**: every EXTERNAL CLI / MCP / local tool you used is filed in `capabilities/` — look before
   you rediscover it (harness built-ins and the project's own scripts/APIs are NOT capabilities)
 - **Skill crystallization**: operations that keep being re-run and confirmed become callable procedures — each one

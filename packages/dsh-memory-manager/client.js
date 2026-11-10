@@ -211,7 +211,28 @@ window.__ModuleLoader__.load({
 .dmo-meter{position:relative;display:inline-block;width:80px;height:6px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);vertical-align:middle;overflow:hidden}
 .dmo-meter-fill{position:absolute;inset:0 auto 0 0;background:var(--dsw-alias-state-success-primary)}
 .dmo-meter-fill.over{background:var(--dsw-alias-state-warning-primary)}
-@media (max-width:720px){.dmo-body{flex-direction:column;padding:0 12px 12px}.dmo-rail{width:auto;flex-direction:row;overflow-x:auto;border-right:none;border-bottom:.5px solid var(--dsw-alias-border-l2);padding:0 0 6px}}
+/* Adapt to the panel width, including a narrow panel in a wide host window. */
+.dmo-root{min-width:0;min-height:0;container-name:dmo-panel;container-type:inline-size}
+.dmo-header{flex-wrap:wrap;gap:10px 12px;padding:18px 24px 16px;border-bottom:.5px solid var(--dsw-alias-border-l2)}
+.dmo-title{font-size:18px;line-height:26px;white-space:nowrap}.dmo-sub{min-width:0;flex:1 1 240px}
+.dmo-search{flex:0 1 240px;min-width:160px;max-width:100%;height:36px;padding:0 10px;gap:8px;border-color:var(--dsw-alias-border-l3);transition:border-color .15s ease,box-shadow .15s ease}
+.dmo-search:focus-within,.dmo-filter:focus-visible{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-business-primary) 25%,transparent)}
+.dmo-body{padding:18px 24px 24px;gap:24px;min-width:0}.dmo-rail{width:168px;gap:4px;padding:0 12px 4px 0}
+.dmo-nav{min-height:36px;height:auto;padding:7px 10px;line-height:22px;flex-shrink:0;transition:background .15s ease,color .15s ease}
+.dmo-nav.active{color:var(--dsw-alias-state-business-primary);background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 11%,var(--dsw-alias-bg-layer-1))}
+.dmo-nav.active .ico{color:inherit}.dmo-nav .cnt{padding:0 5px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2)}
+.dmo-main{gap:16px;overscroll-behavior:contain;scroll-padding:12px}.dmo-card{padding:18px}.dmo-card.tight{padding:12px 14px}.dmo-h2{font-size:15px;line-height:22px;margin-bottom:12px}
+.dmo-growth{gap:10px}.dmo-gcard{flex-basis:145px;min-width:0;padding:14px;border-radius:var(--dsw-radius-lg);transition:background .15s ease,border-color .15s ease}.dmo-gcard:hover{border-color:var(--dsw-alias-border-l3)}
+.dmo-gnum{font-size:24px;line-height:30px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}.dmo-toolbar{gap:10px}.dmo-filter{height:36px;padding:0 10px}
+.dmo-row,.dmo-row-btn{padding:12px 10px;border-radius:var(--dsw-radius-sm)}.dmo-row-top{min-width:0;gap:10px}.dmo-row-name{min-width:0;overflow-wrap:anywhere;font-weight:600}
+.dmo-row-sum,.dmo-snippet{line-height:19px}.dmo-tl-row{padding:9px 10px}.dmo-tl-name{min-width:0;max-width:35%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dmo-doc-head{gap:10px}.dmo-doc-title{font-size:16px;line-height:24px;overflow-wrap:anywhere}.dmo-toc,.dmo-toc-chips{gap:6px}
+.dmo-sec{border-radius:var(--dsw-radius-lg)}.dmo-sec-head{min-height:44px;padding:10px 14px;font-weight:600}.dmo-sec-body{min-width:0;padding:10px 16px 14px}
+.dmo-md{line-height:1.7;overflow-wrap:anywhere}.dmo-md p,.dmo-md ul{margin:8px 0}.dmo-md pre,.dmo-table-wrap{max-width:100%;box-sizing:border-box}.dmo-crumbs{flex-wrap:wrap;overflow-wrap:anywhere}
+.dmo-row-btn:focus-visible,.dmo-row-del:focus-visible,.dmo-switch:focus-visible,.dmo-code-copy:focus-visible,.dmo-link:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
+@media (max-width:720px){.dmo-header{padding:14px 12px 12px}.dmo-sub{flex-basis:100%;order:2}.dmo-search{flex:1 1 180px;min-width:0;order:3}.dmo-header>.dmo-btn{order:4}.dmo-body{flex-direction:column;padding:12px;gap:12px}.dmo-rail{width:auto;max-width:100%;flex-direction:row;overflow-x:auto;overflow-y:hidden;border-right:none;border-bottom:.5px solid var(--dsw-alias-border-l2);padding:0 2px 8px;gap:4px}.dmo-nav{width:auto;white-space:nowrap}.dmo-rail>div{flex:none;margin-top:0!important;border-top:0!important;padding-top:0!important}.dmo-rail .cnt{margin-left:2px}.dmo-main{min-height:0}.dmo-card{padding:14px}.dmo-tl-when{width:auto;min-width:52px}}
+@container dmo-panel (max-width:720px){.dmo-header{padding:14px 12px 12px}.dmo-sub{flex-basis:100%;order:2}.dmo-search{flex:1 1 180px;min-width:0;order:3}.dmo-header>.dmo-btn{order:4}.dmo-body{flex-direction:column;padding:12px;gap:12px}.dmo-rail{width:auto;max-width:100%;flex-direction:row;overflow-x:auto;overflow-y:hidden;border-right:none;border-bottom:.5px solid var(--dsw-alias-border-l2);padding:0 2px 8px;gap:4px}.dmo-nav{width:auto;white-space:nowrap}.dmo-rail>div{flex:none;margin-top:0!important;border-top:0!important;padding-top:0!important}.dmo-rail .cnt{margin-left:2px}.dmo-main{min-height:0}.dmo-card{padding:14px}.dmo-tl-when{width:auto;min-width:52px}}
+@media (prefers-reduced-motion:reduce){.dmo-root *,.dmo-root *::before,.dmo-root *::after{scroll-behavior:auto!important;transition-duration:0s!important;animation-duration:0s!important;animation-iteration-count:1!important}}
 `;
 
 		// ---------------------------------------------------------------------
@@ -922,7 +943,7 @@ window.__ModuleLoader__.load({
 		// reader
 		// ---------------------------------------------------------------------
 
-		function Section({ index, section, open, onToggle, zone, onNavigate, registerRef }) {
+		function Section({ index, section, open, onToggle, zone, onNavigate, registerRef, preserveOrder }) {
 			return h(
 				'div',
 				{ className: 'dmo-sec', 'data-dmo': 'section', ref: (el) => registerRef(index, el) },
@@ -934,7 +955,7 @@ window.__ModuleLoader__.load({
 					h('span', { className: 'dmo-sec-title' }, section.heading),
 					h('span', { className: 'dmo-meta', style: { marginLeft: 'auto' } }, `${section.body.length}B`),
 				),
-				open ? h('div', { className: 'dmo-sec-body' }, h(MarkdownBody, { text: reverseBullets(section.body), zone, onNavigate })) : null,
+				open ? h('div', { className: 'dmo-sec-body' }, h(MarkdownBody, { text: preserveOrder ? section.body : reverseBullets(section.body), zone, onNavigate })) : null,
 			);
 		}
 
@@ -984,7 +1005,7 @@ window.__ModuleLoader__.load({
 				setOpen(m);
 			};
 			const copyPath = () => {
-				const rel = view.zone === '' ? 'MEMORY.md' : `${ZONE_DIR[view.zone] ? `${ZONE_DIR[view.zone]}/` : ''}${fileName}`;
+				const rel = view.candidate ? `dao/_candidates/${fileName}` : view.zone === '' ? 'MEMORY.md' : `${ZONE_DIR[view.zone] ? `${ZONE_DIR[view.zone]}/` : ''}${fileName}`;
 				const full = root ? `${root}/${rel}`.replace(/\\/g, '/') : rel;
 				try {
 					navigator.clipboard?.writeText(full);
@@ -998,7 +1019,8 @@ window.__ModuleLoader__.load({
 			// the reader flips it), so the top card is always the latest state.
 			// Index maps (`open[i]`, `refs`, `jump(i)`) keep the ORIGINAL section
 			// indices — only the render order changes.
-			const shown = sections.map((s, i) => ({ s, i })).reverse();
+			const shown = sections.map((s, i) => ({ s, i }));
+			if (!view.candidate) shown.reverse();
 			const chipRows = kind === 'functions' ? shown.map(({ s, i }) => ({ i, label: s.date ? `${s.date}${/补$/.test(s.heading) ? '补' : ''}` : `#${i + 1}` })) : shown.map(({ s, i }) => ({ i, label: s.heading.slice(0, 14) }));
 
 			return h(
@@ -1054,7 +1076,7 @@ window.__ModuleLoader__.load({
 					: h(
 							'div',
 							{ style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-							shown.map(({ s, i }) => h(Section, { key: `${s.heading}-${i}`, index: i, section: s, open: Boolean(open[i]), onToggle: (x) => setOpen((m) => ({ ...m, [x]: !m[x] })), zone: view.zone, onNavigate, registerRef })),
+							shown.map(({ s, i }) => h(Section, { key: `${s.heading}-${i}`, index: i, section: s, open: Boolean(open[i]), onToggle: (x) => setOpen((m) => ({ ...m, [x]: !m[x] })), zone: view.zone, onNavigate, registerRef, preserveOrder: Boolean(view.candidate) })),
 						),
 			);
 		}
@@ -1063,7 +1085,76 @@ window.__ModuleLoader__.load({
 		// overview / lists / search
 		// ---------------------------------------------------------------------
 
-		function Overview({ health, counts, timeline, usage, env, prose, preview, previewQ, setPreviewQ, onOpen, onZone, onNavigate }) {
+		// Snapshot is per plugin instance and never establishes capture health.
+		// Only render fixed labels and numeric values: the API must not leak IDs,
+		// paths, raw exception messages, or unrecognised labels into this card.
+		function CaptureStatus({ capture }) {
+			const data = capture && typeof capture === 'object' && !Array.isArray(capture) ? capture : null;
+			const count = (key) => Number.isSafeInteger(data?.[key]) && data[key] >= 0 ? data[key] : null;
+			const fmt = (key) => count(key) === null ? '未知' : String(count(key));
+			const enabled = data?.enabled === true ? '已启用' : data?.enabled === false ? '未启用' : '未知';
+			const observed = count('observed');
+			const observations = data?.hasObservations === false && observed === 0
+				? '本实例尚无观测样本，无法判断采集是否正常。'
+				: data?.hasObservations === true && observed !== null && observed > 0
+					? `本实例已观察 ${observed} 条事件，结果仅反映已观察的样本。`
+					: '观测状态未知，无法判断采集是否正常。';
+			const capacity = data?.saturated === true || (count('skippedCapacity') ?? 0) > 0
+				? '观察容量不足或计数已饱和，统计不完整。'
+				: data?.saturated === false && count('skippedCapacity') !== null
+					? null : '观察容量状态未知。';
+			const codes = {
+				MEMORY_STAGE_OUTCOME_UNKNOWN: '暂存结果未知', MEMORY_WRITE_COMMIT_UNKNOWN: '写入结果未知',
+				MEMORY_LEDGER_APPEND_FAILED: '记账结果未知', MEMORY_LEDGER_UNREADABLE: '账本不可读',
+				MEMORY_DELETE_INTENT_PENDING: '存在未完成删除', MEMORY_CAPTURE_LOCK_BUSY: '采集锁占用',
+				MEMORY_CAPTURE_LOCK_TIMEOUT: '采集锁等待超时', MEMORY_CAPTURE_LOCK_UNKNOWN: '采集锁状态未知',
+				MEMORY_CAPTURE_LOCK_RELEASE_UNKNOWN: '采集锁释放结果未知',
+				CAPTURE_MUTEX_UNAVAILABLE: '采集锁不可用', CAPTURE_MUTEX_UNSAFE_PATH: '采集锁路径不安全',
+				CAPTURE_MUTEX_SENTINEL_CLOSE_UNKNOWN: '锁文件关闭结果未知', CAPTURE_MUTEX_OPEN_FAILED: '采集锁打开失败',
+				CAPTURE_MUTEX_ACQUIRE_FAILED: '采集锁获取结果未知', CAPTURE_MUTEX_BUSY: '采集锁占用', CAPTURE_MUTEX_CLOSE_UNKNOWN: '采集锁释放结果未知',
+				CAPTURE_BASELINE_UNVERIFIED: '原记录无法对账', CAPTURE_INTENT_PENDING: '存在未完成采集',
+				CAPTURE_INTENT_UNKNOWN: '采集意图结果未知', CAPTURE_FINALIZE_UNKNOWN: '采集意图清理结果未知',
+				CAPTURE_HISTORY_ENCODING: '原记录编码无法无损保留', CAPTURE_HISTORY_REDACTION: '原记录脱敏会改变历史',
+				CAPTURE_INPUT_REDACTION: '采集内容需要进一步脱敏', CAPTURE_UNSAFE_DAILY: '每日记录路径不安全', OTHER: '其他',
+			};
+			const stages = { source: '来源', select: '筛选', schedule: '调度', lock: '互斥', read: '读取', dedupe: '去重', stage: '暂存', commit: '提交', ledger: '记账', cleanup: '清理', OTHER: '其他' };
+			const bins = (value, labels) => {
+				if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+				if (Object.keys(value).some((key) => !Object.prototype.hasOwnProperty.call(labels, key))) return null;
+				const parts = [];
+				for (const [key, label] of Object.entries(labels)) {
+					const n = value[key];
+					if (!Number.isSafeInteger(n) || n < 0) return null;
+					if (n > 0) parts.push(`${label} ${n}`);
+				}
+				return parts;
+			};
+			const codeDetails = bins(data?.errorCodes, codes);
+			const stageDetails = bins(data?.errorStages, stages);
+			const detail = (items) => items === null ? '未知' : items.length ? items.join(' · ') : '无已记录明细';
+			return h(Card, null,
+				h(CardTitle, null, '每日采集状态'),
+				h('section', { role: 'status', 'aria-label': '每日采集状态', 'aria-live': 'polite', 'data-dmo': 'capture-status' },
+					h('div', null, `采集：${enabled}`),
+					h('div', { className: 'dmo-meta' }, observations),
+					h('div', null, `尝试 ${fmt('scheduled')} · 确认 ${fmt('confirmed')} · 失败 ${fmt('failed')} · 待处理 ${fmt('pending')}`),
+					h('div', { className: 'dmo-meta' }, `已选择 ${fmt('selected')} · 重复 ${fmt('duplicate')} · 冲突 ${fmt('conflict')}`),
+					h('div', { className: 'dmo-meta' }, `来源跳过 ${fmt('skippedSource')} · 缺少标识跳过 ${fmt('skippedMissingId')} · 统计容量溢出 ${fmt('skippedCapacity')}`),
+					capacity ? h('div', { className: 'dmo-meta' }, capacity) : null,
+					h('div', { className: 'dmo-meta' }, `失败类别：${detail(codeDetails)}；发生阶段：${detail(stageDetails)}`),
+					h('div', { className: 'dmo-meta' }, data?.intentWitness === 'present'
+						? '发现未完成的采集意图，后续采集会停写；需先核查，不能自动删除。'
+						: data?.intentWitness === 'not_seen'
+							? '当前未发现采集意图文件；这不能证明历史上没有未完成操作。'
+							: '采集意图现场状态未知。'),
+					h('div', { className: 'dmo-meta' }, data?.resetOnNewInstance === true
+						? '仅统计当前实例；插件重新加载或实例重建后计数清零，不代表历史记录。'
+						: '统计的实例范围或重载后的状态未知。'),
+				),
+			);
+		}
+
+		function Overview({ health, counts, timeline, usage, env, capture, prose, preview, previewQ, setPreviewQ, onOpen, onZone, onNavigate }) {
 			const problems = health?.results ?? [];
 			const fails = problems.filter((p) => p.level === 'FAIL');
 			const warns = problems.filter((p) => p.level === 'WARN');
@@ -1127,6 +1218,7 @@ window.__ModuleLoader__.load({
 						? h('ul', { className: 'dmo-probs' }, problems.slice(0, 12).map((p, i) => h('li', { key: i }, `[${p.level}] ${p.rule}: ${p.message}`)))
 						: h('div', { className: 'dmo-meta', style: { marginTop: 6 } }, '体检通过：索引体积、摘要、反向链接、日期顺序、死链、冷记忆均正常。'),
 				),
+				h(CaptureStatus, { capture }),
 				h(
 					'div',
 					{ className: 'dmo-growth' },
@@ -1310,7 +1402,7 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		function ZoneList({ zone, rows, sort, setSort, filter, setFilter, onOpen, daoView, setDaoView, candidates, candidateAction, candBusy, actMsg }) {
+		function ZoneList({ zone, rows, sort, setSort, filter, setFilter, onOpen, daoView, setDaoView, candidates, candidateState, onOpenCandidate, onRetry, candidateAction, candBusy, actMsg, onDeleteDao }) {
 			const label = ZONE_LABEL[zone] ?? zone;
 			// 道层的两个视图（2026-11-10 用户要求）：正式道 / 候选公理。
 			// 候选不是"另一种道"，它还没生效——所以用**筛选标签**分开，
@@ -1318,7 +1410,9 @@ window.__ModuleLoader__.load({
 			const isDao = zone === 'dao';
 			const showCandidates = isDao && daoView === 'candidates';
 			const candList = Array.isArray(candidates) ? candidates : [];
-			const shown = showCandidates ? candList : rows;
+			const candidateQuery = filter.trim().toLowerCase();
+			const filteredCandidates = candList.filter((c) => !candidateQuery || `${c.name ?? ''} ${c.proposition ?? ''}`.toLowerCase().includes(candidateQuery));
+			const shown = showCandidates ? filteredCandidates : rows;
 			return h(
 				'div',
 				{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
@@ -1333,7 +1427,7 @@ window.__ModuleLoader__.load({
 								'span',
 								{ style: { display: 'inline-flex', gap: 4, marginLeft: 4 } },
 								h(Btn, { sm: true, tone: daoView === 'active' ? undefined : 'outline', onClick: () => setDaoView('active'), title: '已生效的道' }, `正式 ${rows.length}`),
-								h(Btn, { sm: true, tone: daoView === 'candidates' ? undefined : 'outline', onClick: () => setDaoView('candidates'), title: '等待你确认的候选公理', 'data-dmo': 'dao-cand-tab' }, `候选 ${candList.length}`),
+								h(Btn, { sm: true, tone: daoView === 'candidates' ? undefined : 'outline', onClick: () => setDaoView('candidates'), title: '等待你确认的候选公理', 'data-dmo': 'dao-cand-tab' }, `候选 ${candidateState?.error || (candidateState?.loading && !candidateState?.data) ? '—' : candList.length}`),
 							)
 						: null,
 					h('span', { className: 'dmo-meta' }, `${shown.length} 项`),
@@ -1343,12 +1437,16 @@ window.__ModuleLoader__.load({
 				),
 				actMsg ? h('div', { className: 'dmo-meta', 'data-dmo': 'dao-act-msg' }, actMsg) : null,
 				showCandidates
-					? candList.length === 0
-						? h('div', { className: 'dmo-empty' }, '没有待决策的候选公理。Agent 攒够 5 条法后可以用 memory_dao status=candidate 提出候选。')
+					? candidateState?.error
+						? h('div', { className: 'dmo-empty', role: 'alert' }, `候选读取失败：${candidateState.error} `, h(Btn, { sm: true, tone: 'outline', onClick: onRetry }, '重试'))
+						: candidateState?.loading && !candidateState?.data
+						? h('div', { className: 'dmo-empty' }, '正在读取候选…')
+						: filteredCandidates.length === 0
+						? h('div', { className: 'dmo-empty' }, candidateQuery ? '没有匹配的候选。' : '没有待决策的候选公理。')
 						: h(
 								'div',
 								{ className: 'dmo-rows', 'data-dmo': 'dao-candidates' },
-								candList.map((c) =>
+								filteredCandidates.map((c) =>
 									h(
 										'div',
 										{ key: c.name, className: 'dmo-group', style: { padding: '10px 12px', borderBottom: '1px solid var(--dsw-alias-border-l2)' } },
@@ -1356,11 +1454,11 @@ window.__ModuleLoader__.load({
 											h('span', { style: { fontWeight: 600, fontSize: 13 } }, c.name),
 											h('span', { className: 'dmo-meta' }, `${c.source_count ?? 0} 条法`),
 											h('span', { className: 'grow' }),
-											h(Btn, { sm: true, tone: 'outline', disabled: candBusy === c.name, onClick: () => setDaoView('active') }, '看正文'),
+											h(Btn, { sm: true, tone: 'outline', disabled: candBusy === c.name, onClick: () => onOpenCandidate(c.name) }, '查看正文'),
 										),
 										c.proposition ? h('div', { style: { fontSize: 12, lineHeight: 1.6, marginTop: 6, color: 'var(--dsw-alias-label-secondary)' } }, c.proposition) : h('div', { className: 'dmo-meta' }, '(命题读取失败)'),
 										h('div', { style: { display: 'flex', gap: 6, marginTop: 8 } },
-											h(Btn, { sm: true, disabled: candBusy === c.name, 'data-dmo': 'dao-confirm', onClick: () => candidateAction('confirm', c.name) }, '确认转正'),
+											h(Btn, { sm: true, disabled: candBusy === c.name, 'data-dmo': 'dao-confirm', onClick: () => { if (window.confirm(`确认将候选「${c.name}」转为正式道？请先查看正文及来源。`)) candidateAction('confirm', c.name); } }, '确认转正'),
 											h(Btn, { sm: true, tone: 'outline', disabled: candBusy === c.name, 'data-dmo': 'dao-reject', onClick: () => {
 												const why = window.prompt(`否决候选「${c.name}」的理由（必填：否则同一命题会原样再提一遍）`);
 												if (why && why.trim()) candidateAction('reject', c.name, why.trim());
@@ -1384,11 +1482,11 @@ window.__ModuleLoader__.load({
 								const newMonth = zone === 'daily' && (i === 0 || rows[i - 1].name.slice(0, 7) !== month);
 								return h(
 									'div',
-									{ key: f.name, className: 'dmo-group' },
+									{ key: f.name, className: 'dmo-group', style: { display: 'flex', alignItems: 'stretch', gap: 6 } },
 									newMonth ? h('div', { key: 'm', className: 'dmo-month' }, month) : null,
 									h(
 										'button',
-										{ key: 'r', type: 'button', className: 'dmo-row', onClick: () => onOpen(zone, f.name), title: f.name, 'data-dmo': 'row' },
+										{ key: 'r', type: 'button', className: 'dmo-row', style: { flex: 1, minWidth: 0 }, onClick: () => onOpen(zone, f.name), title: f.name, 'data-dmo': 'row' },
 										h(
 											'div',
 											{ className: 'dmo-row-top' },
@@ -1397,10 +1495,21 @@ window.__ModuleLoader__.load({
 										),
 										f.summary ? h('div', { className: 'dmo-row-sum' }, f.summary) : null,
 									),
+									// 正式道的删除（2026-11-10 用户要求）。放在行**外面**而不是里面：
+									// 行本身是 <button>，button 不能嵌套 button（HTML 非法，点击会双触发）。
+									// 只有道层出这个按钮——其它层的删除没有对应留档语义，不该顺手加。
+									zone === 'dao' && onDeleteDao
+										? h(Btn, {
+												sm: true, tone: 'outline', 'data-dmo': 'dao-del',
+												disabled: candBusy === f.name,
+												title: '删除这条道（会留档到 dao/_deleted/）',
+												onClick: () => onDeleteDao(f.name.replace(/\.md$/, '')),
+											}, '删除')
+										: null,
 								);
 							}),
 						)
-					: h('div', { className: 'dmo-empty' }, filter ? '没有匹配的条目。' : `${label}区还没有文件。`),
+					: !showCandidates ? h('div', { className: 'dmo-empty' }, filter ? '没有匹配的条目。' : `${label}区还没有文件。`) : null,
 			);
 		}
 
@@ -1444,13 +1553,12 @@ window.__ModuleLoader__.load({
 				data?.hostDegraded && tab === 'host'
 					? h('div', { className: 'dmo-empty' }, '宿主技能根不可读，系统技能暂不可列；结晶技能不受影响。')
 					: null,
+				actMsg ? h('div', { className: 'dmo-card tight', role: 'status', 'data-dmo': 'skill-actmsg' }, actMsg) : null,
 				error
 					? h('div', { className: 'dmo-empty' }, `读取技能库失败：${error}`)
 					: loading && !data
 						? h('div', { className: 'dmo-empty' }, '读取技能库…')
-						: actMsg
-							? h('div', { className: 'dmo-empty', 'data-dmo': 'skill-actmsg' }, actMsg)
-							: shown.length
+						: shown.length
 					? h(
 							'div',
 							{ className: 'dmo-rows' },
@@ -1654,6 +1762,7 @@ window.__ModuleLoader__.load({
 			const items = data?.items ?? [];
 			const counts = data?.counts ?? { open: 0, acknowledged: 0, resolved: 0 };
 			const [busy, setBusy] = useState(null);
+			const [writeError, setWriteError] = useState('');
 			// 二次确认：正在等确认的 fingerprint。删除不可逆，误点代价大，
 			// 故第一次点只把按钮变成"确认删除"，第二次点才真删。
 			const [confirming, setConfirming] = useState(null);
@@ -1662,6 +1771,7 @@ window.__ModuleLoader__.load({
 			/** 统一走 /inbox-action：payload 决定是改状态还是删除。 */
 			const write = (fingerprint, payload) => {
 				setBusy(fingerprint);
+				setWriteError('');
 				fetch(`${API}/inbox-action`, {
 					method: 'POST',
 					headers: { 'content-type': 'application/json' },
@@ -1672,7 +1782,7 @@ window.__ModuleLoader__.load({
 						setConfirming(null);
 						onStateChange?.();
 					})
-					.catch(() => {})
+					.catch((e) => setWriteError(`操作失败：${String(e?.message ?? e)}`))
 					.finally(() => setBusy(null));
 			};
 
@@ -1703,6 +1813,8 @@ window.__ModuleLoader__.load({
 				h('div', { className: 'dmo-chips' }, chips),
 			);
 
+			if (res.error) return h('div', { className: 'dmo-empty', role: 'alert' }, `收件箱读取失败：${res.error} `, h(Btn, { tone: 'outline', onClick: onStateChange }, '重试'));
+			if (res.loading && !data) return h('div', { className: 'dmo-empty' }, '正在读取收件箱…');
 			if (!items.length) {
 				const which = statusFilter ? INBOX_STATUS.find((s) => s.key === statusFilter)?.label : '全部';
 				return h(
@@ -1804,7 +1916,7 @@ window.__ModuleLoader__.load({
 				);
 			});
 
-			return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } }, head, ...rows);
+			return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } }, head, writeError ? h('div', { className: 'dmo-card tight', role: 'alert' }, writeError) : null, ...rows);
 		}
 
 		function SearchPane({ res, q, zone, setZone, onOpen }) {
@@ -1814,6 +1926,7 @@ window.__ModuleLoader__.load({
 				{ key: 'index', label: '索引' },
 				{ key: 'functions', label: '功能' },
 				{ key: 'insights', label: '思想' },
+				{ key: 'dao', label: '道' },
 				{ key: 'capabilities', label: '能力' },
 				{ key: 'skills', label: '技能' },
 				{ key: 'daily', label: '每日' },
@@ -1968,6 +2081,7 @@ window.__ModuleLoader__.load({
 			// 所以这些按钮直接打 POST /axiom-action，而不是走 agent 的 tool——
 			// 让人的动作留在人手里。
 			const candRes = useApi(`${API}/axiom-candidates?v=${tick}`, fixtures);
+			const candidateDetail = useApi(view.kind === 'candidate' ? `${API}/axiom-candidates?name=${enc(view.name)}&v=${tick}` : null, fixtures);
 			const candidateAction = async (action, name, reason) => {
 				setActMsg('');
 				setCandBusy(name);
@@ -1979,7 +2093,8 @@ window.__ModuleLoader__.load({
 					});
 					const r = await resp.json().catch(() => ({}));
 					if (!resp.ok) {
-						setActMsg(`失败：${r.error || `HTTP ${resp.status}`}`);
+						setActMsg(`${resp.status >= 500 ? '操作结果未知' : '操作未确认'}：${r.error || `HTTP ${resp.status}`}（列表将刷新，请核对后再操作）`);
+						setTick((n) => n + 1);
 						return null;
 					}
 					setActMsg(r?.message ?? '完成');
@@ -1988,13 +2103,40 @@ window.__ModuleLoader__.load({
 					setTick((n) => n + 1);
 					return r;
 				} catch (e) {
-					setActMsg(`操作失败：${String(e?.message ?? e)}`);
+					setActMsg(`操作结果未知：无法接收回执，操作可能已发生；请刷新后核对，不要盲目重试。${String(e?.message ?? e)}`);
+					setTick((n) => n + 1);
 					return null;
 				} finally {
 					setCandBusy('');
 				}
 			};
 			const search = useApi(live.length >= 2 ? `${API}/search?q=${enc(live)}${searchZone !== 'all' ? `&zone=${searchZone}` : ''}` : null, fixtures);
+
+			// 删除正式道（2026-11-10 用户要求）。与候选删除分开：道已经参与判断、
+			// 可能被召回引用过，所以后端**留档到 dao/_deleted/**，并提醒索引行需手工删。
+			const deleteDao = async (name) => {
+				if (!window.confirm(`删除道「${name}」？\n\n它会留档到 dao/_deleted/（可回查），但 MEMORY.md 里的道层索引行需要你手工删除——面板不改索引。`)) return null;
+				setActMsg('');
+				setCandBusy(name);
+				try {
+					const resp = await fetch(`${API}/dao-action`, {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ action: 'delete', name }),
+					});
+					const r = await resp.json().catch(() => ({}));
+					if (!resp.ok) { setActMsg(`${resp.status >= 500 ? '操作结果未知' : '操作未确认'}：${r.error || `HTTP ${resp.status}`}（列表将刷新，请核对后再操作）`); setTick((n) => n + 1); return null; }
+					setActMsg(`${r.message}${r.note ? ` —— ${r.note}` : ''}`);
+					setTick((n) => n + 1);
+					return r;
+				} catch (e) {
+					setActMsg(`操作结果未知：无法接收回执，操作可能已发生；请刷新后核对，不要盲目重试。${String(e?.message ?? e)}`);
+					setTick((n) => n + 1);
+					return null;
+				} finally {
+					setCandBusy('');
+				}
+			};
 
 			const ws = overview.data?.[0];
 			const counts = ws?.counts ?? {};
@@ -2032,13 +2174,17 @@ window.__ModuleLoader__.load({
 			};
 
 			let timeline = [];
-			for (const zone of ['functions', 'insights', 'capabilities', 'skills', 'daily'])
+			for (const zone of ['functions', 'insights', 'dao', 'capabilities', 'skills', 'daily'])
 				for (const f of lists[zone]) timeline.push({ zone, name: f.name, bytes: f.bytes, mtime: f.mtime, summary: summaryOf(zone, f.name) });
 			timeline.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
 			timeline = timeline.slice(0, 12);
 
 			const openFile = (zone, name) => {
-				setView({ kind: 'file', zone: zone ?? '', name: name ?? null });
+				if (zone === 'skills' && typeof name === 'string' && name.includes('/')) {
+					setView({ kind: 'bundle', name: name.split('/')[0], tab: 'memory' });
+				} else {
+					setView({ kind: 'file', zone: zone ?? '', name: name ?? null });
+				}
 				setQuery('');
 				setLive('');
 			};
@@ -2054,7 +2200,8 @@ window.__ModuleLoader__.load({
 				openFile(target.zone, target.name);
 			};
 			const back = () => {
-				if (view.kind === 'file' && view.zone) setView({ kind: 'zone', zone: view.zone });
+				if (view.kind === 'candidate') { setDaoView('candidates'); setView({ kind: 'zone', zone: 'dao' }); }
+				else if (view.kind === 'file' && view.zone) setView({ kind: 'zone', zone: view.zone });
 				else if (view.kind === 'bundle') setView({ kind: 'zone', zone: 'skills', tab: view.tab === 'host' ? 'host' : 'memory' });
 				else setView({ kind: 'overview' });
 			};
@@ -2072,7 +2219,7 @@ window.__ModuleLoader__.load({
 			const kindOfZone = (z) => (z === '' ? 'index' : Object.prototype.hasOwnProperty.call(ZONE_DIR, z) ? z : 'daily');
 			const kind = !opened ? null : kindOfZone(opened.zone);
 
-			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'inbox' ? 'inbox' : view.kind === 'zone' ? view.zone : view.kind === 'bundle' ? 'skills' : view.zone === '' ? 'index' : view.zone;
+			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'inbox' ? 'inbox' : view.kind === 'candidate' ? 'dao' : view.kind === 'zone' ? view.zone : view.kind === 'bundle' ? 'skills' : view.zone === '' ? 'index' : view.zone;
 
 			const onKeyDown = (e) => {
 				const tag = e.target?.tagName;
@@ -2102,11 +2249,11 @@ window.__ModuleLoader__.load({
 			let main = null;
 			if (live.length >= 2) main = h(SearchPane, { res: search, q: live, zone: searchZone, setZone: setSearchZone, onOpen: openFile });
 			else if (!ws && overview.loading) main = h('div', { className: 'dmo-empty' }, '读取记忆体检…');
-			else if (overview.error) main = h('div', { className: 'dmo-empty' }, `API 不可用：${overview.error}`);
-			else if (!ws) main = h('div', { className: 'dmo-empty' }, '没有已注册的 workspace。');
-			else if (!health?.initialized) main = h('div', { className: 'dmo-empty' }, '记忆还没有建立（`~/.dsh/memory/` 尚未创建）。让 Agent 做一次实质工作，它就会用 memory_write 写下第一份迭代。');
+			else if (overview.error) main = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } }, h('div', { className: 'dmo-empty' }, '总览 API 不可用。'), h(CaptureStatus, { capture: null }));
+			else if (!ws) main = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } }, h('div', { className: 'dmo-empty' }, '没有已注册的 workspace。'), h(CaptureStatus, { capture: null }));
+			else if (!health?.initialized) main = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } }, h('div', { className: 'dmo-empty' }, '记忆还没有建立。'), h(CaptureStatus, { capture: ws.capture }));
 			else if (view.kind === 'inbox') main = h(InboxPane, { res: inboxRes, statusFilter: inboxFilter, setStatusFilter: setInboxFilter, onStateChange: () => setTick((n) => n + 1) });
-			else if (view.kind === 'overview') main = h(Overview, { health, counts, timeline, usage: overview.data?.[0]?.usage, env: overview.data?.[0]?.env, prose: parseProseSections(indexText), preview, previewQ, setPreviewQ, onOpen: openFile, onZone: (z) => setView({ kind: 'zone', zone: z }), onNavigate: navigate });
+			else if (view.kind === 'overview') main = h(Overview, { health, counts, timeline, usage: overview.data?.[0]?.usage, env: overview.data?.[0]?.env, capture: overview.data?.[0]?.capture, prose: parseProseSections(indexText), preview, previewQ, setPreviewQ, onOpen: openFile, onZone: (z) => setView({ kind: 'zone', zone: z }), onNavigate: navigate });
 			else if (view.kind === 'zone' && view.zone === 'skills')
 				main = h(SkillLibrary, {
 					data: skillLib.data, loading: skillLib.loading, error: skillLib.error,
@@ -2123,7 +2270,17 @@ window.__ModuleLoader__.load({
 					filter, setFilter,
 				});
 			else if (view.kind === 'bundle') main = h(SkillBundleView, { data: bundleSkill, name: view.name, onBack: back, sel: view.file ?? null, onSel: (f) => setView({ kind: 'bundle', name: view.name, tab: view.tab, file: f }), fixtures });
-			else if (view.kind === 'zone') main = h(ZoneList, { zone: view.zone, rows: rowsOf(view.zone), sort, setSort, filter, setFilter, onOpen: openFile, daoView, setDaoView, candidates: candRes.data?.candidates ?? [], candidateAction, candBusy, actMsg });
+			else if (view.kind === 'zone') {
+				const zoneRes = { functions: funcs, insights, dao: daos, capabilities: caps, daily: dailies }[view.zone];
+				if (zoneRes?.error) main = h('div', { className: 'dmo-empty', role: 'alert' }, `读取分区失败：${zoneRes.error} `, h(Btn, { tone: 'outline', onClick: () => setTick((n) => n + 1) }, '重试'));
+				else if (zoneRes?.loading && !zoneRes.data) main = h('div', { className: 'dmo-empty' }, '正在读取分区…');
+				else main = h(ZoneList, { zone: view.zone, rows: rowsOf(view.zone), sort, setSort, filter, setFilter, onOpen: openFile, daoView, setDaoView, candidates: candRes.data?.candidates ?? [], candidateState: candRes, onOpenCandidate: (name) => setView({ kind: 'candidate', name }), onRetry: () => setTick((n) => n + 1), candidateAction, candBusy, actMsg, onDeleteDao: deleteDao });
+			}
+			else if (view.kind === 'candidate') {
+				if (candidateDetail.error) main = h('div', { className: 'dmo-empty', role: 'alert' }, `候选正文读取失败：${candidateDetail.error} `, h(Btn, { tone: 'outline', onClick: () => setTick((n) => n + 1) }, '重试'), h(Btn, { onClick: back }, '返回'));
+				else if (candidateDetail.data?.text !== undefined) main = h(Reader, { view: { zone: 'dao', name: `${view.name}.md`, candidate: true }, text: candidateDetail.data.text, meta: null, kind: 'dao', root: ws.root, onBack: back, onNavigate: navigate });
+				else main = h('div', { className: 'dmo-empty' }, '正在读取候选正文…');
+			}
 			else if (fileText) main = h(Reader, { view, text: fileText, meta: fileMeta, kind, root: ws.root, onBack: back, onNavigate: navigate });
 			else main = h('div', { className: 'dmo-empty' }, fileRes.loading ? '读取文件…' : fileRes.error ? `读取失败：${fileRes.error}` : '文件为空。');
 
@@ -2141,7 +2298,7 @@ window.__ModuleLoader__.load({
 					'div',
 					{ className: 'dmo-header' },
 					h('h1', { className: 'dmo-title' }, '记忆管理'),
-					h('span', { className: 'dmo-sub' }, `${counts.functions ?? 0} 功能 · ${counts.insights ?? 0} 思想 · ${counts.capabilities ?? 0} 能力 · ${counts.skills ?? 0} 技能 · ${counts.daily ?? 0} 日线索`),
+					h('span', { className: 'dmo-sub' }, `${counts.functions ?? 0} 功能 · ${counts.insights ?? 0} 思想 · ${counts.dao ?? 0} 道 · ${counts.capabilities ?? 0} 能力 · ${counts.skills ?? 0} 技能 · ${counts.daily ?? 0} 日线索`),
 					h(
 						'label',
 						{ className: 'dmo-search', style: { marginLeft: 'auto', width: 240 } },
@@ -2172,7 +2329,7 @@ window.__ModuleLoader__.load({
 									const r = await fetch(`${API}/reload`, { method: 'POST' });
 									const j = await r.json().catch(() => ({}));
 									if (!r.ok && r.status !== 202) throw new Error(j.error || `HTTP ${r.status}`);
-									setReloadMsg('server 半已重载');
+									setReloadMsg('已启动重载，请稍后核验');
 									setTimeout(() => setReloadMsg(''), 5000);
 								} catch (err) {
 									setReloadMsg(`热重启失败：${String(err?.message ?? err)}`);
@@ -2210,7 +2367,7 @@ window.__ModuleLoader__.load({
 								{
 									key: n.key, type: 'button', 'data-dmo': 'nav-item',
 									className: `dmo-nav${activeKey === n.key ? ' active' : ''}`,
-									onClick: () => (n.key === 'overview' ? setView({ kind: 'overview' }) : n.key === 'inbox' ? setView({ kind: 'inbox' }) : n.key === 'index' ? openFile('', null) : setView({ kind: 'zone', zone: n.key })),
+									onClick: () => { setFilter(''); setQuery(''); setLive(''); if (n.key === 'overview') setView({ kind: 'overview' }); else if (n.key === 'inbox') setView({ kind: 'inbox' }); else if (n.key === 'index') openFile('', null); else setView({ kind: 'zone', zone: n.key }); },
 								},
 								h('span', { className: 'ico' }, n.icon),
 								n.label,
@@ -2260,7 +2417,7 @@ window.__ModuleLoader__.load({
 			},
 			// Pure view logic, exposed so ui-test.mjs can assert the panel's
 			// parsing/folding behaviour without a browser.
-			__internalsForTest: { relTime, plain, parseIndexTables, parseProseSections, splitSections, subTablesOf, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight, tokenizeCode, ZoneList },
+			__internalsForTest: { relTime, plain, parseIndexTables, parseProseSections, splitSections, subTablesOf, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight, tokenizeCode, ZoneList, SkillLibrary },
 		};
 	},
 });

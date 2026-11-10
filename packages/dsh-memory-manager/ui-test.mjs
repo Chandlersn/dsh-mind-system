@@ -167,6 +167,7 @@ const fixtures = {
 	'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], title: '全局记忆', path: 'C:/x/.dsh', counts: { functions: 2, insights: 1, capabilities: 0, skills: 1, daily: 2 }, env: { version: '5.26.0', canReload: true, hotReloadRunning: false, memoryRoot: 'C:/x/memory', skillRoot: 'C:/x/.dsh/skills', indexBytes: 6000, indexComfortBytes: 8000, indexHardBytes: 16000 } }], loading: false, error: null },
 	'/api/memory-org/list?zone=functions&v=0': { data: { files: [{ name: 'alpha.md', bytes: fnText.length, mtime: iso(30) }, { name: 'beta.md', bytes: 900, mtime: iso(2000) }] }, loading: false, error: null },
 	'/api/memory-org/list?zone=insights&v=0': { data: { files: [{ name: 'gamma.md', bytes: 500, mtime: iso(120) }] }, loading: false, error: null },
+	'/api/memory-org/list?zone=dao&v=0': { data: { files: [] }, loading: false, error: null },
 	'/api/memory-org/list?zone=skills&v=0': { data: { files: [{ name: '分离延迟重启.md', bytes: 700, mtime: iso(60) }] }, loading: false, error: null },
 	// Skill library payload — 5.20.0 storage scan: the host side lists what is
 	// ON DISK (bundle dirs with their file trees); no registry fields, no
@@ -243,6 +244,30 @@ function serialize(node) {
 
 const render = (initialView) => serialize(FakeReact.createElement(MemoryPanel, { __apiFixtures: fixtures, initialView }));
 const count = (s, needle) => s.split(needle).length - 1;
+
+// Expand the actual component tree so assertions can invoke the registered
+// callbacks, not merely check that buttons happen to be present in markup.
+function elements(node) {
+	if (node == null || typeof node === 'boolean' || typeof node === 'string' || typeof node === 'number') return [];
+	if (Array.isArray(node)) return node.flatMap(elements);
+	if (typeof node.type === 'function') return elements(node.type(node.props ?? {}));
+	return [node, ...elements(node.props?.children)];
+}
+function panelWithState(initialView, fixtureMap, overrides = {}) {
+	let index = 0;
+	const changes = [];
+	const react = { ...FakeReact, useState(init) {
+		const slot = index++;
+		return [Object.prototype.hasOwnProperty.call(overrides, slot) ? overrides[slot] : (typeof init === 'function' ? init() : init), (value) => changes.push({ slot, value })];
+	} };
+	const panelInstance = mod.factory((name) => name === 'react' ? react : undefined);
+	const registrations = [];
+	panelInstance.apply({ slots: { inject: (_slot, fn) => fn(), register: (opts, component) => registrations.push({ opts, component }) } });
+	const Panel = registrations.find((entry) => entry.opts.name === 'main').component;
+	return { nodes: elements(Panel({ initialView, __apiFixtures: fixtureMap })), changes };
+}
+const textOf = (node) => serialize(node?.props?.children);
+const clickByText = (nodes, text) => nodes.find((node) => node.type === 'button' && textOf(node) === text);
 // --- 候选公理层（2026-11-10 用户要求）----------------------------------------
 // 用户在道层要求：候选筛选标签 + 确认/删除按钮。候选**未生效**，
 // 所以必须与正式道分开呈现，否则分不清哪些已在参与判断。
@@ -268,9 +293,55 @@ const count = (s, needle) => s.split(needle).length - 1;
 		ok(count(candView, 'data-dmo="dao-confirm"') === 2, `每个候选都有确认按钮（${count(candView, 'data-dmo="dao-confirm"')}）`);
 		ok(count(candView, 'data-dmo="dao-reject"') === 2, `每个候选都有否决按钮（${count(candView, 'data-dmo="dao-reject"')}）`);
 		ok(count(candView, 'data-dmo="dao-delete"') === 2, `每个候选都有删除按钮（${count(candView, 'data-dmo="dao-delete"')}）`);
+		// 正式道的删除按钮（2026-11-10 用户要求：道里面也要增加删除按钮）。
+		// 关键结构：行本身是 <button>，删除按钮必须放在行外面——button 不能嵌 button。
+		const daoRows = serialize(FakeReact.createElement(ZL, {
+			zone: 'dao', rows: [{ name: '真道甲.md', bytes: 100, mtime: Date.now() }], sort: 'time', setSort: () => {}, filter: '', setFilter: () => {},
+			onOpen: () => {}, daoView: 'active', setDaoView: () => {}, candidates: [], candidateAction: () => {}, candBusy: '', actMsg: '',
+			onDeleteDao: () => {},
+		}));
+		ok(daoRows.includes('data-dmo="row"'), '正式道行本身可点开');
+		ok(count(daoRows, 'data-dmo="dao-del"') === 1, `正式道有删除按钮（${count(daoRows, 'data-dmo="dao-del"')}）`);
+		const fnRows = serialize(FakeReact.createElement(ZL, {
+			zone: 'functions', rows: [{ name: 'x.md', bytes: 10, mtime: Date.now() }], sort: 'time', setSort: () => {}, filter: '', setFilter: () => {},
+			onOpen: () => {}, daoView: 'active', setDaoView: () => {}, candidates: [], candidateAction: () => {}, candBusy: '', actMsg: '',
+			onDeleteDao: () => {},
+		}));
+		ok(count(fnRows, 'data-dmo="dao-del"') === 0, '非道层不出现道删除按钮');
 	} else {
 		ok(false, 'ZoneList 需要经 __internalsForTest 暴露（候选视图无法验证）');
 	}
+}
+
+// Candidate interaction, filtering and mutually exclusive empty/error states.
+{
+	const base = { zone: 'dao', rows: [], sort: 'time', setSort() {}, filter: '', setFilter() {}, onOpen() {}, daoView: 'candidates', setDaoView() {}, candidates: fixtures['/api/memory-org/axiom-candidates?v=0'].data.candidates, candidateAction() {}, candBusy: '', actMsg: '', onRetry() {} };
+	const opened = [];
+	const candidateNodes = elements(FakeReact.createElement(T.ZoneList, { ...base, onOpenCandidate: (name) => opened.push(name) }));
+	const openButtons = candidateNodes.filter((node) => node.type === 'button' && textOf(node) === '查看正文');
+	if (openButtons[1]?.props?.onClick) openButtons[1].props.onClick();
+	ok(opened.length === 1 && opened[0] === '测试候选乙', 'candidate body button opens the selected candidate');
+	const filtered = serialize(FakeReact.createElement(T.ZoneList, { ...base, filter: '被测者' }));
+	ok(filtered.includes('测试候选甲') && !filtered.includes('测试候选乙') && filtered.includes('1 项'), 'candidate filter searches proposition and updates displayed count');
+	const noMatch = serialize(FakeReact.createElement(T.ZoneList, { ...base, filter: '不存在' }));
+	ok(noMatch.includes('没有匹配的候选') && !noMatch.includes('道区还没有文件') && !noMatch.includes('没有待决策的候选公理'), 'candidate no-match shows only its own empty state');
+	const none = serialize(FakeReact.createElement(T.ZoneList, { ...base, candidates: [] }));
+	ok(none.includes('没有待决策的候选公理') && !none.includes('道区还没有文件'), 'empty candidates are not mistaken for an empty active dao list');
+	const err = serialize(FakeReact.createElement(T.ZoneList, { ...base, candidates: [], candidateState: { error: '候选断网', loading: false, data: null } }));
+	ok(err.includes('候选读取失败') && err.includes('候选断网') && !err.includes('没有待决策的候选公理'), 'candidate list error is visible and not presented as empty');
+}
+{
+	const candidateName = '测试候选甲';
+	const candidateUrl = `/api/memory-org/axiom-candidates?name=${encodeURIComponent(candidateName)}&v=0`;
+	const detailFixtures = { ...fixtures, [candidateUrl]: { data: { name: candidateName, text: '# 候选标题\n\n## 依据展开\n\n独有的候选正文。' }, loading: false, error: null } };
+	const detail = serialize(FakeReact.createElement(MemoryPanel, { __apiFixtures: detailFixtures, initialView: { kind: 'candidate', name: candidateName } }));
+	ok(detail.includes('独有的候选正文') && detail.includes('依据展开'), 'candidate detail renders body returned by the candidate API');
+	const errorFixtures = { ...fixtures, '/api/memory-org/list?zone=functions&v=0': { data: null, loading: false, error: '分区断网' } };
+	const view = serialize(FakeReact.createElement(MemoryPanel, { __apiFixtures: errorFixtures, initialView: { kind: 'zone', zone: 'functions' } }));
+	ok(view.includes('读取分区失败') && view.includes('分区断网') && !view.includes('功能区还没有文件'), 'zone list errors are visible rather than reported as empty');
+	const inboxFixtures = { ...fixtures, '/api/memory-org/inbox?v=0': { data: null, loading: false, error: '收件箱断网' } };
+	const inbox = serialize(FakeReact.createElement(MemoryPanel, { __apiFixtures: inboxFixtures, initialView: { kind: 'inbox' } }));
+	ok(inbox.includes('收件箱断网') && !inbox.includes('暂无问题'), 'inbox errors remain visible instead of claiming an empty inbox');
 }
 
 // --- overview ---------------------------------------------------------------
@@ -283,7 +354,7 @@ ok(count(overview, 'data-dmo="growth-card"') === 5, `overview shows all five zon
 ok(overview.includes('能力台账') && overview.includes('技能库'), 'the added capability/skill cards label their zones');
 ok(overview.includes('WARN 1') && overview.includes('冷记忆 1'), 'health chips carry the warning and the cold count');
 ok(overview.includes('[WARN] TEMP: functions/beta.md 冷记忆'), 'the health list renders every problem from overview.results');
-ok(overview.includes('2 功能 · 1 思想 · 0 能力 · 1 技能 · 2 日线索'), 'header summarises every zone');
+ok(overview.includes('2 功能 · 1 思想 · 0 道 · 0 能力 · 1 技能 · 2 日线索'), 'header summarises every zone');
 // Consensus + environment constants (5.28.0): the two prose blocks of MEMORY.md
 // that the index tables do not carry are surfaced on the overview.
 ok(overview.includes('共识与环境常量') && overview.includes('跨功能共识 / 规范') && overview.includes('环境常量（易忘）'), 'the overview surfaces consensus and env constants');
@@ -339,6 +410,13 @@ ok(dailyList.indexOf('2026-10') < dailyList.indexOf('2026-09'), 'months run newe
 // without a live useState — exactly why the panel test can assert both halves.
 // 5.20.0: the payload is a STORAGE scan — rows carry their file lists, the
 // detail view renders SKILL.md plus a clickable file tree (scripts/...).
+// Action feedback must be additive: both success and failure keep rows visible.
+if (T.SkillLibrary) {
+	for (const message of ['已启用', '操作失败：网络错误']) {
+		const feedback = serialize(FakeReact.createElement(T.SkillLibrary, { data: fixtures['/api/memory-org/skills?v=0'].data, loading: false, error: null, tab: 'memory', onTab() {}, onOpenMemory() {}, onOpenHost() {}, onToggle() {}, onDelete() {}, actMsg: message, toggleBusy: '', filter: '', setFilter() {} }));
+		ok(feedback.includes(message) && feedback.includes('detached-restart') && feedback.includes('draft-skill'), `skill action feedback keeps the library visible: ${message}`);
+	}
+} else ok(false, 'SkillLibrary is exposed through __internalsForTest for action-feedback regression');
 const skillMem = render({ kind: 'zone', zone: 'skills', tab: 'memory' });
 ok(count(skillMem, 'data-dmo="skill-tab"') === 2, 'the library offers two toggle tabs');
 ok(skillMem.includes('结晶技能 2') && skillMem.includes('系统技能 1'), 'tabs carry per-side counts');
@@ -620,7 +698,21 @@ ok(searchView.includes('相关命中'), 'search hits render the API snippet text
 ok(searchView.includes('dmo-mark') && searchView.includes('冷记忆'), 'the query is highlighted inside the snippet');
 ok(searchView.includes('今日待观察'), 'search hits show their section heading');
 ok(searchView.includes('第 3 行'), 'search hits show the line number');
-ok(count(searchView, 'data-dmo="search-zone"') === 7, `search offers a zone filter (${count(searchView, 'data-dmo="search-zone"')} chips)`);
+ok(count(searchView, 'data-dmo="search-zone"') === 8, `search includes all eight zone filters (${count(searchView, 'data-dmo="search-zone"')} chips)`);
+{
+	const selected = [];
+	const pane = elements(FakeReact.createElement(T.SearchPane, { res: { data: { hits: [] }, loading: false, error: null }, q: '测试', zone: 'all', setZone: (z) => selected.push(z), onOpen() {} }));
+	clickByText(pane, '道')?.props?.onClick?.();
+	ok(selected.length === 1 && selected[0] === 'dao', 'clicking 道 sends the dao filter key');
+}
+{
+	const searchFixtures = { ...fixtures, '/api/memory-org/search?q=%E6%8A%80%E8%83%BD': { data: { hits: [{ zone: 'skills', name: 'detached-restart/SKILL.md', line: 2, snippet: '技能' }] }, loading: false, error: null } };
+	const { nodes, changes } = panelWithState({ kind: 'overview' }, searchFixtures, { 3: '技能', 4: '技能' });
+	const hit = nodes.find((node) => node.type === 'button' && node.props?.['data-dmo'] === 'row' && textOf(node).includes('detached-restart'));
+	hit?.props?.onClick?.();
+	const nav = changes.find((c) => c.slot === 0)?.value;
+	ok(nav?.kind === 'bundle' && nav?.name === 'detached-restart', 'opening a skill search result navigates to its bundle');
+}
 ok(searchView.includes('技能'), 'the search zone chips include the skills zone');
 ok(searchView.includes('dmo-chip btn active'), 'the active zone chip is marked');
 // a filtered empty result explains itself instead of looking broken

@@ -18,8 +18,8 @@
  * 3. **门槛值**：术块 900 / 概括 110 / 法 ≥2 / 道 ≥5 —— 从 constants 与
  *    layer-gate 里读，与 README 比对
  * 4. **内置信号数**：dispatch.js 里实际注册的信号数
- * 5. **测试规模**：文件数与用例数从测试目录数，与 README 比对
- * 6. **代码规模**：代码行数从源码数，与 README 比对
+ * 5. **测试规模**：从测试目录数；README 写了数字时比对，未写则仅展示
+ * 6. **代码规模**：从源码数；README 写了数字时比对，未写则仅展示
  *
  * @module scripts/verify-readme.mjs
  */
@@ -72,9 +72,17 @@ for (const [pkg, file, re] of toolSpecs) {
 console.log(`  · ${toolSpecs.length} 包共 ${toolTotal} 个工具，逐个出处见各包 README`);
 
 // ---------------------------------------------------------------------------
-console.log('\n--- 2. 判据数（memory_check 实际检查的）---');
+console.log('\n--- 2. 判据数（memory_check 与联邦检查）---');
 const mm = read(join(pkgs, 'dsh-memory-manager', 'server.js'));
-const codes = [...new Set([...mm.matchAll(/add\(\s*'(?:WARN|FAIL|INFO)'\s*,\s*'([^']+)'/g)].map((m) => m[1]))];
+const healthStart = mm.indexOf('async function checkLinks(');
+const healthEnd = mm.indexOf('function panelizeHealth(', healthStart);
+ok(healthStart >= 0 && healthEnd > healthStart, '体检与共享检查函数范围可定位');
+const healthSource = healthStart >= 0 && healthEnd > healthStart ? mm.slice(healthStart, healthEnd) : '';
+const federationStart = mm.indexOf('function memoryFederationTool(');
+const federationEnd = mm.indexOf('function memoryCapabilityTool(', federationStart);
+ok(federationStart >= 0 && federationEnd > federationStart, '联邦检查函数范围可定位');
+const federationSource = federationStart >= 0 && federationEnd > federationStart ? mm.slice(federationStart, federationEnd) : '';
+const codes = [...new Set([...(healthSource + federationSource).matchAll(/add\(\s*'(?:WARN|FAIL|INFO)'\s*,\s*'([^']+)'/g)].map((m) => m[1]))];
 const claimedCriteria = Number(/### memory-manager · (\d+) 条/.exec(readme)?.[1] ?? -1);
 ok(claimedCriteria === codes.length, `README 声称 ${claimedCriteria} 条判据 = 实际 ${codes.length}`);
 // 每个代号都要在判据总表里出现
@@ -134,14 +142,10 @@ const am = countTests('dsh-agent-mind', 'test');
 const mmT = countTests('dsh-memory-manager', 'tests');
 const amRow = /`dsh-agent-mind` \| (\d+) \| (\d+)/.exec(readme);
 const mmRow = /`dsh-memory-manager` \| (\d+) \| (\d+)/.exec(readme);
-ok(
-	Number(amRow?.[1]) === am.files && Number(amRow?.[2]) === am.cases,
-	`agent-mind 测试规模 ${am.files}/${am.cases} 与 README 一致`,
-);
-ok(
-	Number(mmRow?.[1]) === mmT.files && Number(mmRow?.[2]) === mmT.cases,
-	`memory 测试规模 ${mmT.files}/${mmT.cases} 与 README 一致`,
-);
+if (amRow) ok(Number(amRow[1]) === am.files && Number(amRow[2]) === am.cases, `agent-mind 静态测试规模声明与源码一致`);
+else console.log(`  · README 未声明 agent-mind 静态测试规模（源码扫描 ${am.files} 文件/${am.cases} 个显式用例，仅供参考）`);
+if (mmRow) ok(Number(mmRow[1]) === mmT.files && Number(mmRow[2]) === mmT.cases, `memory 静态测试规模声明与源码一致`);
+else console.log(`  · README 未声明 memory 静态测试规模（源码扫描 ${mmT.files} 文件/${mmT.cases} 个显式用例，仅供参考）`);
 
 // ---------------------------------------------------------------------------
 console.log('\n--- 6. 代码规模 ---');
@@ -178,7 +182,8 @@ const LINES = {
 for (const [pkg, files] of Object.entries(LINES)) {
 	const r = countLines(pkg, files);
 	const row = new RegExp(`\`${pkg}\` \\| \\d+ 文件? / (\\d+) 行`).exec(readme);
-	ok(Number(row?.[1]) === r.n, `${pkg} 代码行数 ${r.n} 与 README 一致`);
+	if (row) ok(Number(row[1]) === r.n, `${pkg} 静态行数声明与源码一致`);
+	else console.log(`  · README 未声明 ${pkg} 静态行数（指定文件扫描 ${r.okCount} 文件/${r.n} 行，仅供参考）`);
 }
 
 console.log(failures === 0 ? '\nverify-readme: ALL PASS' : `\nverify-readme: ${failures} FAILED`);

@@ -4,8 +4,8 @@ import {
   classifyProblem,
   inject,
   name
-} from "./chunk-2HMO3QIV.js";
-import "./chunk-DC3YUXV4.js";
+} from "./chunk-BQ5VQ24B.js";
+import "./chunk-I67UV77L.js";
 export {
   ClassifierService,
   apply,

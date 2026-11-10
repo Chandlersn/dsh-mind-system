@@ -2,10 +2,11 @@
  * Small shared helpers: dates, atomic file writes, slugs, iteration-block
  * parsing and memory-root resolution. No Host dependency.
  */
-import { readFile, writeFile, rename, unlink, mkdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, rename, unlink, mkdir, stat, lstat, realpath } from 'node:fs/promises';
 import * as path from 'node:path';
 import { homedir } from 'node:os';
 import { Buffer } from 'node:buffer';
+import { randomUUID } from 'node:crypto';
 import { redactSecrets } from './secrets.js';
 
 const pad2 = (n) => String(n).padStart(2, '0');
@@ -52,64 +53,232 @@ export async function readIfExists(p) {
  * path's tail settles, so it never grows unbounded.
  */
 const pathTails = new Map();
-export function withPathLock(p, fn) {
-	const key = path.resolve(p);
-	const prev = pathTails.get(key) ?? Promise.resolve();
+function enqueuePath(tails, key, fn) {
+	const prev = tails.get(key) ?? Promise.resolve();
 	// The next writer queues behind THIS one whether or not this one rejects.
 	const run = prev.then(fn, fn);
 	// Keep the tail alive for a follower, then drop the entry once settled.
-	pathTails.set(key, run);
+	tails.set(key, run);
 	run.then(
 		() => {
-			if (pathTails.get(key) === run) pathTails.delete(key);
+			if (tails.get(key) === run) tails.delete(key);
 		},
 		() => {
-			if (pathTails.get(key) === run) pathTails.delete(key);
+			if (tails.get(key) === run) tails.delete(key);
 		},
 	);
 	return run;
+}
+export function withPathLock(p, fn) {
+	return enqueuePath(pathTails, path.resolve(p), fn);
+}
+
+// Separate from pathTails: callers may hold withPathLock across their entire
+// read-modify-write and then call writeText. Reusing that queue would deadlock.
+// This queue protects only each write's rename + ledger append, within one process.
+const writeCommitTails = new Map();
+export async function withWriteCommitLock(p, fn) {
+	// Resolve the parent, not the final leaf: rename replaces the directory entry
+	// (which itself could be a symlink). This joins directory aliases to one queue.
+	const parent = await realpath(path.dirname(path.resolve(p)));
+	let key = path.join(parent, path.basename(p));
+	if (process.platform === 'win32') key = key.toLowerCase();
+	return enqueuePath(writeCommitTails, key, fn);
 }
 
 /**
  * Write text atomically: a crash or a reader can never observe a partial file.
  * `rename` replaces the destination in one step (Node uses MOVEFILE_REPLACE_
- * EXISTING on Windows); a short retry covers transient locks from readers or
- * antivirus scanning the destination.
+ * EXISTING on Windows). If the call fails, the replacement outcome is unknown;
+ * callers must inspect disk and ledger instead of blindly repeating it.
  *
  * MEMORY DEFENCE: every markdown write funnels through here, so tier-1
  * credentials are redacted at the choke point. (The .usage.jsonl ledger is the
  * ONE writer that appends directly — it redacts its note inside usage.js;
  * appendUsage is not a markdown write and keeps O(1) append semantics.)
  * The returned `{ hits }` lets callers surface what changed in the tool receipt;
- * callers that ignore the return value keep working.
+ * callers that ignore the return value keep working. Callers using a configured
+ * memory root must pass `{ memoryRoot: root }`; otherwise only the default root
+ * is considered for the write ledger. For a tracked target, a ledger failure
+ * after replacement throws MEMORY_LEDGER_APPEND_FAILED with fileWritten=true:
+ * the operation is partially complete, and blindly retrying can duplicate work.
  */
-export async function writeText(p, content) {
+export async function writeText(p, content, options = {}) {
+	if (options?.memoryRoot !== undefined && (typeof options.memoryRoot !== 'string' || !options.memoryRoot.trim())) {
+		throw new TypeError('memoryRoot must be a non-empty path');
+	}
 	const { text, hits } = redactSecrets(content);
 	await mkdir(path.dirname(p), { recursive: true });
-	// tmp name carries pid + ms + a RANDOM suffix: same-process writes to the
-	// same target in the same millisecond would otherwise share a tmp file and
-	// one rename steals the other's bytes.
-	const tmp = `${p}.tmp-${process.pid.toString(36)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+	// Exclusive creation prevents collisions and existing links from being opened.
+	const tmp = `${p}.tmp-${randomUUID()}`;
+	let staged = false;
 	try {
-		await writeFile(tmp, text, 'utf8');
-		for (let attempt = 0; ; attempt++) {
+		try {
+			await writeFile(tmp, text, { encoding: 'utf8', flag: 'wx' });
+			staged = true;
+		} catch (cause) {
+			// A failed acknowledgement may mean a partially written stage exists,
+			// or that the path already belonged to someone else. Do not unlink it.
+			throw new MemoryStageOutcomeUnknown(tmp, cause);
+		}
+		return await withWriteCommitLock(p, async () => {
+			// A pending delete must remain the last ledger event until it is resolved.
+			// Check before replacing the directory entry under the same commit lock.
+			await checkTrackedWriteIntent(p, options?.memoryRoot);
 			try {
 				await rename(tmp, p);
-				return { hits };
-			} catch (err) {
-				if (attempt >= 3) throw err;
-				await new Promise((r) => setTimeout(r, 20 * (attempt + 1)));
+			} catch (cause) {
+				// A failed acknowledgement does not establish whether the OS
+				// replaced the target. A retry could repeat a committed operation.
+				throw new MemoryWriteCommitUnknown(p, cause);
 			}
-		}
+			// Keep the lock until the redacted contents have been recorded. Without
+			// this, another rename can win before this write appends its older hash.
+			// The lock cannot make file + ledger a crash-safe transaction or stop
+			// other processes. Report an append failure as a partial write.
+			await recordTrackedWrite(p, text, options?.memoryRoot);
+			return { hits };
+		});
 	} catch (err) {
-		try {
-			await unlink(tmp);
-		} catch {
-			/* tmp already gone */
+		if (staged) {
+			try {
+				await unlink(tmp);
+			} catch {
+				/* tmp may already have been renamed */
+			}
 		}
 		throw err;
 	}
 }
+
+/** Refuse tracked replacements if their ledger is unknown or deletion is pending. */
+async function checkTrackedWriteIntent(absPath, memoryRoot) {
+	const { isTracked, ledgerKey, readLedger, LEDGER_REL } = await import('./write-ledger.js');
+	const configuredRoot = memoryRoot === undefined ? resolveRoot({}) : path.resolve(memoryRoot);
+	const logicalKey = ledgerKey(configuredRoot, path.resolve(absPath));
+	let root;
+	try {
+		root = await realpath(configuredRoot);
+	} catch (cause) {
+		// Unrelated paths still work when the default memory root does not exist.
+		// A logically tracked path must not be replaced when its root is unknown.
+		const logicalParts = logicalKey.split('/');
+		const logicalTracked = isTracked(logicalKey) || (process.platform === 'win32' && logicalParts.length > 1 && isTracked([logicalParts[0].toLowerCase(), ...logicalParts.slice(1)].join('/')));
+		if (logicalTracked) throw new Error(`记忆根无法解析，未写入 ${logicalKey}`, { cause });
+		return;
+	}
+	// rename replaces the leaf itself, even when that leaf is a symbolic link.
+	// Resolve the directory instead, just as withWriteCommitLock does.
+	const parent = await realpath(path.dirname(path.resolve(absPath)));
+	const key = ledgerKey(root, path.join(parent, path.basename(absPath)));
+	if (!isTracked(key)) {
+		// Windows compares directory names case-insensitively, whereas isTracked
+		// and ledger keys are case-sensitive. Never silently bypass an aliased
+		// tracked zone that the recorder cannot represent consistently.
+		const parts = key.split('/');
+		if (process.platform === 'win32' && parts.length > 1 && isTracked([parts[0].toLowerCase(), ...parts.slice(1)].join('/'))) {
+			throw new Error(`受管目录大小写无法与账本口径一致，未写入 ${key}`);
+		}
+		return;
+	}
+	let ledger = await readLedger(root);
+	// readLedger treats ENOENT as an absent ledger, but a dangling ledger
+	// symlink also reads as ENOENT and is not evidence of an empty history.
+	if (ledger instanceof Map && ledger.size === 0) {
+		const ledgerPath = path.join(root, LEDGER_REL);
+		try {
+			const entry = await lstat(ledgerPath);
+			if (entry.isSymbolicLink()) {
+				try { await stat(ledgerPath); } catch { ledger = undefined; }
+			}
+		} catch (err) {
+			if (err?.code !== 'ENOENT') ledger = undefined;
+		}
+	}
+	if (ledger === undefined) {
+		const err = new Error(`写入账本不可读或损坏，未写入 ${key}`);
+		err.code = 'MEMORY_LEDGER_UNREADABLE';
+		err.fileWritten = false;
+		throw err;
+	}
+	const pending = process.platform === 'win32'
+		? [...ledger].some(([recorded, entry]) => recorded.toLowerCase() === key.toLowerCase() && entry.op === 'delete_intent')
+		: ledger.get(key)?.op === 'delete_intent';
+	if (pending) {
+		const err = new Error(`${key} 存在未完成删除意图，未写入；请先核对并处理该意图`);
+		err.code = 'MEMORY_DELETE_INTENT_PENDING';
+		err.fileWritten = false;
+		throw err;
+	}
+}
+
+/** A failed stage write may have created bytes or encountered an existing path. */
+export class MemoryStageOutcomeUnknown extends Error {
+	constructor(stagingPath, cause) {
+		super(`暂存文件创建或写入结果未知：${stagingPath}；目标尚未替换，请先核对暂存路径，不要盲目删除或重试。${cause ? ` 原因：${redactSecrets(String(cause.message ?? cause)).text}` : ''}`, cause ? { cause } : undefined);
+		this.name = 'MemoryStageOutcomeUnknown';
+		this.code = 'MEMORY_STAGE_OUTCOME_UNKNOWN';
+		this.fileWritten = false;
+		this.stagingPath = path.resolve(stagingPath);
+	}
+}
+
+/** Replacement may have happened even though the rename acknowledgement failed. */
+export class MemoryWriteCommitUnknown extends Error {
+	constructor(filePath, cause) {
+		super(`文件提交结果未知：${filePath}；请先核对目标文件与账本，不要盲目重试。${cause ? ` 原因：${redactSecrets(String(cause.message ?? cause)).text}` : ''}`, cause ? { cause } : undefined);
+		this.name = 'MemoryWriteCommitUnknown';
+		this.code = 'MEMORY_WRITE_COMMIT_UNKNOWN';
+		this.fileWritten = null;
+		this.ledgerStatus = 'unknown';
+		this.path = path.resolve(filePath);
+	}
+}
+
+/** A file replacement succeeded but its required ledger record did not. */
+export class MemoryLedgerAppendError extends Error {
+	constructor(filePath, key, cause) {
+		super(`文件已写入，但写入账本未能确认追加：${filePath}。请先核对文件和账本，不要盲目重试。`, cause ? { cause } : undefined);
+		this.name = 'MemoryLedgerAppendError';
+		this.code = 'MEMORY_LEDGER_APPEND_FAILED';
+		this.fileWritten = true;
+		// appendFile can fail after a partial or complete append; do not claim
+		// the record is certainly absent merely because the call failed.
+		this.ledgerRecorded = null;
+		this.ledgerStatus = 'unknown';
+		this.path = path.resolve(filePath);
+		this.key = key;
+	}
+}
+
+/** Record tracked targets only; do not silently hide a post-commit failure. */
+async function recordTrackedWrite(absPath, text, memoryRoot) {
+	const { recordWrite, isTracked, ledgerKey, contentHash } = await import('./write-ledger.js');
+	const configuredRoot = memoryRoot === undefined ? resolveRoot({}) : path.resolve(memoryRoot);
+	const logicalKey = ledgerKey(configuredRoot, path.resolve(absPath));
+	let root;
+	let target;
+	try {
+		[root, target] = await Promise.all([realpath(configuredRoot), realpath(absPath)]);
+	} catch (err) {
+		// A missing default root must not turn an unrelated write into an error.
+		// For a target under a tracked logical path, missing resolution means the
+		// record cannot be confirmed after the file replacement.
+		if (isTracked(logicalKey)) throw new MemoryLedgerAppendError(absPath, logicalKey, err);
+		return;
+	}
+	const key = ledgerKey(root, target);
+	if (!isTracked(key)) return;
+	try {
+		const recorded = await recordWrite(root, { key, hash: contentHash(text), tool: 'memory-manager', bytes: byteLenLocal(text) });
+		if (!recorded) throw new MemoryLedgerAppendError(absPath, key);
+	} catch (err) {
+		if (err instanceof MemoryLedgerAppendError) throw err;
+		throw new MemoryLedgerAppendError(absPath, key, err);
+	}
+}
+
+const byteLenLocal = (s) => Buffer.byteLength(String(s ?? ''), 'utf8');
 
 export async function statExists(p) {
 	try {

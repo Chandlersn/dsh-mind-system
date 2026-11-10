@@ -19,7 +19,7 @@
  *
  * @module dsh-memory-manager
  */
-import { readFile, writeFile, rename, unlink, rm, mkdir, readdir, stat, appendFile } from 'node:fs/promises';
+import { readFile, writeFile, rename, link, unlink, rm, mkdir, readdir, stat, lstat, realpath } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
@@ -27,6 +27,8 @@ import * as path from 'node:path';
 import { homedir } from 'node:os';
 import { Buffer } from 'node:buffer';
 import { createRequire } from 'node:module';
+import { createHash, randomUUID } from 'node:crypto';
+import { recordDeleteEvent, recordWrite, readLedger, ledgerKey, isTracked, contentHash } from './src/write-ledger.js';
 // ---------------------------------------------------------------------------
 // shared layers — the plugin is a folder, not one 3.5k-line file
 // ---------------------------------------------------------------------------
@@ -38,7 +40,7 @@ import { createRequire } from 'node:module';
 //   host.js      — DSH install discovery and lazy Host binding
 import {
 	localDateStr, normDate, oneLine, charLen, readIfExists, writeText, statExists, safeSlug,
-	splitIterationBlocks, dshHome, joinDshHome, resolveRoot, appendBlock, countHeadingDate, withPathLock,
+	splitIterationBlocks, dshHome, joinDshHome, resolveRoot, appendBlock, countHeadingDate, withPathLock, withWriteCommitLock, MemoryWriteCommitUnknown, MemoryLedgerAppendError, MemoryStageOutcomeUnknown,
 } from './src/util.js';
 import { usagePath, appendUsage, readUsage, summarizeUsage, insightTrust, trustLineFor, refreshTrustLine, canonicalHref } from './src/usage.js';
 import {
@@ -47,7 +49,9 @@ import {
 	dropIndexRow, rowSlug,
 } from './src/markdown.js';
 import { selfReload, isReloading } from './src/reload.js';
-import { tokensOf, matchIndexRows, buildRecallMessage, skillNameOf, archiveBlocks } from './src/recall.js';
+import { createWriteGuard } from './src/write-guard.js';
+import { withMemoryRootTransaction } from './src/root-transaction.js';
+import { tokensOf, matchIndexRows, buildRecallMessage, buildBudgetedRecall, skillNameOf, archiveBlocks, eligibleIndexRows, RECALL_BUDGET_TOKENS } from './src/recall.js';
 import { redactSecrets, scanSecrets } from './src/secrets.js';
 import { gateDao, gateFa, concreteMarkersOf, MIN_DAO_SOURCES, MAX_DAO_ENTRIES, daoSourceSlugs, daoReservedHeadingCollisions } from './src/layer-gate.js';
 // 层级自检（2026-11-02 用户要求）：落盘后回读产物，按该层自己的定义核一遍。
@@ -59,6 +63,139 @@ import { AXIOM_CANDIDATE_STATES, confirmAxiomCandidate, rejectAxiomCandidate, de
 // 阀门桥（2026-11-09）：对 dsh-valves 的可选依赖——负向规则召回注入 + 上行评估留痕。
 // 缺 valves 时全部返回 undefined，既有行为一分不变（N4 降级）。
 import { relevantNegativeRules, recordUpwardWrite, upwardEntryFromWrite } from './src/valves-bridge.js';
+
+// Keep unlink and its intent/completion records ordered with writeText commits in
+// this process. Disk and ledger remain separate writes: incomplete intent is
+// surfaced by R26, never treated as a completed deletion.
+export async function deleteTrackedFile(root, file, expectedText, { tool, to, writeEvent = recordDeleteEvent } = {}) {
+	const key = ledgerKey(root, file);
+	if (!isTracked(key)) throw new Error(`拒绝登记无效删除路径：${key}`);
+	return withWriteCommitLock(file, async () => {
+		const before = await readLedger(root);
+		if (before === undefined) throw new Error(`账本不可读或损坏，未删除 ${key}`);
+		if (before.get(key)?.op === 'delete_intent') throw new Error(`先前删除未完成，未删除 ${key}`);
+		const current = await readFile(file, 'utf8');
+		if (current !== expectedText) throw new Error(`${key} 在操作期间发生变化，未删除；目标可能已经写入`);
+		const id = randomUUID();
+		const event = { key, id, tool, ...(to ? { to } : {}) };
+		let intentConfirmed = false;
+		try { intentConfirmed = await writeEvent(root, { ...event, op: 'delete_intent' }); } catch { /* outcome remains unknown */ }
+		if (!intentConfirmed) {
+			const err = new Error(`删除尚未执行，但 ${key} 的删除意图记账结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+			err.code = 'MEMORY_DELETE_INTENT_UNKNOWN'; err.intentId = id; err.deleteStatus = 'not_started'; err.ledgerStatus = 'unknown';
+			throw err;
+		}
+		let currentAfterIntent;
+		try { currentAfterIntent = await readFile(file, 'utf8'); }
+		catch (cause) { throw new Error(`${key} 已记录删除意图 ${id}，删除尚未执行；请先核对文件和账本，不要盲目重试。`, { cause }); }
+		if (currentAfterIntent !== expectedText) throw new Error(`${key} 在记录意图期间发生变化，未删除；账本保留未完成意图`);
+		try { await unlink(file); } catch (cause) {
+			const err = new Error(`${key} 删除结果未知，文件可能已删除；账本保留未完成意图 ${id}。请先核对文件和账本，不要盲目重试。`, { cause });
+			err.code = 'MEMORY_DELETE_OUTCOME_UNKNOWN'; err.intentId = id; err.deleteStatus = 'unknown'; err.ledgerStatus = 'pending';
+			throw err;
+		}
+		let completionConfirmed = false;
+		try { completionConfirmed = await writeEvent(root, { ...event, op: 'delete' }); } catch { /* acknowledgement may be lost */ }
+		if (!completionConfirmed) {
+			const err = new Error(`${key} 已删除，但完成事件记账结果未知（意图 ${id}）；请先核对账本，不要盲目重试。`);
+			err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'deleted'; err.ledgerStatus = 'unknown';
+			throw err;
+		}
+		const after = await readLedger(root);
+		if (after?.get(key)?.op !== 'delete' || after.get(key).id !== id) throw new Error(`${key} 已删除，但账本出现并发或损坏，状态未知`);
+	});
+}
+
+export async function writeRenameTarget(root, file, expected, text) {
+	const key = ledgerKey(root, file);
+	const redacted = redactSecrets(text).text;
+	const tmp = `${file}.rename-${randomUUID()}.tmp`;
+	try { await writeFile(tmp, redacted, { encoding: 'utf8', flag: 'wx' }); }
+	catch (cause) { throw new MemoryStageOutcomeUnknown(tmp, cause); }
+	try {
+		return await withWriteCommitLock(file, async () => {
+			const ledger = await readLedger(root);
+			if (ledger === undefined || ledger.get(key)?.op === 'delete_intent') throw new Error('账本不可读、损坏或目标有未完成删除，未写入目标');
+			let current;
+			try { current = await readFile(file, 'utf8'); } catch (err) { if (err?.code !== 'ENOENT') throw err; }
+			if (current !== expected) throw new Error(`${key} 在操作期间发生变化，未覆盖；源文件尚未删除`);
+			try { await rename(tmp, file); }
+			catch (cause) { throw new MemoryWriteCommitUnknown(file, cause); }
+			try {
+				if (!(await recordWrite(root, { key, hash: contentHash(redacted), tool: 'memory_rename' }))) throw new MemoryLedgerAppendError(file, key);
+			} catch (cause) {
+				if (cause instanceof MemoryLedgerAppendError) throw cause;
+				throw new MemoryLedgerAppendError(file, key, cause);
+			}
+		});
+	} finally { await unlink(tmp).catch(() => {}); }
+}
+
+// A panel archive or promotion has already been committed before source deletion.
+async function deleteAfterPanelCopy(root, file, text, options) {
+	try { return await deleteTrackedFile(root, file, text, options); }
+	catch (cause) {
+		const err = new Error(`目标 ${options.to} 已写入；${cause?.message ?? String(cause)}`, { cause });
+		for (const key of ['code', 'intentId', 'deleteStatus', 'ledgerStatus']) if (cause?.[key] !== undefined) err[key] = cause[key];
+		throw err;
+	}
+}
+
+// Panel-created archives previously bypassed the write ledger. Keep exclusive
+// creation semantics when requested and report a failed append after disk write.
+async function writeTrackedPanelFile(root, file, text, { exclusive = false, tool } = {}) {
+	const key = ledgerKey(root, file);
+	if (!isTracked(key)) throw new Error(`拒绝登记无效写入路径：${key}`);
+	return withWriteCommitLock(file, async () => {
+		const ledger = await readLedger(root);
+		if (ledger === undefined || ledger.get(key)?.op === 'delete_intent') throw new Error(`账本不可读、损坏或目标有未完成删除，未写入 ${key}`);
+		if (exclusive && await statExists(file)) {
+			const error = new Error(`目标已存在，未写入 ${key}`); error.code = 'EEXIST'; throw error;
+		}
+		// Stage the entire body beside the destination. link() commits without
+		// overwriting an existing archive; a partial stage is never visible there.
+		const tmp = `${file}.stage-${randomUUID()}.tmp`;
+		let failure;
+		let staged = false;
+		let committed = false;
+		try {
+			try { await writeFile(tmp, text, { encoding: 'utf8', flag: 'wx' }); staged = true; }
+			catch (cause) {
+				const err = new Error(`目标 ${key} 尚未提交、源文件尚未删除；临时文件写入失败且可能残留，请先核对后处理。`, { cause });
+				err.code = 'MEMORY_PANEL_STAGING_FAILED'; err.fileWritten = false; err.ledgerStatus = 'not_attempted'; err.cleanupStatus = 'unknown';
+				throw err;
+			}
+			try {
+				if (exclusive) await link(tmp, file);
+				else await rename(tmp, file);
+				committed = true;
+			} catch (cause) { throw new MemoryWriteCommitUnknown(file, cause); }
+			try {
+				if (!(await recordWrite(root, { key, hash: contentHash(text), tool }))) throw new MemoryLedgerAppendError(file, key);
+			} catch (cause) {
+				if (cause instanceof MemoryLedgerAppendError) throw cause;
+				throw new MemoryLedgerAppendError(file, key, cause);
+			}
+		} catch (err) { failure = err; }
+		// Until exclusive creation is acknowledged the path may be somebody
+		// else's pre-existing file, so never unlink it on that failure path.
+		try { if (staged) await unlink(tmp); }
+		catch (cause) {
+			// A successful rename consumes its source; all other cleanup failures
+			// may leave a link to the target and must not be reported as success.
+			if (!(cause?.code === 'ENOENT' && committed && !exclusive)) {
+				if (failure) {
+					failure.message += ` 暂存文件清理结果未知（${tmp}）；请核对，不要盲目重试。`;
+					failure.cleanupStatus = 'unknown';
+				} else {
+					failure = new Error(`目标已提交并记账（${key}），但暂存文件清理结果未知（${tmp}）；源文件尚未删除，请先核对，不要盲目重试。`, { cause });
+					failure.code = 'MEMORY_PANEL_CLEANUP_UNKNOWN'; failure.fileWritten = true; failure.ledgerStatus = 'recorded'; failure.cleanupStatus = 'unknown';
+				}
+			}
+		}
+		if (failure) throw failure;
+	});
+}
 
 /**
  * 层级自检结果的输出形状（2026-11-02）。
@@ -273,9 +410,16 @@ const DATE_TAG = /^##\s*\[(\d{4})-(\d{2})-(\d{2})/gm;
 // shared health check (memory_check tool + panel API)
 // ---------------------------------------------------------------------------
 
+// Keep producer-only identities outside returned objects. Even non-enumerable
+// own properties make a host tool result non-lossless JSON and are rejected.
+const healthIssueIdentities = new WeakMap();
 async function runHealthCheck(root, opts) {
 	const results = [];
-	const add = (level, rule, message) => results.push({ level, rule, message });
+	const add = (level, rule, message, identity) => {
+		const finding = { level, rule, message };
+		if (identity) healthIssueIdentities.set(finding, identity);
+		results.push(finding);
+	};
 
 	const memPath = path.join(root, 'MEMORY.md');
 	const memText = await readIfExists(memPath);
@@ -284,8 +428,8 @@ async function runHealthCheck(root, opts) {
 		return { root, results, warnCount: 0, failCount: 1 };
 	}
 	const memSize = byteLen(memText);
-	if (memSize > opts.maxIndexHardBytes) add('FAIL', 'R5', `MEMORY.md ${memSize}B > 硬上限 ${opts.maxIndexHardBytes}B`);
-	else if (memSize > opts.maxIndexBytes) add('WARN', 'R5', `MEMORY.md ${memSize}B > 舒适线 ${opts.maxIndexBytes}B`);
+	if (memSize > opts.maxIndexHardBytes) add('FAIL', 'R5', `MEMORY.md ${memSize}B > 硬上限 ${opts.maxIndexHardBytes}B`, { subtype: 'index-size', subject: 'MEMORY.md' });
+	else if (memSize > opts.maxIndexBytes) add('WARN', 'R5', `MEMORY.md ${memSize}B > 舒适线 ${opts.maxIndexBytes}B`, { subtype: 'index-size', subject: 'MEMORY.md' });
 
 	let emptySummary = 0;
 	const longRows = [];
@@ -572,7 +716,7 @@ async function runHealthCheck(root, opts) {
 					const head = `${mHead[1]}${mHead[2]}${mHead[3]}`;
 					const newest = dates[dates.length - 1];
 					if (head < newest) {
-						add('WARN', 'R3', `functions/${f} 头部状态摘要截至 ${mHead.slice(1).join('-')} 早于最新迭代块 ${newest.slice(0, 4)}-${newest.slice(4, 6)}-${newest.slice(6)}：追加迭代须成对刷新头部摘要`);
+						add('WARN', 'R3', `functions/${f} 头部状态摘要截至 ${mHead.slice(1).join('-')} 早于最新迭代块 ${newest.slice(0, 4)}-${newest.slice(4, 6)}-${newest.slice(6)}：追加迭代须成对刷新头部摘要`, { subtype: 'summary-stale', subject: `functions/${f}` });
 					}
 				} else if (!mHead && dates.length) {
 					add('WARN', 'R3', `functions/${f} 缺少「当前状态摘要（截至 YYYY-MM-DD）」头部摘要`);
@@ -1038,6 +1182,148 @@ async function runHealthCheck(root, opts) {
 		}
 	} catch {
 		/* R24 是增强检查，绝不因它失败而中断体检 */
+	}
+
+	// R26：递归核对受管层，未读到的路径为未知，不能推断写入者。
+	try {
+		const { readLedger, auditBatch, isTracked } = await import('./src/write-ledger.js');
+		const ledger = await readLedger(root);
+		const files = [];
+		const unknown = new Set();
+		const zones = ['functions', 'insights', 'dao', 'capabilities', 'daily'];
+		const scan = async (key, optionalRoot = false) => {
+			let entries;
+			try {
+				entries = await readdir(path.join(root, ...key.split('/')), { withFileTypes: true });
+			} catch (err) {
+				if (optionalRoot && err?.code === 'ENOENT') return;
+				unknown.add(key);
+				add('WARN', 'R26', `${key} 扫描失败（${err?.code ?? 'unknown'}），该范围的状态未知`);
+				return;
+			}
+			for (const entry of entries) {
+				const child = `${key}/${entry.name}`;
+				if (entry.isSymbolicLink()) {
+					unknown.add(child);
+					add('WARN', 'R26', `${child} 是符号链接，未遍历或对账，该范围的状态未知`);
+				} else if (entry.isDirectory()) {
+					await scan(child);
+				} else if (entry.isFile() && /\.md$/i.test(entry.name) && isTracked(child)) {
+					try {
+						files.push({ key: child, text: await readFile(path.join(root, ...child.split('/')), 'utf8') });
+					} catch (err) {
+						unknown.add(child);
+						add('WARN', 'R26', `${child} 读取失败（${err?.code ?? 'unknown'}），文件状态未知`);
+					}
+				}
+			}
+		};
+		for (const zone of zones) await scan(zone, true);
+		// The actual daily layer lives at the root, not just in daily/.
+		let dailyRootUnknown = false;
+		try {
+			for (const entry of await readdir(root, { withFileTypes: true })) {
+				const key = entry.name;
+				if (!isTracked(key) || key.includes('/')) continue;
+				if (!entry.isFile() || entry.isSymbolicLink()) {
+					unknown.add(key);
+					add('WARN', 'R26', `${key} 不是普通每日文件，该范围的状态未知`);
+					continue;
+				}
+				try { files.push({ key, text: await readFile(path.join(root, key), 'utf8') }); }
+				catch (err) { unknown.add(key); add('WARN', 'R26', `${key} 读取失败（${err?.code ?? 'unknown'}），文件状态未知`); }
+			}
+		} catch (err) {
+			dailyRootUnknown = true;
+			add('WARN', 'R26', `每日记录根目录扫描失败（${err?.code ?? 'unknown'}），该范围的状态未知`);
+		}
+		if (ledger === undefined) {
+			add('WARN', 'R26', '写入账本不可读或包含损坏记录（.write-ledger.jsonl）：无法对账，文件状态未知');
+		} else if (ledger.size === 0) {
+			add('WARN', 'R26', '写入账本为空：现存文件没有账本记录，无法判定其来源');
+		} else {
+			const issues = auditBatch({ root, files, ledger });
+			const mismatches = issues.filter((it) => it.reason === 'hash_mismatch');
+			const unrecorded = issues.filter((it) => it.reason === 'never_recorded');
+			const unexpected = issues.filter((it) => it.reason === 'deleted_present');
+			for (const it of unexpected.slice(0, 12)) add('WARN', 'R26', `${it.key} 账本记录已删除但文件存在，原因未知`);
+			if (unexpected.length > 12) add('WARN', 'R26', `另有 ${unexpected.length - 12} 个已记录删除的文件再次出现`);
+			for (const it of mismatches.slice(0, 12)) add('WARN', 'R26', `${it.key} 内容与账本记录不符，无法仅凭对账结果判断原因或写入者`, { subtype: 'hash-mismatch', subject: it.key });
+			if (mismatches.length > 12) add('WARN', 'R26', `另有 ${mismatches.length - 12} 个文件内容与账本记录不符`);
+			if (unrecorded.length) add('WARN', 'R26', `${unrecorded.length} 个文件不在写入账本里，无法据此判断来源`, { subtype: 'unrecorded-count', subject: 'aggregate' });
+			const seen = new Set(files.map((file) => file.key));
+			const absent = [];
+			for (const key of ledger.keys()) {
+				if (typeof key !== 'string' || !isTracked(key) || !/\.md$/i.test(key)) continue;
+				if (key.split('/').some((part) => !part || part === '.' || part === '..' || part.includes('\\'))) {
+					add('WARN', 'R26', '账本包含无效路径，无法对账');
+					continue;
+				}
+				const entry = ledger.get(key);
+				if (entry?.op === 'delete_intent') {
+					add('WARN', 'R26', `${key} 删除意图未完成，文件与账本状态未知，需核查`);
+					continue;
+				}
+				if (entry?.op === 'delete') continue;
+				if (seen.has(key) || (dailyRootUnknown && !key.includes('/')) || [...unknown].some((prefix) => key === prefix || key.startsWith(`${prefix}/`))) continue;
+				absent.push(key);
+			}
+			for (const key of absent.slice(0, 12)) add('WARN', 'R26', `${key} 已登记但扫描时不存在，可能已删除或移动，无法判断原因`);
+			if (absent.length > 12) add('WARN', 'R26', `另有 ${absent.length - 12} 个已登记文件扫描时不存在`);
+		}
+	} catch (err) {
+		add('WARN', 'R26', `写入对账无法完成（${err?.code ?? 'unknown'}），本轮状态未知`);
+	}
+
+	// R27 派生层冗余结构（2026-11-10 用户实测）：
+	//
+	// 用户看到召回里那条「早期演化（25 块已折叠：2026-10-18→…补24）」直接问
+	// "这种内容，不是垃圾吗，怎么就没发现呢"。查下来是**一类**病，不是一处：
+	// 派生层（functions/）应当压缩，却把**过程**搬了进来。三类症状同源：
+	//   ①同文件出现多段「早期演化」——每次折叠新插一段，从不合并；
+	//   ②段头逐条列日期标签——日期在每日记录里本来就有，标签链零信息；
+	//   ③同一天堆 ≥5 个「补N」块——过程没沉淀就被归档（纪律明令的反面样本）。
+	// 系统查不到它们，是因为所有规则都按 `## [YYYY-MM-DD]` 迭代块和索引行定义，
+	// 「早期演化」段头与"同日多块"不在任何规则的定义里。
+	try {
+		const dir = path.join(root, 'functions');
+		let names = [];
+		try {
+			names = (await readdir(dir)).filter((f) => f.endsWith('.md'));
+		} catch {
+			names = [];
+		}
+		const dup = [];
+		const long = [];
+		const sameDay = [];
+		const preview = (list) => `${list.slice(0, 4).join('、')}${list.length > 4 ? ` 等 ${list.length} 处` : ''}`;
+		for (const f of names) {
+			const text = await readIfExists(path.join(dir, f));
+			if (text === undefined) continue;
+			const lines = text.split('\n');
+			const heads = lines.filter((l) => /^##\s*早期演化/.test(l));
+			if (heads.length > 1) dup.push(`functions/${f}（${heads.length} 段）`);
+			const over = heads.filter((h) => h.length > 90);
+			if (over.length) long.push(`functions/${f}（${over[0].length} 字符）`);
+			const byDay = new Map();
+			for (const l of lines) {
+				const m = /^##\s*\[(\d{4}-\d{2}-\d{2})/.exec(l);
+				if (m) byDay.set(m[1], (byDay.get(m[1]) || 0) + 1);
+			}
+			const worst = [...byDay.entries()].sort((a, b) => b[1] - a[1])[0];
+			if (worst && worst[1] >= 5) sameDay.push(`functions/${f}（${worst[0]} 有 ${worst[1]} 块）`);
+		}
+		if (dup.length) {
+			add('WARN', 'R27', `「早期演化」段重复（应合并为一段）：${preview(dup)}——每次折叠新插一段会让文件越折越长，召回读到的是串不起作用的标签`, { subtype: 'duplicate-evolution-sections', subject: 'aggregate' });
+		}
+		if (long.length) {
+			add('WARN', 'R27', `「早期演化」标题逐条列日期标签或过长（标题只该写数量与区间）：${preview(long)}——需审查标题与段落后再整理，当前 memory_fold 不会自动整理旧段`, { subtype: 'long-evolution-headings', subject: 'aggregate' });
+		}
+		if (sameDay.length) {
+			add('WARN', 'R27', `同一天有多块迭代记录：${preview(sameDay)}——数量本身不能证明违反蒸馏纪律，请结合素材日期与豁免理由审查`, { subtype: 'same-day-blocks', subject: 'aggregate' });
+		}
+	} catch {
+		/* R27 是增强检查，绝不因它失败而中断体检 */
 	}
 
 	const warnCount = results.filter((r) => r.level === 'WARN').length;
@@ -1894,7 +2180,7 @@ warnings: { type: 'array', required: true, items: { type: 'string' } },
 			} else {
 				text = text.replace(/^>\s*摘要：.*$/m, `> 摘要：${summary}`);
 			}
-			const wroteCap = await writeText(p, text);
+			const wroteCap = await writeText(p, text, { memoryRoot: root });
 			if (wroteCap?.hits?.length) {
 				warnings.push(`台账内容含凭据材料（${wroteCap.hits.join('、')}），落盘前已 redact——调用方式里留密钥没有意义，留调用形态即可`);
 			}
@@ -2405,14 +2691,8 @@ function memoryWriteTool(opts) {
 					`功能文件：${v.featureFile}（${v.functionBytes}B${v.createdFunctionFile ? '，新建' : ''}）`,
 				];
 				if (v.resolvedDailyLogs.length) lines.push(`✅ 已勾掉待观察项：${v.resolvedDailyLogs.join('、')}`);
-				lines.push('ℹ 索引行未自动写入——功能域稳定后用 memory_index 收进索引；每日记录是原始层，由模型自主维护。');
-				// 自检结果必须显示：合格给一句确认（含"其实只是专项"这类说明），不合格逐项点名。
-				if (v.selfCheck) {
-					lines.push(v.selfCheck.ok ? `✓ ${v.selfCheck.layer}层自检通过` : `⛔ ${v.selfCheck.layer}层自检未过：`);
-					for (const n of v.selfCheck.notes ?? []) lines.push(`  ℹ ${n.message}`);
-					for (const f of v.selfCheck.findings ?? []) lines.push(`  ✗ ${f.message}`);
-				}
-				// 自检结果必须显示：合格给一句确认（含"其实只是专项"这类说明），不合格逐项点名。
+				lines.push('ℹ 索引行未自动写入——功能域稳定后用 memory_index 收进索引；每日记录属于原始层，只能通过插件采集写入。');
+				// 自检结果必须显示：合格给一句确认，不合格逐项点名。
 				if (v.selfCheck) {
 					lines.push(v.selfCheck.ok ? `✓ ${v.selfCheck.layer}层自检通过` : `⛔ ${v.selfCheck.layer}层自检未过：`);
 					for (const n of v.selfCheck.notes ?? []) lines.push(`  ℹ ${n.message}`);
@@ -2426,6 +2706,7 @@ function memoryWriteTool(opts) {
 		async execute(args, exec) {
 			const root = resolveRoot(opts);
 			const feature = safeSlug(args.feature);
+			const resolveTarget = typeof args.resolve === 'string' && args.resolve.trim() ? safeSlug(args.resolve) : undefined;
 			const date = normDate(args.date);
 			const title = oneLine(args.title);
 			if (!title) throw new Error('title is required');
@@ -2538,7 +2819,7 @@ function memoryWriteTool(opts) {
 					fnText = fnText.split(p.oldString).join(p.newString);
 				}
 			}
-			const wrote = await writeText(fnPath, fnText);
+			const wrote = await writeText(fnPath, fnText, { memoryRoot: root });
 			if (wrote?.hits?.length) {
 				warnings.push(`写入内容含凭据材料（${wrote.hits.join('、')}），落盘前已 redact 为 [REDACTED:kind]——密钥不该进记忆，请改用凭据服务`);
 			}
@@ -2557,10 +2838,13 @@ function memoryWriteTool(opts) {
 			// 4) resolve open items (R2 勾掉): mark still-open daily entries for
 			// the resolved feature across logs from the day it was first raised.
 			let resolvedIn = [];
-			if (typeof args.resolve === 'string' && args.resolve.trim()) {
-				const target = safeSlug(args.resolve);
-				resolvedIn = await resolveOpenItems(root, target, '0000-01-01', date);
-				if (!resolvedIn.length) warnings.push(`resolve: ${target} 在每日日志的待观察区没有未解决条目（可能已勾掉或不存在）`);
+			if (resolveTarget) {
+				try {
+					resolvedIn = await resolveOpenItems(root, resolveTarget, '0000-01-01', date);
+					if (!resolvedIn.length) warnings.push(`resolve: ${resolveTarget} 在每日日志的待观察区没有未解决条目（可能已勾掉或不存在）`);
+				} catch (err) {
+					warnings.push(`功能文件已写入，但更新每日待观察项未全部完成：${String(err?.message ?? err)}；请先核对已处理文件，不要盲目重试写入`);
+				}
 			}
 
 			// —— 写入后：从磁盘回读，按「术层定义」自检（用户 2026-11-02 要求）——
@@ -2656,6 +2940,8 @@ function memoryInsightTool(opts) {
 			const root = resolveRoot(opts);
 			await mkdir(path.join(root, 'insights'), { recursive: true });
 			const theme = safeSlug(args.theme);
+			const oldTheme = typeof args.supersedes === 'string' && args.supersedes.trim() ? safeSlug(args.supersedes) : undefined;
+			if (oldTheme && (oldTheme === theme || (process.platform === 'win32' && oldTheme.toLowerCase() === theme.toLowerCase()))) throw new Error('supersedes must reference a DIFFERENT theme');
 			const principle = oneLine(args.principle);
 			if (!principle) throw new Error('principle is required');
 			const summary = oneLine(args.summary);
@@ -2739,13 +3025,11 @@ function memoryInsightTool(opts) {
 			if (trust.level === '动摇') {
 				warnings.push(`该思想正处于「动摇」（认可 ${trust.positives} · 纠正 ${trust.corrections}）：继续追加前先精炼原则本体或传 supersedes 取代它`);
 			}
-			await writeText(p, text);
+			await writeText(p, text, { memoryRoot: root });
 
 			// 1b) supersede (R12): stamp the old insight without deleting it.
 			let supersededFile;
-			if (typeof args.supersedes === 'string' && args.supersedes.trim()) {
-				const oldTheme = safeSlug(args.supersedes);
-				if (oldTheme === theme) throw new Error('supersedes must reference a DIFFERENT theme');
+			if (oldTheme) {
 				const oldPath = path.join(root, 'insights', `${oldTheme}.md`);
 				const oldText = await readIfExists(oldPath);
 				if (oldText === undefined) {
@@ -2758,7 +3042,7 @@ function memoryInsightTool(opts) {
 					const stamp =
 						`> ⚠️ 已被取代 → [${theme}.md](${theme}.md)（${date}）。以下内容保留作为决策历史。`;
 					const stamped = oldText.replace(/^/, `${stamp}\n\n`);
-					await writeText(oldPath, appendUnderHeading(stamped, '## 思想演进', `- ${date} 被 [${theme}.md](${theme}.md) 取代`).text);
+					await writeText(oldPath, appendUnderHeading(stamped, '## 思想演进', `- ${date} 被 [${theme}.md](${theme}.md) 取代`).text, { memoryRoot: root });
 					supersededFile = oldPath;
 				}
 			}
@@ -2912,6 +3196,8 @@ function memoryDaoTool(opts) {
 			}
 
 			const name = safeSlug(args.name);
+			const oldName = typeof args.supersedes === 'string' && args.supersedes.trim() ? safeSlug(args.supersedes) : undefined;
+			if (oldName && (oldName === name || (process.platform === 'win32' && oldName.toLowerCase() === name.toLowerCase()))) throw new Error('supersedes must reference a DIFFERENT 道');
 			const proposition = oneLine(args.proposition);
 			const body = String(args.body ?? '').trim();
 			if (!body) throw new Error('body is required: a 道 需要正文展开（形态/推理用法/依据展开/边界），否则只是一句口号');
@@ -3039,7 +3325,7 @@ function memoryDaoTool(opts) {
 					'',
 				].join('\n');
 				const candPath = path.join(candDir, `${name}.md`);
-				await writeText(candPath, candText);
+				await writeText(candPath, candText, { memoryRoot: root });
 				return {
 					ok: true,
 					status: 'candidate',
@@ -3080,12 +3366,10 @@ function memoryDaoTool(opts) {
 				lawLines,
 				'',
 			].join('\n');
-			await writeText(targetPath, text);
+			await writeText(targetPath, text, { memoryRoot: root });
 
 			let supersededFile;
-			if (typeof args.supersedes === 'string' && args.supersedes.trim()) {
-				const oldName = safeSlug(args.supersedes);
-				if (oldName === name) throw new Error('supersedes must reference a DIFFERENT 道');
+			if (oldName) {
 				const oldPath = path.join(daoDir, `${oldName}.md`);
 				const oldText = await readIfExists(oldPath);
 				if (oldText === undefined) {
@@ -3094,7 +3378,7 @@ function memoryDaoTool(opts) {
 					warnings.push(`supersedes: dao/${oldName}.md 已带取代标记`);
 				} else {
 					const stamp = `> ⚠️ 已被取代 → [${name}.md](${name}.md)（${date}）。以下内容保留作为决策历史。`;
-					await writeText(oldPath, oldText.replace(/^/, `${stamp}\n\n`));
+					await writeText(oldPath, oldText.replace(/^/, `${stamp}\n\n`), { memoryRoot: root });
 					supersededFile = oldPath;
 				}
 			}
@@ -3127,10 +3411,11 @@ function memoryFoldTool(opts) {
 	return defineTool({
 		name: 'memory_fold',
 		description:
-			'Compress a function file (R9): fold the OLDEST iteration blocks into a single "早期演化" paragraph (keeps 结论 only — title, result, key lesson — drops step-by-step detail), keeping the head state summary and the most recent blocks verbatim. Use it when memory_check reports R9 or a write warns about size. The folded history stays recoverable: the paragraph names every folded date tag.',
+			'Compress the oldest iteration blocks into an early-evolution section while retaining recent blocks. Folded headings remain as individual dated summaries; the section heading does not repeat their date tags. Existing sections are not automatically rewritten.',
 		parameters: {
 			feature: { type: 'string', required: true, description: '功能域 slug（functions/ 下的既有文件）。' },
 			keep: { type: 'integer', description: '从最新块往回保留的块数（默认 3，最小 1）。' },
+			normalizeHeadings: { type: 'boolean', description: '只清理旧折叠标题中已在正文完整保留的重复日期标签，不折叠或删除正文。' },
 		},
 		output: {
 			schema: {
@@ -3165,6 +3450,29 @@ function memoryFoldTool(opts) {
 			if (text === undefined) throw new Error(`functions/${feature}.md 不存在`);
 			const bytesBefore = byteLen(text);
 
+			if (args.normalizeHeadings === true) {
+				const lines = text.split('\n');
+				let changed = 0;
+				for (let i = 0; i < lines.length; i++) {
+					const m = /^(##\s*早期演化（\d+ 块已折叠)：([^）]+)）\s*$/.exec(lines[i]);
+					if (!m) continue;
+					const tags = m[2].split('→').map((tag) => tag.trim()).filter(Boolean);
+					let end = i + 1;
+					while (end < lines.length && !/^##\s/.test(lines[end])) end++;
+					const bodyTags = new Set(lines.slice(i + 1, end).map((line) => /^-\s*\[([^\]]+)\]/.exec(line)?.[1]).filter(Boolean));
+					if (!tags.length || !tags.every((tag) => bodyTags.has(tag))) {
+						warnings.push(`第 ${i + 1} 行的标签未在本段正文完整保留，已跳过`);
+						continue;
+					}
+					lines[i] = `${m[1]}）`;
+					changed++;
+				}
+				const newText = lines.join('\n');
+				if (changed) await writeText(p, newText, { memoryRoot: root });
+				warnings.push(`安全整理 ${changed} 个标题，正文与其他内容保持原样`);
+				return { file: p, foldedBlocks: 0, keptBlocks: 0, bytesBefore, bytesAfter: byteLen(newText), warnings };
+			}
+
 			// Collect iteration blocks (## [date...] up to the next ## heading).
 			const lines = text.split('\n');
 			const headEnd = (() => {
@@ -3185,6 +3493,10 @@ function memoryFoldTool(opts) {
 			const foldFrom = blockStarts[0];
 			const foldTo = blockStarts[foldCount]; // first kept block start
 			const foldedLines = lines.slice(foldFrom, foldTo);
+			// Do not silently discard intervening non-iteration sections.
+			if (foldedLines.some((line) => /^##\s/.test(line) && !/^##\s*\[\d{4}-\d{2}-\d{2}/.test(line))) {
+				throw new Error('待折叠迭代块之间存在其他章节，无法安全折叠');
+			}
 			const keptLines = lines.slice(foldTo);
 
 			// Extract per-block: heading (date + title) and its bullets' key info.
@@ -3212,14 +3524,14 @@ function memoryFoldTool(opts) {
 				return `- [${s.tag}] ${s.title}${res ? `（${res}）` : ''}`;
 			});
 			const evoBlock = [
-				`## 早期演化（${foldCount} 块已折叠：${summaries.map((s) => s.tag).join('→')}）`,
+				`## 早期演化（${foldCount} 块已折叠）`,
 				'',
 				...evoLines,
 				'',
 			];
 
 			const newText = [...lines.slice(0, foldFrom), ...evoBlock, ...keptLines].join('\n');
-			await writeText(p, newText);
+			await writeText(p, newText, { memoryRoot: root });
 			const bytesAfter = byteLen(newText);
 			if (bytesAfter > opts.maxFunctionBytes) {
 				warnings.push(`折叠后仍 ${bytesAfter}B > ${opts.maxFunctionBytes}B：再降低 keep 或压缩状态摘要`);
@@ -3273,7 +3585,7 @@ function memoryRenameTool(opts) {
 			const root = resolveRoot(opts);
 			const from = safeSlug(args.from);
 			const to = safeSlug(args.to);
-			if (from === to) throw new Error('from 与 to 相同');
+			if (from === to || (process.platform === 'win32' && from.toLowerCase() === to.toLowerCase())) throw new Error('from 与 to 指向同一路径');
 			const warnings = [];
 			const fromPath = path.join(root, 'functions', `${from}.md`);
 			const toPath = path.join(root, 'functions', `${to}.md`);
@@ -3281,24 +3593,31 @@ function memoryRenameTool(opts) {
 			if (fromText === undefined) throw new Error(`functions/${from}.md 不存在`);
 			const toText = await readIfExists(toPath);
 			const merging = toText !== undefined;
+			if (merging) {
+				const [a, b, realA, realB] = await Promise.all([stat(fromPath), stat(toPath), realpath(fromPath), realpath(toPath)]);
+				if ((a.ino && b.ino && a.dev === b.dev && a.ino === b.ino) || realA === realB || (process.platform === 'win32' && realA.toLowerCase() === realB.toLowerCase())) {
+					throw new Error('from 与 to 指向同一文件，拒绝合并');
+				}
+			}
 
 			// 1) move / merge content
 			let finalToText;
 			if (!merging) {
 				finalToText = fromText;
-				await writeText(toPath, finalToText);
-				await (await import('node:fs/promises')).unlink(fromPath);
 			} else {
-				// Append the old file's iteration blocks under the target's head,
-				// then rewrite intra-file links from `from` to `to` inside the moved
-				// blocks; the source file is deleted (R10: no absorbed leftovers).
-				const fromLines = fromText.split('\n');
-				const firstBlock = fromLines.findIndex((l) => /^##\s*\[\d{4}-\d{2}-\d{2}/.test(l));
-				const blockPart = firstBlock === -1 ? '' : fromText.slice(fromText.indexOf(fromLines[firstBlock]));
-				const relinked = blockPart.split(`](${from}.md)`).join(`](${to}.md)`);
-				finalToText = toText.replace(/\n*$/, '\n') + relinked;
-				await writeText(toPath, finalToText);
-				await (await import('node:fs/promises')).unlink(fromPath);
+				// Preserve the complete source, including folded history, its summary,
+				// and custom sections. Extracting only dated blocks silently discarded
+				// all content above the first block and could erase a folded-only file.
+				const relinked = fromText.split(`](${from}.md)`).join(`](${to}.md)`);
+				finalToText = toText.replace(/\n*$/, '\n\n') + `<!-- 并入来源：${from} -->\n\n` + relinked;
+			}
+			await writeRenameTarget(root, toPath, toText, finalToText);
+			try {
+				await deleteTrackedFile(root, fromPath, fromText, { tool: 'memory_rename', to: `functions/${to}.md` });
+			} catch (cause) {
+				const error = new Error(`目标 functions/${to}.md 已写入；源 functions/${from}.md 的删除未完成确认，引用尚未改写。请核对两份文件和账本，不要盲目重试合并。${cause?.message ?? String(cause)}`, { cause });
+				error.code = 'MEMORY_RENAME_PARTIAL';
+				throw error;
 			}
 
 			// 2) rewrite every reference across the memory root. Four spellings
@@ -3312,58 +3631,41 @@ function memoryRenameTool(opts) {
 			// by rowSlug, the absorbed row and the target row then looked like two
 			// DIFFERENT entries, so the duplicate was invisible to every lint.
 			const rewritten = [];
-			const renameRowCells = (l) => {
-				// Only table rows get label surgery; prose is handled by the splits.
-				if (!l.trim().startsWith('|')) return l;
-				return l
-					.split(`[${from}.md](`).join(`[${to}.md](`)
-					.split(`[${from}](`).join(`[${to}](`);
-			};
-			const rewriteOne = (before) => {
-				let after = before
-					// Label + href pairs first (both spellings), then bare prose.
+			const rewriteOne = (before, isIndex) => {
+				let prepared = before;
+				if (isIndex) {
+					// Only the functions index may contain duplicate source/target rows.
+					// Never deduplicate arbitrary tables elsewhere in the memory root.
+					const start = prepared.indexOf(FUNC_TABLE_HEADING);
+					const end = start < 0 ? -1 : prepared.indexOf('\n## ', start + FUNC_TABLE_HEADING.length);
+					const section = start < 0 ? '' : prepared.slice(start, end < 0 ? undefined : end);
+					if (merging && section.split('\n').some((line) => line.startsWith('|') && rowSlug(line) === to)) {
+						prepared = dropIndexRow(prepared, FUNC_TABLE_HEADING, FUNC_TABLE_HEADER, from);
+					}
+					let inFunctions = false;
+					prepared = prepared.split('\n').map((line) => {
+						if (line.startsWith('## ')) inFunctions = line.startsWith(FUNC_TABLE_HEADING);
+						return inFunctions && line.startsWith('|') && rowSlug(line) === from
+							? line.split(`| ${from} |`).join(`| ${to} |`) : line;
+					}).join('\n');
+				}
+				// Rename a label only when it actually points at the renamed file.
+				return prepared
 					.split(`[${from}.md](${from}.md)`).join(`[${to}.md](${to}.md)`)
+					.split(`[${from}](${from}.md)`).join(`[${to}](${to}.md)`)
 					.split(`[${from}.md](functions/${from}.md)`).join(`[${to}.md](functions/${to}.md)`)
+					.split(`[${from}](functions/${from}.md)`).join(`[${to}](functions/${to}.md)`)
 					.split(`](${from}.md)`).join(`](${to}.md)`)
 					.split(`](functions/${from}.md)`).join(`](functions/${to}.md)`)
-					// file:/// memory-root hrefs (5.27.0 evidence links).
 					.split(`/functions/${from}.md`).join(`/functions/${to}.md`)
-					.split(`functions/${from}.md`).join(`functions/${to}.md`)
-					// A link LABEL is `[from](…)` — never matched by `| from |`.
-					.split(`[${from}](`).join(`[${to}](`)
-					.split(`| ${from} |`).join(`| ${to} |`);
-				// Cells still holding the old LABEL text after the exact-pattern pass
-				// (e.g. `[from](functions/to.md)` from a half-rewritten row).
-				after = after.split('\n').map(renameRowCells).join('\n');
-				if (merging) {
-					// The absorbed domain's row now carries the TARGET slug (labels
-					// were rewritten above) — dedupe by rowSlug: keep the first row
-					// whose slug is `to`, drop every later one.
-					const lines = after.split('\n');
-					let seenTarget = false;
-					const cleaned = lines.filter((l) => {
-						if (!l.startsWith('|')) return true;
-						if (rowSlug(l) === to || rowSlug(l) === from) {
-							// from-labels can survive inside non-canonical cells; treat
-							// either as the absorbed row.
-							const isTarget = rowSlug(l) === to;
-							if (rowSlug(l) === from) return false; // legacy cell nobody rewrote
-							if (!isTarget) return true;
-							if (seenTarget) return false; // extra row created by the rename
-							seenTarget = true;
-						}
-						return true;
-					});
-					after = cleaned.join('\n');
-				}
-				return after;
+					.split(`functions/${from}.md`).join(`functions/${to}.md`);
 			};
 			const rewriteIn = async (fp) => {
 				const before = await readIfExists(fp);
 				if (before === undefined) return;
-				const after = rewriteOne(before);
+				const after = rewriteOne(before, fp === path.join(root, 'MEMORY.md'));
 				if (after !== before) {
-					await writeText(fp, after);
+					await writeText(fp, after, { memoryRoot: root });
 					rewritten.push(path.relative(root, fp).split(path.sep).join('/'));
 				}
 			};
@@ -3410,31 +3712,9 @@ function memoryRenameTool(opts) {
 // proactive recall: pre-step index matching (agent/pre-step waterfall)
 // ---------------------------------------------------------------------------
 
-function indexRowsOf(indexText) {
-	const out = [];
-	for (const raw of indexText.split('\n')) {
-		const s = raw.trim();
-		if (!s.startsWith('|') || s.includes('---')) continue;
-		const cells = s.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
-		if (cells.length < 2 || !cells[1]) continue;
-		// Column-agnostic, like matchIndexRows: the 4-column generation kept the
-		// link in cell 3, the current one bakes it into cell 1. Both must resolve
-		// so a mixed-shape root keeps working. 5.24.0: a skill row links to its
-		// HOST bundle (file:///.../skills/<name>/SKILL.md), so both href shapes
-		// are accepted and the skill's identity is its bundle directory name.
-		const anyHref = cells.map((c) => /\(([^)\s]+\.md)\)/.exec(c)?.[1]).find(Boolean);
-		// A SKILL.md href IS a skill regardless of its parent dirs (the skill root
-		// is configurable — the real one is <dshHome>/skills, tests inject a temp
-		// dir); the legacy `skills/<name>.md` form stays accepted.
-		const isSkillHref = Boolean(anyHref) && (/^skills\//.test(anyHref) || /(?:^|\/)SKILL\.md$/.test(anyHref));
-		const href = anyHref && (isSkillHref || ZONE_RE.test(anyHref)) ? anyHref : undefined;
-		if (!href) continue;
-		const zone = isSkillHref ? 'skill' : href.startsWith('insights/') ? 'insight' : href.startsWith('functions/') ? 'function' : null;
-		if (!zone) continue;
-		const name = zone === 'skill' ? (href.split('/').filter(Boolean).slice(-2)[0] ?? '') : href.split('/').pop().replace(/\.md$/, '');
-		out.push({ name, summary: cells[1], href, zone });
-	}
-	return out;
+function indexRowsOf(indexText, options = {}) {
+	// Decision repair must use the exact same lifecycle and scope gate as ranked recall.
+	return eligibleIndexRows(indexText, options);
 }
 
 /**
@@ -3808,21 +4088,37 @@ function memoryCheckTool(opts, inbox) {	return defineTool({
 								times: { type: 'integer', required: true },
 								status: { type: 'string', required: true },
 								fingerprint: { type: 'string', required: true },
+								resultIndex: { type: 'integer', required: true },
 							},
 						},
 						description: '每条 WARN/FAIL 在问题收件箱里的跟踪状态（times=累计发现次数）。',
+					},
+					trackingFailures: {
+						type: 'array',
+						items: {
+							type: 'object', additionalProperties: false,
+							properties: {
+								resultIndex: { type: 'integer', required: true },
+								rule: { type: 'string', required: true },
+								status: { type: 'string', enum: ['unknown', 'not_committed'], required: true },
+								message: { type: 'string', required: true },
+							},
+						},
 					},
 				},
 			},
 			render: (_args, v) => {
 				const lines = [`memory_check — ${v.root}：${v.failCount} FAIL，${v.warnCount} WARN`];
-				const timesByRule = new Map((v.tracked ?? []).map((t) => [t.rule, t]));
-				for (const r of v.results) {
-					const t = timesByRule.get(r.rule);
+				const timesByIndex = new Map((v.tracked ?? []).map((t) => [t.resultIndex, t]));
+				const failuresByIndex = new Map((v.trackingFailures ?? []).map((t) => [t.resultIndex, t]));
+				for (const [index, r] of v.results.entries()) {
+					const t = timesByIndex.get(index);
 					// 复发计数是打破"报出来=尽到责任"回路的阻尼：同一问题第 N 次
 					// 发现必须可见且递增，"存量"不再是无代价的口头标签。
 					const recur = t && t.times >= 2 && t.status !== 'resolved' ? `（第 ${t.times} 次发现，仍 ${t.status}——处置或说明为何搁置，不要再标"存量"跳过）` : '';
 					lines.push(`  [${r.level}] ${r.rule}: ${r.message}${recur}`);
+					const failure = failuresByIndex.get(index);
+					if (failure) lines.push(`    ⚠ 收件箱：${failure.message}`);
 				}
 				if (!v.results.length) lines.push('  全部通过');
 				return [{ type: 'text', text: lines.join('\n') }];
@@ -3841,8 +4137,14 @@ function memoryCheckTool(opts, inbox) {	return defineTool({
 			// 临时根（造出 25 个假功能域/假 WARN），那些是测试夹具不是真实问题，
 			// 绝不能进全局收件箱把复发计数灌水。opts.memoryRoot 存在即测试态。
 			const tracked = [];
+			const trackingFailures = [];
 			if (inbox && !opts.memoryRoot) {
-				for (const r of report.results ?? []) {
+				let scope;
+				try {
+					scope = await realpath(root);
+					if (process.platform === 'win32') scope = scope.toLowerCase();
+				} catch { /* unknown scope: keep legacy identity, never guess */ }
+				for (const [resultIndex, r] of (report.results ?? []).entries()) {
 					try {
 						const { item } = await inbox.post({
 							from: 'memory-manager',
@@ -3850,14 +4152,20 @@ function memoryCheckTool(opts, inbox) {	return defineTool({
 							severity: r.level === 'FAIL' ? 'error' : 'warn',
 							message: r.message,
 							hint: '体检自动投递：处置后 memory_inbox update resolved，或说明搁置理由',
+							...(scope && healthIssueIdentities.has(r) ? { identity: { scope, ...healthIssueIdentities.get(r) } } : {}),
 						});
-						tracked.push({ rule: r.rule, times: item.times, status: item.status, fingerprint: item.fingerprint });
-					} catch {
-						/* 跟踪失败不阻断体检 */
+						tracked.push({ rule: r.rule, times: item.times, status: item.status, fingerprint: item.fingerprint, resultIndex });
+					} catch (error) {
+						// Only a confirmed pre-replacement failure is known not to commit.
+						const notCommitted = error?.code === 'INBOX_NOT_COMMITTED';
+						trackingFailures.push({
+							resultIndex, rule: r.rule, status: notCommitted ? 'not_committed' : 'unknown',
+							message: notCommitted ? '跟踪未写入收件箱，请检查存储后重试。' : '跟踪结果未知，请先读取收件箱核对，不要盲目重试。',
+						});
 					}
 				}
 			}
-			return { ...report, ...(tracked.length ? { tracked } : {}) };
+			return { ...report, ...(tracked.length ? { tracked } : {}), ...(trackingFailures.length ? { trackingFailures } : {}) };
 		},
 	});
 }
@@ -3985,7 +4293,7 @@ const DISCIPLINE_TEXT = [
 	'',
 	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十四个工具：memory_read / memory_search / memory_capability / memory_write / memory_index / memory_insight / memory_dao / memory_fold / memory_rename / memory_check / memory_usage / memory_federation / memory_skill / memory_inbox；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向五层，每层只吃上一层的产出**：',
 	'',
-	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 是任务与对话过程的第一手数据，**本插件不约束其内容与格式**——用任何工具、任何方式自由记录（决策、对话、试错、片段都行）。它是一切蒸馏的原料；同一事实只在这里是"过程"，其余层只见结论。只有一条轻过滤：**执行式日志（命令输出、PID、退出码、耗时流水）不要抄**——会话转录与日志文件里本来就有，抄进每日记录只会稀释蒸馏原料；值得记的是日志里没有的：判断与取舍、用户原话、踩坑的因果、待验证的下一步。',
+	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 是任务与对话过程的第一手数据，内容可保留决策、对话和踩坑，但按用户要求只能通过插件采集写入，不可直接用编辑工具、shell 或脚本修改；未启用采集时如实报告缺口。它是一切蒸馏的原料；同一事实只在这里是"过程"，其余层只见结论。只有一条轻过滤：**执行式日志（命令输出、PID、退出码、耗时流水）不要抄**——会话转录与日志文件里本来就有，抄进每日记录只会稀释蒸馏原料；值得记的是日志里没有的：判断与取舍、用户原话、踩坑的因果、待验证的下一步。',
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一个 functions/<功能域>.md 迭代块 = **≥3 个主题相关素材日的综合结论**（蒸馏结论：动因/改动/判据/待观察 各一句；2026-11-09 用户要求：不以单日为单位蒸馏，单日事件多是过程片段，多天的演化/反复/被推翻才值得归档）。**素材日由 agent 围绕主题检索推理挑选**（memory_search 全库找相关日，可不连续、可跨周月），不是机械取最近 3 天——选证据关联不选日历相邻，块内说明为何选这些日。相关素材不足 3 天先积累不蒸馏（周检是天然时机）；用户显式要求或踩坑因果/安全约束可豁免，块内注明素材日期与理由。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
 	'- **第 2 层 · 创新思想（memory_insight）**：从功能划分中**再提取**可迁移原则（会重套的、不绑定单一功能机制的），回链来源功能域；取代旧思想传 `supersedes`。',
 	'- **第 3 层 · 索引与总览（memory_index）**：**整合层**——功能域稳定后（有 ≥2 个迭代块，或用户可感知为独立主题时）用 memory_index 把它收进 MEMORY.md 索引；索引行摘要 = 从各迭代块的概括中提炼的"这个功能是什么"。索引是展示与检索的派生物，不与单次写入强绑。',
@@ -4001,7 +4309,7 @@ const DISCIPLINE_TEXT = [
 	'- **守护型**：低频但高价值的记忆（安全审计、关键踩坑、兜底规则）用 `memory_write(guard=true)` 标记，体检的冷记忆规则会跳过它——不要因为"很久没写"就删掉兜底经验。',
 	'- **项目归属**：涉及特定项目的记忆，在功能域 slug 或正文里注明项目名（如 `toolbox-login`）。功能域多到单根过大时，可启用**联邦模式**（`federation: { root, projects }`）：项目真相源留在各项目记忆根，`memory_federation` 负责刷副本与跨项目索引，项目细节不上升。',
 	'- **收缩机制**：功能文件超 30KB 用 `memory_fold` 折叠最旧块；MEMORY.md 超线按 ### 子分区拆分；重命名/合并用 `memory_rename`（自动改写引用并验证死链清零）。',
-	'- **密钥防线**：凭据（API key / token / 私钥 / JWT）绝不进记忆——插件写入口在落盘前把凭据形态替换成 `[REDACTED:kind]` 并在回执点名；每日原始层不经插件，直接写文件时请自律（体检 R21 兜底报告，身份证/手机号只告警不改写）。留「调用形态 + 前提从哪里领」，不留密钥本体。',
+	'- **密钥防线**：凭据（API key / token / 私钥 / JWT）绝不进记忆——插件写入口在落盘前把凭据形态替换成 `[REDACTED:kind]` 并在回执点名；每日采集也须经过插件脱敏；体检 R21 是补充检测，身份证/手机号只告警不改写。留「调用形态 + 前提从哪里领」，不留密钥本体。',
 	'- 批量改动记忆后跑 `memory_check` 体检。',
 	'- 归属口诀：会**重跑**的操作（术·functions/）、会**重套**的原则（法·insights/）、**反复跑通且验证**的程序（技能·宿主目录包 `<dshHome>/skills/`，靠 frontmatter `agent_created` 与外来安装包区分）、**≥5 条法萃出的上位命题**（道·dao/，由 `memory_dao` 写、R24 守）、违反即出事故的约束（共识区·MEMORY.md，R19 守）、指向内容的指针（器·索引与面板）；原始过程永远只留在每日记录。',
 ].join('\n');
@@ -4016,6 +4324,14 @@ const MIME_HTML = { 'Content-Type': 'text/html; charset=utf-8' };
 function json(res, status, body) {
 	res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
 	res.end(JSON.stringify(body));
+}
+
+function panelError(err) {
+	const result = { error: String(err?.message ?? err) };
+	if (typeof err?.code === 'string' && err.code.startsWith('MEMORY_')) result.code = err.code;
+	for (const key of ['intentId', 'deleteStatus', 'ledgerStatus', 'cleanupStatus']) if (typeof err?.[key] === 'string') result[key] = err[key];
+	if (err?.fileWritten === null || typeof err?.fileWritten === 'boolean') result.fileWritten = err.fileWritten;
+	return result;
 }
 
 /** Read a small JSON POST body (the panel's write channel only sends tiny payloads). */
@@ -4099,7 +4415,7 @@ async function zoneCounts(root, skillRoot = '') {
  * the connection service is a host where we cannot tell caller from stranger,
  * so writes are off, never guessed-open.
  */
-const PANEL_WRITE_SEGS = new Set(['skill-action', 'reload', 'inbox-action']);
+const PANEL_WRITE_SEGS = new Set(['skill-action', 'reload', 'inbox-action', 'axiom-action', 'dao-action']);
 function memoryPanelApi(opts, connection, inbox) {
 	return async (req, res) => {
 		const url = new URL(req.url, 'http://localhost');
@@ -4111,6 +4427,14 @@ function memoryPanelApi(opts, connection, inbox) {
 			return json(res, 501, { error: '宿主未提供 connection 服务，无法核验调用方——写路由已禁用' });
 		}
 		const root = resolveRoot(opts);
+		const transactionalPost = req.method === 'POST' && ['axiom-action', 'dao-action', 'skill-action'].includes(seg);
+		let transactionBody;
+		if (transactionalPost) {
+			// Do not hold the shared write queue while waiting for a client body.
+			try { transactionBody = await readBody(req); }
+			catch (err) { return json(res, 400, { error: String(err?.message ?? err) }); }
+		}
+		const handle = async () => {
 		try {
 			if (seg === 'overview') {
 				const health = panelizeHealth(await runHealthCheck(root, opts));
@@ -4186,7 +4510,7 @@ function memoryPanelApi(opts, connection, inbox) {
 				const usageItems = summarizeUsage(await readUsage(root, 30));
 				const usage = new Map(usageItems.map((it) => [it.href, it]));
 				const tokens = tokensOf(q);
-				const rows = matchIndexRows(indexText, tokens, 3, usage)
+				const rows = matchIndexRows(indexText, tokens, 3, usage, { memoryRoot: root })
 					.filter((l) => !q.includes(l.href))
 					.map((r) => {
 						const u = usage.get(r.href);
@@ -4213,7 +4537,7 @@ function memoryPanelApi(opts, connection, inbox) {
 					tokens: [...tokens],
 					usageSignals: usageItems.length,
 					rows,
-					message: rows.length ? '' : '（无命中：该输入不会注入任何召回）',
+					message: rows.length ? '' : '（索引行无命中；档案、纠正提示或负向规则仍可能被召回）',
 				});
 			}
 			// Skill library (5.18.0): the panel shows BOTH halves of "skills" —
@@ -4276,6 +4600,32 @@ function memoryPanelApi(opts, connection, inbox) {
 				// 候选公理列表（2026-11-10）：面板道层用它做"候选"筛选标签。
 				// 只读；确认/否决走 axiom-action。
 				const candDir = path.join(root, 'dao', '_candidates');
+				if (url.searchParams.has('name')) {
+					if (req.method && req.method !== 'GET') return json(res, 405, { error: 'GET only' });
+					const name = url.searchParams.get('name');
+					try {
+						// Require the exact slug; safeSlug alone normalizes whitespace and .md.
+						if (safeSlug(name) !== name || /[.\s]$/.test(name) || /[\x00-\x1f]/.test(name)) throw new Error('invalid slug');
+					} catch {
+						return json(res, 400, { error: 'invalid candidate name' });
+					}
+					try {
+						// Resolve links too: neither a linked candidate directory nor a linked
+						// file may redirect this endpoint outside its designated directory.
+						const rootReal = await realpath(root);
+						const dirReal = await realpath(candDir);
+						const fileReal = await realpath(path.join(candDir, `${name}.md`));
+						const samePath = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+						if (!samePath(dirReal, path.join(rootReal, 'dao', '_candidates')) || !samePath(fileReal, path.join(dirReal, `${name}.md`))) {
+							return json(res, 400, { error: 'candidate path outside permitted directory' });
+						}
+						const text = await readFile(fileReal, 'utf8');
+						return json(res, 200, { name, text });
+					} catch (err) {
+						if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return json(res, 404, { error: 'candidate not found' });
+						throw err;
+					}
+				}
 				let names = [];
 				try {
 					names = (await readdir(candDir)).filter((f) => f.endsWith('.md')).sort();
@@ -4312,11 +4662,13 @@ function memoryPanelApi(opts, connection, inbox) {
 				return json(res, 200, { candidates: items, count: items.length });
 			}
 			if (seg === 'axiom-action') {
-				// 候选的确认/否决（2026-11-10）。**这是面板上的"人工闸门"**：
-				// 用户在面板点确认 = byUser:true 的来源。agent 不能伪造这个请求
-				// ——它没有浏览器会话，且这条路径只由面板 UI 调用。
+				// 会话认证并不能证明调用方是人；面板点击依赖宿主的会话认证边界。
+				// 无法认证时必须关闭写入口，不能只依赖外层路由白名单。
+				if (!connection || typeof connection.requestRejection !== 'function') {
+					return json(res, 501, { error: '宿主未提供 connection 服务，无法核验调用方——写路由已禁用' });
+				}
 				if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
-				const body = await readBody(req);
+				const body = transactionBody;
 				const action = String(body?.action ?? '');
 				const slug = safeSlug(body?.name);
 				if (!slug) return json(res, 400, { error: 'name 必填' });
@@ -4331,14 +4683,16 @@ function memoryPanelApi(opts, connection, inbox) {
 				} catch {
 					return json(res, 404, { error: `候选不存在：${slug}` });
 				}
-				const proposition = /##\s*命题\s*\n+([\s\S]*?)(?:\n##|$)/.exec(text)?.[1]?.trim() ?? '';
-				const sources = [...text.matchAll(/^- \[([^\]]+)\]\(\.\.\/insights\//gm)].map((m) => m[1]);
-				const body_ = /##\s*(?:正文|依据展开)\s*\n+([\s\S]*?)(?:\n##|$)/.exec(text)?.[1]?.trim() ?? '';
+				const proposition = /^##\s*命题[ \t]*\r?\n+([\s\S]*?)(?=\r?\n##\s|$)/m.exec(text)?.[1]?.trim() ?? '';
+				// 对其他操作不依赖内容形状；转正时再严格校验正文和来源节。
+				const sourceSection = /^##\s*来源法[ \t]*\r?\n([\s\S]*?)(?=\r?\n##\s|(?![\s\S]))/m.exec(text)?.[1] ?? '';
+				const sources = [...sourceSection.matchAll(/^- \[([^\]]+)\]\(\.\.\/insights\/([^/)]+)\.md\)\s*$/gm)]
+					.filter((m) => m[1] === m[2]).map((m) => m[1]);
 
 				if (action === 'delete') {
 					// 删除 = 用户明确不要这条。与 reject 的区别：reject 留档案（反例证据），
 					// delete 是「这条根本不该出现」（误写/重复）。
-					await unlink(candPath).catch(() => {});
+					await deleteTrackedFile(root, candPath, text, { tool: 'axiom-action:delete' });
 					return json(res, 200, { message: `已删除候选 ${slug}` });
 				}
 				if (action === 'reject') {
@@ -4351,13 +4705,11 @@ function memoryPanelApi(opts, connection, inbox) {
 					if (!r.ok) return json(res, 400, { error: r.reason });
 					// 否决：候选文件移到 _candidates/_rejected/，保留证据但不占待决策队列。
 					const rejDir = path.join(candDir, '_rejected');
-					await mkdir(rejDir, { recursive: true }).catch(() => {});
-					await writeFile(
-						path.join(rejDir, `${slug}.md`),
-						`${text.trimEnd()}\n\n## 否决\n\n- 时间：${r.axiom.rejected_at}\n- 理由：${reason}\n`,
-						'utf8',
-					).catch(() => {});
-					await unlink(candPath).catch(() => {});
+					await mkdir(rejDir, { recursive: true });
+					// 先独占创建留档；任何写入失败或已有档案都保留候选原文。
+					const rejectedPath = path.join(rejDir, `${slug}.md`);
+					await writeTrackedPanelFile(root, rejectedPath, `${text}\n\n## 否决\n\n- 时间：${r.axiom.rejected_at}\n- 理由：${reason}\n`, { exclusive: true, tool: 'axiom-action:reject' });
+					await deleteAfterPanelCopy(root, candPath, text, { tool: 'axiom-action:reject', to: `dao/_candidates/_rejected/${slug}.md` });
 					return json(res, 200, { message: `已否决候选 ${slug}`, rejected_at: r.axiom.rejected_at });
 				}
 				// confirm：转正 → 写到 dao/ 正式位置（走与 memory_dao 相同的模板）
@@ -4366,35 +4718,97 @@ function memoryPanelApi(opts, connection, inbox) {
 					{ byUser: true, note: '面板确认' },
 				);
 				if (!c.ok) return json(res, 400, { error: c.reason });
-				const lawLines = sources.map((s) => `- [${s}](../insights/${s}.md)`).join('\n');
-				const daoText = [
-					`# 道 · ${slug}`,
-					'',
-					'> 性质：**道层**。最抽象的指导思想，不含任何具体工具/文件/项目。',
-					`> 萃取自 ${sources.length} 条法（\`insights/\`）的共同上位命题，非单条抽象。`,
-					`> 由候选公理经**用户确认**转正（${c.axiom.confirmed_at}）。`,
-					'',
-					'## 命题',
-					'',
-					proposition,
-					'',
-					...(body_ ? [body_, ''] : []),
-					'## 来源法',
-					'',
-					lawLines,
-					'',
-				].join('\n');
-				await writeFile(path.join(root, 'dao', `${slug}.md`), daoText, 'utf8');
-				await unlink(candPath).catch(() => {});
+				// 严格复核真实来源（不得把不存在、被取代或名称与链接不符的法计入）。
+				const sourceLines = sourceSection.split(/\r?\n/).filter((line) => /^\s*-\s/.test(line));
+				if (sourceLines.length !== sources.length) return json(res, 400, { error: '来源法链接无效或名称与链接不一致' });
+				const validSources = [];
+				for (const source of sources) {
+					if (safeSlug(source) !== source) return json(res, 400, { error: '来源法名称无效' });
+					const law = await readIfExists(path.join(root, 'insights', `${source}.md`));
+					if (law === undefined || /^>\s*⚠️\s*已被取代/m.test(law)) return json(res, 400, { error: `来源法不存在或已被取代：${source}` });
+					validSources.push(source);
+				}
+				const daoDir = path.join(root, 'dao');
+				let existing = 0;
+				for (const file of await readdir(daoDir)) {
+					if (!file.endsWith('.md')) continue;
+					const existingText = await readFile(path.join(daoDir, file), 'utf8');
+					if (!/^>\s*⚠️\s*已被取代/m.test(existingText)) existing++;
+				}
+				const targetPath = path.join(daoDir, `${slug}.md`);
+				if (await statExists(targetPath)) return json(res, 409, { error: '同名正式道已存在，不能覆盖' });
+				const gate = gateDao({ name: slug, proposition, extractedFrom: validSources, existing });
+				if (!gate.ok) return json(res, 400, { error: gate.reason });
+				const propHeading = /^##\s*命题[ \t]*\r?\n/gm;
+				const sourceHeading = /^##\s*来源法[ \t]*\r?\n/gm;
+				const propMatches = [...text.matchAll(propHeading)];
+				const sourceMatches = [...text.matchAll(sourceHeading)];
+				if (propMatches.length !== 1 || sourceMatches.length !== 1) return json(res, 400, { error: '候选必须有唯一的命题和来源法章节' });
+				const firstSection = /^##\s/m.exec(text.slice(propMatches[0].index + propMatches[0][0].length));
+				if (!firstSection) return json(res, 400, { error: '候选缺少道体正文' });
+				const bodyStart = propMatches[0].index + propMatches[0][0].length + firstSection.index;
+				const bodyEnd = sourceMatches[0].index;
+				if (bodyStart >= bodyEnd) return json(res, 400, { error: '候选正文和来源法顺序无效' });
+				const candidateBody = text.slice(bodyStart, bodyEnd);
+				if (daoReservedHeadingCollisions(candidateBody).length || !philosophicalShape(proposition).ok || checkDaoBody(candidateBody).findings.length) {
+					return json(res, 400, { error: '候选命题或正文不符合正式道的形态要求' });
+				}
+				// 保留候选正文的全部章节和字节；来源与后续记录原样保留。
+				const daoText = `# 道 · ${slug}\n\n> 由候选公理经用户确认转正（${c.axiom.confirmed_at}）。\n\n## 命题\n\n${proposition}\n\n${candidateBody}${text.slice(bodyEnd)}`;
+				try {
+					await writeTrackedPanelFile(root, targetPath, daoText, { exclusive: true, tool: 'axiom-action:confirm' });
+				} catch (err) {
+					if (err?.code === 'EEXIST') return json(res, 409, { error: '同名正式道已存在，不能覆盖' });
+					throw err;
+				}
+				await deleteAfterPanelCopy(root, candPath, text, { tool: 'axiom-action:confirm', to: `dao/${slug}.md` });
 				return json(res, 200, {
 					message: `已确认候选 ${slug}，转为正式道`,
 					file: `dao/${slug}.md`,
 					note: '索引行仍需手工补进 MEMORY.md（memory_index 是唯一写索引的通道）',
 				});
 			}
+			if (seg === 'dao-action') {
+				// 正式道的删除（2026-11-10 用户要求：道里也要能删）。
+				//
+				// 为什么不复用 axiom-action：**删的东西不一样**。候选删了只是丢掉
+				// 一个提案；正式道删了是丢掉一条已经在参与判断的命题，而且它可能
+				// 已被召回引用。所以额外做两件事：
+				// ①备份到 dao/_deleted/（不是彻底消失，留可回查的一份）；
+				// ②如实提醒索引行要手工删（memory_index 是唯一写索引的通道）。
+				if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
+				const body = transactionBody;
+				const slug = safeSlug(body?.name);
+				if (!slug) return json(res, 400, { error: 'name 必填' });
+				const daoPath = path.join(root, 'dao', `${slug}.md`);
+				let text;
+				try {
+					text = await readFile(daoPath, 'utf8');
+				} catch {
+					return json(res, 404, { error: `道条目不存在：${slug}` });
+				}
+				const delDir = path.join(root, 'dao', '_deleted');
+				// 归档失败必须中止，确保原文仍在；删除失败也不能报告成功。
+				await mkdir(delDir, { recursive: true });
+				try {
+					await writeTrackedPanelFile(root, path.join(delDir, `${slug}.md`), `${text.trimEnd()}\n\n## 删除\n\n- 时间：${new Date().toISOString()}\n- 来源：面板手动删除\n`, { exclusive: true, tool: 'dao-action:delete' });
+				} catch (err) {
+					if (err?.code === 'EEXIST') {
+						const existing = await stat(path.join(delDir, `${slug}.md`));
+						if (existing.isFile()) return json(res, 409, { error: `已有同名历史归档：${slug}；为保护历史，本次未删除正式道` });
+					}
+					throw err;
+				}
+				await deleteAfterPanelCopy(root, daoPath, text, { tool: 'dao-action:delete', to: `dao/_deleted/${slug}.md` });
+				return json(res, 200, {
+					message: `已删除道 · ${slug}（已留档到 dao/_deleted/）`,
+					archived: `dao/_deleted/${slug}.md`,
+					note: 'MEMORY.md 里指向这条的道层行需要手工删除——索引由 memory_index 维护，面板不改索引。',
+				});
+			}
 			if (seg === 'skill-action') {
 				if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
-				const body = await readBody(req);
+				const body = transactionBody;
 				const action = String(body?.action ?? '');
 				if (!['activate', 'retire', 'delete'].includes(action)) return json(res, 400, { error: `action must be activate|retire|delete (got ${action})` });
 				// Same hook the registered tool carries (3217's onSkillChange): the
@@ -4674,7 +5088,14 @@ function memoryPanelApi(opts, connection, inbox) {
 					'<li><code>GET /api/memory-org/search?q=&lt;关键词&gt;</code> — 全库搜索</li></ul>',
 			);
 		} catch (err) {
-			json(res, 500, { error: String(err?.message ?? err) });
+			json(res, 500, panelError(err));
+		}
+		};
+		try {
+			if (transactionalPost) return await withMemoryRootTransaction(root, handle);
+			return await handle();
+		} catch (err) {
+			return json(res, 500, panelError(err));
 		}
 	};
 }
@@ -4717,6 +5138,9 @@ export function apply(ctx, config) {
 		// Foreground recall budget (ms). Config may SHORTEN it but never extend
 		// past the default — recall must stay bounded no matter the config.
 		recallTimeoutMs: resolveRecallBudget(config?.recallTimeoutMs),
+		// This limits only the optional rendered recall text, not negative rules.
+		recallOptionalBudgetBytes: Number.isFinite(config?.recallOptionalBudgetBytes) && config.recallOptionalBudgetBytes >= 0
+			? Math.min(65536, Math.floor(config.recallOptionalBudgetBytes)) : 8192,
 		// Passive capture into the raw daily layer (off unless opted in).
 		captureUserTurns: config?.captureUserTurns === true,
 		// Opt-in three-tier federation: { root, projects: [{ key, root }] }.
@@ -4743,18 +5167,25 @@ export function apply(ctx, config) {
 	// 收件箱先建：memory_check 的自动投递要用它（发现→跟踪零配合）。
 	const inbox = new MemoryInbox(dshHome);
 
+	// One cooperative queue covers the entire read/modify/write operation, not
+	// just its final rename. It is shared across plugin reloads in this process.
+	// External processes and uncooperative writers remain outside this boundary.
+	const transactionTool = (tool) => ({
+		...tool,
+		execute: (args, exec) => withMemoryRootTransaction(resolveRoot(opts), () => tool.execute(args, exec)),
+	});
 	const disposers = [
-		ctx.tools.register(memoryReadTool(opts)),
+		ctx.tools.register(transactionTool(memoryReadTool(opts))),
 		ctx.tools.register(memorySearchTool(opts)),
-		ctx.tools.register(memoryCapabilityTool(opts)),
-		ctx.tools.register(memoryWriteTool(opts)),
-		ctx.tools.register(memoryIndexTool(opts)),
-		ctx.tools.register(memoryInsightTool(opts)),
-		ctx.tools.register(memoryDaoTool(opts)),
-		ctx.tools.register(memoryFoldTool(opts)),
-		ctx.tools.register(memoryRenameTool(opts)),
+		ctx.tools.register(transactionTool(memoryCapabilityTool(opts))),
+		ctx.tools.register(transactionTool(memoryWriteTool(opts))),
+		ctx.tools.register(transactionTool(memoryIndexTool(opts))),
+		ctx.tools.register(transactionTool(memoryInsightTool(opts))),
+		ctx.tools.register(transactionTool(memoryDaoTool(opts))),
+		ctx.tools.register(transactionTool(memoryFoldTool(opts))),
+		ctx.tools.register(transactionTool(memoryRenameTool(opts))),
 		ctx.tools.register(memoryCheckTool(opts, inbox)),
-		ctx.tools.register(memoryUsageTool(opts)),
+		ctx.tools.register(transactionTool(memoryUsageTool(opts))),
 		ctx.tools.register(memoryFederationTool(opts)),
 	];
 
@@ -4792,6 +5223,18 @@ export function apply(ctx, config) {
 					.catch(() => {});
 			}),
 		);
+	}
+
+	// —— 层级写入守卫（2026-11-10 用户要求：把机制卡死）——
+	//
+	// R26 只检查文件与账本的当前一致性；既不能证明来源或作者，也不能阻止写入。
+	// 用户要的是"绝对不可以直接动用编辑工具书写"，所以必须有一个**前向拦截**。
+	// fs/*-intent 是 first-wins 单槽，已有监听器会让后续守卫不执行。
+	// tools/execute 是包裹式流水线，检查后调用 next 才进入工具本体。
+	// 仅覆盖调度的 write/edit，不拦 shell 或其他写入方式。
+	if (typeof ctx.on === 'function') {
+		const guard = createWriteGuard(() => resolveRoot(opts), ctx, () => opts.skillRoot ? path.resolve(opts.skillRoot) : path.join(dshHome(), 'skills'));
+		disposers.push(ctx.on('tools/execute', guard));
 	}
 
 	// —— 健康探针（2026-10-26）——
@@ -4835,7 +5278,7 @@ export function apply(ctx, config) {
 	// against (bridge.registry); on a host without the skill service it stays
 	// undefined and /skills answers hostDegraded rather than erroring.
 	opts.bridge = skillBridge;
-	disposers.push(ctx.tools.register(memorySkillTool(opts, skillBridge ? { onSkillChange: skillBridge.invalidate } : {})));
+	disposers.push(ctx.tools.register(transactionTool(memorySkillTool(opts, skillBridge ? { onSkillChange: skillBridge.invalidate } : {}))));
 
 	// Proactive recall: on every proposed step, match the batch's user text
 	// against the memory index and prepend one recall message when the overlap
@@ -4849,7 +5292,9 @@ export function apply(ctx, config) {
 	const recallLedger = [];
 	const recordRecall = (stats) => {
 		if (!stats) return;
-		recallLedger.push({ injected: stats.injected, held: stats.held, dropped: stats.dropped, budget: stats.budget, used: stats.usedTokens });
+		recallLedger.push({ injected: stats.actualRows, strong: stats.injected, held: stats.held, dropped: stats.dropped, archives: stats.archives, rules: stats.rules, budget: stats.budget, used: stats.usedTokens,
+			omittedRows: stats.budgetOmitted.rows, omittedRepairs: stats.budgetOmitted.repairs, omittedHeld: stats.budgetOmitted.held, omittedArchives: stats.budgetOmitted.archives,
+			optionalBytes: stats.optionalBytes, renderFailures: stats.renderFailed ? 1 : 0 });
 		if (recallLedger.length > RECALL_LEDGER_CAP) recallLedger.shift();
 	};
 	const recallLedgerSummary = () => {
@@ -4857,7 +5302,9 @@ export function apply(ctx, config) {
 		const sum = (k) => recallLedger.reduce((n, e) => n + e[k], 0);
 		return {
 			rounds: recallLedger.length,
-			injected: sum('injected'), held: sum('held'), dropped: sum('dropped'),
+			injected: sum('injected'), strong: sum('strong'), held: sum('held'), dropped: sum('dropped'), archives: sum('archives'), rules: sum('rules'),
+			omittedRows: sum('omittedRows'), omittedRepairs: sum('omittedRepairs'), omittedHeld: sum('omittedHeld'), omittedArchives: sum('omittedArchives'),
+			peakOptionalBytes: Math.max(...recallLedger.map((e) => e.optionalBytes)), renderFailures: sum('renderFailures'),
 			budget: recallLedger[0].budget,
 			peakUsed: Math.max(...recallLedger.map((e) => e.used)),
 		};
@@ -4870,12 +5317,13 @@ export function apply(ctx, config) {
 	// opts.dropRecallCaches — a write to either file voids the matching cache,
 	// so freshness follows writes instead of the clock.
 	const indexCache = { text: undefined, at: 0 };
-	const usageCache = { map: undefined, at: 0 };
+	const usageCache = { map: undefined, recent: undefined, at: 0 };
 	opts.dropRecallCaches = () => {
 		indexCache.at = 0;
 		indexCache.text = undefined;
 		usageCache.at = 0;
 		usageCache.map = undefined;
+		usageCache.recent = undefined;
 	};
 	const readUsageCached = async () => {
 		const now = Date.now();
@@ -4884,10 +5332,13 @@ export function apply(ctx, config) {
 			// were judged (positives / correction rate). Cheap: one dot-file read
 			// per minute, and a failure just means "rank lexically only".
 			try {
-				const items = summarizeUsage(await readUsage(resolveRoot(opts)));
+				const entries = await readUsage(resolveRoot(opts));
+				const items = summarizeUsage(entries);
 				usageCache.map = new Map(items.map((it) => [it.href, it]));
+				usageCache.recent = summarizeUsage(entries.filter((entry) => entry.ms >= now - 7 * 24 * 60 * 60 * 1000));
 			} catch {
 				usageCache.map = new Map();
+				usageCache.recent = [];
 			}
 			usageCache.at = now;
 		}
@@ -4915,17 +5366,18 @@ export function apply(ctx, config) {
 					.filter((b) => b?.type === 'text')
 					.map((b) => b.text)
 					.join('\n');
-				const signature = `${payload.agent.id}:${userText.slice(0, 400)}`;
+				const signature = `${payload.turn ?? ''}:${createHash('sha256').update(userText).digest('hex')}`;
 				// MemOS borrow ⑤: every non-empty user turn gets a recall attempt,
 				// but the whole attempt is bounded by an absolute budget. On timeout
 				// we inject NOTHING (rather than a slow or half-built recall), so the
 				// step proceeds normally — the failure mode is silence, not latency.
 				const budgetMs = Math.min(Number(opts.recallTimeoutMs) || DEFAULTS.recallTimeoutMs, DEFAULTS.recallTimeoutMs);
+				const deadline = performance.now() + budgetMs;
 				const buildRecall = async () => {
 					if (!userText.trim()) return null;
 					if (recallServed.get(payload.agent.id) === signature) return null;
 					const indexText = await readIndexCached();
-					if (!indexText) return null;
+					// A missing index must not suppress separately configured negative rules.
 					// RRF fusion: lexical IDF rank + usage-heat rank (see
 					// matchIndexRows). Signals already exist in .usage.jsonl;
 					// without this they were collected but never used to rank.
@@ -4933,11 +5385,10 @@ export function apply(ctx, config) {
 					const qTokens = tokensOf(userText);
 					// 档案块：共识/道条目整份带入（独立通道，不与索引行 IDF 争名额）。
 					const archives = archiveBlocks(indexText, qTokens);
-					const matchedRows = matchIndexRows(indexText, qTokens, 3, usage);
+					const matchedRows = matchIndexRows(indexText, qTokens, 3, usage, { memoryRoot: resolveRoot(opts) });
 					// 三档 + 双侧账本挂在返回数组上，filter 会丢掉自定义属性，先取下来。
 					const recallStats = matchedRows.stats ?? null;
 					const recallHeld = matchedRows.heldRows ?? [];
-					recordRecall(recallStats); // 双侧账本（只读汇总给探针）
 					const base = matchedRows
 						// Pointer dedupe: when the user's own text already cites a memory
 						// file (they quoted an earlier recall or wrote the link), re-
@@ -4949,11 +5400,11 @@ export function apply(ctx, config) {
 					// context even when the current wording doesn't match it. The
 					// current step is never interrupted or modified.
 					if (usage && usage.size) {
-						const repairs = decisionRepairTargets([...usage.values()]).filter(
+						const repairs = decisionRepairTargets(usageCache.recent ?? []).filter(
 							(r) => !rows.some((l) => l.href === r.href) && !userText.includes(r.href),
 						);
 						if (repairs.length) {
-							const indexRows = indexRowsOf(indexText);
+							const indexRows = indexRowsOf(indexText, { memoryRoot: resolveRoot(opts) });
 							for (const r of repairs) {
 								const row = indexRows.find((x) => x.href === r.href);
 								if (!row) continue;
@@ -4961,16 +5412,6 @@ export function apply(ctx, config) {
 							}
 						}
 					}
-					// Bounded FIFO (5.27.0, audit): the signature carries a slice of
-					// user text, and one entry lives per agent for the whole process
-					// life — an unbounded Map grows with every session a long-running
-					// host ever opens. 512 is far above any plausible concurrent-agent
-					// count; evicting an idle agent's entry only means it can be
-					// re-served once, never a correctness loss.
-					if (recallServed.size > 512 && !recallServed.has(payload.agent.id)) {
-						recallServed.delete(recallServed.keys().next().value);
-					}
-					recallServed.set(payload.agent.id, signature);
 					// 负向规则注入（2026-11-09，阀门下行通道的零配合落点）：
 					// 已人工确认的禁令若关键词命中本轮输入，即使记忆索引一行都
 					// 没匹配上也要注入——"什么不能做"必须在动手前到达上下文。
@@ -4983,13 +5424,22 @@ export function apply(ctx, config) {
 						negativeLines = [];
 					}
 					if (!rows.length && !negativeLines.length && !archives.length) return null;
-					// Usage signal: what recall actually put in front of the model is
-					// the demand side of the memory's popularity. Fire and forget —
-					// logging must never delay or break the step.
-					for (const r of rows) void appendUsage(resolveRoot(opts), { href: r.href, kind: 'recall' });
-					const message = rows.length || archives.length
-						? buildRecallMessage(rows, recallHeld, recallStats, archives)
-						: { role: 'user', content: [{ type: 'text', text: '' }], source: { kind: 'memory-manager/recall', form: 'recall' } };
+					let selectedRows = [], selectedArchives = [];
+					let budgetOmitted = { rows: 0, repairs: 0, held: 0, archives: 0 }, optionalBytes = 0, renderFailed = false;
+					let message = { role: 'user', content: [{ type: 'text', text: '' }], source: { kind: 'memory-manager/recall', form: 'recall' } };
+					if (rows.length || archives.length) {
+						try {
+							const rendered = buildBudgetedRecall(rows, recallHeld, recallStats, archives, { maxOptionalBytes: opts.recallOptionalBudgetBytes });
+							message = rendered.message;
+							selectedRows = rendered.rows;
+							selectedArchives = rendered.archives;
+							budgetOmitted = rendered.omitted;
+							optionalBytes = rendered.optionalBytes;
+						} catch {
+							// Optional formatting must not discard rules that were already read.
+							renderFailed = true;
+						}
+					}
 					if (negativeLines.length) {
 						const block = [
 							'### ⛔ 负向规则（valves · 已人工确认）',
@@ -4999,14 +5449,27 @@ export function apply(ctx, config) {
 						].join('\n');
 						message.content = [{ type: 'text', text: `${message.content[0]?.text ? message.content[0].text + '\n\n' : ''}${block}` }];
 					}
-					return createUserMessage(message);
+					if (!message.content[0]?.text) return null;
+					return {
+						message: createUserMessage(message), signature, rows: selectedRows,
+						recallStats: recallStats ?? { injected: 0, held: 0, dropped: 0, budget: RECALL_BUDGET_TOKENS, usedTokens: 0 },
+						archivesCount: selectedArchives.length, rulesCount: negativeLines.length, budgetOmitted, optionalBytes, renderFailed,
+					};
 				};
 				// Absolute budget: whichever settles first wins. A timeout injects
 				// nothing (silence), never a slow or partial recall.
-				recall = await Promise.race([
-					buildRecall(),
-					new Promise((resolve) => setTimeout(() => resolve(null), budgetMs)),
-				]);
+				let timeout;
+				try {
+					recall = await Promise.race([
+						buildRecall(),
+						new Promise((resolve) => { timeout = setTimeout(() => resolve(null), budgetMs); }),
+					]);
+					// A blocked event loop can let the build's microtask run before the
+					// expired timer. It must not admit an already-expired candidate.
+					if (performance.now() >= deadline) recall = null;
+				} finally {
+					if (timeout !== undefined) clearTimeout(timeout);
+				}
 				// Passive capture (⑥): append the user's own words to today's RAW layer.
 				// Opt-in, best-effort and SIDE-STEPPED: it never blocks, never breaks
 				// the step, and never changes what was injected above.
@@ -5014,15 +5477,18 @@ export function apply(ctx, config) {
 					void (async () => {
 						try {
 							const root = resolveRoot(opts);
-							const today = localDateStr();
-							const p = path.join(root, `${today}.md`);
-							const before = (await readIfExists(p)) ?? dailyTemplate(today);
-							const line = captureLineFor(userText, before, opts);
-							// The capture writes via appendFile (bypassing writeText's
-							// choke point), so the credential scan must run here too —
-							// the user's raw words are the MOST likely place for a pasted
-							// token.
-							if (line) await appendFile(p, `${before.endsWith('\n') || before === '' ? '' : '\n'}${redactSecrets(line).text}\n`, 'utf8');
+							await withMemoryRootTransaction(root, async () => {
+								const today = localDateStr();
+								const p = path.join(root, `${today}.md`);
+								let info;
+								try { info = await lstat(p); } catch (err) { if (err?.code !== 'ENOENT') throw err; }
+								// Do not interpret unreadable or aliased existing files as a new day.
+								if (info && (!info.isFile() || info.nlink > 1)) throw new Error('每日记录不是独立普通文件');
+								const before = info ? await readFile(p, 'utf8') : dailyTemplate(today);
+								const safeText = redactSecrets(userText).text;
+								const line = captureLineFor(safeText, before, { enabled: true, maxChars: opts.captureMaxChars });
+								if (line) await writeText(p, `${before}${before.endsWith('\n') || before === '' ? '' : '\n'}${line}\n`, { memoryRoot: root });
+							});
 						} catch {
 							/* capture is a best-effort breadcrumb, never a failure */
 						}
@@ -5033,7 +5499,17 @@ export function apply(ctx, config) {
 			}
 			const decision = await next();
 			if (!recall || decision.kind !== 'enter') return decision;
-			return { ...decision, messages: [recall, ...decision.messages] };
+			// Commit only the candidate that actually won the deadline and is being
+			// inserted into an entered step. Late builds and rejected steps leave no
+			// served signature or exposure records behind.
+			if (recallServed.size >= 512 && !recallServed.has(payload.agent.id)) recallServed.delete(recallServed.keys().next().value);
+			recallServed.set(payload.agent.id, recall.signature);
+			if (recall.recallStats) recordRecall({ ...recall.recallStats, actualRows: recall.rows.length, archives: recall.archivesCount, rules: recall.rulesCount, budgetOmitted: recall.budgetOmitted, optionalBytes: recall.optionalBytes, renderFailed: recall.renderFailed });
+			for (const r of recall.rows) {
+				const root = resolveRoot(opts);
+				void withMemoryRootTransaction(root, () => appendUsage(root, { href: r.href, kind: 'recall' })).catch(() => {});
+			}
+			return { ...decision, messages: [recall.message, ...decision.messages] };
 		}, { prepend: true }),
 	);
 	const sp = ctx.systemPrompt;

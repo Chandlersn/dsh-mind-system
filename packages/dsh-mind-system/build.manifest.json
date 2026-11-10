@@ -10,10 +10,6 @@
         {
           "path": "cordis.patch.yml",
           "why": "装配统一由合成包根 cordis.patch.yml 的 9 条 insert 表达；成员 patch 一起装会重复装载"
-        },
-        {
-          "path": "reload-core.mjs",
-          "why": "运行时自举：clis/index.js 的 ensureReloadCore() 内嵌 RELOAD_CORE_SOURCE，缺文件时自己写出。独立包那份只是可读参照，合成包不需要"
         }
       ]
     },

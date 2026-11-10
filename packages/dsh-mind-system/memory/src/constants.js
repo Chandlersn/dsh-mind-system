@@ -4,7 +4,7 @@
  */
 
 export const name = 'memory-manager';
-export const inject = ['tools', 'systemPrompt', 'webServer'];
+export const inject = ['tools', 'systemPrompt', 'webServer', 'fs', 'workingDirectory'];
 
 export const DEFAULTS = {
 	maxIndexBytes: 10 * 1024, // 索引舒适线

@@ -106,7 +106,18 @@ test('文案是证据口吻，不是命令：不出现"别再错一次/先读它
 	assert.ok(text.includes('点名来源') && text.includes('不适用的忽略'), '来源署名与忽略声明');
 	assert.ok(!text.includes('别在同一个判断上再错一次'), '命令口吻已移除');
 	assert.ok(text.includes('带入') && text.includes('暂缓') && text.includes('丢弃'), '双侧指标同处可见');
-	assert.ok(text.includes('用了'), '预算用量可见');
+	assert.ok(text.includes('强档摘要估算') && text.includes('不含档案、规则与格式') && text.includes('首条可能超额'), '明确估算范围与首条可能超额');
+});
+
+test('最终带入行数与索引分档分开，预算不伪装成消息总额', () => {
+	const rows = [{ name: '甲', summary: '修复摘要', href: 'functions/甲.md', zone: 'function', repair: { corrections: 3, badRate: 0.8 } }];
+	const stats = { matched: 4, injected: 2, held: 1, dropped: 1, budget: 10, usedTokens: 14 };
+	const archives = [{ kind: '## 道层', text: '档案内容' }];
+	const text = buildRecallMessage(rows, [], stats, archives).content[0].text;
+	assert.match(text, /索引分档 4 条：强档 2 · 暂缓 1 · 丢弃 1/);
+	assert.match(text, /最终带入 1 条索引\/修复项/);
+	assert.match(text, /强档摘要估算 14\/10 token；不含档案、规则与格式，首条可能超额/);
+	assert.match(text, /档案内容/);
 });
 
 test('擦边档文案只列名不带内容', () => {

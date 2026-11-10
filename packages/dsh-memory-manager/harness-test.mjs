@@ -4,15 +4,15 @@
  * fake ctx, and exercises write/index/insight/fold/rename/check/resolve/
  * supersede/recall against a temp memory root.
  *
- * Data-flow contract (layered): the daily log is the RAW layer (free-form, the
- * model maintains it), memory_write distills functions/ blocks only,
+ * Data-flow contract (layered): daily logs are RAW evidence written only by
+ * plugin collection, memory_write distills functions/ blocks only,
  * memory_index is the sole index writer, insights sit between, and the check
  * lints everything.
  *
  * The Host installation must be discoverable (see resolveDshRoot): set
  * DSH_INSTALL_DIR when the harness install is not the process's own ancestor.
  */
-import { mkdir, mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, readFile, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -345,21 +345,22 @@ const fn4 = await readFile(w4.featureFile, 'utf8');
 ok(fn4.includes('另一功能（未建档）'), 'missing related renders as plain text');
 ok(!fn4.includes('](另一功能.md)'), 'no dangling href for missing related');
 
-// 6) resolve: second feature with an open item, then resolve it. The raw daily
-// layer is free-form — simulate the model recording an open item itself.
+// 6) resolve remains accepted, but historical raw evidence is immutable.
+// This isolated daily fixture models a previously captured user entry.
 await T.memory_write.execute(
 	{ feature: '遗留功能', title: '引入遗留', summary: '有遗留项的功能', result: 'pending' },
 	exec,
 );
 const dailyPath0 = path.join(root, `${today}.md`);
-await writeFile(dailyPath0, `# ${today} 记录\n\n- 遗留功能有个开放风险 → [functions/遗留功能.md](functions/遗留功能.md)\n`, 'utf8');
+const dailyRaw0 = `# ${today} 记录\n\n- 遗留功能有个开放风险 → [functions/遗留功能.md](functions/遗留功能.md)\n`;
+await writeFile(dailyPath0, dailyRaw0, 'utf8');
 const w5 = await T.memory_write.execute(
 	{ feature: '测试功能', title: '解决遗留项', summary: '勾掉遗留功能的待观察', resolve: '遗留功能', result: 'done' },
 	exec,
 );
 const d1 = await T.memory_read.execute({ kind: 'daily' }, exec);
-ok(d1.content.includes('✅') && d1.content.includes('functions/遗留功能.md'), `resolve stamps the open item (logs: ${w5.resolvedDailyLogs.join(',')})`);
-ok(!d1.content.includes('已解决 → ['), 'bare ✅ stamp, no second pointer');
+ok(await readFile(dailyPath0, 'utf8') === dailyRaw0 && d1.content === dailyRaw0, 'resolve preserves raw daily content');
+ok(w5.resolvedDailyLogs.length === 0 && w5.warnings.some((w) => /未修改或勾选/.test(w)), 'resolve reports skipped daily updates');
 
 // 7) supersede: new insight replaces the old one
 const i2 = await T.memory_insight.execute(
@@ -425,8 +426,29 @@ ok(fold1.foldedBlocks === 3 && fold1.keptBlocks === 2, `fold counts: ${fold1.fol
 ok(fold1.bytesAfter < fold1.bytesBefore, `fold shrinks: ${fold1.bytesBefore} -> ${fold1.bytesAfter}`);
 const foldedFile = await T.memory_read.execute({ kind: 'function', name: '折叠目标' }, exec);
 ok(foldedFile.content.includes('早期演化'), 'folded file has evolution paragraph');
+ok(!/^## 早期演化.*→/m.test(foldedFile.content), 'fold heading does not duplicate every date tag');
+ok((foldedFile.content.match(/^- \[\d{4}-\d{2}-\d{2}/gm) ?? []).length >= 3, 'fold retains individual date tags for numbering and history');
+{
+	const p = path.join(root, 'functions', '折叠隔离.md');
+	const before = '# test\n\n## [2026-01-01] first\n\n- **结果**：完成\n\n## 必须保留\n\n不可丢失\n\n## [2026-01-02] second\n\n正文\n';
+	await writeFile(p, before, 'utf8');
+	let rejected = false;
+	try { await T.memory_fold.execute({ feature: '折叠隔离', keep: 1 }, exec); } catch { rejected = true; }
+	ok(rejected && await readFile(p, 'utf8') === before, 'fold refuses to discard intervening sections');
+}
 ok(foldedFile.content.includes('块一') && foldedFile.content.includes('块五'), 'folded history names oldest, kept names newest');
 ok(foldedFile.content.includes('## ['), 'kept blocks remain');
+// Existing headings are shortened only when every tag survives in that section's body.
+{
+	const p = path.join(root, 'functions', '标题整理.md');
+	const before = '# 测试\n\n## 早期演化（2 块已折叠：2026-01-01→2026-01-01补）\n\n- [2026-01-01] 甲\n  补充说明\n- [2026-01-01补] 乙\n\n## 早期演化（1 块已折叠：2026-01-02）\n\n原文缺失标签\n';
+	await writeFile(p, before, 'utf8');
+	await T.memory_fold.execute({ feature: '标题整理', normalizeHeadings: true }, exec);
+	const actual = await readFile(p, 'utf8');
+	ok(actual === before.replace('## 早期演化（2 块已折叠：2026-01-01→2026-01-01补）', '## 早期演化（2 块已折叠）'), 'normalization keeps all body text and skips missing tags');
+	const report = await T.memory_check.execute({}, exec);
+	ok(report.results.some((r) => r.rule === 'R27' && r.message.includes('标题整理.md')), 'R27 identifies duplicated evolution headings in a real fixture');
+}
 // 8b) a fold must not recycle a same-day tag: the folded tags live on in the
 // 「早期演化」 list, so the next write continues the sequence (补4 → 补5) instead
 // of colliding with a folded 补2 and tripping the R3 ordering check.
@@ -460,6 +482,15 @@ const mergedFile = await T.memory_read.execute({ kind: 'function', name: '测试
 ok(mergedFile.content.includes('并入前块'), 'merged blocks appended to target');
 const mergedIdx = await T.memory_read.execute({ kind: 'index' }, exec);
 ok(!mergedIdx.content.includes('| 待并入 |'), 'merged source row removed from index');
+{
+	const { readLedger, contentHash } = await import('./src/write-ledger.js');
+	const ledger = await readLedger(root);
+	ok(ledger?.get('functions/旧名功能.md')?.op === 'delete' && ledger.get('functions/旧名功能.md').to === 'functions/新名功能.md', 'rename records completed source deletion and destination');
+	ok(ledger?.get('functions/待并入.md')?.op === 'delete' && ledger.get('functions/待并入.md').to === 'functions/测试功能.md', 'merge records completed source deletion and destination');
+	ok(ledger?.get('functions/新名功能.md')?.hash === contentHash(await readFile(path.join(root, 'functions', '新名功能.md'), 'utf8')), 'rename destination content matches recorded hash');
+	const report = await T.memory_check.execute({}, exec);
+	ok(!report.results.some((r) => r.rule === 'R26' && /(?:旧名功能|待并入)\.md.*不存在/.test(r.message)), 'R26 does not flag completed rename or merge as unexplained loss');
+}
 
 // 11) full check now passes (no FAIL)
 const c1 = await T.memory_check.execute({}, exec);
@@ -1247,6 +1278,11 @@ for (const [form, bullet] of [
 		dupThrew++;
 	}
 	ok(dupThrew === 1, 'memory_dao rejects duplicate-only sources through the real execute path');
+	// 候选写入走真实插件工具，并登记到同一个自定义记忆根。
+	await T.memory_dao.execute({ name: '集成候选', status: 'candidate', proposition: '秩序与混乱会互相转化，各自演化出不同的结构', extractedFrom: lawSlugs, body: '## 三种形态\n\n- 一种：自证。\n- 两种：外物。\n\n## 依据展开\n\n这几条法共同指向同一件事，因此合起来成为一条道。\n\n## 边界\n\n- 当产出者不在回路之内时，此判据不成立。\n' }, exec);
+	const { readLedger: readCandidateLedger, contentHash: candidateHash } = await import('./src/write-ledger.js');
+	const candidateText = await readFile(path.join(root, 'dao', '_candidates', '集成候选.md'), 'utf8');
+	ok((await readCandidateLedger(root))?.get('dao/_candidates/集成候选.md')?.hash === candidateHash(candidateText), 'candidate tool records nested write under configured memory root');
 	// 5 条不同的法 → 写入 dao/<name>.md
 	await T.memory_dao.execute({ name: '集成之道', proposition: '秩序与混乱会互相转化，各自演化出不同的结构', extractedFrom: lawSlugs, body: '## 三种形态\n\n- 一种：自证。\n- 两种：外物。\n\n## 依据展开\n\n这几条法共同指向同一件事，因此合起来成为一条道。\n\n## 边界\n\n- 当产出者不在回路之内时，此判据不成立。\n' }, exec);
 	ok(await statExists(path.join(root, 'dao', '集成之道.md')), 'memory_dao writes dao/<name>.md through the execute path');
@@ -1320,6 +1356,89 @@ for (const [form, bullet] of [
 	const after = await mod.runHealthCheck(vanishRoot, { ...mod.DEFAULTS, newFeatureGraceDays: 0 });
 	ok(!after.results.some((r) => r.rule === 'R25'), 'R25 clears once the ledger is redirected to the surviving file');
 	await rm(vanishRoot, { recursive: true, force: true });
+}
+
+// R26 must scan nested files, report missing records, and keep failed scans unknown.
+{
+	const auditRoot = await mkdtemp(path.join(tmpdir(), 'dsh-r26-recursive-'));
+	try {
+		await mkdir(path.join(auditRoot, 'dao', '_candidates'), { recursive: true });
+		await mkdir(path.join(auditRoot, 'functions'), { recursive: true });
+		await writeFile(path.join(auditRoot, 'MEMORY.md'), '# 索引\n');
+		const candidateKey = 'dao/_candidates/候选.md';
+		await writeFile(path.join(auditRoot, ...candidateKey.split('/')), '# 变动后的候选\n');
+		// ENOTDIR is deterministic even when tests run as an administrator.
+		await writeFile(path.join(auditRoot, 'capabilities'), 'not a directory');
+		await symlink(path.join(auditRoot, 'functions'), path.join(auditRoot, 'dao', '关联目录'), process.platform === 'win32' ? 'junction' : 'dir');
+		const records = [
+			{ key: candidateKey, hash: 'stale' },
+			{ key: 'functions/消失.md', hash: 'old' },
+			{ key: 'capabilities/状态未知.md', hash: 'old' },
+			{ key: 'dao/关联目录/状态未知.md', hash: 'old' },
+			{ key: 'functions/未完成.md', op: 'delete_intent', id: 'pending' },
+			{ key: 'functions/已删除.md', op: 'delete_intent', id: 'done' },
+			{ key: 'functions/已删除.md', op: 'delete', id: 'done' },
+			{ key: 'functions/重现.md', op: 'delete_intent', id: 'reappear' },
+			{ key: 'functions/重现.md', op: 'delete', id: 'reappear' },
+		];
+		await writeFile(path.join(auditRoot, 'functions', '重现.md'), 'again');
+		await writeFile(path.join(auditRoot, '.write-ledger.jsonl'), records.map(JSON.stringify).join('\n') + '\n');
+		const report = await mod.runHealthCheck(auditRoot, { ...mod.DEFAULTS, newFeatureGraceDays: 0 });
+		const findings = report.results.filter((r) => r.rule === 'R26').map((r) => r.message);
+		ok(findings.some((m) => m.includes(candidateKey) && m.includes('不符')), 'R26 scans nested candidate files and detects mismatches');
+		ok(findings.some((m) => m.includes('functions/消失.md') && m.includes('不存在')), 'R26 reports recorded files absent from the filesystem');
+		ok(findings.some((m) => m.includes('functions/未完成.md') && m.includes('未完成')), 'R26 reports an unfinished deletion as unknown');
+		ok(!findings.some((m) => m.includes('functions/已删除.md') && m.includes('不存在')), 'R26 accepts a recorded completed deletion');
+		ok(findings.some((m) => m.includes('functions/重现.md') && m.includes('文件存在')), 'R26 reports a deleted path that reappears');
+		ok(findings.some((m) => m.includes('capabilities') && m.includes('状态未知')), 'R26 reports directory scan errors as unknown');
+		ok(!findings.some((m) => m.includes('capabilities/状态未知.md') && m.includes('不存在')), 'R26 never calls an unreadable subtree missing');
+		ok(findings.some((m) => m.includes('dao/关联目录') && m.includes('符号链接') && m.includes('状态未知')), 'R26 reports unscanned links as unknown');
+		ok(!findings.some((m) => m.includes('dao/关联目录/状态未知.md') && m.includes('不存在')), 'R26 never calls entries beneath an unscanned link missing');
+		ok(!findings.some((m) => /插件之外|外部.*写入|外部.*修改/.test(m)), 'R26 does not claim who wrote a mismatched file');
+	} finally {
+		await rm(auditRoot, { recursive: true, force: true });
+	}
+}
+
+// Interrupted deletion and same-path races are tested against an isolated root.
+{
+	const isolated = await mkdtemp(path.join(tmpdir(), 'dsh-delete-events-'));
+	try {
+		const { recordDeleteEvent, readLedger } = await import('./src/write-ledger.js');
+		const { writeText } = await import('./src/util.js');
+		await mkdir(path.join(isolated, 'functions'), { recursive: true });
+		await writeFile(path.join(isolated, 'MEMORY.md'), '# index\n');
+		const first = path.join(isolated, 'functions', '完成失败.md');
+		await writeText(first, 'source', { memoryRoot: isolated });
+		let failure = '';
+		try { await mod.deleteTrackedFile(isolated, first, 'source', { writeEvent: (root, e) => e.op === 'delete' ? false : recordDeleteEvent(root, e) }); } catch (e) { failure = e.message; }
+		ok(failure.includes('已删除') && failure.includes('记账结果未知') && failure.includes('不要盲目重试') && !await statExists(first), 'failed completion explicitly reports deletion and unknown ledger outcome');
+		ok((await readLedger(isolated))?.get('functions/完成失败.md')?.op === 'delete_intent', 'failed completion leaves an incomplete intent');
+		const report = await mod.runHealthCheck(isolated, { ...mod.DEFAULTS, newFeatureGraceDays: 0 });
+		ok(report.results.some((r) => r.rule === 'R26' && r.message.includes('完成失败.md') && r.message.includes('未完成')), 'R26 reports incomplete deletion after completion append failure');
+		const second = path.join(isolated, 'functions', '意图失败.md');
+		await writeText(second, 'source', { memoryRoot: isolated });
+		failure = '';
+		try { await mod.deleteTrackedFile(isolated, second, 'source', { writeEvent: async () => false }); } catch (e) { failure = e.message; }
+		ok(failure.includes('删除尚未执行') && failure.includes('意图记账结果未知') && failure.includes('不要盲目重试') && await readFile(second, 'utf8') === 'source', 'failed intent append preserves source and reports unknown ledger outcome');
+		const third = path.join(isolated, 'functions', '发生竞争.md');
+		await writeText(third, 'source', { memoryRoot: isolated });
+		failure = '';
+		try { await mod.deleteTrackedFile(isolated, third, 'source', { writeEvent: async (root, e) => { const ok = await recordDeleteEvent(root, e); if (e.op === 'delete_intent') await writeFile(third, 'changed by other writer'); return ok; } }); } catch (e) { failure = e.message; }
+		ok(failure.includes('发生变化') && await readFile(third, 'utf8') === 'changed by other writer', 'concurrent change observed after intent is not deleted');
+		ok((await readLedger(isolated))?.get('functions/发生竞争.md')?.op === 'delete_intent', 'concurrent change leaves deletion state unknown');
+		const target = path.join(isolated, 'functions', '目标竞争.md');
+		await writeText(target, 'newer', { memoryRoot: isolated });
+		failure = '';
+		try { await mod.writeRenameTarget(isolated, target, 'older', 'merged'); } catch (e) { failure = e.message; }
+		ok(failure.includes('发生变化') && await readFile(target, 'utf8') === 'newer', 'rename target changed since read is not overwritten');
+		const fourth = path.join(isolated, 'functions', '同进程写入.md');
+		await writeText(fourth, 'old', { memoryRoot: isolated });
+		let concurrent;
+		await mod.deleteTrackedFile(isolated, fourth, 'old', { writeEvent: async (root, e) => { const ok = await recordDeleteEvent(root, e); if (e.op === 'delete_intent') concurrent = writeText(fourth, 'new', { memoryRoot: isolated }); return ok; } });
+		await concurrent;
+		ok(await readFile(fourth, 'utf8') === 'new' && (await readLedger(isolated))?.get('functions/同进程写入.md')?.hash, 'same-process write is serialized after delete and remains recorded');
+	} finally { await rm(isolated, { recursive: true, force: true }); }
 }
 
 // 23) memory_skill — the crystallization layer (MemOS-borrowed, file-discipline
@@ -1411,7 +1530,7 @@ ok(mod.DISCIPLINE_TEXT.includes('执行式日志') && mod.DISCIPLINE_TEXT.includ
 {
 	const { dailyTemplate } = await import(new URL('./src/markdown.js', import.meta.url).href);
 	const dt = dailyTemplate('2026-10-21');
-	ok(dt.includes('执行式日志') && dt.includes('轻过滤'), 'a fresh daily log opens with the filter line');
+	ok(dt.includes('执行式日志') && dt.includes('只能通过插件采集写入') && dt.includes('不自动记录助手'), 'a fresh daily log states collection source, limits and execution-log filter');
 }
 // 5.24.0: a skill IS the host bundle — no bundlePath arg, no pointer section.
 ok(!('bundlePath' in (T.memory_skill.parameters ?? {})) && !('hostName' in (T.memory_skill.parameters ?? {})), 'obsolete skill fields are gone (bundlePath/hostName)');
