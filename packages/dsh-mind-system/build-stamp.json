@@ -297,7 +297,7 @@
     },
     "mind/README.md": {
       "source": "dsh-agent-mind/README.md",
-      "sha256": "d79ada9f753b8ce46d9bc3194ce4418f7aee91b2a709dd12923ca79222be622a"
+      "sha256": "c2a1db6bba073c6940ed6e7c21c279571bcef83bcd29dd47721f59433f310448"
     },
     "mind/index.js": {
       "source": "dsh-agent-mind/index.js",
@@ -337,7 +337,7 @@
     },
     "mind/src/sampling.js": {
       "source": "dsh-agent-mind/src/sampling.js",
-      "sha256": "9a1954c0d2c258fcbc89921a4eba31915d8edfb62a8bc97dfc096a271821e41a"
+      "sha256": "f707377cc94e55f664ec1e5b9cae4484f041b9a72cac2d724df0dc14552bc2fd"
     },
     "mind/src/situation.js": {
       "source": "dsh-agent-mind/src/situation.js",
@@ -401,7 +401,7 @@
     },
     "mind/test/sampling.test.js": {
       "source": "dsh-agent-mind/test/sampling.test.js",
-      "sha256": "363de3faf6bff23bcde062b5e2c123c63685969b579a723a08a55903abde5b78"
+      "sha256": "564f785ea1d91cfbf6afb6f378024cd2107e4be7aea3ac3206e9627a14a1d0c0"
     },
     "valves/README.md": {
       "source": "dsh-valves/README.md",

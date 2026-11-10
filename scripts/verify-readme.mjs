@@ -98,7 +98,15 @@ ok(readme.includes(`≥ ${daoMin} 条法萃取`), `道来源下限 ${daoMin} 与
 // ---------------------------------------------------------------------------
 console.log('\n--- 4. 内置信号数 ---');
 const dispatch = read(join(pkgs, 'dsh-agent-mind', 'src', 'dispatch.js'));
-const sigCount = (dispatch.match(/name:\s*'(?:no-effect|need-\w+|do-it|intent-[\w-]+)'/g) ?? []).length;
+// 只数 BUILTIN_SIGNALS 数组里的条目（owner: 'mind' 紧跟 name: '...'）。
+// 旧写法是硬编码名字白名单（no-effect|need-*|do-it|intent-*），于是新增一族
+// 信号不会被计数——README 说要改数字，守卫却仍按旧数比对，两边一起错。
+// 现在按结构数：BUILTIN_SIGNALS 内每个 `name: '<x>'` 都算一条内置信号。
+const builtinBlock = dispatch.slice(
+	dispatch.indexOf('const BUILTIN_SIGNALS'),
+	dispatch.indexOf('const registry') === -1 ? undefined : dispatch.indexOf('const registry'),
+);
+const sigCount = (builtinBlock.match(/^\s{4}name:\s*'[\w-]+'/gm) ?? []).length;
 const claimedSig = Number(/内置 (\d+) 条信号/.exec(readme)?.[1] ?? -1);
 ok(claimedSig === sigCount, `README 声称 ${claimedSig} 条信号 = 实际 ${sigCount}`);
 

@@ -14,8 +14,12 @@
  *
  * ## 采样记什么（刻意少）
  *
- * 只记时间、判出的处境和命中信号名，不记录原文或稳定输入哈希。
- * 旧版本的历史文件可能仍含哈希；不会自动删除既有数据。
+ * 记时间、判出的处境、判定路径、命中信号名；**未命中行**（no-signal /
+ * ambiguous）额外记一条 ≤60 字的**脱敏摘要**（`digest`），用于回查"该加什么词"。
+ * 不记原文、不记可反查的稳定哈希；旧版本历史文件可能仍含哈希，不会自动删除。
+ *
+ * 摘要的边界见 `redactInput()`：抹掉路径/URL/邮箱/凭据/长 hex/代码片段后截断，
+ * 拿到它足以判断该加什么词，但拼不回原句。
  *
  * ## 判据
  *
@@ -115,6 +119,12 @@ export async function recordSample(dshHome, decision) {
 	// 空输入 → 不采样。理由见上。
 	if (String(text).length === 0) return;
 
+	// 摘要只写在"要扩词"的行上：no-signal / ambiguous 才需要人回头看是哪句话。
+	// 命中行已被 hits 说清，不必留输入（少存一份就少一份风险）。
+	const needsDigest = decision?.unknown === true
+		&& (decision?.reason === 'no-signal' || decision?.ambiguous === true);
+	const digest = needsDigest ? redactInput(text) : '';
+
 	const line = `${JSON.stringify({
 		t: new Date().toISOString(),
 		situation: decision?.unknown ? null : decision?.situation,
@@ -123,6 +133,9 @@ export async function recordSample(dshHome, decision) {
 		...(decision?.reason !== undefined ? { reason: decision.reason } : {}),
 		...(decision?.ambiguous === true ? { ambiguous: true } : {}),
 		hits: decision?.hits ?? [],
+		// 脱敏摘要（2026-11-10）：只记未命中行，最多 60 字、抹掉路径/URL/凭据/代码。
+		// 目的：让"该加什么词"可回查，而不是靠人当场记住。
+		...(digest ? { digest } : {}),
 	})}\n`;
 
 	// 排到链尾：前一次写完再写这一次。失败不阻断后续。
@@ -136,6 +149,51 @@ export async function recordSample(dshHome, decision) {
 		}
 	});
 	await writeChain;
+}
+
+/**
+ * 输入的脱敏摘要 —— 让"哪句话漏判了"可回查，同时不落原文。
+ *
+ * ## 为什么必须加这个（2026-11-10 用户要求）
+ *
+ * 旧样本只记判定结果（处境/命中的信号名），**不记输入**。后果是：
+ * 知道"今天有 25 次 no-signal"，却不知道是哪些话导致的 —— 于是扩词表
+ * 只能靠人当场记住用户说了什么（本次三族新词全是我亲眼看到的原话，
+ * 第二天就找不回来了）。这就是词典无法自动积累的根本原因。
+ *
+ * ## 与"刻意不存原文"的关系（不是推翻，是承接）
+ *
+ * 该模块头部的约束仍然成立：**不存原文、不存可反查的稳定哈希**。
+ * 摘要做三件事把风险压到最低：
+ *
+ * 1. **截断** —— 最多 60 字，丢掉后半句的具体内容（路径、代码、结论）。
+ * 2. **抹掉标识** —— 路径、URL、邮箱、长 hex/token、引号内的代码片段一律
+ *    替换成类型标记；凭据形态绝不留。
+ * 3. **只在有信号价值的行写** —— 只对 `no-signal` / `ambiguous` 写入摘要
+ *    （命中行已经被 `hits` 说清了）。这让摘要总量小、且只覆盖"要扩词"的场景。
+ *
+ * 判据：拿到摘要能判断"该加什么词"，但拼不回原句、也定位不到具体业务。
+ *
+ * @param {string} text 原始输入。
+ * @returns {string} 脱敏摘要（可能为空）。
+ */
+export function redactInput(text) {
+	let s = String(text ?? '').replace(/\s+/g, ' ').trim();
+	if (!s) return '';
+	// 顺序有讲究：先抹长结构，再截断，否则截断会把 token 切成半截逃过检测。
+	s = s
+		.replace(/\b[A-Za-z]:[\\/][^\s，。；、）)]+/g, '<path>')          // Windows 路径
+		.replace(/(?:^|\s)\/(?:[\w.-]+\/)+[\w.-]*/g, ' <path>')            // POSIX 路径
+		.replace(/\bhttps?:\/\/[^\s，。；、）)]+/g, '<url>')
+		.replace(/\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g, '<email>')
+		// 凭据形态：常见前缀 + 足够长的尾巴，或超长纯 hex/base64
+		.replace(/\b(?:sk|ghp|gho|ghs|xox[abp]|AKIA|Bearer)[-_A-Za-z0-9]{8,}\b/g, '<secret>')
+		.replace(/\b[A-Fa-f0-9]{24,}\b/g, '<hash>')
+		// 代码片段：反引号/引号内的内容通常是具体实现，不该进样本
+		.replace(/`[^`]{1,80}`/g, '<code>')
+		.replace(/「[^」]{40,}」/g, '<quote>');
+	if (s.length > 60) s = `${s.slice(0, 60)}…`;
+	return s;
 }
 
 /**
