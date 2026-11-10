@@ -54,6 +54,8 @@ import { gateDao, gateFa, concreteMarkersOf, MIN_DAO_SOURCES, MAX_DAO_ENTRIES, d
 // 与 layer-gate（写入前准入）分工：准入看输入，自检看**磁盘上的产物**。
 import { checkArtifact, selfCheckLine, selfCheckWarnings } from './src/layer-selfcheck.js';
 import { checkDaoBody, philosophicalShape } from './src/dao-shape.js';
+// 候选公理（2026-11-10 用户要求）：agent 升华 → 用户决策。
+import { AXIOM_CANDIDATE_STATES, confirmAxiomCandidate, rejectAxiomCandidate, describeCandidate } from './src/axiom-candidate.js';
 // 阀门桥（2026-11-09）：对 dsh-valves 的可选依赖——负向规则召回注入 + 上行评估留痕。
 // 缺 valves 时全部返回 undefined，既有行为一分不变（N4 降级）。
 import { relevantNegativeRules, recordUpwardWrite, upwardEntryFromWrite } from './src/valves-bridge.js';
@@ -4269,6 +4271,126 @@ function memoryPanelApi(opts, connection, inbox) {
 					opts.reload().catch((e) => console.warn?.(`memory-manager: reload crashed: ${e?.message ?? e}`));
 				}, 150);
 				return;
+			}
+			if (seg === 'axiom-candidates') {
+				// 候选公理列表（2026-11-10）：面板道层用它做"候选"筛选标签。
+				// 只读；确认/否决走 axiom-action。
+				const candDir = path.join(root, 'dao', '_candidates');
+				let names = [];
+				try {
+					names = (await readdir(candDir)).filter((f) => f.endsWith('.md')).sort();
+				} catch (err) {
+					// 与巡检同一纪律：读不到**不能**报成"零候选"。
+					// dao/ 存在才算"还没候选"，否则是记忆根故障。
+					if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') {
+						let daoOk = false;
+						try { daoOk = (await readdir(path.join(root, 'dao'), { withFileTypes: true })) !== undefined; } catch { daoOk = false; }
+						if (!daoOk) return json(res, 500, { error: 'dao/ 不可读（记忆根可能有问题）', candidates: [] });
+						return json(res, 200, { candidates: [], count: 0 });
+					}
+					return json(res, 500, { error: String(err?.message ?? err), candidates: [] });
+				}
+				const items = [];
+				for (const f of names) {
+					const slug = f.replace(/\.md$/, '');
+					try {
+						const text = await readFile(path.join(candDir, f), 'utf8');
+						const proposition = /##\s*命题\s*\n+([\s\S]*?)(?:\n##|$)/.exec(text)?.[1]?.trim() ?? '';
+						const sources = [...text.matchAll(/^- \[([^\]]+)\]\(\.\.\/insights\//gm)].map((m) => m[1]);
+						items.push({
+							...describeCandidate({
+								name: slug, proposition, extracted_from: sources,
+								status: AXIOM_CANDIDATE_STATES.candidate,
+								evidence: /##\s*待决策\s*\n+([\s\S]*?)$/.exec(text)?.[1]?.trim() ?? '',
+							}),
+							file: `dao/_candidates/${f}`,
+						});
+					} catch {
+						items.push({ name: slug, proposition: '', source_count: 0, status: 'candidate', decision_needed: true, unreadable: true, file: `dao/_candidates/${f}` });
+					}
+				}
+				return json(res, 200, { candidates: items, count: items.length });
+			}
+			if (seg === 'axiom-action') {
+				// 候选的确认/否决（2026-11-10）。**这是面板上的"人工闸门"**：
+				// 用户在面板点确认 = byUser:true 的来源。agent 不能伪造这个请求
+				// ——它没有浏览器会话，且这条路径只由面板 UI 调用。
+				if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
+				const body = await readBody(req);
+				const action = String(body?.action ?? '');
+				const slug = safeSlug(body?.name);
+				if (!slug) return json(res, 400, { error: 'name 必填' });
+				if (!['confirm', 'reject', 'delete'].includes(action)) {
+					return json(res, 400, { error: `action must be confirm|reject|delete (got ${action})` });
+				}
+				const candDir = path.join(root, 'dao', '_candidates');
+				const candPath = path.join(candDir, `${slug}.md`);
+				let text;
+				try {
+					text = await readFile(candPath, 'utf8');
+				} catch {
+					return json(res, 404, { error: `候选不存在：${slug}` });
+				}
+				const proposition = /##\s*命题\s*\n+([\s\S]*?)(?:\n##|$)/.exec(text)?.[1]?.trim() ?? '';
+				const sources = [...text.matchAll(/^- \[([^\]]+)\]\(\.\.\/insights\//gm)].map((m) => m[1]);
+				const body_ = /##\s*(?:正文|依据展开)\s*\n+([\s\S]*?)(?:\n##|$)/.exec(text)?.[1]?.trim() ?? '';
+
+				if (action === 'delete') {
+					// 删除 = 用户明确不要这条。与 reject 的区别：reject 留档案（反例证据），
+					// delete 是「这条根本不该出现」（误写/重复）。
+					await unlink(candPath).catch(() => {});
+					return json(res, 200, { message: `已删除候选 ${slug}` });
+				}
+				if (action === 'reject') {
+					const reason = String(body?.reason ?? '').trim();
+					if (!reason) return json(res, 400, { error: '否决必须写理由（否则同一命题会原样再提一遍）' });
+					const r = rejectAxiomCandidate(
+						{ name: slug, proposition, extracted_from: sources, status: AXIOM_CANDIDATE_STATES.candidate },
+						{ reason },
+					);
+					if (!r.ok) return json(res, 400, { error: r.reason });
+					// 否决：候选文件移到 _candidates/_rejected/，保留证据但不占待决策队列。
+					const rejDir = path.join(candDir, '_rejected');
+					await mkdir(rejDir, { recursive: true }).catch(() => {});
+					await writeFile(
+						path.join(rejDir, `${slug}.md`),
+						`${text.trimEnd()}\n\n## 否决\n\n- 时间：${r.axiom.rejected_at}\n- 理由：${reason}\n`,
+						'utf8',
+					).catch(() => {});
+					await unlink(candPath).catch(() => {});
+					return json(res, 200, { message: `已否决候选 ${slug}`, rejected_at: r.axiom.rejected_at });
+				}
+				// confirm：转正 → 写到 dao/ 正式位置（走与 memory_dao 相同的模板）
+				const c = confirmAxiomCandidate(
+					{ name: slug, proposition, extracted_from: sources, status: AXIOM_CANDIDATE_STATES.candidate },
+					{ byUser: true, note: '面板确认' },
+				);
+				if (!c.ok) return json(res, 400, { error: c.reason });
+				const lawLines = sources.map((s) => `- [${s}](../insights/${s}.md)`).join('\n');
+				const daoText = [
+					`# 道 · ${slug}`,
+					'',
+					'> 性质：**道层**。最抽象的指导思想，不含任何具体工具/文件/项目。',
+					`> 萃取自 ${sources.length} 条法（\`insights/\`）的共同上位命题，非单条抽象。`,
+					`> 由候选公理经**用户确认**转正（${c.axiom.confirmed_at}）。`,
+					'',
+					'## 命题',
+					'',
+					proposition,
+					'',
+					...(body_ ? [body_, ''] : []),
+					'## 来源法',
+					'',
+					lawLines,
+					'',
+				].join('\n');
+				await writeFile(path.join(root, 'dao', `${slug}.md`), daoText, 'utf8');
+				await unlink(candPath).catch(() => {});
+				return json(res, 200, {
+					message: `已确认候选 ${slug}，转为正式道`,
+					file: `dao/${slug}.md`,
+					note: '索引行仍需手工补进 MEMORY.md（memory_index 是唯一写索引的通道）',
+				});
 			}
 			if (seg === 'skill-action') {
 				if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });

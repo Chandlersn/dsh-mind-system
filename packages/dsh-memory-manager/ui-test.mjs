@@ -159,6 +159,11 @@ const indexText = [
 	'- ',
 ].join('\n');
 const fixtures = {
+	// 候选公理（2026-11-10 用户要求）：道层面板要能筛出待决策候选并给确认/删除按钮。
+	'/api/memory-org/axiom-candidates?v=0': { data: { count: 2, candidates: [
+		{ name: '测试候选甲', proposition: '判据要落在被测者控制不了的那一面。', source_count: 5, status: 'candidate', decision_needed: true, file: 'dao/_candidates/测试候选甲.md' },
+		{ name: '测试候选乙', proposition: '凡信号都需要一条它无法伪造的退路。', source_count: 6, status: 'candidate', decision_needed: true, file: 'dao/_candidates/测试候选乙.md' },
+	] }, loading: false, error: null },
 	'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], title: '全局记忆', path: 'C:/x/.dsh', counts: { functions: 2, insights: 1, capabilities: 0, skills: 1, daily: 2 }, env: { version: '5.26.0', canReload: true, hotReloadRunning: false, memoryRoot: 'C:/x/memory', skillRoot: 'C:/x/.dsh/skills', indexBytes: 6000, indexComfortBytes: 8000, indexHardBytes: 16000 } }], loading: false, error: null },
 	'/api/memory-org/list?zone=functions&v=0': { data: { files: [{ name: 'alpha.md', bytes: fnText.length, mtime: iso(30) }, { name: 'beta.md', bytes: 900, mtime: iso(2000) }] }, loading: false, error: null },
 	'/api/memory-org/list?zone=insights&v=0': { data: { files: [{ name: 'gamma.md', bytes: 500, mtime: iso(120) }] }, loading: false, error: null },
@@ -238,6 +243,35 @@ function serialize(node) {
 
 const render = (initialView) => serialize(FakeReact.createElement(MemoryPanel, { __apiFixtures: fixtures, initialView }));
 const count = (s, needle) => s.split(needle).length - 1;
+// --- 候选公理层（2026-11-10 用户要求）----------------------------------------
+// 用户在道层要求：候选筛选标签 + 确认/删除按钮。候选**未生效**，
+// 所以必须与正式道分开呈现，否则分不清哪些已在参与判断。
+{
+	const daoActive = render({ kind: 'zone', zone: 'dao' });
+	ok(count(daoActive, 'data-dmo="dao-cand-tab"') === 1, '道层有候选筛选标签');
+	ok(daoActive.includes('候选 2'), `候选标签带待决策数量（应显示 候选 2）`);
+	ok(!daoActive.includes('data-dmo="dao-confirm"'), '正式道视图里不出现候选操作按钮（两者不混）');
+
+	// 切到候选视图：真实组件把 daoView 作为 props 传入；这里直接渲染 ZoneList
+	// 的受控形态，验证候选行与三个动作按钮都在。
+	const ZL = T.ZoneList;
+	if (ZL) {
+		const candView = serialize(FakeReact.createElement(ZL, {
+			zone: 'dao', rows: [], sort: 'time', setSort: () => {}, filter: '', setFilter: () => {},
+			onOpen: () => {}, daoView: 'candidates', setDaoView: () => {},
+			candidates: fixtures['/api/memory-org/axiom-candidates?v=0'].data.candidates,
+			candidateAction: () => {}, candBusy: '', actMsg: '',
+		}));
+		ok(candView.includes('测试候选甲') && candView.includes('测试候选乙'), '候选视图列出全部候选');
+		ok(candView.includes('5 条法') && candView.includes('6 条法'), '每条候选标出来源法数量');
+		ok(candView.includes('判据要落在被测者控制不了的那一面'), '候选命题完整呈现');
+		ok(count(candView, 'data-dmo="dao-confirm"') === 2, `每个候选都有确认按钮（${count(candView, 'data-dmo="dao-confirm"')}）`);
+		ok(count(candView, 'data-dmo="dao-reject"') === 2, `每个候选都有否决按钮（${count(candView, 'data-dmo="dao-reject"')}）`);
+		ok(count(candView, 'data-dmo="dao-delete"') === 2, `每个候选都有删除按钮（${count(candView, 'data-dmo="dao-delete"')}）`);
+	} else {
+		ok(false, 'ZoneList 需要经 __internalsForTest 暴露（候选视图无法验证）');
+	}
+}
 
 // --- overview ---------------------------------------------------------------
 const overview = render({ kind: 'overview' });

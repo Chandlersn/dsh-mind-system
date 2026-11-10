@@ -117,11 +117,11 @@
     },
     "memory/api-test.mjs": {
       "source": "dsh-memory-manager/api-test.mjs",
-      "sha256": "b3fcfe0837890426159e8a7b89f7ae0f402eda7d0c26b70da095d527d16e9153"
+      "sha256": "d0736d62783446765070a4708d6bef60114efb6b2604486e4a1896cc975a2faf"
     },
     "memory/client.js": {
       "source": "dsh-memory-manager/client.js",
-      "sha256": "3b72a5be49056f1667e7b946dc28d1e92880942a0f5a3a512ef94c0befbe33e3"
+      "sha256": "c8a3b8874cae8051a60b1440809cc33accaa59e8f86cfa24b1347d4c5431a001"
     },
     "memory/harness-test.mjs": {
       "source": "dsh-memory-manager/harness-test.mjs",
@@ -149,7 +149,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "8298ab64d05ab0e6418010c310a9df5c7349a88c94a86559a9e72e3443ffb412"
+      "sha256": "f4862115c0e7187f80957df466e4f02a97981a74a4be04d5b526eb7e1f5a5851"
     },
     "memory/src/axiom-candidate.js": {
       "source": "dsh-memory-manager/src/axiom-candidate.js",
@@ -249,7 +249,7 @@
     },
     "memory/ui-test.mjs": {
       "source": "dsh-memory-manager/ui-test.mjs",
-      "sha256": "5d2dc5966fb037ab7f40c9756d6114827111cce16d1d4ff275542a1ed56db538"
+      "sha256": "fedd316e9ab0617115f7d25bc0edd9340f4ec281de89f41e2600293e21423433"
     },
     "meta/README.md": {
       "source": "dsh-meta-framework/README.md",

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * API-route test: drives the panel HTTP handlers with stub req/res objects
  * against the plugin's real (global) memory root.
  *
@@ -11,7 +11,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { mkdir, writeFile, readFile, stat, rm } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, stat, rm, readdir } from 'node:fs/promises';
 
 // 宿主缺席时**跳过**而不是失败：本脚本验证的是"与真宿主协作"，没有宿主就
 // 没有可验证的对象。CI 要求必须有宿主时设 DSH_REQUIRE_HOST=1（缺席即失败）。
@@ -243,6 +243,82 @@ ok(badRel2.status === 400, 'skillfile rejects backslashes in the relative path')
 // GET on a write route is 405 ONLY where the caller is allowed to reach it at
 // all (the temp instance): on the live instance the fence answers 501 before
 // the method check — the order itself is the contract (deny first, parse later).
+// --- 候选公理 API（2026-11-10 用户要求）-------------------------------------
+// 面板的道层候选标签与确认/删除按钮打的就是这三条路由。它们是**人工闸门
+// 的入口**：用户在面板点确认，就是候选转正的唯一来源。
+{
+	// 目录里造一个候选（模拟 agent 用 memory_dao status=candidate 写下的）
+	const daoDir = path.join(root, 'dao');
+	const candDir = path.join(daoDir, '_candidates');
+	await mkdir(candDir, { recursive: true });
+	const candFile = path.join(candDir, 'apitest候选.md');
+	await writeFile(candFile, [
+		'# 候选公理 · apitest候选',
+		'',
+		'## 命题',
+		'',
+		'判据要落在被测者控制不了的那一面。',
+		'',
+		'## 来源法',
+		'',
+		'- [法一](../insights/法一.md)',
+		'- [法二](../insights/法二.md)',
+		'- [法三](../insights/法三.md)',
+		'- [法四](../insights/法四.md)',
+		'- [法五](../insights/法五.md)',
+		'',
+	].join('\n'), 'utf8');
+
+	// 列表
+	const listed = await call('/api/memory-org/axiom-candidates');
+	// callerOf 的桩返回 { status, body }，body 是 JSON 字符串（不是 Response）
+	const body = JSON.parse(listed.body);
+	ok(listed.status === 200, 'axiom-candidates 返回 200');
+	ok(Array.isArray(body.candidates) && body.candidates.length >= 1, `候选列表含刚写入的候选（${body.candidates?.length}）`);
+	const mine = body.candidates.find((c) => c.name === 'apitest候选');
+	ok(mine !== undefined, '候选按名字列出');
+	ok(mine.source_count === 5, `来源法数量正确（${mine.source_count}）`);
+	ok(mine.decision_needed === true, '候选标着"等你决定"');
+
+	// 否决必须给理由
+	const noReason = await post('/api/memory-org/axiom-action', { action: 'reject', name: 'apitest候选' });
+	ok(noReason.status === 400, '否决不给理由 → 400（否则同一命题会原样再提）');
+
+	// 确认 → 转正：文件移到 dao/，候选位置消失
+	const confirmed = await post('/api/memory-org/axiom-action', { action: 'confirm', name: 'apitest候选' });
+	ok(confirmed.status === 200, '确认转正返回 200');
+	const daoAfter = await readdir(daoDir).catch(() => []);
+	ok(daoAfter.includes('apitest候选.md'), '转正后正式道文件存在');
+	const candAfter = await readdir(candDir).catch(() => []);
+	ok(!candAfter.includes('apitest候选.md'), '转正后候选文件已移除');
+	// 否决与删除：两条路径的**区别**必须成立——否决留档（反例证据），
+	// 删除是"这条根本不该出现"。混成一条会让证据悄悄消失。
+	const candDir2 = path.join(daoDir, '_candidates');
+	await writeFile(path.join(candDir2, 'apitest驳回.md'), [
+		'# 候选公理 · apitest驳回', '', '## 命题', '', '待否决的命题。', '',
+		'## 来源法', '', ...['一','二','三','四','五'].map((n) => `- [法${n}](../insights/法${n}.md)`), '',
+	].join('\n'), 'utf8');
+	const rejected = await post('/api/memory-org/axiom-action', { action: 'reject', name: 'apitest驳回', reason: '这只是一条法的换句话' });
+	ok(rejected.status === 200, '否决返回 200');
+	const rejDir = path.join(candDir2, '_rejected');
+	const rejFiles = await readdir(rejDir).catch(() => []);
+	ok(rejFiles.includes('apitest驳回.md'), '否决后候选移到 _rejected/（保留为反例证据）');
+	const rejText = await readFile(path.join(rejDir, 'apitest驳回.md'), 'utf8');
+	ok(rejText.includes('这只是一条法的换句话'), '否决理由落盘');
+	const pendingAfterReject = await readdir(candDir2).catch(() => []);
+	ok(!pendingAfterReject.includes('apitest驳回.md'), '否决后不再出现在待决策队列');
+
+	await writeFile(path.join(candDir2, 'apitest删除.md'), '## 命题\n\n误写的候选。\n', 'utf8');
+	const deleted = await post('/api/memory-org/axiom-action', { action: 'delete', name: 'apitest删除' });
+	ok(deleted.status === 200, '删除返回 200');
+	const afterDel = await readdir(candDir2).catch(() => []);
+	ok(!afterDel.includes('apitest删除.md'), '删除后候选彻底消失');
+	const rejAfterDel = await readdir(rejDir).catch(() => []);
+	ok(!rejAfterDel.includes('apitest删除.md'), '删除**不**留档（与否决的区别）');
+	const daoText = await readFile(path.join(daoDir, 'apitest候选.md'), 'utf8');
+	ok(daoText.includes('用户确认') && daoText.includes('转正'), '正式道标注了"经用户确认转正"');
+	ok(daoText.includes('法五'), '来源法完整带进正式道');
+}
 const getOnly = await tcall('/api/memory-org/skill-action');
 ok(getOnly.status === 405, 'skill-action is POST-only (past the fence)');
 const liveGetWrite = await call('/api/memory-org/skill-action');

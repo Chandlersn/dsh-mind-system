@@ -1310,8 +1310,15 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		function ZoneList({ zone, rows, sort, setSort, filter, setFilter, onOpen }) {
+		function ZoneList({ zone, rows, sort, setSort, filter, setFilter, onOpen, daoView, setDaoView, candidates, candidateAction, candBusy, actMsg }) {
 			const label = ZONE_LABEL[zone] ?? zone;
+			// 道层的两个视图（2026-11-10 用户要求）：正式道 / 候选公理。
+			// 候选不是"另一种道"，它还没生效——所以用**筛选标签**分开，
+			// 而不是混在同一个列表里让人分不清哪些已经在参与判断。
+			const isDao = zone === 'dao';
+			const showCandidates = isDao && daoView === 'candidates';
+			const candList = Array.isArray(candidates) ? candidates : [];
+			const shown = showCandidates ? candList : rows;
 			return h(
 				'div',
 				{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
@@ -1319,12 +1326,54 @@ window.__ModuleLoader__.load({
 					'div',
 					{ className: 'dmo-toolbar' },
 					h('span', { style: { fontSize: 14, fontWeight: 600 } }, label),
-					h('span', { className: 'dmo-meta' }, `${rows.length} 项`),
-					zone !== 'daily' ? h(Btn, { sm: true, tone: 'outline', onClick: () => setSort(sort === 'time' ? 'name' : 'time'), title: '切换排序' }, sort === 'time' ? '按时间 ↓' : '按名称 ↑') : h('span', { className: 'dmo-meta' }, '按时间 ↓'),
+					// 候选标签：只有道层有。数字直接放在标签上——待决策的东西
+					// 不该要求用户主动点开才知道有几条。
+					isDao
+						? h(
+								'span',
+								{ style: { display: 'inline-flex', gap: 4, marginLeft: 4 } },
+								h(Btn, { sm: true, tone: daoView === 'active' ? undefined : 'outline', onClick: () => setDaoView('active'), title: '已生效的道' }, `正式 ${rows.length}`),
+								h(Btn, { sm: true, tone: daoView === 'candidates' ? undefined : 'outline', onClick: () => setDaoView('candidates'), title: '等待你确认的候选公理', 'data-dmo': 'dao-cand-tab' }, `候选 ${candList.length}`),
+							)
+						: null,
+					h('span', { className: 'dmo-meta' }, `${shown.length} 项`),
+					zone !== 'daily' && !showCandidates ? h(Btn, { sm: true, tone: 'outline', onClick: () => setSort(sort === 'time' ? 'name' : 'time'), title: '切换排序' }, sort === 'time' ? '按时间 ↓' : '按名称 ↑') : null,
 					h('span', { className: 'grow' }),
 					h('input', { className: 'dmo-filter', style: { width: 180 }, placeholder: zone === 'daily' ? '过滤日期…' : '按名称或摘要过滤…', value: filter, onChange: (e) => setFilter(e.target.value) }),
 				),
-				rows.length
+				actMsg ? h('div', { className: 'dmo-meta', 'data-dmo': 'dao-act-msg' }, actMsg) : null,
+				showCandidates
+					? candList.length === 0
+						? h('div', { className: 'dmo-empty' }, '没有待决策的候选公理。Agent 攒够 5 条法后可以用 memory_dao status=candidate 提出候选。')
+						: h(
+								'div',
+								{ className: 'dmo-rows', 'data-dmo': 'dao-candidates' },
+								candList.map((c) =>
+									h(
+										'div',
+										{ key: c.name, className: 'dmo-group', style: { padding: '10px 12px', borderBottom: '1px solid var(--dsw-alias-border-l2)' } },
+										h('div', { style: { display: 'flex', alignItems: 'baseline', gap: 8 } },
+											h('span', { style: { fontWeight: 600, fontSize: 13 } }, c.name),
+											h('span', { className: 'dmo-meta' }, `${c.source_count ?? 0} 条法`),
+											h('span', { className: 'grow' }),
+											h(Btn, { sm: true, tone: 'outline', disabled: candBusy === c.name, onClick: () => setDaoView('active') }, '看正文'),
+										),
+										c.proposition ? h('div', { style: { fontSize: 12, lineHeight: 1.6, marginTop: 6, color: 'var(--dsw-alias-label-secondary)' } }, c.proposition) : h('div', { className: 'dmo-meta' }, '(命题读取失败)'),
+										h('div', { style: { display: 'flex', gap: 6, marginTop: 8 } },
+											h(Btn, { sm: true, disabled: candBusy === c.name, 'data-dmo': 'dao-confirm', onClick: () => candidateAction('confirm', c.name) }, '确认转正'),
+											h(Btn, { sm: true, tone: 'outline', disabled: candBusy === c.name, 'data-dmo': 'dao-reject', onClick: () => {
+												const why = window.prompt(`否决候选「${c.name}」的理由（必填：否则同一命题会原样再提一遍）`);
+												if (why && why.trim()) candidateAction('reject', c.name, why.trim());
+											} }, '否决'),
+											h(Btn, { sm: true, tone: 'outline', disabled: candBusy === c.name, 'data-dmo': 'dao-delete', onClick: () => {
+												if (window.confirm(`彻底删除候选「${c.name}」？\n\n删除与"否决"的区别：否决会留档作为反例证据，删除是"这条根本不该出现"（误写/重复）。`)) candidateAction('delete', c.name);
+											} }, '删除'),
+										),
+									),
+								),
+							)
+					: null,
+				!showCandidates && rows.length
 					? h(
 							'div',
 							{ className: 'dmo-rows' },
@@ -1884,6 +1933,10 @@ window.__ModuleLoader__.load({
 			// guard the tool has (safeSlug, atomic write, link lint, index sync)
 			// stays in force. Failures surface inline; the list refetches after.
 			const [actMsg, setActMsg] = useState('');
+			// 道层视图（2026-11-10）：正式道 / 候选公理。候选默认不显示——
+			// 它们还没生效，混进列表会让人分不清哪些已在参与判断。
+			const [daoView, setDaoView] = useState('active');
+			const [candBusy, setCandBusy] = useState('');
 			// Per-row pending (5.27.0): the switch has no optimistic state — it
 			// refetches after the write — so a double click fires two lifecycle
 			// requests and the second lands as "已是 active" noise. The button is
@@ -1908,6 +1961,37 @@ window.__ModuleLoader__.load({
 					return null;
 				} finally {
 					setToggleBusy('');
+				}
+			};
+			// —— 候选公理（2026-11-10 用户要求）——
+			// 面板是**人工闸门的入口**：用户在这里点确认，就是候选转正的唯一来源。
+			// 所以这些按钮直接打 POST /axiom-action，而不是走 agent 的 tool——
+			// 让人的动作留在人手里。
+			const candRes = useApi(`${API}/axiom-candidates?v=${tick}`, fixtures);
+			const candidateAction = async (action, name, reason) => {
+				setActMsg('');
+				setCandBusy(name);
+				try {
+					const resp = await fetch(`${API}/axiom-action`, {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ action, name, ...(reason ? { reason } : {}) }),
+					});
+					const r = await resp.json().catch(() => ({}));
+					if (!resp.ok) {
+						setActMsg(`失败：${r.error || `HTTP ${resp.status}`}`);
+						return null;
+					}
+					setActMsg(r?.message ?? '完成');
+					// 写完后重取：列表与「正式 N / 候选 N」两个计数都要跟着变，
+					// 否则用户点完确认会看到候选还挂在那里。
+					setTick((n) => n + 1);
+					return r;
+				} catch (e) {
+					setActMsg(`操作失败：${String(e?.message ?? e)}`);
+					return null;
+				} finally {
+					setCandBusy('');
 				}
 			};
 			const search = useApi(live.length >= 2 ? `${API}/search?q=${enc(live)}${searchZone !== 'all' ? `&zone=${searchZone}` : ''}` : null, fixtures);
@@ -2039,7 +2123,7 @@ window.__ModuleLoader__.load({
 					filter, setFilter,
 				});
 			else if (view.kind === 'bundle') main = h(SkillBundleView, { data: bundleSkill, name: view.name, onBack: back, sel: view.file ?? null, onSel: (f) => setView({ kind: 'bundle', name: view.name, tab: view.tab, file: f }), fixtures });
-			else if (view.kind === 'zone') main = h(ZoneList, { zone: view.zone, rows: rowsOf(view.zone), sort, setSort, filter, setFilter, onOpen: openFile });
+			else if (view.kind === 'zone') main = h(ZoneList, { zone: view.zone, rows: rowsOf(view.zone), sort, setSort, filter, setFilter, onOpen: openFile, daoView, setDaoView, candidates: candRes.data?.candidates ?? [], candidateAction, candBusy, actMsg });
 			else if (fileText) main = h(Reader, { view, text: fileText, meta: fileMeta, kind, root: ws.root, onBack: back, onNavigate: navigate });
 			else main = h('div', { className: 'dmo-empty' }, fileRes.loading ? '读取文件…' : fileRes.error ? `读取失败：${fileRes.error}` : '文件为空。');
 
@@ -2176,7 +2260,7 @@ window.__ModuleLoader__.load({
 			},
 			// Pure view logic, exposed so ui-test.mjs can assert the panel's
 			// parsing/folding behaviour without a browser.
-			__internalsForTest: { relTime, plain, parseIndexTables, parseProseSections, splitSections, subTablesOf, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight, tokenizeCode },
+			__internalsForTest: { relTime, plain, parseIndexTables, parseProseSections, splitSections, subTablesOf, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight, tokenizeCode, ZoneList },
 		};
 	},
 });
