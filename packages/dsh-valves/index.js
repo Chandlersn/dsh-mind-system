@@ -52,6 +52,8 @@ import {
 	weeklyPrinciplePatrol, quarterlyLayerPatrol,
 	writePatrolReport, readLatestPatrolReport, isPatrolDue, PATROL_PERIODS, clampTimerDelay,
 } from './src/patrol.js';
+// IV-5 公理闸门限速：每月最多生效一次 + 显式测试通道（不消耗额度）。
+import { checkAxiomRate, applyAxiomLimit } from './src/ratelimit.js';
 import { nominateFromDisk } from './src/nominate.js';
 // III-3 预算缰绳：批量执行面（提名/治理/确认）的数量上限。
 import { check as checkBudget, DEFAULT_BUDGET } from './src/budget.js';
@@ -200,6 +202,55 @@ export function createRuntime(options = {}) {
 				// 同 record() 的口径：不声明就是日常（见 record 里的说明）。
 				origin: typeof candidate?.origin === 'string' && candidate.origin ? candidate.origin : 'daily',
 				principle_refs: candidate?.principle_refs,
+			});
+		},
+		/**
+		 * IV-5：带公理限速的上行准入（异步，因为要读账本算额度）。
+		 *
+		 * 为什么不改 `upward()` 本身：它被 14 处调用（3 生产 + 11 测试）且是同步的，
+		 * 为了一条公理路径把全部调用改成异步，代价远大于收益。限速是**叠加层**，
+		 * 独立方法更清楚：predicate 判合规，本方法判时机。
+		 */
+		async upwardWithAxiomLimit(from, to, candidate, options = {}) {
+			const decision = admitUpward(from, to, candidate, { layers, thresholds });
+			// 只有公理类变更受限速约束；其它类型原样返回（不读账本、不增加开销）。
+			const touchesAxiom = candidate?.rule_type === 'axiom' || candidate?.negative_type === 'weakened_axiom';
+			if (!touchesAxiom) {
+				return record(`upward_${from}_${to}`, 'up', decision, {
+					from, to,
+					candidate_id: candidate?.candidate_id ?? candidate?.rule_id,
+					origin: typeof candidate?.origin === 'string' && candidate.origin ? candidate.origin : 'daily',
+					principle_refs: candidate?.principle_refs,
+				});
+			}
+			const entries = await readDecisions(storageDir);
+			// 账本读不到 → 不能假装"这个月还没改过"（那会让限速静默失效）。
+			// 如实转人工：与"读不到黑名单就不放行"同一纪律。
+			if (entries === undefined) {
+				const guarded = {
+					...decision,
+					action: 'human_gate',
+					reason: 'axiom_ledger_unreadable',
+					note: '账本读取失败，无法判定本月公理额度（不当作零额度放行）',
+				};
+				return record(`upward_${from}_${to}`, 'up', guarded, {
+					from, to, candidate_id: candidate?.candidate_id ?? candidate?.rule_id,
+					origin: typeof candidate?.origin === 'string' && candidate.origin ? candidate.origin : 'daily',
+				});
+			}
+			const rate = checkAxiomRate(
+				{ entries, now: Date.now(), ...(options.testChannel === true || candidate?.testChannel === true ? { testChannel: true } : {}) },
+				options,
+			);
+			const final = applyAxiomLimit(decision, rate);
+			return record(`upward_${from}_${to}`, 'up', final, {
+				from, to,
+				candidate_id: candidate?.candidate_id ?? candidate?.rule_id,
+				origin: typeof candidate?.origin === 'string' && candidate.origin ? candidate.origin : 'daily',
+				// 公理判定附上额度信息：事后能回答"当时还剩多少额度"。
+				...(touchesAxiom ? { axiom_rate: { used: rate.used ?? 0, max: rate.max, test_channel: rate.testChannel === true } } : {}),
+				// 测试通道**不进生产分布**：显式标出来，summary 会把它单列。
+				...(rate.testChannel === true ? { origin: 'verification' } : {}),
 			});
 		},
 		principle(stats) {
@@ -655,6 +706,7 @@ export function apply(ctx, config = {}, overrides = {}) {
 					// 样本口径（可选）：验证/演练样本显式标记，日常样本缺省不标。
 					// I-1 计数只数无 origin 或 origin=daily 的行——验证样本不得灌进校准分布。
 					origin: { type: 'string', enum: ['daily', 'verification', 'drill', 'nomination'], description: '样本类型：daily=日常（缺省）；verification=部署/闭环验证；drill=演练；nomination=自动提名器产物。' },
+					testChannel: { type: 'boolean', description: 'up 公理：声明走测试通道——不消耗月度额度、不进生产分布（IV-5）。只能由显式参数打开，不读环境变量。' },
 					// down
 					constraints: { type: 'array', items: { type: 'string' }, description: 'down：已具体化的可执行约束（空 = 未具体化，拒）。' },
 					touches_axiom: { type: 'boolean', description: 'down：是否触及公理语义（true → human_gate）。' },
@@ -717,7 +769,14 @@ export function apply(ctx, config = {}, overrides = {}) {
 						})),
 					};
 				}
-				return { direction: 'up', ...runtime.upward(args.from, args.to, args.data ?? {}) };
+				// IV-5：走限速版本——公理类变更额外受月度额度约束。
+				// testChannel 只能由 **data 里的显式字段** 打开（见 ratelimit.js 的说明）。
+				return {
+					direction: 'up',
+					...(await runtime.upwardWithAxiomLimit(args.from, args.to, args.data ?? {}, {
+						...(args.data?.testChannel === true ? { testChannel: true } : {}),
+					})),
+				};
 			} catch (error) {
 				return { error: 'valve_check 执行失败', reason: error instanceof Error ? error.message : String(error) };
 			}

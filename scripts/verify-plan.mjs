@@ -52,15 +52,19 @@ if (claimed) ok(Number(claimed[1]) === count.ok, `汇总声称 ✅ ${claimed[1]}
 
 console.log('\n--- 2. 阶段 III 节点表与验收表不矛盾 ---');
 // 节点表：III-x 行里若出现 ✅，则验收表对应 F 项不能是 ⬜
-const III_TO_F = {
+const NODE_TO_F = {
 	'III-1': 'F1',
 	'III-2': 'F19',
 	'III-3': 'F10',
 	'III-4': 'F10',
 	'III-5': 'F10',
 	'III-6': 'F18',
+	// IV 节点也纳进来：2026-11-10 实测，IV-4 完成后验收表的 F13 还挂着 ⬜，
+	// 守卫没覆盖 IV 是它自己的盲区，补上。
+	'IV-4': 'F13',
+	'IV-5': 'F11',
 };
-for (const [node, f] of Object.entries(III_TO_F)) {
+for (const [node, f] of Object.entries(NODE_TO_F)) {
 	const row = plan.split('\n').find((l) => l.startsWith(`| ${node} `));
 	if (!row) {
 		ok(false, `找不到节点行 ${node}`);

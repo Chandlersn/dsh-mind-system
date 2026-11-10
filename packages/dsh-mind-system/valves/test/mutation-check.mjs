@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 一次性变异验证：逐条改坏判据 → 跑测试 → 必须红 → 恢复 → 必须绿。
  * 跑完自删由调用方负责。产物只写临时副本，不碰源文件。
  */
@@ -79,8 +79,22 @@ MUTATIONS.push(
 	{ file: 'index.js', find: "origin: typeof input?.origin === 'string' && input.origin ? input.origin : 'daily',", replace: "...(input?.origin === undefined ? {} : { origin: input.origin }),", label: 'origin 退回"不传就不写"（真实日常样本再次丢失归属）' },
 	// 空输入报 clean（真机第一份报告抓到的假绿）：
 	{ file: 'index.js', find: 'if (principles.length === 0) {', replace: 'if (false) {', label: '空原则清单仍报 clean（没查却说没问题）' },
+	// IV-5 公理闸门限速（2026-11-10）：
+	{ file: 'src/ratelimit.js', find: "if (input?.testChannel === true) {", replace: 'if (false) {', label: '测试通道失效（验收被限速卡住，上轮矛盾复现）' },
+	{ file: 'src/ratelimit.js', find: 'if (used >= max) {', replace: 'if (false) {', label: '公理限速失效（每月可无限改公理）' },
+	{ file: 'src/ratelimit.js', find: "if (e?.outcome !== 'admitted') continue;", replace: '', label: '被拒的公理变更也占额度（拒绝消耗额度）' },
+	{ file: 'src/ratelimit.js', find: "|| e?.negative_type === 'weakened_axiom'", replace: '', label: 'weakened_axiom 不算公理变更（削弱的公理逃逸限速）' },
+	{ file: 'src/ratelimit.js', find: 'if (!rate || rate.allowed !== false) return decision;', replace: 'return decision;', label: '限速判定不生效（合规就当允许落地）' },
+	{ file: 'index.js', find: "reason: 'axiom_ledger_unreadable',", replace: "reason: 'axiom_human_only',", label: '账本读不到当作零额度放行（限速静默失效）' },
+	// IV-4 层修改机制（2026-11-10）：
+	{ file: 'src/layerchange.js', find: "if (change.state !== LAYER_CHANGE_STATES.approved) {", replace: 'if (false) {', label: '层修改自动生效（未批准也能激活）' },
+	{ file: 'src/layerchange.js', find: "if (change.state !== LAYER_CHANGE_STATES.proposed) {", replace: 'if (false) {', label: '终审门槛失效（已批准的能被再审）' },
+	{ file: 'src/layerchange.js', find: "if (!layers.includes(from)) {", replace: 'if (false) {', label: '改不存在的层不拦' },
+	{ file: 'src/layerchange.js', find: "if (layers.includes(to)) {", replace: 'if (false) {', label: '新名撞现有层不拦（两层共名）' },
+	{ file: 'src/layerchange.js', find: "if (!active) continue;", replace: '', label: '未激活的修改也做映射（提议即生效）' },
+	{ file: 'src/layerchange.js', find: "if (c?.state !== LAYER_CHANGE_STATES.active) continue;", replace: '', label: '层表被未激活的修改改变' },
+	{ file: 'src/layerchange.js', find: 'const expired = Number.isFinite(until) && now > until;', replace: 'const expired = false;', label: '退役状态不标（过期仍报 active）' },
 );
-
 let red = 0;
 for (const m of MUTATIONS) {
 	const sandbox = mkdtempSync(join(tmpdir(), 'dsh-valves-mut-'));
@@ -97,7 +111,7 @@ for (const m of MUTATIONS) {
 			continue;
 		}
 		writeFileSync(target, text.replace(m.find, m.replace), 'utf8');
-		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js', 'test/governance.test.js', 'test/budget.test.js', 'test/snapshot.test.js', 'test/guard.test.js', 'test/semantic.test.js', 'test/patrol.test.js', 'test/origin.test.js'], { cwd: dir, encoding: 'utf8' });
+		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js', 'test/governance.test.js', 'test/budget.test.js', 'test/snapshot.test.js', 'test/guard.test.js', 'test/semantic.test.js', 'test/patrol.test.js', 'test/origin.test.js', 'test/ratelimit.test.js', 'test/layerchange.test.js'], { cwd: dir, encoding: 'utf8' });
 		const killed = r.status !== 0;
 		console.log(`${killed ? 'RED ' : 'GREEN(!!)'} ${m.label}`);
 		if (killed) red++;
