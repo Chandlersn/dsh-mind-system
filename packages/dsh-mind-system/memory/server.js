@@ -2818,10 +2818,10 @@ function memoryDaoTool(opts) {
 		description:
 			'Write ONE 道 (dao) entry — the most abstract layer: a philosophical/dialectical proposition about how things ARE, from which concrete shoulds can be derived. HARD GATE (throws, does not warn): requires extractedFrom with >=5 existing insights/ laws, a proposition free of concrete tech/project/file markers, no procedure phrasing, and a layer size cap of 7. If the gate rejects, the reason states exactly what is missing — do not retry blindly: add laws first, or reconsider whether this is actually a 法 rather than a 道. Body goes to dao/<name>.md. This tool does NOT write MEMORY.md — add the dao-layer row by hand (体检 R24 会点名没有登记进索引的道)。 **Body structure is gated, not advisory** (src/dao-shape.js): it must contain a descriptive section (e.g. 三种形态 — world as it IS, no normative verbs like 必须/应当), a derivation section (依据展开 — must ARGUE how the laws jointly force the proposition, not restate them one by one), and a boundary section saying when the proposition does NOT hold. The proposition itself must carry philosophical shape: at least one of (对立/张力) or (生成性/演化) — a static assertion such as 「所有系统最终都会腐烂」 is rejected as an engineering conclusion, not a 道.',
 		parameters: {
-			name: { type: 'string', required: true, description: '道名 slug（文件名，不含 .md），如「静默失效」「判据在真实路径上」。' },
-			proposition: { type: 'string', required: true, description: '命题本体：一句话说清"世界是怎样的"。不得含具体技术/项目/文件名，不得含操作步骤。' },
-			extractedFrom: { type: 'array', required: true, description: '萃取来源：insights/ 里的**法** slug 列表。至少 5 条（硬闸门）。道不直接从 functions/ 萃取——中间必须隔着法。', items: { type: 'string' } },
-			body: { type: 'string', required: true, description: '正文（Markdown）：三种形态 / 推理用法 / 依据展开 / 边界。命题一句话在这里展开成可用的推理前提。**不要再写「## 来源法」标题**——那一节由本工具按 extractedFrom 追加并读取，正文再写一个会被静默忽略（该用「## 依据展开」）。' },
+			name: { type: 'string', required: true, description: '道名 slug（文件名，不含 .md），如「静默失效」「判据在真实路径上」。status=list_candidates 时仍需传（工具契约统一，值会被忽略）。' },
+			proposition: { type: 'string', required: true, description: '命题本体：一句话说清"世界是怎样的"。不得含具体技术/项目/文件名，不得含操作步骤。status=list_candidates 时值会被忽略。' },
+			extractedFrom: { type: 'array', required: true, description: '萃取来源：insights/ 里的**法** slug 列表。至少 5 条（硬闸门）。道不直接从 functions/ 萃取——中间必须隔着法。status=list_candidates 时值会被忽略。', items: { type: 'string' } },
+			body: { type: 'string', required: true, description: '正文（Markdown）：三种形态 / 推理用法 / 依据展开 / 边界。命题一句话在这里展开成可用的推理前提。**不要再写「## 来源法」标题**——那一节由本工具按 extractedFrom 追加并读取，正文再写一个会被静默忽略（该用「## 依据展开」）。status=list_candidates 时值会被忽略。' },
 			date: { type: 'string', description: 'YYYY-MM-DD；缺省今天。' },
 			supersedes: { type: 'string', description: '可选：被本道取代的旧道名。旧文件保留并打取代标记。' },
 			valve_evidence: {
@@ -2832,6 +2832,11 @@ function memoryDaoTool(opts) {
 					verifiable_by: { type: 'string', description: '人工判断的依据说明。' },
 				},
 				description: '可选：上行阀门证据。法→道在阀门侧永远人工闸门，这里只留痕。',
+			},
+			status: {
+				type: 'string',
+				enum: ['candidate', 'active', 'list_candidates'],
+				description: 'candidate=候选公理（写入 dao/_candidates/，等待用户确认，不进召回、不进索引）；active=正式道（缺省，走原有路径）；list_candidates=列出全部待确认候选（用于主动呈现给用户决策）。',
 			},
 		},
 		output: {
@@ -2869,6 +2874,40 @@ function memoryDaoTool(opts) {
 			const root = resolveRoot(opts);
 			const daoDir = path.join(root, 'dao');
 			const warnings = [];
+
+			// —— 列出待确认候选（2026-11-10）——
+			// 用户要求"agent 主动展现给用户，由用户决策"。没有这个读入口，
+			// 候选写进去就等于石沉大海——存在但没人知道，那和没写一样。
+			if (args.status === 'list_candidates') {
+				const candDir = path.join(daoDir, '_candidates');
+				let names = [];
+				try {
+					names = (await readdir(candDir)).filter((f) => f.endsWith('.md')).sort();
+				} catch {
+					/* 还没有候选 = 正常态，不是错误 */
+				}
+				const items = [];
+				for (const f of names) {
+					const slug = f.replace(/\.md$/, '');
+					try {
+						const t = await readText(path.join(candDir, f));
+						const prop = /##\s*命题\s*\n+([\s\S]*?)(?:\n##|$)/.exec(t)?.[1]?.trim() ?? '';
+						const srcCount = (t.match(/^- \[[^\]]+\]\(\.\.\/insights\//gm) ?? []).length;
+						items.push({ name: slug, proposition: prop, source_count: srcCount });
+					} catch {
+						items.push({ name: slug, proposition: '', source_count: 0, unreadable: true });
+					}
+				}
+				return {
+					ok: true,
+					status: 'list_candidates',
+					count: items.length,
+					candidates: items,
+					note: items.length
+						? '这些候选**尚未生效**（不进召回、不参与判定）。请把每条呈现给用户：命题 + 来源法数量，由用户决定转正或否决。'
+						: '当前没有待确认的候选公理。',
+				};
+			}
 
 			const name = safeSlug(args.name);
 			const proposition = oneLine(args.proposition);
@@ -2961,6 +3000,58 @@ function memoryDaoTool(opts) {
 			});
 			if (!verdict.ok) throw new Error(verdict.reason);
 			for (const w of verdict.warnings) warnings.push(w);
+
+			// —— 候选公理（2026-11-10 用户要求）——
+			// 候选走**同一套闸门**（上面几行），只是落地位置不同：写到
+			// dao/_candidates/ 而不是 dao/。这样它存在、可见、能反复打磨，
+			// 但在用户点确认之前**不进索引、不进召回、不参与任何判断**。
+			//
+			// 为什么候选必须在物理上分开：召回只认 MEMORY.md 索引行，
+			// 而索引由 memory_index 手写。放进 dao/ 就等于默认它会被人加进索引，
+			// 那就退回"agent 自己升格"的老路了。
+			if (args.status === 'candidate') {
+				const candDir = path.join(daoDir, '_candidates');
+				await mkdir(candDir, { recursive: true });
+				const lawLinesC = existingLaws.map((s) => `- [${s}](../insights/${s}.md)`).join('\n');
+				const candText = [
+					`# 候选公理 · ${name}`,
+					'',
+					'> 性质：**候选公理**（未生效）。等用户确认后才转为正式道。',
+					'> 确认前：不进 MEMORY.md 索引、不进召回、不参与任何判定。',
+					`> 萃取自 ${existingLaws.length} 条法，已过道层三关（≥5 法 / 无具体标记 / 非操作手册）。`,
+					'',
+					'## 命题',
+					'',
+					proposition,
+					'',
+					body,
+					'',
+					'## 来源法',
+					'',
+					lawLinesC,
+					'',
+					'## 待决策',
+					'',
+					'- 这个命题成立吗？站得住「换一个领域依然成立」这条判据吗？',
+					'- 确认：用 `status=active` 重新写入（转正）；否决：说明理由，候选文件保留作为「世界不是什么」的证据。',
+					'',
+				].join('\n');
+				const candPath = path.join(candDir, `${name}.md`);
+				await writeText(candPath, candText);
+				return {
+					ok: true,
+					status: 'candidate',
+					name,
+					path: candPath,
+					proposition,
+					source_count: existingLaws.length,
+					sources: [...existingLaws],
+					...(warnings.length ? { warnings } : {}),
+					note:
+						'已写入候选区（dao/_candidates/），**未生效**。请主动把这个候选公理呈现给用户：命题 + 来源法 + 为什么它够格，' +
+						'由用户决定是否转正（转正用 status=active 重写；否决请记录理由）。',
+				};
+			}
 
 			// —— 写入 ——
 			await mkdir(daoDir, { recursive: true });

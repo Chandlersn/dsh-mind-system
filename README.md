@@ -1,4 +1,4 @@
-# DSH 心智系统
+﻿# DSH 心智系统
 
 > 让 agent 知道"遇到什么问题先问什么"，并且**能自己发现自己错了**。
 
@@ -456,7 +456,7 @@ npm test
 | 包 | 测试文件 | 用例/断言 |
 |---|---|---|
 | `dsh-agent-mind` | 15 | 153 |
-| `dsh-memory-manager` | 7 | 173 |
+| `dsh-memory-manager` | 8 | 190 |
 | `dsh-clis`（源仓库） | 41 | 617 |
 
 ### 关键命令
@@ -583,7 +583,7 @@ npm run install:profile -- --dry-run   # 只说做什么
 | `dsh-agent-mind` | 20 文件 / 5800 行 |
 | `dsh-clis` | 源仓库 45 个 .ts / 9458 行 |
 | `dsh-meta-framework` | 10 文件 / 3230 行 |
-| `dsh-memory-manager` | 4 文件 / 5989 行 |
+| `dsh-memory-manager` | 4 文件 / 6080 行 |
 
 memory-manager 只计常改的 4 个文件（`server.js` + 三个判据模块），不是全包。
 

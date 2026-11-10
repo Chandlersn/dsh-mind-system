@@ -113,7 +113,7 @@
     },
     "memory/README.md": {
       "source": "dsh-memory-manager/README.md",
-      "sha256": "67539558df34ee0038b3e4efbab1e7fa1a10b1a1ad6691240e60e866ff36473f"
+      "sha256": "656360835f6f1bedc3c23e2d3c6002ef6b5fd4f9581ac63dea6df7b76c746013"
     },
     "memory/api-test.mjs": {
       "source": "dsh-memory-manager/api-test.mjs",
@@ -149,7 +149,11 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "cb74feb17d80a206298a77b9dd181f11dddb9a49690cdb91de7e5778f2c97dcf"
+      "sha256": "8298ab64d05ab0e6418010c310a9df5c7349a88c94a86559a9e72e3443ffb412"
+    },
+    "memory/src/axiom-candidate.js": {
+      "source": "dsh-memory-manager/src/axiom-candidate.js",
+      "sha256": "a7618f06ac4cbe848ee096746f04755f243aa465bd48b83976d99f57ab2722b7"
     },
     "memory/src/constants.js": {
       "source": "dsh-memory-manager/src/constants.js",
@@ -202,6 +206,10 @@
     "memory/src/valves-bridge.js": {
       "source": "dsh-memory-manager/src/valves-bridge.js",
       "sha256": "2b4715ddc1ffcf490ecacd55d24efb97c83bebefbd3e8420789b506967321c63"
+    },
+    "memory/tests/axiom-candidate.test.js": {
+      "source": "dsh-memory-manager/tests/axiom-candidate.test.js",
+      "sha256": "1b8ae5db6f9917b38f13c56bd2c5478072ef2efc93c44fa87bc4f6a2dc737042"
     },
     "memory/tests/check-inbox-loop.test.js": {
       "source": "dsh-memory-manager/tests/check-inbox-loop.test.js",
