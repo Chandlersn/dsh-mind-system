@@ -42,6 +42,8 @@ import {
 	matchNegativeRules,
 } from './src/store.js';
 import { nominateFromDisk } from './src/nominate.js';
+// III-3 预算缰绳：批量执行面（提名/治理/确认）的数量上限。
+import { check as checkBudget, DEFAULT_BUDGET } from './src/budget.js';
 import { readClisHistory, consumeClisHistory, criterionEvidenceFromInsights } from './src/clis-bridge.js';
 import { governanceRound, referenceCoverage, validateClassification } from './src/governance.js';
 
@@ -252,12 +254,27 @@ export function createRuntime(options = {}) {
 				...(channel !== 'forbidden' && args.usageItems === undefined ? { skills_note: '未提供 usage 聚合（调用方经 memory summarizeUsage 传入），正向侧本次未查' } : {}),
 			};
 			if (args.check === true) {
+				// III-3 预算缰绳：裁决会逐条落账，批次规模必须先过预算。
+				// 超限**不静默截断**——只处理前 N 条会让账本看起来完整、
+				// 实际缺一段，事后无人能查。所以整批终止并说清剩多少。
+				const candidates = [...(out.forbidden ?? []), ...(out.skills ?? [])];
+				const budgetCheck = checkBudget({ items: candidates.length, rows: candidates.length });
+				if (!budgetCheck.ok) {
+					return {
+						...out,
+						terminated_by: budgetCheck.code,
+						budget: budgetCheck.detail,
+						verdicts: [],
+						note: `本批 ${candidates.length} 条超过预算 ${budgetCheck.detail.maxItems}，已整批终止（未部分执行）。用 window_days 缩小范围或分批重跑。`,
+					};
+				}
 				out.verdicts = [];
-				for (const c of [...(out.forbidden ?? []), ...(out.skills ?? [])]) {
+				for (const c of candidates) {
 					// 器→术：候选都在 L3 原料层，目标 L2。
 					const decision = this.upward('L3', 'L2', c);
 					out.verdicts.push({ candidate_id: c.candidate_id, ...decision });
 				}
+				out.budget_used = { items: candidates.length, maxItems: (budgetCheck.detail?.maxItems ?? DEFAULT_BUDGET.maxItems) };
 			}
 			return out;
 		},
@@ -301,8 +318,19 @@ export function createRuntime(options = {}) {
 		 */
 		async criteria(insightFiles) {
 			const candidates = criterionEvidenceFromInsights(insightFiles);
+			// III-3：判据五门逐条裁决，同样受预算约束（不静默截断）。
+			const budgetCheck = checkBudget({ items: candidates.length, rows: candidates.length });
+			if (!budgetCheck.ok) {
+				return {
+					candidates: [],
+					verdicts: [],
+					terminated_by: budgetCheck.code,
+					budget: budgetCheck.detail,
+					note: `本批 ${candidates.length} 条超过预算 ${budgetCheck.detail.maxItems}，已整批终止（未部分执行）。分批重跑。`,
+				};
+			}
 			const verdicts = candidates.map((c) => ({ candidate_id: c.candidate_id, ...this.upward('L2', 'L1', c) }));
-			return { candidates, verdicts };
+			return { candidates, verdicts, budget_used: { items: candidates.length } };
 		},
 		/**
 		 * III-1：治理循环单轮。账本从盘上读（调用方不传 entries），
@@ -310,6 +338,13 @@ export function createRuntime(options = {}) {
 		 * 那会把没被用过的原则也判 uncertain 刷屏）。结果落账 gate=governance。
 		 */
 		async govern(input = {}) {
+			// III-3：受检原则数 + 反例总数都算批量规模；超限整批终止。
+			const principles = Array.isArray(input.principles) ? input.principles : [];
+			const antiTotal = principles.reduce((n, p) => n + (Array.isArray(p?.anti_examples) ? p.anti_examples.length : 0), 0);
+			const budgetCheck = checkBudget({ items: principles.length, rows: principles.length + antiTotal });
+			if (!budgetCheck.ok) {
+				return { terminated_by: budgetCheck.code, budget: budgetCheck.detail, principle_reports: [], redefinition_proposals: [], human_gate_required: true };
+			}
 			const entries = await readDecisions(storageDir);
 			if (entries === undefined) {
 				reportFinding(PROBE_CODES.storeUnreadable, 'warn', '治理循环读账本失败。');

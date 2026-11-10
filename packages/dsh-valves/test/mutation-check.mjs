@@ -36,6 +36,12 @@ MUTATIONS.push(
 	{ file: 'src/governance.js', find: 'if (nomination.confidence < minConfidence) {', replace: 'if (false) {', label: '归类置信度门槛失效（低置信度不转人工）' },
 	{ file: 'src/governance.js', find: "human_gate_required: humanGate || proposals.length > 0,", replace: 'human_gate_required: false,', label: '改定义提议绕过人工闸门' },
 	{ file: 'src/governance.js', find: 'const effectiveCoverage = coldStart ? null : coverage;', replace: 'const effectiveCoverage = coverage;', label: '冷启动保护失效（无 refs 历史被判假失效）' },
+	// III-3 预算缰绳（2026-11-10）：
+	{ file: 'src/budget.js', find: 'const overItems = items > budget.maxItems;', replace: 'const overItems = false;', label: '条目预算上限失效（多少条都放行）' },
+	{ file: 'src/budget.js', find: 'const overRows = rows > budget.maxLedgerRows;', replace: 'const overRows = false;', label: '账本行预算上限失效' },
+	{ file: 'src/budget.js', find: 'if (!overItems && !overRows) return { ok: true };', replace: 'if (true) return { ok: true };', label: '预算判定恒放行（缰绳等于没有）' },
+	{ file: 'src/budget.js', find: 'if (items < 0 || rows < 0) {', replace: 'if (false) {', label: '负规模不报错（算错与超限混为一谈）' },
+	{ file: 'src/budget.js', find: 'for (let i = 0; i < all.length; i += size) out.push(all.slice(i, i + size));', replace: 'out.push(all.slice(0, size));', label: '分批丢数据（只保留第一批）' },
 );
 
 let red = 0;
@@ -54,7 +60,7 @@ for (const m of MUTATIONS) {
 			continue;
 		}
 		writeFileSync(target, text.replace(m.find, m.replace), 'utf8');
-		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js', 'test/governance.test.js'], { cwd: dir, encoding: 'utf8' });
+		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js', 'test/governance.test.js', 'test/budget.test.js'], { cwd: dir, encoding: 'utf8' });
 		const killed = r.status !== 0;
 		console.log(`${killed ? 'RED ' : 'GREEN(!!)'} ${m.label}`);
 		if (killed) red++;
