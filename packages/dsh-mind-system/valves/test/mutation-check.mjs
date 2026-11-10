@@ -59,6 +59,14 @@ MUTATIONS.push(
 	{ file: 'src/guard.js', find: 'if (list.length === 0) {', replace: 'if (false) {', label: '跳过判据不拦（空判据也算跑过）' },
 	{ file: 'src/guard.js', find: "if (!options.allowLayers.includes(options.layer)) {", replace: 'if (false) {', label: '越层写入不拦' },
 	{ file: 'src/store.js', find: "} else if (options.human !== true) {", replace: "} else if (false) {", label: 'store 不检查人工声明（无票直写）' },
+	// III-6 语义越权（2026-11-10）：
+	{ file: 'src/semantic.js', find: 'blocked: false,', replace: 'blocked: true,', label: '语义标记变成阻断（会误杀正当路径）' },
+	// 注意：N4 短路是**双层**的（detect 的外层 + semanticSimilarity 的内层），
+	// 单变异任何一层都杀不死——这正是冗余保护的价值。这里变内层（最终防线）。
+	{ file: 'src/semantic.js', find: "if (typeof embed !== 'function') {", replace: 'if (false) {', label: '最终防线失效（内层不再判 embedder 类型）' },
+	{ file: 'src/semantic.js', find: 'if (na === 0 || nb === 0) return null;', replace: 'if (false) return null;', label: '零向量硬算相似度（除零）' },
+	{ file: 'src/semantic.js', find: "if (kw && t.includes(kw)) hits.push", replace: 'if (false) hits.push', label: '词面层永不命中（语义层唯一依赖变成硬依赖）' },
+	{ file: 'src/semantic.js', find: 'if (lexical.hits.length > 0) {', replace: 'if (false) {', label: '词面命中不进理由（标记失去证据）' },
 );
 
 let red = 0;
@@ -77,7 +85,7 @@ for (const m of MUTATIONS) {
 			continue;
 		}
 		writeFileSync(target, text.replace(m.find, m.replace), 'utf8');
-		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js', 'test/governance.test.js', 'test/budget.test.js', 'test/snapshot.test.js', 'test/guard.test.js'], { cwd: dir, encoding: 'utf8' });
+		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js', 'test/governance.test.js', 'test/budget.test.js', 'test/snapshot.test.js', 'test/guard.test.js', 'test/semantic.test.js'], { cwd: dir, encoding: 'utf8' });
 		const killed = r.status !== 0;
 		console.log(`${killed ? 'RED ' : 'GREEN(!!)'} ${m.label}`);
 		if (killed) red++;

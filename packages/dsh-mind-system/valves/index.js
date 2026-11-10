@@ -45,6 +45,8 @@ import {
 } from './src/store.js';
 // III-5 越权拦截：只有人工通道能签票，规则库写入必须持票。
 import { issuePermit } from './src/guard.js';
+// III-6 语义越权：标记不阻断；embedder 可选，缺了标 degraded（N4）。
+import { detectSemanticBypass } from './src/semantic.js';
 import { nominateFromDisk } from './src/nominate.js';
 // III-3 预算缰绳：批量执行面（提名/治理/确认）的数量上限。
 import { check as checkBudget, DEFAULT_BUDGET } from './src/budget.js';
@@ -197,6 +199,37 @@ export function createRuntime(options = {}) {
 		},
 		async negativeRules() {
 			return readNegativeRules(storageDir);
+		},
+		/**
+		 * III-6 语义越权标记：**只标记不阻断**。
+		 *
+		 * 读现有规则（含各自声明的 boundary_keywords），对候选描述做词面检查；
+		 * 传了 embed 才做语义层，否则如实标 degraded。结果落账为
+		 * possible_semantic_bypass（outcome 记 admitted，因为它**不拦**）。
+		 */
+		async semanticCheck(input = {}) {
+			const rules = await readNegativeRules(storageDir);
+			if (rules === undefined) {
+				// 读不到规则 ≠ 没有越权 —— 如实报不可判定，不冒充"干净"。
+				return { error: 'rules_unreadable', flagged: false, blocked: false };
+			}
+			const verdict = await detectSemanticBypass(
+				{ rules, text: input.text, ...(typeof input.embed === 'function' ? { embed: input.embed } : {}) },
+				{ similarityThreshold: input.similarity_threshold },
+			);
+			if (verdict.flagged) {
+				void appendDecision(storageDir, {
+					gate: 'semantic',
+					direction: 'check',
+					// 标记不等于拒绝：它放行了，只是进了人工抽查队列。
+					outcome: 'admitted',
+					action: 'flag',
+					reason: verdict.code,
+					candidate_id: input.candidate_id,
+					...(input?.origin === undefined ? {} : { origin: input.origin }),
+				});
+			}
+			return verdict;
 		},
 		async matchNegative(text) {
 			const rules = await readNegativeRules(storageDir);
@@ -418,6 +451,10 @@ export function apply(ctx, config = {}, overrides = {}) {
 		thresholds,
 		layers: config?.layers,
 	});
+	// III-6 语义层的 embedder 是**可选 peer**：配置里给了函数才用，
+	// 缺了就是 degraded（N4：附加能力缺了要降级，主流程不依赖它）。
+	const semanticEmbedder = typeof config?.embedder === 'function' ? config.embedder : undefined;
+	facts.semanticEmbedder = semanticEmbedder === undefined ? 'absent' : 'configured';
 	facts.storageDir = runtime.storageDir;
 	facts.thresholdsOverridden = config?.thresholds !== undefined && Object.keys(config.thresholds ?? {}).length > 0;
 	facts.loaded = true;
@@ -447,11 +484,23 @@ export function apply(ctx, config = {}, overrides = {}) {
 			'两类阀门的准入判定（提名→代码裁决→留痕）。direction=down：上一层原则是否已具体化到下一层可执行（查负向黑名单、查具体化、禁跳层）；' +
 			'direction=up：反例/证据是否够格修改上层（J1 可外部检验、逐层不跳、正负向阈值）。' +
 			'**判定 accept/human_gate 不等于生效**：负向规则生效必须走 valve_confirm（人工确认），正向规则写入走 memory 工具（其层级闸门更严）。' +
-			'阈值为暂定值，判定与拒绝都落双侧账本（valve_metrics 可查漏判分母）。',
+			'阈值为暂定值，判定与拒绝都落双侧账本（valve_metrics 可查漏判分母）。' +
+			'direction=semantic：语义越权**只标记不阻断**（标 possible_semantic_bypass 进人工抽查）；词面层永远可用，' +
+			'语义层需要 embedder（可选 peer），缺了如实标 degraded 且不阻断主流程（N4）。',
 		parameters: {
-			direction: { type: 'string', required: true, enum: ['down', 'up', 'principle'], description: 'down=下行准入；up=上行准入；principle=原则失效判定（外层治理判据核）。' },
+			direction: { type: 'string', required: true, enum: ['down', 'up', 'principle', 'semantic'], description: 'down=下行准入；up=上行准入；principle=原则失效判定（外层治理判据核）；semantic=语义越权标记（不阻断）。' },
 			from: { type: 'string', description: '源层（如 L2）。direction=principle 时可省。' },
 			to: { type: 'string', description: '目标层（如 L1）。direction=principle 时可省。' },
+			semantic: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					text: { type: 'string', description: 'semantic：待检查的候选描述/约束文本。' },
+					candidate_id: { type: 'string', description: 'semantic：候选标识（落账用）。' },
+					similarity_threshold: { type: 'number', description: 'semantic：语义相似度阈值（缺省 0.82，暂定）。' },
+				},
+				description: 'direction=semantic 的输入。embedder 由插件配置提供，调用方不可传函数。',
+			},
 			data: {
 				type: 'object',
 				additionalProperties: false,
@@ -507,6 +556,19 @@ export function apply(ctx, config = {}, overrides = {}) {
 					};
 					const decision = runtime.downward(args.from, args.to, data);
 					return { direction: 'down', ...decision, ...(hits === undefined ? { note: '负向规则库读取失败，按不可判定转人工（没查成 ≠ 没命中）' } : {}) };
+				}
+				if (args.direction === 'semantic') {
+					// III-6：标记不阻断。embedder 来自插件配置（可选 peer），
+					// 调用方不能传函数——工具参数只接受 JSON。
+					return {
+						direction: 'semantic',
+						...(await runtime.semanticCheck({
+							text: args.semantic?.text,
+							candidate_id: args.semantic?.candidate_id,
+							similarity_threshold: args.semantic?.similarity_threshold,
+							...(typeof semanticEmbedder === 'function' ? { embed: semanticEmbedder } : {}),
+						})),
+					};
 				}
 				return { direction: 'up', ...runtime.upward(args.from, args.to, args.data ?? {}) };
 			} catch (error) {
