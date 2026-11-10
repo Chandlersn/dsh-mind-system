@@ -40,7 +40,7 @@
 | :--- | :--- | :--- |
 | I · 数据期 | I-1 ✅ I-2 ✅ I-3 ✅ I-4 ✅ I-5 ✅ | **机制全通**，唯 `dailyCount=0`（真实日常样本）待积累 |
 | II · 蒸馏自动化 | II-1 ✅ II-2 ✅ II-3 ✅ II-4 ⏸ II-5 ✅ | 机制通；II-4 快速通道按 D4 等分布 |
-| III · 治理与缰绳 | III-1 ✅ III-2 ✅ III-3 ✅ III-4 ✅ III-5 ✅ III-6 ✅ III-7 ⬜ | **6/7**，唯定时巡检未建 |
+| III · 治理与缰绳 | III-1 🔶 III-2 ✅ III-3 ✅ III-4 ✅ III-5 ✅ III-6 ✅ III-7 ✅ | **6/7 完成**，III-1 缺真实反例驱动的失效提议（机制在，闭环未走完一次） |
 | IV · 放量与层修改 | IV-1…IV-5 ⬜ | 未开始（依赖 I 的真实分布） |
 | V · 端到端收口 | V-1…V-4 ⬜ | 未开始 |
 
@@ -98,10 +98,11 @@
 | III-4 回滚缰绳 | 规则生效前快照 + 回退到上一版本；回退上限 3 次转 human_gate | 一次真实回退演练；上限路径变异红 | F10, N5 | ✅ `src/snapshot.js` + store 集成：`confirmNegativeRule` **写前必快照**，快照失败则**拒绝写入**（宁可不生效，也不制造回不去的状态）；`rollbackNegativeRule` 退到上一未消费快照（上一版为 null 时等价删除）；上限 3 次**按规则各自计**（A 到上限不影响 B），到上限返回 human_gate_required。**实测抓到两个真 bug**：①不标记已消费 → 连续回退重复恢复同一版；②用快照总数冒充回退次数 → 正常修订三次后首次回退即被拒。真实回退演练通过（误改→恢复第一版→再退回删除）。10 例测试 + 7 条变异全杀（31/31）；`valve_confirm` 加 action=rollback |
 | III-5 越权拦截（显式） | 拦"候选未经确认直接生效"与"跳过判据写库"；写操作权限检查 | 三类越权各一条拦截测试 + 变异红；安全事件落账 | F10, N5 | ✅ `src/guard.js` 写入票机制：`issuePermit` **只接受人工渠道**（confirm/rollback），票绑定 ruleId + 5 分钟 TTL + 一次性；`requirePermit` 在落盘前校验；`requireCriteria` 拦"零判据写库"。三类越权实测拦截（unconfirmed_candidate / skipped_criteria / cross_layer_write），合法路径不被误伤。**补强点**：初版变异"无票放行"存活——空 token 落到了 `permits.get('')===undefined` 的兜底上，证明"只断言被拒"不够，须区分 missing_permit 与 unknown_permit。14 例测试 + 8 条变异全杀（39/39） |
 | III-6 语义越权（标记不阻断） | boundary_keywords + 相似度检查；embedder 为可选 peer，缺了标 degraded 不阻断 | 低相似度标 possible_semantic_bypass 进人工抽查；无 embedder 时主流程不报错 | F18, N4 | ✅ `src/semantic.js` 两层：词面层（boundary_keywords 包含匹配，与下行黑名单同语义）永远可用；语义层（cosine，自己算 8 行不引库）需 embedder，缺了标 degraded。**`blocked` 恒 false 由测试钉住**——语义判断会错，拦错一条就是误伤正当路径，阻断权仍在 valve_confirm。经 `valve_check direction=semantic` 落账。**变异教会一课**：只断言"最终状态 degraded"杀不死变异（去掉检查后 undefined 调用抛错被 catch 兜成 degraded，状态一模一样）→ 改用源码顺序断言"类型检查先于调用点"。13 例测试 + 5 条变异（44/44） |
-| III-7 定时巡检 | 周级原则巡检 + 季度层结构巡检（schedule 或 timer 插件） | 一次定时触发的巡检报告落盘 | F1 | ⬜ |
+| III-7 定时巡检 | 周级原则巡检 + 季度层结构巡检（schedule 或 timer 插件） | 一次定时触发的巡检报告落盘 | F1 | ✅ `src/patrol.js` + apply 内定时器：周级 7 天（原则零引用/反例）、季度 90 天（空层/失衡，带最小样本门槛）；报告落 `storages/mind-patrol/<kind>-<date>.json`，**失败也落盘**（`ok:false`，否则"没跑"与"跑了没问题"无法区分）；启动时按上次报告**补跑**（interval 会因重启重置，只看定时器会永远等不到）+ 卸载清定时器。**真机抓到 32 位溢出**：90 天超 Node setInterval 上限，被静默压成 1ms 变成忙循环 → `clampTimerDelay` 夹到上限，靠 `isPatrolDue` 判是否真到期。19 例测试 + 7 条变异（51/51）；真机验证报告落盘且警告消失 |
 
-**阶段 III 验收**：F1/F10/F18/F19 全过（均已 ✅）；缰绳三件（预算 III-3 / 回滚 III-4 / 越权 III-5）全部落地且变异全红。
-**余项**：III-7 定时巡检未建（周期触发，非机制缺口）。
+**阶段 III 验收**：F1/F10/F18/F19 —— F10（三道缰绳）✅、F18（语义越权）✅、F19（原则失效）✅；**F1 为 🔶**（治理循环机制齐备 + 定时巡检已建，但"真实反例驱动出一次失效提议"尚未发生）。
+**判定**：阶段的**机制目标全部达成**（7 个节点 6 ✅ + III-1 机制在）；**闭环目标未完全达成**——差一次真实的失效提议。按"完成标志未达成不算完成"的纪律，阶段 III 记为 **🔶 机制完成、闭环待触发**，不强行转 ✅。
+**下一动作**：等 `dailyCount` 涨起来、账本里出现带 `principle_refs` 的日常行，`valve_govern` 才可能真的提出改定义。
 
 ### 阶段 IV · 放量与层修改
 

@@ -67,6 +67,14 @@ MUTATIONS.push(
 	{ file: 'src/semantic.js', find: 'if (na === 0 || nb === 0) return null;', replace: 'if (false) return null;', label: '零向量硬算相似度（除零）' },
 	{ file: 'src/semantic.js', find: "if (kw && t.includes(kw)) hits.push", replace: 'if (false) hits.push', label: '词面层永不命中（语义层唯一依赖变成硬依赖）' },
 	{ file: 'src/semantic.js', find: 'if (lexical.hits.length > 0) {', replace: 'if (false) {', label: '词面命中不进理由（标记失去证据）' },
+	// III-7 定时巡检（2026-11-10）：
+	{ file: 'src/patrol.js', find: 'if (!latest || typeof latest.at !== \'string\') return true;', replace: 'if (!latest) return false;', label: '从未跑过也判"不必跑"（巡检永不开工）' },
+	{ file: 'src/patrol.js', find: 'return now.getTime() - last >= periodMs;', replace: 'return false;', label: '周期判定失效（永远不会到期）' },
+	{ file: 'src/patrol.js', find: 'if (refs < zeroRefWarn) {', replace: 'if (false) {', label: '零引用原则不报（周检失明）' },
+	{ file: 'src/patrol.js', find: 'if (n === 0) {', replace: 'if (false) {', label: '空层不报（季度巡检失明）' },
+	{ file: 'src/patrol.js', find: 'if (total >= 10) {', replace: 'if (true) {', label: '失衡判定丢最小样本门槛（小样本误报）' },
+	{ file: 'index.js', find: 'await writePatrolReport(storageDir, failed);', replace: '', label: '巡检失败不落盘（没跑与跑了没问题混同）' },
+	{ file: 'src/patrol.js', find: 'return Math.min(n, MAX_TIMER_DELAY_MS);', replace: 'return n;', label: '定时器延时不给 32 位上限（90 天被压成 1ms 忙循环）' },
 );
 
 let red = 0;
@@ -85,7 +93,7 @@ for (const m of MUTATIONS) {
 			continue;
 		}
 		writeFileSync(target, text.replace(m.find, m.replace), 'utf8');
-		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js', 'test/governance.test.js', 'test/budget.test.js', 'test/snapshot.test.js', 'test/guard.test.js', 'test/semantic.test.js'], { cwd: dir, encoding: 'utf8' });
+		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js', 'test/governance.test.js', 'test/budget.test.js', 'test/snapshot.test.js', 'test/guard.test.js', 'test/semantic.test.js', 'test/patrol.test.js'], { cwd: dir, encoding: 'utf8' });
 		const killed = r.status !== 0;
 		console.log(`${killed ? 'RED ' : 'GREEN(!!)'} ${m.label}`);
 		if (killed) red++;

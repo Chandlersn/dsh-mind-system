@@ -76,11 +76,31 @@ for (const [node, f] of Object.entries(III_TO_F)) {
 	if (fRow) ok(!/\| ⬜ \|/.test(fRow), `${node} 已完成 → ${f} 不能仍标 ⬜`);
 }
 
-console.log('\n--- 3. 已知待建项不得被误标完成 ---');
-// III-7 定时巡检确实未建；若有人把它标成 ✅ 而没证据，这里会红。
-const iii7 = plan.split('\n').find((l) => l.startsWith('| III-7 '));
-ok(iii7 !== undefined, 'III-7 行存在');
-ok(!iii7.includes('✅'), 'III-7 定时巡检尚未实现，不得标 ✅');
+console.log('\n--- 3. 已知未走完闭环的项不得被误标完成 ---');
+// III-1 治理循环：机制在，但"真实反例驱动的失效提议"还没发生过，
+// 且它的定时触发刚由 III-7 补上、尚未跑过一轮真实周期。所以它是 🔶。
+// 这条断言的作用：等哪天真的走完一次，改成 ✅ 时**必须同时删掉这条守卫**
+// ——强制重新审视，而不是顺手把 ⬜ 改成 ✅。
+const iii1 = plan.split('\n').find((l) => l.startsWith('| III-1 '));
+ok(iii1 !== undefined, 'III-1 行存在');
+ok(!iii1.includes('✅'), 'III-1 治理循环尚未走完一次真实闭环，不得标 ✅（若确实走完，请同步删除本守卫）');
+
+// 进度汇总行与节点行必须一致（最容易漏的一处）
+const summaryRow = plan.split('\n').find((l) => l.startsWith('| III · 治理与缰绳 |'));
+ok(summaryRow !== undefined, '进度汇总含 III 行');
+if (summaryRow) {
+	for (const node of ['III-1', 'III-2', 'III-3', 'III-4', 'III-5', 'III-6', 'III-7']) {
+		const row = plan.split('\n').find((l) => l.startsWith(`| ${node} `));
+		const nodeDone = row?.includes('✅');
+		// 汇总里该节点的标记：`III-x ✅` / `III-x 🔶` / `III-x ⬜`
+		const m = new RegExp(`${node}\\s*([✅🔶⬜])`).exec(summaryRow);
+		ok(m !== null, `汇总行含 ${node} 的状态`);
+		if (m) {
+			const summaryDone = m[1] === '✅';
+			ok(summaryDone === nodeDone, `${node} 汇总(${m[1]}) 与节点行(${nodeDone ? '✅' : '非✅'}) 一致`);
+		}
+	}
+}
 
 console.log(failed === 0 ? '\nplan-check: ALL PASS' : `\nplan-check: ${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

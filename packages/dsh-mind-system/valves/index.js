@@ -47,6 +47,11 @@ import {
 import { issuePermit } from './src/guard.js';
 // III-6 语义越权：标记不阻断；embedder 可选，缺了标 degraded（N4）。
 import { detectSemanticBypass } from './src/semantic.js';
+// III-7 定时巡检：周级原则 + 季度层结构，结论落盘（不自动改任何东西）。
+import {
+	weeklyPrinciplePatrol, quarterlyLayerPatrol,
+	writePatrolReport, readLatestPatrolReport, isPatrolDue, PATROL_PERIODS, clampTimerDelay,
+} from './src/patrol.js';
 import { nominateFromDisk } from './src/nominate.js';
 // III-3 预算缰绳：批量执行面（提名/治理/确认）的数量上限。
 import { check as checkBudget, DEFAULT_BUDGET } from './src/budget.js';
@@ -201,6 +206,45 @@ export function createRuntime(options = {}) {
 			return readNegativeRules(storageDir);
 		},
 		/**
+		 * III-7 跑一次巡检并落盘。
+		 *
+		 * kind=weekly：原则巡检（需要调用方给原则清单——巡检不自动枚举，
+		 * 没被用过的原则排队只会刷屏）。
+		 * kind=quarterly：层结构巡检（层与计数由调用方给，从 memory 读）。
+		 *
+		 * **失败也落盘**：`ok:false` + 原因。否则"没跑"与"跑了没问题"
+		 * 在文件系统里长得一样，而这两件事完全不同。
+		 */
+		async patrol(kind, input = {}) {
+			const now = new Date();
+			const at = now.toISOString();
+			let body;
+			try {
+				body = kind === 'quarterly'
+					? quarterlyLayerPatrol({ layers: input.layers, counts: input.counts })
+					: weeklyPrinciplePatrol({ principles: input.principles }, input.options);
+			} catch (err) {
+				const failed = { kind, at, ok: false, error: err instanceof Error ? err.message : String(err) };
+				await writePatrolReport(storageDir, failed);
+				return failed;
+			}
+			const report = { kind, at, ok: true, ...body };
+			const written = await writePatrolReport(storageDir, report);
+			void appendDecision(storageDir, {
+				gate: 'patrol',
+				direction: 'scheduled',
+				outcome: 'admitted',
+				action: kind,
+				reason: body.findings.length > 0 ? 'findings_reported' : 'clean',
+				origin: 'daily',
+			});
+			return { ...report, report_path: written.path, report_ok: written.ok };
+		},
+		/** 上次巡检报告（探针与"是否该补跑"的判据来源）。 */
+		async lastPatrol(kind) {
+			return readLatestPatrolReport(storageDir, kind);
+		},
+		/**
 		 * III-6 语义越权标记：**只标记不阻断**。
 		 *
 		 * 读现有规则（含各自声明的 boundary_keywords），对候选描述做词面检查；
@@ -287,10 +331,18 @@ export function createRuntime(options = {}) {
 			} else {
 				clearFinding(PROBE_CODES.storeUnreadable);
 			}
+			// III-7：上次巡检的时间与结论。没跑过要如实说"从未"，不能空着——
+			// "没有报告"与"巡检了没问题"是两件事，指标上必须分得开。
+			const weeklyPatrol = await readLatestPatrolReport(storageDir, 'weekly');
+			const quarterlyPatrol = await readLatestPatrolReport(storageDir, 'quarterly');
 			return {
 				...summarizeDecisions(entries),
 				negative_rules: rules === undefined ? null : rules.length,
 				negative_store: rules === undefined ? 'unreadable' : 'ok',
+				last_patrol: {
+					weekly: weeklyPatrol ? { at: weeklyPatrol.at, ok: weeklyPatrol.ok, findings: weeklyPatrol.findings?.length ?? 0 } : 'never',
+					quarterly: quarterlyPatrol ? { at: quarterlyPatrol.at, ok: quarterlyPatrol.ok, findings: quarterlyPatrol.findings?.length ?? 0 } : 'never',
+				},
 				thresholds,
 				thresholds_status: '暂定（待实测分布校准）',
 			};
@@ -458,6 +510,74 @@ export function apply(ctx, config = {}, overrides = {}) {
 	facts.storageDir = runtime.storageDir;
 	facts.thresholdsOverridden = config?.thresholds !== undefined && Object.keys(config.thresholds ?? {}).length > 0;
 	facts.loaded = true;
+
+	// ── III-7 定时巡检 ───────────────────────────────────────────────────
+	// 为什么不用第三方 timer 插件：巡检是附加能力，零依赖才降级得干净（N4）。
+	//
+	// 为什么除了 interval 还要"启动即补跑一次"：interval 只在进程活着时走，
+	// 宿主重启就重新计时。频繁重启时周检可能**永远等不到那一刻**——
+	// 那等于没有定时巡检。所以启动时先看上次报告时间，过期就立刻补跑。
+	const patrolConfig = config?.patrol ?? {};
+	const patrolEnabled = patrolConfig.enabled !== false; // 缺省开
+	const patrolTimers = [];
+	const runPatrol = async (kind) => {
+		try {
+			const last = await readLatestPatrolReport(runtime.storageDir, kind);
+			const period = kind === 'quarterly' ? PATROL_PERIODS.quarterlyMs : PATROL_PERIODS.weeklyMs;
+			if (!isPatrolDue(last, period)) return null;
+			// 巡检自己也要读数据：原则清单从账本与规则聚合，层次统计从 memory 拿。
+			// 拿不到就只跑周级（原则巡检不依赖外部），季度级如实记 skipped。
+			if (kind === 'quarterly') {
+				const layers = Array.isArray(config?.layers) && config.layers.length ? config.layers : DEFAULT_LAYERS;
+				const counts = typeof patrolConfig.layerCounts === 'function'
+					? await patrolConfig.layerCounts()
+					: undefined;
+				if (counts === undefined) {
+					facts.patrolQuarterly = 'skipped_no_layer_counts';
+					return null;
+				}
+				return await runtime.patrol('quarterly', { layers, counts });
+			}
+			const principles = Array.isArray(patrolConfig.principles) ? patrolConfig.principles : [];
+			return await runtime.patrol('weekly', { principles });
+		} catch (error) {
+			// 巡检失败不能拖垮插件：记事实 + 日志，不抛。
+			facts.patrolError = error instanceof Error ? error.message : String(error);
+			logger?.warn?.(`巡检执行失败：${facts.patrolError}`);
+			return null;
+		}
+	};
+	if (patrolEnabled) {
+		// 启动补跑（不 await，装载不被巡检拖慢）
+		void runPatrol('weekly');
+		void runPatrol('quarterly');
+		for (const [kind, period] of [['weekly', PATROL_PERIODS.weeklyMs], ['quarterly', PATROL_PERIODS.quarterlyMs]]) {
+			try {
+				// 夹到 32 位上限：90 天超过 Node setInterval 的上限会被压成 1ms
+				// （实测 TimeoutOverflowWarning，季度巡检变忙循环）。夹短之后
+				// 每次唤醒都用 isPatrolDue 判是否真到期，行为仍然正确。
+				const t = setInterval(() => { void runPatrol(kind); }, clampTimerDelay(period));
+				// unref：巡检不该阻止进程退出（测试/CLI 场景尤其重要）。
+				if (typeof t?.unref === 'function') t.unref();
+				patrolTimers.push(t);
+			} catch {
+				// 环境没有 setInterval（极少见）：巡检降级为"只能手动跑"。
+				facts.patrolTimers = 'unavailable';
+			}
+		}
+		facts.patrol = 'enabled';
+	} else {
+		facts.patrol = 'disabled';
+	}
+	// 插件卸载时清掉定时器，否则重载会叠加出多个并行巡检。
+	if (typeof ctx.on === 'function') {
+		ctx.on('dispose', () => {
+			for (const t of patrolTimers) {
+				try { clearInterval(t); } catch { /* ignore */ }
+			}
+			patrolTimers.length = 0;
+		});
+	}
 
 	// 服务发布：memory 等成员用 ctx.get('valves') 运行时探测（可选依赖）。
 	// ctx.provide 两参数形态（Cordis 4.0.5 实测）；provide 不可用时退回 ctx.set。
