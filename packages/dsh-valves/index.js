@@ -1,4 +1,4 @@
-/**
+﻿/**
  * dsh-valves —— 心智系统的两类阀门（《心智系统开发说明书》§4.2 的最小落地）。
  *
  * ## 定位：判据的裁决所，不是又一个判断器
@@ -51,6 +51,7 @@ import { detectSemanticBypass } from './src/semantic.js';
 import {
 	weeklyPrinciplePatrol, quarterlyLayerPatrol,
 	writePatrolReport, readLatestPatrolReport, isPatrolDue, PATROL_PERIODS, clampTimerDelay,
+	readPendingAxiomCandidates,
 } from './src/patrol.js';
 // IV-5 公理闸门限速：每月最多生效一次 + 显式测试通道（不消耗额度）。
 import { checkAxiomRate, applyAxiomLimit } from './src/ratelimit.js';
@@ -605,19 +606,57 @@ export function apply(ctx, config = {}, overrides = {}) {
 			// "查过没问题"的绿灯（真机第一份报告就是 principles:0 + clean，
 			// 这正是"绿灯不携带信息"）。如实记 no_input，让读数说出真相。
 			const principles = Array.isArray(patrolConfig.principles) ? patrolConfig.principles : [];
-			if (principles.length === 0) {
+			// 待决策的候选公理（2026-11-10）：默认从**磁盘**读 `dao/_candidates/`，
+			// 不反向 import memory（依赖方向纪律）；配置给了回调就用回调覆盖。
+			//
+			// 为什么放进周检：候选写进去如果没人提醒，就等于"存在但没人知道"，
+			// 和没写一样。周检是天然提醒时机——每周一看报告就能决定。
+			let pendingCandidates = null;
+			try {
+				if (typeof patrolConfig.pendingAxiomCandidates === 'function') {
+					const got = await patrolConfig.pendingAxiomCandidates();
+					pendingCandidates = Array.isArray(got) ? got : null;
+				} else if (typeof patrolConfig.memoryRoot === 'string' && patrolConfig.memoryRoot.trim()) {
+					const got = await readPendingAxiomCandidates(patrolConfig.memoryRoot.trim());
+					// 读失败不静默当零候选：那会让人以为"没有待决策项"。
+					if (!got.ok) facts.patrolCandidates = `error:${got.error}`;
+					else pendingCandidates = got.candidates;
+				}
+			} catch (err) {
+				facts.patrolCandidates = `error:${err instanceof Error ? err.message : String(err)}`;
+			}
+			if (principles.length === 0 && pendingCandidates === null) {
 				const skipped = {
 					kind: 'weekly',
 					at: new Date().toISOString(),
 					ok: false,
 					error: 'no_input',
-					note: '未提供原则清单，本轮未实际巡检任何原则（不是 clean）',
+					note: '未提供原则清单、也没有候选公理来源，本轮未实际巡检任何东西（不是 clean）',
 				};
 				await writePatrolReport(runtime.storageDir, skipped);
 				facts.patrolWeekly = 'skipped_no_principles';
 				return null;
 			}
-			return await runtime.patrol('weekly', { principles });
+			// 原则为空但有候选：仍要跑一轮，否则"每周提醒候选"这件事永远不发生。
+			const report = await runtime.patrol('weekly', { principles });
+			if (pendingCandidates !== null) {
+				// 候选单独成段，不混进 findings：findings 是"原则本身有问题"，
+				// 候选是"等你决策"，两件事混在一起会让人以为候选也是故障。
+				const enriched = {
+					...report,
+					pending_axiom_candidates: {
+						count: pendingCandidates.length,
+						items: pendingCandidates,
+						...(pendingCandidates.length
+							? { note: '有候选公理待你决策：确认转正，或说明理由否决（否决会留档作为反例）' }
+							: {}),
+					},
+				};
+				await writePatrolReport(runtime.storageDir, enriched);
+				facts.patrolCandidates = pendingCandidates.length;
+				return enriched;
+			}
+			return report;
 		} catch (error) {
 			// 巡检失败不能拖垮插件：记事实 + 日志，不抛。
 			facts.patrolError = error instanceof Error ? error.message : String(error);

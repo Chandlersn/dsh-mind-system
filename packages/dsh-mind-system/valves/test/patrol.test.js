@@ -293,3 +293,82 @@ test('apply 的巡检在没拿到原则清单时落盘 no_input，绝不落 clea
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+// ——————————————————————————————————————————————
+// 周检提醒待决策候选（2026-11-10 用户要求）
+// ——————————————————————————————————————————————
+
+test('readPendingAxiomCandidates：dao/ 在但没有 _candidates → 空列表，不是错误', async () => {
+	const { readPendingAxiomCandidates } = await import("../src/patrol.js");
+	const { mkdirSync } = await import("node:fs");
+	const dir = sandbox();
+	try {
+		mkdirSync(join(dir, "dao"), { recursive: true });
+		const r = await readPendingAxiomCandidates(dir);
+		assert.equal(r.ok, true);
+		assert.deepEqual(r.candidates, []);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('readPendingAxiomCandidates：dao/ 本身不可读 → 报错而非"零候选"（读坏了不能说成没有）', async () => {
+	const { readPendingAxiomCandidates } = await import("../src/patrol.js");
+	const dir = sandbox(); // 空目录：连 dao/ 都没有
+	try {
+		const r = await readPendingAxiomCandidates(dir);
+		assert.equal(r.ok, false, '记忆根不可读不能伪装成「没有候选」');
+		assert.match(String(r.error), /dao/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('readPendingAxiomCandidates：读出候选的命题与来源法数', async () => {
+	const { readPendingAxiomCandidates } = await import("../src/patrol.js");
+	const { mkdirSync, writeFileSync } = await import("node:fs");
+	const dir = sandbox();
+	try {
+		const candDir = join(dir, "dao", "_candidates");
+		mkdirSync(candDir, { recursive: true });
+		writeFileSync(join(candDir, "演示候选.md"), [
+			"# 候选公理 · 演示候选",
+			"",
+			"## 命题",
+			"",
+			"信号需要一条它无法伪造的退路。",
+			"",
+			"## 来源法",
+			"",
+			"- [法一](../insights/法一.md)",
+			"- [法二](../insights/法二.md)",
+			"- [法三](../insights/法三.md)",
+			"- [法四](../insights/法四.md)",
+			"- [法五](../insights/法五.md)",
+			"",
+		].join("\n"), "utf8");
+		const r = await readPendingAxiomCandidates(dir);
+		assert.equal(r.ok, true);
+		assert.equal(r.candidates.length, 1);
+		assert.equal(r.candidates[0].name, "演示候选");
+		assert.match(r.candidates[0].proposition, /无法伪造的退路/);
+		assert.equal(r.candidates[0].source_count, 5);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('readPendingAxiomCandidates：目录存在但读失败 → 如实报错，不假装零候选', async () => {
+	const { readPendingAxiomCandidates } = await import("../src/patrol.js");
+	const { writeFileSync } = await import("node:fs");
+	const dir = sandbox();
+	try {
+		// 把 _candidates 造成文件而非目录 → readdir 抛 ENOTDIR
+		writeFileSync(join(dir, "dao"), "not a dir", "utf8");
+		const r = await readPendingAxiomCandidates(dir);
+		assert.equal(r.ok, false, "读失败不能伪装成空列表");
+		assert.ok(r.error);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

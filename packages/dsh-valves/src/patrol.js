@@ -171,6 +171,61 @@ export function patrolReportPath(storageDir, kind, date = new Date()) {
 }
 
 /**
+ * 读待决策的候选公理（从磁盘，不跨插件调用）。
+ *
+ * ## 为什么不通过 memory 的回调拿
+ *
+ * 候选是**文件**（`dao/_candidates/*.md`），而 valves 不该反向 import memory
+ * （依赖方向纪律）。所以按路径约定直接读：代价是知道一个目录名，
+ * 收益是零耦合——memory 没装、版本不同、服务没发布，这一项都能独立工作。
+ *
+ * 读不到 = 没有候选（正常态）。但**目录存在却读失败**要如实报错，
+ * 那可能意味着候选丢了。
+ *
+ * @param {string} memoryRoot 记忆根（`dao/` 的父目录）。
+ * @returns {Promise<{ok: boolean, candidates: object[], error?: string}>}
+ */
+export async function readPendingAxiomCandidates(memoryRoot) {
+	const daoDir = join(String(memoryRoot ?? ''), 'dao');
+	const dir = join(daoDir, '_candidates');
+	let names;
+	try {
+		names = (await readdir(dir)).filter((f) => f.endsWith('.md')).sort();
+	} catch (err) {
+		// ENOENT 有**两种含义**，必须分开（2026-11-10 实测踩到）：
+		//   a) `_candidates` 不存在 → 还没有候选（正常态，返回空列表）
+		//   b) `dao` 本身不存在或不是目录 → 记忆根有问题（故障，要报错）
+		// 只看 err.code 会把 b 当成 a，"读坏了说成没有"——正是我们反复踩的坑。
+		if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') {
+			let daoOk = false;
+			try {
+				daoOk = (await readdir(daoDir, { withFileTypes: true })).length >= 0;
+			} catch {
+				daoOk = false;
+			}
+			if (daoOk) return { ok: true, candidates: [] };
+			return { ok: false, candidates: [], error: `dao/ 不可读（记忆根可能有问题）：${err?.code ?? err}` };
+		}
+		return { ok: false, candidates: [], error: err instanceof Error ? err.message : String(err) };
+	}
+	const { readFile } = await import('node:fs/promises');
+	const out = [];
+	for (const f of names) {
+		try {
+			const text = await readFile(join(dir, f), 'utf8');
+			const proposition = /##\s*命题\s*\n+([\s\S]*?)(?:\n##|$)/.exec(text)?.[1]?.trim() ?? '';
+			// 模板把来源法写成 `- [法名](../insights/法名.md)`
+			const sourceCount = (text.match(/^- \[[^\]]+\]\(\.\.\/insights\//gm) ?? []).length;
+			out.push({ name: f.replace(/\.md$/, ''), proposition, source_count: sourceCount });
+		} catch {
+			// 单条读失败不连坐：其余候选仍要呈现出来。
+			out.push({ name: f.replace(/\.md$/, ''), proposition: '', source_count: 0, unreadable: true });
+		}
+	}
+	return { ok: true, candidates: out };
+}
+
+/**
  * 写一份巡检报告。
  *
  * ## 报告里有"没跑成"的一席

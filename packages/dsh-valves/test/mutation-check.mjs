@@ -78,7 +78,7 @@ MUTATIONS.push(
 	// origin 口径（2026-11-10 修正 dailyCount=0 的数据黑洞）：
 	{ file: 'index.js', find: "origin: typeof input?.origin === 'string' && input.origin ? input.origin : 'daily',", replace: "...(input?.origin === undefined ? {} : { origin: input.origin }),", label: 'origin 退回"不传就不写"（真实日常样本再次丢失归属）' },
 	// 空输入报 clean（真机第一份报告抓到的假绿）：
-	{ file: 'index.js', find: 'if (principles.length === 0) {', replace: 'if (false) {', label: '空原则清单仍报 clean（没查却说没问题）' },
+	{ file: 'index.js', find: 'if (principles.length === 0 && pendingCandidates === null) {', replace: 'if (false) {', label: '空原则清单仍报 clean（没查却说没问题）' },
 	// IV-5 公理闸门限速（2026-11-10）：
 	{ file: 'src/ratelimit.js', find: "if (input?.testChannel === true) {", replace: 'if (false) {', label: '测试通道失效（验收被限速卡住，上轮矛盾复现）' },
 	{ file: 'src/ratelimit.js', find: 'if (used >= max) {', replace: 'if (false) {', label: '公理限速失效（每月可无限改公理）' },
