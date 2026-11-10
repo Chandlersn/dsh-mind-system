@@ -20,6 +20,8 @@ import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 // III-4 回滚缰绳：覆盖写之前先快照，回退上限按规则计。
 import { writeSnapshot, readLatestSnapshot, canRollback, markSnapshotConsumed } from './snapshot.js';
+// III-5 越权拦截：规则库写入必须出示人工通道签发的票。
+import { requirePermit, VIOLATIONS } from './guard.js';
 
 export const LEDGER_FILE = 'mind-valves.jsonl';
 export const RULES_FILE = 'mind-negative-rules.json';
@@ -145,13 +147,24 @@ export async function readNegativeRules(storageDir) {
  * @returns { ok, count } 或 { ok: false, error }（写失败必须让调用方知道，
  *   确认过的规则没落库 = 下次拦不住，这不是可以静默的事）。
  */
-export async function confirmNegativeRule(storageDir, rule) {
+export async function confirmNegativeRule(storageDir, rule, options = {}) {
 	const id = String(rule?.id ?? '').trim();
 	const statement = String(rule?.statement ?? '').trim();
 	const negativeType = String(rule?.negative_type ?? '').trim();
 	const TYPES = ['forbidden_skill', 'invalidated_criterion', 'out_of_scope_scenario', 'weakened_axiom'];
 	if (!id || !statement || !TYPES.includes(negativeType)) {
 		return { ok: false, error: 'rule 需要 id、statement 与合法 negative_type' };
+	}
+	// III-5 越权拦截：写入必须证明经过人工确认。
+	// 两种合法姿势：①带一张 issuePermit() 签发的票（生产路径，只能由
+	// confirm/rollback 通道签）；②显式声明 `human:true`（直接调用本函数的
+	// 人工通道）。默认（两者都没有）= 拒绝，且这个拒绝必须响——静默降级
+	// 会让"候选自己写进库"看起来像正常写入。
+	if (options.permit !== undefined && options.permit !== null) {
+		const ok = requirePermit(options.permit, { ruleId: id }, options);
+		if (!ok.ok) return { ok: false, error: ok.error, violation: ok.violation };
+	} else if (options.human !== true) {
+		return { ok: false, error: 'not_human_confirmed', violation: VIOLATIONS.unconfirmedCandidate };
 	}
 	const existing = await readNegativeRules(storageDir);
 	if (existing === undefined) {
@@ -208,6 +221,14 @@ export async function confirmNegativeRule(storageDir, rule) {
 export async function rollbackNegativeRule(storageDir, ruleId, options = {}) {
 	const id = String(ruleId ?? '').trim();
 	if (!id) return { ok: false, error: '需要 ruleId' };
+
+	// III-5：回退同样是改规则库，必须走人工通道（与 confirm 同一守卫）。
+	if (options.permit !== undefined && options.permit !== null) {
+		const ok = requirePermit(options.permit, { ruleId: id }, options);
+		if (!ok.ok) return { ok: false, error: ok.error, violation: ok.violation };
+	} else if (options.human !== true) {
+		return { ok: false, error: 'not_human_confirmed', violation: VIOLATIONS.unconfirmedCandidate };
+	}
 
 	const allowed = await canRollback(storageDir, id, options.rollbacks);
 	if (!allowed.allowed) {

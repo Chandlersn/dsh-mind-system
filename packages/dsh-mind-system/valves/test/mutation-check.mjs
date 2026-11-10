@@ -50,6 +50,15 @@ MUTATIONS.push(
 	{ file: 'src/snapshot.js', find: 'const count = Number.isFinite(used) ? used : await rollbackCount(storageDir, ruleId);', replace: 'const count = Number.isFinite(used) ? used : (await snapshotNumbers(storageDir, ruleId)).length;', label: '回退次数用快照总数冒充（改过三次就拒回退）' },
 	{ file: 'src/snapshot.js', find: 'if (count >= max) {', replace: 'if (false) {', label: '回退上限失效（无限自动回退）' },
 	{ file: 'src/snapshot.js', find: "return String(ruleId ?? '').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 80) || '_';", replace: "return String(ruleId ?? '');", label: '规则 id 不中性化（路径可能逃出快照目录）' },
+	// III-5 越权拦截（2026-11-10）：
+	{ file: 'src/guard.js', find: "if (!HUMAN_CHANNELS.includes(via)) {", replace: 'if (false) {', label: '任意通道都能签票（候选可自我确认生效）' },
+	{ file: 'src/guard.js', find: "if (!t) {", replace: 'if (false) {', label: '无票放行（写入不校验人工确认）' },
+	{ file: 'src/guard.js', find: 'if (now - p.at > PERMIT_TTL_MS) {', replace: 'if (false) {', label: '过期票仍可用' },
+	{ file: 'src/guard.js', find: 'if (p.ruleId !== ruleId) {', replace: 'if (false) {', label: '票不绑定规则（拿 A 的票写 B）' },
+	{ file: 'src/guard.js', find: "return permits.delete(t);", replace: 'return true;', label: '票可重复使用（一次性失效）' },
+	{ file: 'src/guard.js', find: 'if (list.length === 0) {', replace: 'if (false) {', label: '跳过判据不拦（空判据也算跑过）' },
+	{ file: 'src/guard.js', find: "if (!options.allowLayers.includes(options.layer)) {", replace: 'if (false) {', label: '越层写入不拦' },
+	{ file: 'src/store.js', find: "} else if (options.human !== true) {", replace: "} else if (false) {", label: 'store 不检查人工声明（无票直写）' },
 );
 
 let red = 0;
@@ -68,7 +77,7 @@ for (const m of MUTATIONS) {
 			continue;
 		}
 		writeFileSync(target, text.replace(m.find, m.replace), 'utf8');
-		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js', 'test/governance.test.js', 'test/budget.test.js', 'test/snapshot.test.js'], { cwd: dir, encoding: 'utf8' });
+		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js', 'test/governance.test.js', 'test/budget.test.js', 'test/snapshot.test.js', 'test/guard.test.js'], { cwd: dir, encoding: 'utf8' });
 		const killed = r.status !== 0;
 		console.log(`${killed ? 'RED ' : 'GREEN(!!)'} ${m.label}`);
 		if (killed) red++;

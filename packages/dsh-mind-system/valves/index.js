@@ -43,6 +43,8 @@ import {
 	rollbackNegativeRule,
 	matchNegativeRules,
 } from './src/store.js';
+// III-5 越权拦截：只有人工通道能签票，规则库写入必须持票。
+import { issuePermit } from './src/guard.js';
 import { nominateFromDisk } from './src/nominate.js';
 // III-3 预算缰绳：批量执行面（提名/治理/确认）的数量上限。
 import { check as checkBudget, DEFAULT_BUDGET } from './src/budget.js';
@@ -201,7 +203,12 @@ export function createRuntime(options = {}) {
 			return matchNegativeRules(rules, text);
 		},
 		async confirm(rule) {
-			const result = await confirmNegativeRule(storageDir, rule);
+			// III-5：签票只能走人工通道。这里就是人工通道本身（valve_confirm），
+			// 所以由它签发给 store —— 任何其它路径想写库都拿不到票。
+			const permit = issuePermit({ via: 'confirm', ruleId: String(rule?.id ?? '') });
+			const result = await confirmNegativeRule(storageDir, rule, {
+				...(permit.ok ? { permit: permit.token } : {}),
+			});
 			// 确认事件本身也进账本：生效通道被使用过几次，是审计的一部分。
 			void appendDecision(storageDir, {
 				gate: 'confirm',
@@ -221,7 +228,10 @@ export function createRuntime(options = {}) {
 		 * 而不是静默失败——上限不是错误，是"这条规则该由人重新想一遍"。
 		 */
 		async rollback(ruleId) {
-			const result = await rollbackNegativeRule(storageDir, ruleId);
+			const permit = issuePermit({ via: 'rollback', ruleId: String(ruleId ?? '') });
+			const result = await rollbackNegativeRule(storageDir, ruleId, {
+				...(permit.ok ? { permit: permit.token } : {}),
+			});
 			void appendDecision(storageDir, {
 				gate: 'rollback',
 				direction: 'human',

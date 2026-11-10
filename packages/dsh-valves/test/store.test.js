@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 账本与负向规则库测试 —— 全部用临时目录，绝不碰真实 <dshHome>。
  *
  * 重点盯三件容易撒谎的事：
@@ -78,19 +78,19 @@ test('确认通道：合法写入、同 id 覆盖为修订、非法输入拒绝'
 		const r1 = await confirmNegativeRule(dir, {
 			id: 'no-blind-retry', negative_type: 'forbidden_skill',
 			statement: '禁止不读错误原样重试', keywords: ['原样重试'],
-		});
+		}, { human: true });
 		assert.equal(r1.ok, true);
 		assert.equal(r1.count, 1);
 		const r2 = await confirmNegativeRule(dir, {
 			id: 'no-blind-retry', negative_type: 'forbidden_skill',
 			statement: '修订版', keywords: ['原样重试', '盲目重试'],
-		});
+		}, { human: true });
 		assert.equal(r2.count, 1, '同 id 是覆盖不是追加');
 		const rules = await readNegativeRules(dir);
 		assert.equal(rules[0].statement, '修订版');
 		assert.ok(rules[0].confirmed_at, '必须带确认时间');
-		assert.equal((await confirmNegativeRule(dir, { id: 'x' })).ok, false);
-		assert.equal((await confirmNegativeRule(dir, { id: 'x', statement: 's', negative_type: 'made_up' })).ok, false);
+		assert.equal((await confirmNegativeRule(dir, { id: 'x' }, { human: true })).ok, false);
+		assert.equal((await confirmNegativeRule(dir, { id: 'x', statement: 's', negative_type: 'made_up' }, { human: true })).ok, false);
 	} finally {
 		cleanup();
 	}
@@ -100,7 +100,7 @@ test('确认通道：库读不动时拒绝盲写（不覆盖读不到的既有�
 	const { dir, cleanup } = tempDir();
 	try {
 		writeFileSync(rulesPath(dir), '{broken', 'utf8');
-		const r = await confirmNegativeRule(dir, { id: 'x', statement: 's', negative_type: 'forbidden_skill' });
+		const r = await confirmNegativeRule(dir, { id: 'x', statement: 's', negative_type: 'forbidden_skill' }, { human: true });
 		assert.equal(r.ok, false);
 		assert.match(r.error, /读取失败/);
 	} finally {
