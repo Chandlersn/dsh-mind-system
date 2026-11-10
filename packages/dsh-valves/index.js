@@ -164,7 +164,18 @@ export function createRuntime(options = {}) {
 			from: input?.from,
 			to: input?.to,
 			candidate_id: input?.candidate_id,
-			...(input?.origin === undefined ? {} : { origin: input.origin }),
+			// origin 口径（2026-11-10 修正）：**不传 = daily**。
+			//
+			// 原实现是"不传就不写字段"，本意是不猜来源。但它有个致命后果：
+			// 真实调用（agent 跑 valve_check）通常不传 origin，于是真实日常
+			// 样本全部落成"无 origin"，dailyCount 永远是 0 —— 阈值校准依赖的
+			// 分布**永远攒不出来**（实测：100 行账本里 0 行 daily）。不猜来源
+			// 变成了"拒绝承认最可能的来源"，把一个统计口径做成了数据黑洞。
+			//
+			// 现在的语义：真实判定默认就是日常；验证/演练/提名必须**显式声明**
+			// 来把自己排除出校准分布。这样"忘了标"的后果从"样本丢失"降为
+			// "验证样本混进日常"——后者至少有 origin 字段可事后筛，前者无从恢复。
+			origin: typeof input?.origin === 'string' && input.origin ? input.origin : 'daily',
 			// III-2：调用方显式声明"这次判定依据了哪些原则"——覆盖率只数
 			// 显式引用，不猜语义关联。形状不合（非字符串数组）如实丢弃。
 			...(Array.isArray(input?.principle_refs) && input.principle_refs.every((r) => typeof r === 'string' && r)
@@ -186,7 +197,8 @@ export function createRuntime(options = {}) {
 				from,
 				to,
 				candidate_id: candidate?.candidate_id ?? candidate?.rule_id,
-				origin: candidate?.origin,
+				// 同 record() 的口径：不声明就是日常（见 record 里的说明）。
+				origin: typeof candidate?.origin === 'string' && candidate.origin ? candidate.origin : 'daily',
 				principle_refs: candidate?.principle_refs,
 			});
 		},
@@ -198,7 +210,7 @@ export function createRuntime(options = {}) {
 				outcome: verdict.status === 'invalid' ? 'skipped' : 'admitted',
 				action: verdict.status,
 				reason: verdict.triggered.join('+') || verdict.status,
-				...(stats?.origin === undefined ? {} : { origin: stats.origin }),
+				origin: typeof stats?.origin === 'string' && stats.origin ? stats.origin : 'daily',
 			});
 			return verdict;
 		},
@@ -270,7 +282,7 @@ export function createRuntime(options = {}) {
 					action: 'flag',
 					reason: verdict.code,
 					candidate_id: input.candidate_id,
-					...(input?.origin === undefined ? {} : { origin: input.origin }),
+					origin: typeof input?.origin === 'string' && input.origin ? input.origin : 'daily',
 				});
 			}
 			return verdict;
@@ -538,7 +550,22 @@ export function apply(ctx, config = {}, overrides = {}) {
 				}
 				return await runtime.patrol('quarterly', { layers, counts });
 			}
+			// 周检没拿到原则清单时**不能报 clean**：那等于"什么都没查"却给出
+			// "查过没问题"的绿灯（真机第一份报告就是 principles:0 + clean，
+			// 这正是"绿灯不携带信息"）。如实记 no_input，让读数说出真相。
 			const principles = Array.isArray(patrolConfig.principles) ? patrolConfig.principles : [];
+			if (principles.length === 0) {
+				const skipped = {
+					kind: 'weekly',
+					at: new Date().toISOString(),
+					ok: false,
+					error: 'no_input',
+					note: '未提供原则清单，本轮未实际巡检任何原则（不是 clean）',
+				};
+				await writePatrolReport(runtime.storageDir, skipped);
+				facts.patrolWeekly = 'skipped_no_principles';
+				return null;
+			}
 			return await runtime.patrol('weekly', { principles });
 		} catch (error) {
 			// 巡检失败不能拖垮插件：记事实 + 日志，不抛。

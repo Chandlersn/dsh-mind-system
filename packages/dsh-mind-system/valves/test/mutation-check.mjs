@@ -75,6 +75,10 @@ MUTATIONS.push(
 	{ file: 'src/patrol.js', find: 'if (total >= 10) {', replace: 'if (true) {', label: '失衡判定丢最小样本门槛（小样本误报）' },
 	{ file: 'index.js', find: 'await writePatrolReport(storageDir, failed);', replace: '', label: '巡检失败不落盘（没跑与跑了没问题混同）' },
 	{ file: 'src/patrol.js', find: 'return Math.min(n, MAX_TIMER_DELAY_MS);', replace: 'return n;', label: '定时器延时不给 32 位上限（90 天被压成 1ms 忙循环）' },
+	// origin 口径（2026-11-10 修正 dailyCount=0 的数据黑洞）：
+	{ file: 'index.js', find: "origin: typeof input?.origin === 'string' && input.origin ? input.origin : 'daily',", replace: "...(input?.origin === undefined ? {} : { origin: input.origin }),", label: 'origin 退回"不传就不写"（真实日常样本再次丢失归属）' },
+	// 空输入报 clean（真机第一份报告抓到的假绿）：
+	{ file: 'index.js', find: 'if (principles.length === 0) {', replace: 'if (false) {', label: '空原则清单仍报 clean（没查却说没问题）' },
 );
 
 let red = 0;
@@ -93,7 +97,7 @@ for (const m of MUTATIONS) {
 			continue;
 		}
 		writeFileSync(target, text.replace(m.find, m.replace), 'utf8');
-		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js', 'test/governance.test.js', 'test/budget.test.js', 'test/snapshot.test.js', 'test/guard.test.js', 'test/semantic.test.js', 'test/patrol.test.js'], { cwd: dir, encoding: 'utf8' });
+		const r = spawnSync(process.execPath, ['--test', 'test/predicates.test.js', 'test/store.test.js', 'test/entry.test.js', 'test/nominate.test.js', 'test/clis-bridge.test.js', 'test/governance.test.js', 'test/budget.test.js', 'test/snapshot.test.js', 'test/guard.test.js', 'test/semantic.test.js', 'test/patrol.test.js', 'test/origin.test.js'], { cwd: dir, encoding: 'utf8' });
 		const killed = r.status !== 0;
 		console.log(`${killed ? 'RED ' : 'GREEN(!!)'} ${m.label}`);
 		if (killed) red++;

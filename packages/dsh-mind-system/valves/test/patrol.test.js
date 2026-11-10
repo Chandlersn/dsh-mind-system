@@ -237,3 +237,59 @@ test('clampTimerDelay：非正数/非法值给最小合法延时（绝不返回 
 		assert.ok(Number.isFinite(got) && got >= 1, `${String(bad)} → ${got} 应为 ≥1 的有限数`);
 	}
 });
+
+// ——————————————————————————————————————————————
+// 空输入不得报 clean（真机第一份报告抓到的假绿）
+// ——————————————————————————————————————————————
+
+test('空原则清单的巡检结果不含任何"查过"的证据，调用方不得据此报 clean', () => {
+	// 真机第一份报告是 `principles: 0, findings: [], ok: true` —— 看起来像
+	// "查了，没问题"，实际它**一条原则都没检查**。这正是"绿灯不携带信息"。
+	// 判据层如实返回 0/0；把这种结果说成 clean 的是调用方，所以短路在 apply。
+	const empty = weeklyPrinciplePatrol({ principles: [] });
+	assert.equal(empty.summary.principles, 0);
+	assert.deepEqual(empty.findings, []);
+	// 关键对照：这才是真的"查过且没问题"——检查了 N>0 条，零引用为 0
+	const real = weeklyPrinciplePatrol({ principles: [{ id: 'p', refs: 9, antiExamples: 0 }] });
+	assert.equal(real.summary.principles, 1);
+	assert.deepEqual(real.findings, []);
+});
+
+test('runtime.patrol 对空清单如实返回 0/0（判据层不撒谎，clean 与否由调用方判）', async () => {
+	const { createRuntime } = await import('../index.js');
+	const dir = sandbox();
+	try {
+		const rt = createRuntime({ storageDir: dir });
+		const r = await rt.patrol('weekly', { principles: [] });
+		assert.equal(r.ok, true);
+		assert.equal(r.summary.principles, 0, '如实报 0 条原则');
+		assert.equal(r.findings.length, 0);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('apply 的巡检在没拿到原则清单时落盘 no_input，绝不落 clean', async () => {
+	// 这条必须走 apply（真机路径），因为短路写在 apply 的 runPatrol 里。
+	// 只测判据层会漏掉它——实测该变异就是这样存活的。
+	const { apply } = await import('../index.js');
+	const dir = sandbox();
+	try {
+		const ctx = {
+			logger: () => ({ info() {}, warn() {}, error() {} }),
+			provide() {}, set() {}, on() {},
+			tools: { register: () => () => {} },
+		};
+		// 不配 principles → 巡检拿不到输入
+		apply(ctx, { storageDir: dir, patrol: { enabled: true } }, { loadDefineTool: () => (s) => s });
+		await new Promise((r) => setTimeout(r, 250));
+
+		const onDisk = await readLatestPatrolReport(dir, 'weekly');
+		assert.ok(onDisk !== null, '必须落一份报告（哪怕是"没跑成"）');
+		assert.equal(onDisk.ok, false, '没查任何原则不能报 ok:true');
+		assert.equal(onDisk.error, 'no_input', '要明确说"没有输入"，而不是 clean');
+		assert.ok(String(onDisk.note ?? '').includes('不是 clean'), '要写清这不是 clean');
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
