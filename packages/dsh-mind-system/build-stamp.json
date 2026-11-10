@@ -317,7 +317,7 @@
     },
     "mind/src/dispatch.js": {
       "source": "dsh-agent-mind/src/dispatch.js",
-      "sha256": "3d27c0ca3c8863c08f4aaf0b2019c642d58ecc7eb03af8e0a3be2813fd9b02d4"
+      "sha256": "208f125fe357ffabc85d48e9c151a19b00265793b79391d7708f34e675b8997b"
     },
     "mind/src/hitrate.js": {
       "source": "dsh-agent-mind/src/hitrate.js",
@@ -354,6 +354,10 @@
     "mind/test/diagnostics.test.js": {
       "source": "dsh-agent-mind/test/diagnostics.test.js",
       "sha256": "b04abdad544839414775864f596b7947c7a62ed36aefb2105fe43bbd894e81ca"
+    },
+    "mind/test/dictionary.test.js": {
+      "source": "dsh-agent-mind/test/dictionary.test.js",
+      "sha256": "3c46d70e45e5756ef052a515e8142cb83a58efeabae7cc061942a7922503cad0"
     },
     "mind/test/dispatch.test.js": {
       "source": "dsh-agent-mind/test/dispatch.test.js",

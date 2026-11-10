@@ -449,7 +449,7 @@ npm test
 
 | 包 | 测试文件 | 用例/断言 |
 |---|---|---|
-| `dsh-agent-mind` | 14 | 138 |
+| `dsh-agent-mind` | 15 | 147 |
 | `dsh-memory-manager` | 7 | 173 |
 | `dsh-clis`（源仓库） | 41 | 617 |
 
@@ -574,7 +574,7 @@ npm run install:profile -- --dry-run   # 只说做什么
 
 | 包 | 规模 |
 |---|---|
-| `dsh-agent-mind` | 20 文件 / 5615 行 |
+| `dsh-agent-mind` | 20 文件 / 5683 行 |
 | `dsh-clis` | 源仓库 45 个 .ts / 9458 行 |
 | `dsh-meta-framework` | 10 文件 / 3230 行 |
 | `dsh-memory-manager` | 4 文件 / 5989 行 |
