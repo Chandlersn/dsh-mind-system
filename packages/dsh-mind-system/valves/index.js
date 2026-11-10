@@ -39,6 +39,8 @@ import {
 	summarizeDecisions,
 	readNegativeRules,
 	confirmNegativeRule,
+	// III-4 回滚：退到上一版快照，上限按规则计。
+	rollbackNegativeRule,
 	matchNegativeRules,
 } from './src/store.js';
 import { nominateFromDisk } from './src/nominate.js';
@@ -208,6 +210,25 @@ export function createRuntime(options = {}) {
 				action: result.ok ? 'confirmed' : 'confirm_failed',
 				reason: result.ok ? 'human_confirmed' : 'confirm_write_failed',
 				candidate_id: rule?.id,
+			});
+			return result;
+		},
+		/**
+		 * III-4 回退：把一条规则退到上一版快照。
+		 *
+		 * 与 confirm 共用一个人工入口（不新增第 6 个工具）：两者都是**人工
+		 * 改规则库**的动作，区别只是方向。超过上限时返回 human_gate_required
+		 * 而不是静默失败——上限不是错误，是"这条规则该由人重新想一遍"。
+		 */
+		async rollback(ruleId) {
+			const result = await rollbackNegativeRule(storageDir, ruleId);
+			void appendDecision(storageDir, {
+				gate: 'rollback',
+				direction: 'human',
+				outcome: result.ok ? 'admitted' : 'skipped',
+				action: result.ok ? result.action : 'rollback_refused',
+				reason: result.ok ? 'human_rollback' : String(result.error ?? 'rollback_failed'),
+				candidate_id: ruleId,
 			});
 			return result;
 		},
@@ -489,17 +510,26 @@ export function apply(ctx, config = {}, overrides = {}) {
 		description:
 			'人工确认一条负向规则并写入生效库（唯一生效通道）。调用前提：用户已在对话中明确确认这条禁令/证伪/越界标记。' +
 			'未经用户确认不得调用——这是人工闸门的语义，不是自动流程的一步。' +
-			'生效后下行准入与 memory 召回自动使用它（零配合：不需要其它插件改代码）。',
+			'生效后下行准入与 memory 召回自动使用它（零配合：不需要其它插件改代码）。' +
+			'**回退**：传 action=rollback 与 rollback_rule_id，把该规则退到上一版快照（写入前已自动快照）。' +
+			'同一规则回退满 3 次后拒绝自动回退并转人工——反复回退说明判据本身不稳，该由人重新想一遍。',
 		parameters: {
-			id: { type: 'string', required: true, description: '规则稳定 id（kebab-case，如 forbidden-retry-without-read）。同 id 覆盖为修订。' },
-			negative_type: { type: 'string', required: true, enum: ['forbidden_skill', 'invalidated_criterion', 'out_of_scope_scenario', 'weakened_axiom'], description: '负向规则类型。' },
-			statement: { type: 'string', required: true, description: '一句话禁令/证伪陈述（会注入到后续召回里，写给未来的 agent 看）。' },
+			action: { type: 'string', enum: ['confirm', 'rollback'], description: '缺省 confirm（写入/修订规则）；rollback 退到上一版。' },
+			rollback_rule_id: { type: 'string', description: 'action=rollback 时必填：要回退的规则 id。' },
+			id: { type: 'string', description: '规则稳定 id（kebab-case，如 forbidden-retry-without-read）。同 id 覆盖为修订。action=confirm 时必填。' },
+			negative_type: { type: 'string', enum: ['forbidden_skill', 'invalidated_criterion', 'out_of_scope_scenario', 'weakened_axiom'], description: '负向规则类型。action=confirm 时必填。' },
+			statement: { type: 'string', description: '一句话禁令/证伪陈述（会注入到后续召回里，写给未来的 agent 看）。action=confirm 时必填。' },
 			keywords: { type: 'array', items: { type: 'string' }, description: '下行匹配关键词：候选路径描述包含任一词即命中拦截。选具体词，避免误杀。' },
 			layer: { type: 'string', description: '规则所属层（如 L2）。' },
 			source: { type: 'string', description: '确认来源（如用户原话摘要、trace id）。' },
 		},
 		output: { schema: { type: 'json' }, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }] },
 		async execute(args) {
+			if (args?.action === 'rollback') {
+				const ruleId = String(args?.rollback_rule_id ?? '').trim();
+				if (!ruleId) return { error: 'action=rollback 需要 rollback_rule_id' };
+				return runtime.rollback(ruleId);
+			}
 			return runtime.confirm(args);
 		},
 	});

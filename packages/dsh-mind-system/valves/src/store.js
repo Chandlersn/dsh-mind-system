@@ -18,6 +18,8 @@
  */
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+// III-4 回滚缰绳：覆盖写之前先快照，回退上限按规则计。
+import { writeSnapshot, readLatestSnapshot, canRollback, markSnapshotConsumed } from './snapshot.js';
 
 export const LEDGER_FILE = 'mind-valves.jsonl';
 export const RULES_FILE = 'mind-negative-rules.json';
@@ -133,6 +135,13 @@ export async function readNegativeRules(storageDir) {
  * 阀门判定（human_gate）之后由人（经 agent 转达确认）调用。
  * 同 id 覆盖（修订），不重复追加。
  *
+ * ## III-4：覆盖是破坏性的，所以写前必须快照
+ *
+ * 覆盖式写入会让"上一版"彻底消失：一旦写进一条错的禁令，它立刻开始拦截
+ * 所有匹配路径，而旧版本已经不存在、没有任何办法退回。快照不是为了留档，
+ * 是**回退的唯一依据**——所以它在写入之前发生，且快照失败时**拒绝写入**
+ * （宁可这次不生效，也不能制造一个无法回退的状态）。
+ *
  * @returns { ok, count } 或 { ok: false, error }（写失败必须让调用方知道，
  *   确认过的规则没落库 = 下次拦不住，这不是可以静默的事）。
  */
@@ -148,6 +157,13 @@ export async function confirmNegativeRule(storageDir, rule) {
 	if (existing === undefined) {
 		return { ok: false, error: '负向规则库读取失败，拒绝盲写（避免覆盖掉读不到的既有规则）' };
 	}
+	// 写前快照：记下这条规则**改动前**的样子（不存在则记 null）。
+	// 快照失败就不写 —— 制造一个回不去的状态比这次没生效更糟。
+	const prev = existing.find((r) => r?.id === id) ?? null;
+	const snap = await writeSnapshot(storageDir, id, prev);
+	if (!snap.ok) {
+		return { ok: false, error: `快照失败，拒绝写入（无法建立回退点）：${snap.error}` };
+	}
 	const next = existing.filter((r) => r?.id !== id);
 	next.push({
 		id,
@@ -157,11 +173,76 @@ export async function confirmNegativeRule(storageDir, rule) {
 		keywords: Array.isArray(rule.keywords) ? rule.keywords.filter((k) => typeof k === 'string' && k.trim()) : [],
 		confirmed_at: new Date().toISOString(),
 		source: typeof rule.source === 'string' ? rule.source : 'human_confirm',
+		// 记录它被写过几次：回退计数要能回答"这条到底改了几版"。
+		revisions: (Number(prev?.revisions ?? 0) || 0) + 1,
 	});
 	try {
 		await mkdir(storageDir, { recursive: true });
 		await writeFile(rulesPath(storageDir), `${JSON.stringify({ rules: next }, null, 2)}\n`, 'utf8');
-		return { ok: true, count: next.length };
+		return { ok: true, count: next.length, snapshot: snap.n };
+	} catch (err) {
+		return { ok: false, error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
+/**
+ * 把一条规则回退到上一版快照（III-4）。
+ *
+ * ## 语义
+ *
+ * - 上一版不存在（快照里 `rule: null`）→ 这条规则是从无到有加的，回退 = 删掉它。
+ * - 上一版存在 → 用快照内容覆盖回去。
+ * - 超过回退上限（默认 3 次，按规则计）→ 拒绝自动回退，转人工。
+ *
+ * ## 为什么上限按规则计
+ *
+ * 同一条规则回退三次，说明问题不在"那一次写错"，而在**这条规则本身的判据
+ * 不稳**（关键词选错、边界没想清）。继续自动回退只是让人舒服地重复同一个
+ * 错误。到上限就该由人决定：精炼它，还是废弃它。
+ *
+ * @param {string} storageDir storages 根。
+ * @param {string} ruleId 规则 id。
+ * @param {object} [options] `{ rollbacks }` 该规则已回退次数（缺省按快照数近似）。
+ * @returns {Promise<{ok: boolean, action?: 'restored'|'removed', n?: number, error?: string, used?: number, max?: number}>}
+ */
+export async function rollbackNegativeRule(storageDir, ruleId, options = {}) {
+	const id = String(ruleId ?? '').trim();
+	if (!id) return { ok: false, error: '需要 ruleId' };
+
+	const allowed = await canRollback(storageDir, id, options.rollbacks);
+	if (!allowed.allowed) {
+		return {
+			ok: false,
+			error: allowed.reason,
+			used: allowed.used,
+			max: allowed.max,
+			// 到上限并不意味着失败，而是"这一类修法已试过三次"——调用方据此转人工。
+			human_gate_required: true,
+		};
+	}
+
+	const latest = await readLatestSnapshot(storageDir, id);
+	if (!latest.ok) return { ok: false, error: latest.error ?? 'no_snapshot' };
+
+	const existing = await readNegativeRules(storageDir);
+	if (existing === undefined) return { ok: false, error: '负向规则库读取失败，拒绝盲写' };
+
+	const prev = latest.rule;
+	const next = existing.filter((r) => r?.id !== id);
+	if (prev && typeof prev === 'object') next.push(prev);
+
+	try {
+		await mkdir(storageDir, { recursive: true });
+		await writeFile(rulesPath(storageDir), `${JSON.stringify({ rules: next }, null, 2)}\n`, 'utf8');
+		// 标记该快照已消费，否则下次回退会重复恢复同一版（实测缺陷）。
+		await markSnapshotConsumed(storageDir, id, latest.n);
+		return {
+			ok: true,
+			action: prev ? 'restored' : 'removed',
+			n: latest.n,
+			used: allowed.used + 1,
+			max: allowed.max,
+		};
 	} catch (err) {
 		return { ok: false, error: err instanceof Error ? err.message : String(err) };
 	}
