@@ -2,7 +2,7 @@
 // 不触碰真实记忆根；不构建；node --test 直跑。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, stat, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { archiveDailyMonths, readArchivedDay, latestArchivedDay } from '../src/daily-archive.js';
@@ -25,14 +25,33 @@ async function fixture(t, prefix = 'daily-archive-') {
 	return { home, root, skills };
 }
 
+/**
+ * mtime 回溯：mtime<24h 防护（防跨月 capture 竞态）会跳过刚写完的 fixture。
+ * 历史 fixture 必须把 mtime 拨回其名义日期附近——这正是防护语义：
+ * 「上个月且最近没被动过」才可归档。根目录已存在是回溯的前提。
+ */
+async function backdate(root, name, dateStr) {
+	const p = path.join(root, name);
+	const nominal = new Date(`${dateStr}T12:00:00`);
+	await utimes(p, nominal, nominal);
+}
+/** 创建一个名义日期在上个月、mtime 拨回当时的 fixture 日文件。 */
+async function writeDated(root, dateStr, text) {
+	const p = path.join(root, `${dateStr}.md`);
+	await writeFile(p, text, 'utf8');
+	const nominal = new Date(`${dateStr}T12:00:00`);
+	await utimes(p, nominal, nominal);
+	return p;
+}
+
 const r26 = (report) => report.results.filter((r) => r.rule === 'R26');
 const r10 = (report) => report.results.filter((r) => r.rule === 'R10');
 
 test('跨月两文件归档 + 当月保留 + 周分组（含跨周同月）', async (t) => {
 	const { root } = await fixture(t);
-	await writeFile(path.join(root, '2026-09-15.md'), '# 2026-09-15 记录\n\n> 头注\n\n- 周二的判断\n', 'utf8');
-	await writeFile(path.join(root, '2026-09-21.md'), '# 2026-09-21 记录\n\n- 周一的取舍\n', 'utf8');
-	await writeFile(path.join(root, '2026-09-23.md'), '- 同一周的周三\n', 'utf8');
+	await writeDated(root, '2026-09-15', '# 2026-09-15 记录\n\n> 头注\n\n- 周二的判断\n');
+	await writeDated(root, '2026-09-21', '# 2026-09-21 记录\n\n- 周一的取舍\n');
+	await writeDated(root, '2026-09-23', '- 同一周的周三\n');
 	await writeFile(path.join(root, '2026-11-13.md'), '- 当月不归档\n', 'utf8');
 	const res = await archiveDailyMonths(root, { today: '2026-11-13' });
 	assert.deepEqual(res.errors, []);
@@ -60,7 +79,7 @@ test('跨月两文件归档 + 当月保留 + 周分组（含跨周同月）', as
 
 test('重复运行幂等：源没了不再归档；已有日节跳过且不重写已有字节', async (t) => {
 	const { root } = await fixture(t);
-	await writeFile(path.join(root, '2026-10-07.md'), '- 第一次归档\n', 'utf8');
+	await writeDated(root, '2026-10-07', '- 第一次归档\n');
 	const first = await archiveDailyMonths(root, { today: '2026-11-13' });
 	assert.equal(first.archived.length, 1);
 	const archPath = path.join(root, 'daily', '2026-10.md');
@@ -71,7 +90,7 @@ test('重复运行幂等：源没了不再归档；已有日节跳过且不重�
 	assert.deepEqual(second.errors, []);
 	assert.equal(await readFile(archPath, 'utf8'), before);
 	// 模拟"日已存在归档、源文件又出现"：跳过已有日节，不重写已有字节。
-	await writeFile(path.join(root, '2026-10-08.md'), '- 这天已在归档里\n', 'utf8');
+	await writeDated(root, '2026-10-08', '- 这天已在归档里\n');
 	const arch = await readFile(archPath, 'utf8');
 	const patched = `${arch}### [2026-10-08]\n\n- 预置日节\n\n`;
 	await writeFile(archPath, patched, 'utf8');
@@ -83,7 +102,7 @@ test('重复运行幂等：源没了不再归档；已有日节跳过且不重�
 
 test('归档件被 recordWrite 登记（R26 对账 ok），源文件删除配对事件完整', async (t) => {
 	const { root } = await fixture(t);
-	await writeFile(path.join(root, '2026-10-07.md'), '- 要归档的内容\n', 'utf8');
+	await writeDated(root, '2026-10-07', '- 要归档的内容\n');
 	const res = await archiveDailyMonths(root, { today: '2026-11-13' });
 	assert.deepEqual(res.errors, []);
 	const ledger = await readLedger(root);
@@ -107,7 +126,7 @@ test('归档件被 recordWrite 登记（R26 对账 ok），源文件删除配对
 
 test('归档件写入失败时源文件保留并给出明确阶段', async (t) => {
 	const { root } = await fixture(t);
-	await writeFile(path.join(root, '2026-10-07.md'), '- 原文\n', 'utf8');
+	await writeDated(root, '2026-10-07', '- 原文\n');
 	// Fault injection：writeText 经 rename 提交，让归档暂存路径的 rename 失败，
 	// 精确命中"写入阶段"而不是读阶段（读失败是另一个阶段，另有语义）。
 	// ESM 内置绑定需 syncBuiltinESMExports 才能让插件模块看到替换（同 r10 测试）。
@@ -145,7 +164,7 @@ test('归档件写入失败时源文件保留并给出明确阶段', async (t) =
 
 test('归档后体检 R26 对账 ok（无未登记/未配对告警）', async (t) => {
 	const { root, skills } = await fixture(t);
-	await writeFile(path.join(root, '2026-10-07.md'), '- 已归档的一天\n', 'utf8');
+	await writeDated(root, '2026-10-07', '- 已归档的一天\n');
 	// 当月文件用受登记的 writeText 创建：直写会触发 R26 的"未登记"告警——
 	// 那是防线对未登记写入的如实报告，不是归档通道的缺陷。
 	await writeText(path.join(root, '2026-11-13.md'), '- 现存的一天\n', { memoryRoot: root });
@@ -161,8 +180,8 @@ test('归档后体检 R26 对账 ok（无未登记/未配对告警）', async (t
 test('归档后 R26 对账 ok 且无 unexplained missing（任务书点名断言）', async (t) => {
 	const { root, skills } = await fixture(t);
 	// 两个非当月源文件 + 一份当月文件（writeText 登记，模拟正常通道）。
-	await writeFile(path.join(root, '2026-08-20.md'), '- 八月的一天\n', 'utf8');
-	await writeFile(path.join(root, '2026-09-11.md'), '- 九月的一天\n', 'utf8');
+	await writeDated(root, '2026-08-20', '- 八月的一天\n');
+	await writeDated(root, '2026-09-11', '- 九月的一天\n');
 	await writeText(path.join(root, '2026-11-13.md'), '- 当月现存\n', { memoryRoot: root });
 	const res = await archiveDailyMonths(root, { today: '2026-11-13' });
 	assert.deepEqual(res.errors, [], JSON.stringify(res.errors));
@@ -307,4 +326,20 @@ test('未来月份的顶层日文件跳过不归档', async (t) => {
 	assert.deepEqual(res.archived, []);
 	assert.deepEqual(res.skipped, [{ day: '2027-01-01', reason: 'future_month' }]);
 	await assert.ok(await readFile(path.join(root, '2027-01-01.md'), 'utf8'));
+});
+
+test('mtime<24h 的历史月文件跳过（防跨月 capture 竞态），拨回 mtime 后归档', async (t) => {
+	const { root } = await fixture(t);
+	// 名义上是上个月，但 mtime 是刚刚——仍在活跃写入窗口，不得归档。
+	await writeFile(path.join(root, '2026-10-20.md'), '- 刚被写过的历史日\n', 'utf8');
+	const first = await archiveDailyMonths(root, { today: '2026-11-13' });
+	assert.deepEqual(first.archived, [], JSON.stringify(first.archived));
+	assert.ok(first.skipped.some((s) => s.day === '2026-10-20' && s.reason === 'mtime_fresh'), JSON.stringify(first.skipped));
+	await assert.ok(await readFile(path.join(root, '2026-10-20.md'), 'utf8'), '跳过时源文件保留');
+	// mtime 拨回名义日期后，同一文件正常归档。
+	await backdate(root, '2026-10-20.md', '2026-10-20');
+	const second = await archiveDailyMonths(root, { today: '2026-11-13' });
+	assert.deepEqual(second.errors, [], JSON.stringify(second.errors));
+	assert.deepEqual(second.archived.map((a) => a.day), ['2026-10-20']);
+	await assert.rejects(stat(path.join(root, '2026-10-20.md')), (e) => e.code === 'ENOENT');
 });

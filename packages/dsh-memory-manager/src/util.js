@@ -137,9 +137,12 @@ export async function withWriteCommitLock(p, fn) {
  * The returned `{ hits }` lets callers surface what changed in the tool receipt;
  * callers that ignore the return value keep working. Callers using a configured
  * memory root must pass `{ memoryRoot: root }`; otherwise only the default root
- * is considered for the write ledger. For a tracked target, a ledger failure
- * after replacement throws MEMORY_LEDGER_APPEND_FAILED with fileWritten=true:
- * the operation is partially complete, and blindly retrying can duplicate work.
+ * is considered for the write ledger. `options.tool` names the writer in the
+ * ledger (default 'memory-manager'); the daily-archive channel passes
+ * 'daily-archive' so its writes are traceable. For a tracked target, a ledger
+ * failure after replacement throws MEMORY_LEDGER_APPEND_FAILED with
+ * fileWritten=true: the operation is partially complete, and blindly retrying
+ * can duplicate work.
  */
 export async function writeText(p, content, options = {}) {
 	if (options?.memoryRoot !== undefined && (typeof options.memoryRoot !== 'string' || !options.memoryRoot.trim())) {
@@ -160,7 +163,7 @@ export async function writeText(p, content, options = {}) {
 		try {
 			try { await rename(tmp, p); }
 			catch (cause) { const err = new MemoryWriteCommitUnknown(p, cause); err.ledgerStatus = 'not_attempted'; throw err; }
-			await recordTrackedWrite(p, text, options?.memoryRoot);
+			await recordTrackedWrite(p, text, options?.memoryRoot, options?.tool);
 			let stagePresent = false;
 			try { await lstat(tmp); stagePresent = true; }
 			catch (cause) {
@@ -286,7 +289,7 @@ export class MemoryLedgerAppendError extends Error {
 }
 
 /** Record tracked targets only; do not silently hide a post-commit failure. */
-async function recordTrackedWrite(absPath, text, memoryRoot) {
+async function recordTrackedWrite(absPath, text, memoryRoot, tool = undefined) {
 	const { recordWrite, isTracked, ledgerKey, contentHash } = await import('./write-ledger.js');
 	const configuredRoot = memoryRoot === undefined ? resolveRoot({}) : path.resolve(memoryRoot);
 	const logicalKey = ledgerKey(configuredRoot, path.resolve(absPath));
@@ -303,8 +306,10 @@ async function recordTrackedWrite(absPath, text, memoryRoot) {
 	}
 	const key = ledgerKey(root, target);
 	if (!isTracked(key)) return;
+	// tool 可由调用方指定（归档通道要求账本可追溯 tool='daily-archive'）；
+	// 缺省保持原 'memory-manager' 身份，既有账本语义一分不变。
 	try {
-		const recorded = await recordWrite(root, { key, hash: contentHash(text), tool: 'memory-manager', bytes: byteLenLocal(text) });
+		const recorded = await recordWrite(root, { key, hash: contentHash(text), tool: typeof tool === 'string' && tool.trim() ? tool : 'memory-manager', bytes: byteLenLocal(text) });
 		if (!recorded) throw new MemoryLedgerAppendError(absPath, key);
 	} catch (err) {
 		if (err instanceof MemoryLedgerAppendError) throw err;

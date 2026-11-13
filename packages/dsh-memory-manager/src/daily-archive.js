@@ -20,10 +20,16 @@
  *
  * ## 删除配对（不复用 finishCaptureIntent 的裸 unlink）
  *
- * `finishCaptureIntent` 存在未修的路径替换反例；这里走 write-ledger 的
- * `delete_intent → unlink → delete` 三步（同 `deleteTrackedFile` 的口径）：
- * unlink 前在 commit 锁内复读校验内容未变，任何一步失败都保留原文件并在
- * 返回值里给出明确阶段；unlink 结果未知时如实报 unknown，不猜。
+ * `finishCaptureIntent` 存在未修的路径替换反例；这里复用 write-ledger 的
+ * `delete_intent → unlink → delete` 配对语义（server.js 调用时注入真身
+ * `deleteTrackedFile`，`to='daily/YYYY-MM.md'` 指向归档位置）：unlink 前在
+ * commit 锁内复读校验内容未变，任何一步失败都保留原文件并在返回值里给出
+ * 明确阶段；unlink 结果未知时如实报 unknown，不猜。
+ *
+ * ## 竞态防护
+ *
+ * mtime 距今 < 24h 的顶层日文件跳过（`mtime_fresh`）：它可能仍在被采集
+ * 通道追加（跨月边界场景），等下一轮定时器（6h）再归档。
  *
  * ## 边界（诚实标注）
  *
@@ -36,7 +42,7 @@
  *
  * @module src/daily-archive
  */
-import { readFile, readdir, unlink } from 'node:fs/promises';
+import { readFile, readdir, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
@@ -51,6 +57,19 @@ const ARCHIVE_NAME_RE = /^\d{4}-\d{2}\.md$/;
 const DAY_HEADING_RE = /^###\s*\[(\d{4}-\d{2}-\d{2})\]/;
 /** 删除事件登记的 tool 名（账本里可追溯到本通道）。 */
 const TOOL = 'daily-archive';
+/** mtime 距今小于该毫秒数的文件跳过（防跨月 capture 竞态）。 */
+const MTIME_GUARD_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * 归档通道默认的删除配对实现（与 server.js deleteTrackedFile 同语义）。
+ * server.js 调用时注入真身 deleteTrackedFile（含 withWriteCommitLock 排队、
+ * to 字段与并发校验），此处实现保证直接调用者也有完整 intent/complete 配对。
+ */
+let injectedDelete = null;
+/** @param {Function} fn server.js 的 deleteTrackedFile 绑定。 */
+export function setDeleteImplementation(fn) {
+	injectedDelete = typeof fn === 'function' ? fn : null;
+}
 
 const pad2 = (n) => String(n).padStart(2, '0');
 
@@ -136,7 +155,19 @@ function extractDaySection(text, date) {
  * 汇总。unlink 结果未知时如实报 unknown（不复用 finishCaptureIntent 的
  * 裸 unlink——它存在未修的路径替换反例）。
  */
-async function deleteArchivedSource(root, source) {
+async function deleteArchivedSource(root, source, archiveKey) {
+	// 优先复用 server.js 的 deleteTrackedFile：intent/complete 配对、复读校验、
+	// to 指向归档位置——语义与 memory_rename 的源删除完全一致。
+	if (injectedDelete) {
+		try {
+			await injectedDelete(root, source.path, source.text, { tool: TOOL, to: archiveKey });
+			return { ok: true };
+		} catch (err) {
+			// 结果未知（unlink 可能已发生）时如实上报，不猜；调用方保留现场。
+			const unknown = err?.code === 'MEMORY_DELETE_OUTCOME_UNKNOWN' || err?.code === 'MEMORY_DELETE_LEDGER_UNKNOWN';
+			return { ok: false, stage: unknown ? 'unlink_or_complete' : 'delete_intent', code: err?.code, message: `${source.name} 删除配对失败：${err?.message ?? String(err)}` };
+		}
+	}
 	const key = source.name;
 	return withWriteCommitLock(source.path, async () => {
 		let current;
@@ -153,7 +184,7 @@ async function deleteArchivedSource(root, source) {
 		}
 		const id = randomUUID();
 		let intentOk = false;
-		try { intentOk = await recordDeleteEvent(root, { key, op: 'delete_intent', id, tool: TOOL }); } catch { intentOk = false; }
+		try { intentOk = await recordDeleteEvent(root, { key, op: 'delete_intent', id, tool: TOOL, to: archiveKey }); } catch { intentOk = false; }
 		if (!intentOk) {
 			return { ok: false, stage: 'delete_intent', code: 'MEMORY_DELETE_INTENT_UNKNOWN', message: `${key} 的删除意图记账失败，未删除；文件保留` };
 		}
@@ -171,7 +202,7 @@ async function deleteArchivedSource(root, source) {
 			return { ok: false, stage: 'unlink', code: 'MEMORY_DELETE_OUTCOME_UNKNOWN', message: `${key} 删除结果未知（${err?.code ?? 'unknown'}），账本保留未完成意图 ${id}；请先核对，不要盲目重试` };
 		}
 		let doneOk = false;
-		try { doneOk = await recordDeleteEvent(root, { key, op: 'delete', id, tool: TOOL }); } catch { doneOk = false; }
+		try { doneOk = await recordDeleteEvent(root, { key, op: 'delete', id, tool: TOOL, to: archiveKey }); } catch { doneOk = false; }
 		if (!doneOk) {
 			return { ok: false, stage: 'delete_complete', code: 'MEMORY_DELETE_LEDGER_UNKNOWN', message: `${key} 已删除，但完成事件记账失败（意图 ${id}）；账本保留未完成意图，请核对` };
 		}
@@ -217,6 +248,19 @@ export async function archiveDailyMonths(root, { today } = {}) {
 			result.skipped.push({ day, reason: month === currentMonth ? 'current_month' : 'future_month' });
 			continue;
 		}
+		// mtime < 24h 的文件跳过（防跨月 capture 竞态）：一份"上个月的"文件
+		// 若最近还在被写（如采集通道补充、外部修正），它仍处于活跃写入窗口，
+		// 立即归档可能与并发写入交错。下一轮定时器（6h）会再次处理它。
+		try {
+			const info = await stat(path.join(root, entry.name));
+			if (Date.now() - info.mtimeMs < MTIME_GUARD_MS) {
+				result.skipped.push({ day, reason: 'mtime_fresh' });
+				continue;
+			}
+		} catch (err) {
+			result.errors.push({ day, month, stage: 'stat', message: `源文件 ${entry.name} 状态读取失败（${err?.code ?? 'unknown'}），本轮未归档` });
+			continue;
+		}
 		if (!byMonth.has(month)) byMonth.set(month, []);
 		byMonth.get(month).push({ day, name: entry.name, path: path.join(root, entry.name) });
 	}
@@ -251,14 +295,25 @@ export async function archiveDailyMonths(root, { today } = {}) {
 			if (!pending.length) return;
 			const addition = buildAddition(pending);
 			const archiveText = existing === undefined ? archiveHeader(month) + addition : appendArchiveText(existing, addition);
+			const bytesBefore = existing === undefined ? 0 : Buffer.byteLength(existing, 'utf8');
 			try {
-				await writeText(archPath, archiveText, { memoryRoot: root });
+				await writeText(archPath, archiveText, { memoryRoot: root, tool: TOOL });
 			} catch (err) {
 				for (const s of pending) result.errors.push({ day: s.day, month, stage: 'write_archive', message: `归档件 daily/${month}.md 写入失败：${err?.message ?? String(err)}`, ...(err?.code ? { code: err.code } : {}) });
 				return; // 源文件保留
 			}
+			// 前后字节校验：归档件确实落盘为预期内容（长度至少增加、内容与
+			// 计算一致）。校验不过就视为写失败，源文件全部保留。
+			try {
+				const written = await readFile(archPath, 'utf8');
+				const bytesAfter = Buffer.byteLength(written, 'utf8');
+				if (written !== archiveText) throw new Error(`归档件内容与预期不一致（before=${bytesBefore}B, after=${bytesAfter}B）`);
+			} catch (err) {
+				for (const s of pending) result.errors.push({ day: s.day, month, stage: 'verify_archive', message: `归档件 daily/${month}.md 写后校验失败：${err?.message ?? String(err)}`, ...(err?.code ? { code: err.code } : {}) });
+				return; // 源文件保留
+			}
 			for (const s of pending) {
-				const del = await deleteArchivedSource(root, s);
+				const del = await deleteArchivedSource(root, s, `daily/${month}.md`);
 				if (del.ok) result.archived.push({ day: s.day, month, bytes: Buffer.byteLength(s.text, 'utf8') });
 				else result.errors.push({ day: s.day, month, stage: del.stage, message: del.message, ...(del.code ? { code: del.code } : {}) });
 			}

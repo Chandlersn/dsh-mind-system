@@ -106,6 +106,7 @@ const suites = [
 	'tests/daily-raw-protection.test.js',
 	'tests/daily-editor-ledger-boundary.test.js',
 	'tests/daily-archive.test.js',
+	'tests/daily-archive-compat.test.js',
 	'tests/r10-daily-unknown.test.js',
 	'tests/r10-link-stat-unknown.test.js',
 	'tests/stat-exists-safety.test.js',

@@ -54,7 +54,7 @@ import { withMemoryRootTransaction } from './src/root-transaction.js';
 import { selectCaptureEvents } from './src/capture-events.js';
 import { captureSelectedEvents } from './src/capture-service.js';
 import { inspectCaptureIntent } from './src/capture-intent.js';
-import { archiveDailyMonths, readArchivedDay, latestArchivedDay } from './src/daily-archive.js';
+import { archiveDailyMonths, readArchivedDay, latestArchivedDay, setDeleteImplementation } from './src/daily-archive.js';
 import { createCaptureStatus } from './src/capture-status.js';
 import { tokensOf, matchIndexRows, buildRecallMessage, buildBudgetedRecall, skillNameOf, archiveBlocks, eligibleIndexRows, RECALL_BUDGET_TOKENS } from './src/recall.js';
 import { redactSecrets, scanSecrets } from './src/secrets.js';
@@ -68,6 +68,12 @@ import { AXIOM_CANDIDATE_STATES, confirmAxiomCandidate, rejectAxiomCandidate, de
 // 阀门桥（2026-11-09）：对 dsh-valves 的可选依赖——负向规则召回注入 + 上行评估留痕。
 // 缺 valves 时全部返回 undefined，既有行为一分不变（N4 降级）。
 import { relevantNegativeRules, recordUpwardWrite, upwardEntryFromWrite } from './src/valves-bridge.js';
+
+// 归档通道（daily-archive.js）默认自带删除配对实现；这里把本文件的真身
+// deleteTrackedFile 注入进去，使归档删除与 memory_rename 同一语义（intent/
+// complete 配对、to 指向归档位置、withWriteCommitLock 排队）。模块加载即注入：
+// daily-archive 不会在 server.js 加载前被独立使用。
+setDeleteImplementation(deleteTrackedFile);
 
 // Keep unlink and its intent/completion records ordered with writeText commits in
 // this process. Disk and ledger remain separate writes: incomplete intent is
@@ -5497,9 +5503,17 @@ export function apply(ctx, config) {
 	const archiveDisposers = [];
 	if (opts.dailyArchiveFirstDelayMs > 0 && opts.dailyArchiveIntervalMs > 0) {
 		let archiveBusy = false;
+		// 进程内 1h 节流：热重载/多实例会重复 apply()，每个新实例都有自己的
+		// 60s 定时器；Symbol.for 级时间戳让同进程内的所有实例共享一个节流窗，
+		// 避免同一记忆根在一小时内被归档通道反复触碰。
+		const ARCHIVE_LAST_RUN = Symbol.for('dsh-memory-manager.archive-last-run');
+		const ARCHIVE_THROTTLE_MS = 60 * 60 * 1000;
 		const runArchive = () => {
 			if (archiveBusy) return;
+			const last = globalThis[ARCHIVE_LAST_RUN] ?? 0;
+			if (Date.now() - last < ARCHIVE_THROTTLE_MS) return;
 			archiveBusy = true;
+			globalThis[ARCHIVE_LAST_RUN] = Date.now();
 			void withMemoryRootTransaction(resolveRoot(opts), () => archiveDailyMonths(resolveRoot(opts)))
 				.catch(() => {})
 				.finally(() => { archiveBusy = false; });
