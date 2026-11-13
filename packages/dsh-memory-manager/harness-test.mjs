@@ -4,8 +4,8 @@
  * fake ctx, and exercises write/index/insight/fold/rename/check/resolve/
  * supersede/recall against a temp memory root.
  *
- * Data-flow contract (layered): daily logs are RAW evidence written only by
- * plugin collection, memory_write distills functions/ blocks only,
+ * Data-flow contract (layered): daily logs are RAW evidence that may also be
+ * directly edited, memory_write distills functions/ blocks only,
  * memory_index is the sole index writer, insights sit between, and the check
  * lints everything.
  *
@@ -1526,11 +1526,16 @@ ok(/init_skill\.py/.test(T.memory_skill.description) && /Quality Bar/.test(T.mem
 // logs already live in the transcript and the log files — copying them here
 // dilutes the distillation feed). Both surfaces the model sees must say it:
 // the injected discipline text AND the template line written into a fresh day.
-ok(mod.DISCIPLINE_TEXT.includes('执行式日志') && mod.DISCIPLINE_TEXT.includes('不要抄'), 'the discipline text carries the daily-filter rule');
 {
 	const { dailyTemplate } = await import(new URL('./src/markdown.js', import.meta.url).href);
-	const dt = dailyTemplate('2026-10-21');
-	ok(dt.includes('执行式日志') && dt.includes('只能通过插件采集写入') && dt.includes('不自动记录助手'), 'a fresh daily log states collection source, limits and execution-log filter');
+	for (const [name, text] of [['discipline', mod.DISCIPLINE_TEXT], ['daily template', dailyTemplate('2026-10-21')]]) {
+		ok(text.includes('编辑工具') && text.includes('不等于插件采集或来源认证') && text.includes('来源不明时如实标记未知') && text.includes('采集基线不匹配') && text.includes('不自动脱敏'), `${name}: direct editing is allowed without claiming authenticated provenance`);
+		ok(text.includes('判断') && text.includes('取舍') && text.includes('经验') && text.includes('待验证') && text.includes('不强制当天有条目'), `${name}: select valuable material without a daily quota`);
+		ok(text.includes('执行式日志') && text.includes('不要抄') && text.includes('不补造历史'), `${name}: exclude routine logs and fabricated history`);
+		ok(text.includes('采集默认关闭') && text.includes('不自动记录助手') && text.includes('不保证来源认证或完整性'), `${name}: preserve collection switch and limitations`);
+		ok(!text.includes('只能通过插件采集写入'), `${name}: no obsolete collection-only instruction`);
+	}
+	ok(!T.memory_write.description.includes('may only be written through plugin collection'), 'memory_write description does not forbid direct daily edits');
 }
 // 5.24.0: a skill IS the host bundle — no bundlePath arg, no pointer section.
 ok(!('bundlePath' in (T.memory_skill.parameters ?? {})) && !('hostName' in (T.memory_skill.parameters ?? {})), 'obsolete skill fields are gone (bundlePath/hostName)');

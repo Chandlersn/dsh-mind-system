@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { lstat, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { verifyCaptureBaseline } from '../src/capture-baseline.js';
-import { contentHash, LEDGER_REL } from '../src/write-ledger.js';
+import { verifyCaptureBaseline, isCaptureKey } from '../src/capture-baseline.js';
+import { contentHash, isTracked, LEDGER_REL } from '../src/write-ledger.js';
 
 // Fixtures are deliberately limited to a freshly created temporary root;
 // none of these tests calls capture or accesses the user's actual memory.
@@ -102,3 +102,20 @@ for (const [name, ledger] of [['missing ledger', undefined], ['empty ledger', ''
     });
   });
 }
+
+test('采集键口径与 isTracked 对齐：接受 daily/YYYY-MM.md，其他带斜杠路径仍拒', () => {
+  // 月/周折叠方案（2026-11）：归档键与 isTracked 的 daily/ 前缀口径一致。
+  for (const key of ['daily/2026-10.md', 'daily/1999-12.md']) {
+    assert.equal(isCaptureKey(key), true, key);
+    assert.equal(isTracked(key), true, `${key} 必须同时是 tracked 键`);
+  }
+  // 严格月校验：13 月、缺位、日形名、嵌套、其他 zone 前缀一律拒绝。
+  for (const key of ['daily/2026-13.md', 'daily/2026-00.md', 'daily/2026-1.md', 'daily/2026-10-05.md', 'daily/notes.md', 'daily/sub/2026-10.md', 'daily/2026-10.txt', 'functions/x.md', 'insights/x.md', 'daily/../2026-10-05.md', 'daily//2026-10.md', 'daily/2026-10.md/']) {
+    assert.equal(isCaptureKey(key), false, key);
+  }
+  // 根层日线程口径不变。
+  assert.equal(isCaptureKey('2026-11-10.md'), true);
+  assert.equal(isCaptureKey('2026-11-10.md\n'), false);
+  assert.equal(isCaptureKey(undefined), false);
+  assert.equal(isCaptureKey(42), false);
+});

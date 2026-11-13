@@ -164,7 +164,7 @@ const fixtures = {
 		{ name: '测试候选甲', proposition: '判据要落在被测者控制不了的那一面。', source_count: 5, status: 'candidate', decision_needed: true, file: 'dao/_candidates/测试候选甲.md' },
 		{ name: '测试候选乙', proposition: '凡信号都需要一条它无法伪造的退路。', source_count: 6, status: 'candidate', decision_needed: true, file: 'dao/_candidates/测试候选乙.md' },
 	] }, loading: false, error: null },
-	'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], title: '全局记忆', path: 'C:/x/.dsh', counts: { functions: 2, insights: 1, capabilities: 0, skills: 1, daily: 2 }, env: { version: '5.26.0', canReload: true, hotReloadRunning: false, memoryRoot: 'C:/x/memory', skillRoot: 'C:/x/.dsh/skills', indexBytes: 6000, indexComfortBytes: 8000, indexHardBytes: 16000 } }], loading: false, error: null },
+	'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], title: '全局记忆', path: 'C:/x/.dsh', counts: { functions: 2, insights: 1, capabilities: 0, skills: 1, daily: 4, archived: 1 }, env: { version: '5.26.0', canReload: true, hotReloadRunning: false, memoryRoot: 'C:/x/memory', skillRoot: 'C:/x/.dsh/skills', indexBytes: 6000, indexComfortBytes: 8000, indexHardBytes: 16000 } }], loading: false, error: null },
 	'/api/memory-org/list?zone=functions&v=0': { data: { files: [{ name: 'alpha.md', bytes: fnText.length, mtime: iso(30) }, { name: 'beta.md', bytes: 900, mtime: iso(2000) }] }, loading: false, error: null },
 	'/api/memory-org/list?zone=insights&v=0': { data: { files: [{ name: 'gamma.md', bytes: 500, mtime: iso(120) }] }, loading: false, error: null },
 	'/api/memory-org/list?zone=dao&v=0': { data: { files: [] }, loading: false, error: null },
@@ -191,7 +191,11 @@ const fixtures = {
 	'/api/memory-org/skill?name=detached-restart': { data: { name: 'detached-restart', kind: 'memory', status: 'active', scope: 'global', text: '---\nname: detached-restart\nstatus: active\nagent_created: true\n---\n\n# Detached Restart\n\n## Procedure\n\n1. 锁真 PID\n2. 触发继电器', files: [{ rel: '', name: 'SKILL.md', bytes: 4056 }, { rel: 'scripts/restart-relay.mjs', name: 'restart-relay.mjs', bytes: 5127 }] }, loading: false, error: null },
 	'/api/memory-org/skillfile?name=skill-creator&file=scripts%2Fquick_validate.py': { data: { name: 'skill-creator', file: 'scripts/quick_validate.py', text: '#!/usr/bin/env python3\nimport sys\n' }, loading: false, error: null },
 	'/api/memory-org/skillfile?name=detached-restart&file=scripts%2Frestart-relay.mjs': { data: { name: 'detached-restart', file: 'scripts/restart-relay.mjs', text: 'import { spawn } from "node:child_process";\n' }, loading: false, error: null },
-	'/api/memory-org/list?zone=daily&v=0': { data: { files: [{ name: '2026-10-18.md', bytes: 400, mtime: iso(5) }, { name: '2026-09-30.md', bytes: 800, mtime: iso(18_000) }] }, loading: false, error: null },
+	// 月/周折叠方案（2026-11）：daily 列表带 archive 月归档数组（形状对齐
+	// server.js /list?zone=daily 的两布局兼容契约），并加第 3 个日文件让
+	// 周子组能被断言（2026-10-05 属 W41，2026-10-18 属 W42，同月跨两周）。
+	'/api/memory-org/list?zone=daily&v=0': { data: { files: [{ name: '2026-10-18.md', bytes: 400, mtime: iso(5) }, { name: '2026-10-05.md', bytes: 300, mtime: iso(12_000) }, { name: '2026-09-30.md', bytes: 800, mtime: iso(18_000) }], archive: [{ name: '2026-09.md', bytes: 2500, mtime: iso(18_100) }] }, loading: false, error: null },
+	'/api/memory-org/file?zone=daily&name=2026-09.md': { data: { name: '2026-09.md', text: '# 周 2026-W40（09-28 ~ 10-04）\n\n### [2026-09-30]\n\n- 归档月里的一天' }, loading: false, error: null },
 	'/api/memory-org/file?name=MEMORY.md&v=0': { data: { name: 'MEMORY.md', text: indexText }, loading: false, error: null },
 	'/api/memory-org/file?zone=functions&name=alpha.md': { data: { name: 'alpha.md', text: fnText }, loading: false, error: null },
 	'/api/memory-org/file?zone=insights&name=gamma.md': { data: { name: 'gamma.md', text: '> 性质：可重套的原则。\n\n## 核心原则\n\n- 原则本体。\n\n## 思想演进\n\n- 2026-10-18 首次沉淀。\n\n## 适用面（超出来源功能的部分）\n\n- 适用面正文。\n\n## 待观察\n\n- 待观察正文。' }, loading: false, error: null },
@@ -354,7 +358,8 @@ ok(count(overview, 'data-dmo="growth-card"') === 5, `overview shows all five zon
 ok(overview.includes('能力台账') && overview.includes('技能库'), 'the added capability/skill cards label their zones');
 ok(overview.includes('WARN 1') && overview.includes('冷记忆 1'), 'health chips carry the warning and the cold count');
 ok(overview.includes('[WARN] TEMP: functions/beta.md 冷记忆'), 'the health list renders every problem from overview.results');
-ok(overview.includes('2 功能 · 1 思想 · 0 道 · 0 能力 · 1 技能 · 2 日线索'), 'header summarises every zone');
+// 月/周折叠口径变更（2026-11）：counts.daily 含归档月（3 日 + 1 月归档 = 4）。
+ok(overview.includes('2 功能 · 1 思想 · 0 道 · 0 能力 · 1 技能 · 4 日线索'), 'header summarises every zone (daily count includes archive months)');
 // Consensus + environment constants (5.28.0): the two prose blocks of MEMORY.md
 // that the index tables do not carry are surfaced on the overview.
 ok(overview.includes('共识与环境常量') && overview.includes('跨功能共识 / 规范') && overview.includes('环境常量（易忘）'), 'the overview surfaces consensus and env constants');
@@ -369,7 +374,8 @@ ok(overview.includes('dmo-meter') && overview.includes('索引体积'), 'the ind
 ok(overview.includes('召回自检') && overview.includes('至少 2 个字'), 'the recall-preview card invites input');
 // Hot reload (5.25.0): the header offers the in-place server-half swap button.
 ok(overview.includes('热重启'), 'the header offers a 热重启 button');
-ok(count(overview, 'data-dmo="timeline-row"') === 6, `timeline merges all zones (${count(overview, 'data-dmo="timeline-row"')})`);
+// 3 功能 + 1 思想 + 1 技能 + 3 日文件 + 1 月归档 = 8；归档并入 daily 时间线（口径变更）。
+ok(count(overview, 'data-dmo="timeline-row"') === 8, `timeline merges all zones incl. archive (${count(overview, 'data-dmo="timeline-row"')})`);
 const tl = overview.slice(overview.indexOf('data-dmo="timeline-row"'));
 ok(tl.indexOf('2026-10-18') < tl.indexOf('beta'), 'timeline is newest-first');
 ok(overview.includes('alpha 已稳定'), 'timeline rows carry the index one-line summary');
@@ -383,7 +389,7 @@ const overviewWithUsage = serialize(
 	FakeReact.createElement(MemoryPanel, {
 		__apiFixtures: {
 			...fixtures,
-			'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], counts: { functions: 2, insights: 1, capabilities: 0, skills: 1, daily: 2 }, usage: { signalCount: 12, layers: { 实验: 2, 专项: 1, 通用: 0 }, hotspots: [{ href: 'functions/beta.md', flips: 2, badRate: 0.5, uses: 3 }] } }], loading: false, error: null },
+			'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], counts: { functions: 2, insights: 1, capabilities: 0, skills: 1, daily: 4, archived: 1 }, usage: { signalCount: 12, layers: { 实验: 2, 专项: 1, 通用: 0 }, hotspots: [{ href: 'functions/beta.md', flips: 2, badRate: 0.5, uses: 3 }] } }], loading: false, error: null },
 		},
 		initialView: { kind: 'overview' },
 	}),
@@ -400,10 +406,121 @@ ok(funList.includes('alpha 已稳定，等待上线验证。'), 'list rows show 
 ok(funList.includes('按时间 ↓') && funList.includes('切换排序'), 'sort toggle offered for named zones');
 ok(funList.includes('按名称或摘要过滤'), 'filter input offered');
 ok(funList.indexOf('alpha') < funList.indexOf('beta'), 'newest file first by default');
-const dailyList = render({ kind: 'zone', zone: 'daily' });
-ok(dailyList.includes('2026-10-18') && !dailyList.includes('按名称'), 'daily zone lists dates, no name sort');
-ok(count(dailyList, 'class="dmo-month"') === 2, `daily zone groups days by month (${count(dailyList, 'class="dmo-month"')})`);
-ok(dailyList.indexOf('2026-10') < dailyList.indexOf('2026-09'), 'months run newest-first');
+// --- daily zone: 月组 → 周子组 → 日叶子（2026-11 月/周折叠方案） ---------------
+// 分组由 dailyMonthGroups 产出，折叠由 DailyMonthList 管理（today 注入锚点）。
+// 「今天」固定为 2026-11-13（fixture 日文件里最新的一天），不依赖本机时区。
+{
+	// 纯分组逻辑：月倒序、周倒序、归档行不进周组。
+	const gm = T.dailyMonthGroups([
+		{ name: '2026-10-18.md', mtime: 'x' },
+		{ name: '2026-10-05.md', mtime: 'x' },
+		{ name: '2026-09-30.md', mtime: 'x' },
+		{ name: '2026-09.md', mtime: 'x', isArchive: true },
+	]);
+	ok(gm.length === 2 && gm[0].month === '2026-10' && gm[1].month === '2026-09', 'months run newest-first');
+	ok(gm[1].archive?.name === '2026-09.md' && gm[0].archive === null, 'archive rows attach to their month, not to a week');
+	ok(gm[0].weeks.length === 2 && gm[0].weeks[0].key > gm[0].weeks[1].key, 'a month with two ISO weeks splits newest-first into week subgroups');
+	// 周标签口径：ISO 周（周一为一周之始），节内日标题 ### [YYYY-MM-DD] 不变。
+	ok(T.weekLabelOf('2026-11-13') === '周 2026-W46（11-09 ~ 11-15）', `week label = 周 YYYY-Www（MM-DD ~ MM-DD）(${T.weekLabelOf('2026-11-13')})`);
+	ok(T.weekLabelOf('2026-01-01') === '周 2026-W01（12-29 ~ 01-04）', 'an ISO year boundary keeps the ISO year in the label');
+	const zoneRes = T.dailyMonthGroups([{ name: '2026-10-18.md' }, { name: '2026-10-12.md' }]);
+	// 渲染断言：走 ZoneList 的 daily 视图（today 注入，不依赖本机时区）。
+	const ZL = T.ZoneList;
+	const dailyRender = (rows2, today) => serialize(FakeReact.createElement(ZL, {
+		zone: 'daily', rows: rows2, sort: 'time', setSort: () => {}, filter: '', setFilter: () => {},
+		onOpen: () => {}, daoView: 'active', setDaoView: () => {}, candidates: [], candidateState: null,
+		candidateAction: () => {}, candBusy: '', actMsg: '', today,
+	}));
+	// rowsOf 形状（与 MemoryPanel 传入的行一致）：归档行带 isArchive。
+	const panelRows = [
+		{ name: '2026-10-18.md', bytes: 400, mtime: iso(5) },
+		{ name: '2026-10-05.md', bytes: 300, mtime: iso(12_000) },
+		{ name: '2026-09-30.md', bytes: 800, mtime: iso(18_000) },
+		{ name: '2026-09.md', bytes: 2500, mtime: iso(18_100), isArchive: true },
+	];
+	const dailyList = dailyRender(panelRows, '2026-10-18');
+	ok(count(dailyList, 'data-dmo="month-fold"') === 2, `one fold toggle per month (${count(dailyList, 'data-dmo="month-fold"')})`);
+	ok(count(dailyList, 'data-dmo="week-fold"') === 2, `one fold toggle per week subgroup (${count(dailyList, 'data-dmo="week-fold"')})`);
+	ok(count(dailyList, 'data-dmo="month-archive"') === 1, 'the month carrying an archive shows the 月归档 button');
+	ok(dailyList.includes('周 2026-W42（10-12 ~ 10-18）') && dailyList.includes('周 2026-W41（10-05 ~ 10-11）'), 'week subgroup labels follow 周 YYYY-Www（MM-DD ~ MM-DD）');
+	// 折叠默认值：当月展开、非当月收起；当月内当周展开、其它周收起。
+	// 2026-10-05 属 W41，2026-10-18 属 W42 —— 锚在 10-18 时只应看到 W42 的日行。
+	ok(dailyList.includes('data-dmo="row"'), 'day rows render inside the expanded month');
+	ok(count(dailyList, 'data-dmo="row"') === 1, `only the current week's days start visible (${count(dailyList, 'data-dmo="row"')} rows)`);
+	ok(dailyList.includes('1 日'), 'week/month headers carry day counts');
+	// 锚移到当月另一周（10-05 属 W41）：默认展开的就是那一周的日行。
+	const dailyW41 = dailyRender(panelRows, '2026-10-05');
+	ok(count(dailyW41, 'data-dmo="row"') === 1 && dailyW41.includes('周 2026-W41'), 'the anchor week follows the injected today');
+	// 当月无日文件时（锚 11 月）：月全收、无日行。
+	const dailyNov = dailyRender(panelRows, '2026-11-01');
+	ok(count(dailyNov, 'data-dmo="row"') === 0, 'a month without days keeps its weeks folded by default');
+	// 非每日分区不受影响：functions 列表仍是直线行。
+	const fnRows2 = serialize(FakeReact.createElement(ZL, {
+		zone: 'functions', rows: [{ name: 'x.md', bytes: 10, mtime: Date.now() }], sort: 'time', setSort: () => {}, filter: '', setFilter: () => {},
+		onOpen: () => {}, daoView: 'active', setDaoView: () => {}, candidates: [], candidateState: null, candidateAction: () => {}, candBusy: '', actMsg: '',
+	}));
+	ok(count(fnRows2, 'data-dmo="month-fold"') === 0 && count(fnRows2, 'data-dmo="row"') === 1, 'non-daily zones keep the flat list');
+	// —— 月归档展开与日线索（2026-11 方案第 2 条）——
+	// 归档按钮是展开开关：未展开时不渲染日线索；展开且线索已取到时列出每一天。
+	const archiveRender = (props) => serialize(FakeReact.createElement(T.DailyMonthList, {
+		rows: panelRows, onOpen: () => {}, filter: '', today: '2026-10-18', ...props,
+	}));
+	const closedArchive = archiveRender({ openArchive: null, onToggleArchive: () => {}, archiveDays: null });
+	ok(count(closedArchive, 'data-dmo="archive-days"') === 0, 'the archive stays closed until toggled');
+	ok(closedArchive.includes('▸ 月归档'), 'the closed archive toggle points right');
+	const openLoading = archiveRender({ openArchive: '2026-09.md', onToggleArchive: () => {}, archiveDays: { data: null, loading: true, error: null } });
+	ok(openLoading.includes('读取归档日线索…'), 'an expanding archive shows its loading state before clues arrive');
+	const dayClues = [
+		{ date: '2026-09-30', title: '归档月的最后一天' },
+		{ date: '2026-09-12', title: '' },
+	];
+	const openArchive = archiveRender({ openArchive: '2026-09.md', onToggleArchive: () => {}, archiveDays: { data: { name: '2026-09.md', days: dayClues }, loading: false, error: null } });
+	ok(count(openArchive, 'data-dmo="archive-days"') === 1 && count(openArchive, 'data-dmo="archive-day"') === 2, `the expanded archive lists its day clues (${count(openArchive, 'data-dmo="archive-day"')})`);
+	ok(openArchive.includes('2026-09-30') && openArchive.includes('归档月的最后一天'), 'each clue row carries its date and heading title');
+	ok(openArchive.includes('▾ 月归档'), 'the expanded archive toggle points down');
+	// 请求错位防护：展开的是 A 归档、线索还是 B 归档的旧数据时不渲染。
+	const staleArchive = archiveRender({ openArchive: '2026-09.md', onToggleArchive: () => {}, archiveDays: { data: { name: '2026-08.md', days: dayClues }, loading: false, error: null } });
+	ok(!staleArchive.includes('data-dmo="archive-day"') && !staleArchive.includes('2026-09-30'), 'stale clues from another archive are not rendered');
+	// 展开请求失败要可见，不能无声折叠。
+	const archiveError = archiveRender({ openArchive: '2026-09.md', onToggleArchive: () => {}, archiveDays: { data: null, loading: false, error: '归档断网' } });
+	ok(archiveError.includes('归档日线索读取失败') && archiveError.includes('归档断网'), 'archive clue errors stay visible');
+	// 空归档（没有 ### [日期] 标题）如实说明，不渲染假列表。
+	const archiveEmpty = archiveRender({ openArchive: '2026-09.md', onToggleArchive: () => {}, archiveDays: { data: { name: '2026-09.md', days: [] }, loading: false, error: null } });
+	ok(archiveEmpty.includes('没有 ### [日期] 日标题'), 'an archive without day headings says so');
+	// 点击某一天按需请求内容：线索行点击打开归档正文（/file?zone=daily 通道）。
+	const openedNames = [];
+	const clickArchive = serialize(FakeReact.createElement(T.DailyMonthList, {
+		rows: panelRows, filter: '', today: '2026-10-18', openArchive: '2026-09.md', onToggleArchive: () => {}, archiveDays: { data: { name: '2026-09.md', days: dayClues }, loading: false, error: null },
+		onOpen: (zone, name) => openedNames.push(name),
+	}));
+	const clueNodes = elements(FakeReact.createElement(T.DailyMonthList, {
+		rows: panelRows, filter: '', today: '2026-10-18', openArchive: '2026-09.md', onToggleArchive: () => {}, archiveDays: { data: { name: '2026-09.md', days: dayClues }, loading: false, error: null },
+		onOpen: (zone, name) => openedNames.push(name),
+	}));
+	const clueBtn = clueNodes.find((node) => node.type === 'button' && node.props?.['data-dmo'] === 'archive-day');
+	clueBtn?.props?.onClick?.();
+	ok(openedNames.length === 1 && openedNames[0] === '2026-09.md', 'clicking a day clue requests the archive content through the daily reader');
+	ok(clickArchive.length > 0, 'archive clue rows serialize');
+	// —— 旧布局兼容（方案第 3 条）——服务端没有归档时 /list 只回 files（旧形状），
+	// 前端不得因缺 archive 字段崩或显示归档 UI。
+	{
+		const legacyRows = [{ name: '2026-10-18.md', bytes: 400, mtime: iso(5) }, { name: '2026-09-30.md', bytes: 800, mtime: iso(18_000) }];
+		const legacy = serialize(FakeReact.createElement(ZL, {
+			zone: 'daily', rows: legacyRows.map((f) => ({ ...f })), sort: 'time', setSort: () => {}, filter: '', setFilter: () => {},
+			onOpen: () => {}, daoView: 'active', setDaoView: () => {}, candidates: [], candidateState: null,
+			candidateAction: () => {}, candBusy: '', actMsg: '', today: '2026-10-18', openArchive: null, onToggleArchive: () => {}, archiveDays: null,
+		}));
+		ok(count(legacy, 'data-dmo="month-fold"') === 2 && count(legacy, 'data-dmo="month-archive"') === 0, 'a legacy root (no archives) renders month groups without archive buttons');
+		ok(count(legacy, 'data-dmo="row"') === 1, 'the legacy layout still folds weeks and shows its current week');
+		// 空分区空态：无文件时如实提示，而不是渲染空组。
+		const emptyDaily = serialize(FakeReact.createElement(ZL, {
+			zone: 'daily', rows: [], sort: 'time', setSort: () => {}, filter: '', setFilter: () => {},
+			onOpen: () => {}, daoView: 'active', setDaoView: () => {}, candidates: [], candidateState: null,
+			candidateAction: () => {}, candBusy: '', actMsg: '', today: '2026-10-18',
+		}));
+		ok(emptyDaily.includes('每日区还没有文件。'), 'an empty daily zone explains itself');
+	}
+}
 
 // --- skill library: one destination, two sides behind a toggle ---------------
 // The tab is NAVIGATION state (view.tab), so each side renders deterministically

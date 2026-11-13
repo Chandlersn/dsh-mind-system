@@ -86,10 +86,15 @@ test('registered tools/execute wrapper stops actual write and edit before body; 
 			assert.equal(await guard(request('write', safe, agent, signal), async () => { await writeFile(safe, 'safe'); return expected; }), expected);
 			assert.equal(await readFile(safe, 'utf8'), 'safe');
 			assert.equal(await guard(request('memory_write', 'functions/x.md', agent, signal), async () => expected), expected);
-			for (const name of ['write', 'edit']) {
-				await assert.rejects(guard(request(name, '2026-11-10.md', agent, signal), async () => assert.fail('daily write body called')), e => e.code === WRITE_DENIED);
+			const daily = path.join(root, '2026-11-10.md');
+			for (const name of ['write', 'edit', 'str_replace_editor']) {
+				const exec = name === 'str_replace_editor'
+					? { name, arguments: { command: 'str_replace', path: daily }, agent, signal }
+					: request(name, '2026-11-10.md', agent, signal);
+				const content = `${name}: PID 123, exit code 0\n`;
+				assert.equal(await guard(exec, async () => { await writeFile(daily, content); return name; }), name);
+				assert.equal(await readFile(daily, 'utf8'), content);
 			}
-			await assert.rejects(guard({ name: 'str_replace_editor', arguments: { command: 'create', path: path.join(root, '2026-11-10.md') }, agent, signal }, async () => assert.fail('daily editor body called')), e => e.code === WRITE_DENIED);
 		} finally { if (typeof dispose === 'function') dispose(); }
 	});
 });
@@ -107,7 +112,8 @@ test('canonical target identity blocks a symlink alias to a protected directory'
 test('resolution errors fail closed and non-agent calls use provider default cwd', async () => {
 	await fixture(async ({ root, signal, ctx }) => {
 		const guard = createWriteGuard(() => root, ctx);
-		await assert.rejects(guard(request('write', path.join(root, '2026-11-10.md'), undefined, signal), () => assert.fail('daily write body called')), e => e.code === WRITE_DENIED);
+		assert.equal(await guard(request('write', path.join(root, '2026-11-10.md'), undefined, signal), () => 'allowed'), 'allowed');
+		await assert.rejects(guard(request('write', path.join(root, 'functions', 'x.md'), undefined, signal), () => assert.fail('protected body called')), e => e.code === WRITE_DENIED);
 		const bad = createWriteGuard(() => root, { fs: { resolve: async () => { throw new Error('cannot resolve'); } } });
 		await assert.rejects(bad(request('edit', 'x', undefined, signal), () => assert.fail('body called')), /cannot resolve/);
 	});
@@ -166,8 +172,66 @@ test('invalid or unresolved skill root fails closed while read-only operations p
 	});
 });
 
-test('index, daily logs and ledger are protected; unrelated files remain writable', () => {
+test('index, layers, ledger and capture metadata remain protected while root daily logs are writable', () => {
 	const root = path.resolve('memory-root');
-	for (const file of ['MEMORY.md', '2026-11-10.md', '.usage.jsonl', 'dao/_candidates/x.md', 'skills/old.md', 'daily/legacy.md']) assert.equal(classifyWrite(root, path.join(root, file)).block, true);
-	for (const file of ['README.md', '../memory-root-other/a']) assert.equal(classifyWrite(root, path.resolve(root, file)).block, false);
+	for (const file of ['MEMORY.md', '.usage.jsonl', '.write-ledger.jsonl', '.capture-mutex.sqlite', '.capture-mutex.sqlite-wal', '.daily-capture.pending', 'functions/2026-11-10.md', 'insights/x.md', 'dao/_candidates/x.md', 'capabilities/x.md', 'legacy/x.md', 'skills/old.md', 'daily/legacy.md']) assert.equal(classifyWrite(root, path.join(root, file)).block, true, file);
+	for (const file of ['2026-11-10.md', 'README.md', '../memory-root-other/a']) assert.equal(classifyWrite(root, path.resolve(root, file)).block, false, file);
+});
+
+test('daily/YYYY-MM.md archives are writable; other names under daily/ stay denied', () => {
+	const root = path.resolve('memory-root');
+	// 月/周折叠方案（2026-11）：归档文件也是数据文件，放行。
+	for (const file of ['daily/2026-10.md', 'daily/1999-12.md']) {
+		const verdict = classifyWrite(root, path.join(root, file));
+		assert.equal(verdict.block, false, file);
+		assert.equal(verdict.reason, 'daily-archive', file);
+	}
+	// daily/ 下其他名字一律仍拒：非月形名、日线程形、嵌套、错误扩展名。
+	for (const file of ['daily/2026.md', 'daily/2026-1.md', 'daily/2026-123.md', 'daily/2026-10-05.md', 'daily/notes.md', 'daily/2026-10.txt', 'daily/sub/2026-10.md', 'daily/2026-10.md.bak', 'daily/.2026-10.md']) {
+		assert.equal(classifyWrite(root, path.join(root, file)).block, true, file);
+	}
+	// 根层的 YYYY-MM.md 不是归档形态：既非日线程也非受管层文件——不归守卫拦，
+	// 但绝不与 daily/ 放行分支混淆。
+	assert.equal(classifyWrite(root, path.join(root, '2026-10.md')).block, false, 'root-level month file is unmanaged, not an archive');
+});
+
+test('daily-looking display paths cannot bypass canonical layer or independent skill identity', async () => {
+	await fixture(async ({ tmp, root, signal, agent, ctx }) => {
+		const skillRoot = path.join(tmp, 'independent-skills');
+		await mkdir(skillRoot, { recursive: true });
+		const daily = path.join(root, '2026-11-10.md');
+		for (const physical of [path.join(root, 'functions', 'x.md'), path.join(skillRoot, 'x.md')]) {
+			const aliasCtx = { ...ctx, fs: { resolve: async (input, options) => {
+				const target = await resolveTarget(input, options);
+				return target.displayPath === daily ? { ...target, targetKey: physical } : target;
+			} } };
+			const guard = createWriteGuard(() => root, aliasCtx, () => skillRoot);
+			for (const name of ['write', 'edit', 'str_replace_editor']) {
+				const exec = name === 'str_replace_editor'
+					? { name, arguments: { command: 'create', path: daily }, agent, signal }
+					: request(name, daily, agent, signal);
+				await assert.rejects(guard(exec, () => assert.fail('alias body called')), e => e.code === WRITE_DENIED);
+			}
+		}
+		const guard = createWriteGuard(() => root, ctx, () => skillRoot);
+		for (const file of ['.write-ledger.jsonl', '.usage.jsonl', '.daily-capture.pending']) {
+			await assert.rejects(guard(request('write', path.join(root, file), agent, signal), () => assert.fail('metadata body called')), e => e.code === WRITE_DENIED);
+		}
+		assert.equal(await guard(request('write', daily, agent, signal), () => 'allowed'), 'allowed');
+	});
+});
+
+test('unresolved target identities fail closed even for daily-looking paths', async () => {
+	await fixture(async ({ root, signal, agent, ctx }) => {
+		const daily = path.join(root, '2026-11-10.md');
+		for (const badKey of [undefined, 'relative/path']) {
+			const badCtx = { ...ctx, fs: { resolve: async (input, options) => {
+				const target = await resolveTarget(input, options);
+				return target.displayPath === daily ? { ...target, targetKey: badKey } : target;
+			} } };
+			const guard = createWriteGuard(() => root, badCtx);
+			await assert.rejects(guard(request('write', daily, agent, signal), () => assert.fail('unresolved body called')), /无法确认路径归属/);
+		}
+		assert.equal(await createWriteGuard(() => root, ctx)(request('write', daily, agent, signal), () => 'allowed'), 'allowed');
+	});
 });

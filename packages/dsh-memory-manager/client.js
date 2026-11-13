@@ -402,6 +402,9 @@ window.__ModuleLoader__.load({
 			if (p.startsWith('insights/')) return { zone: 'insights', name: p.slice(9) };
 			if (p.startsWith('dao/')) return { zone: 'dao', name: p.slice(4) };
 			if (/^\d{4}-\d{2}-\d{2}\.md$/.test(p)) return { zone: 'daily', name: p };
+			// 月归档（2026-11 月/周折叠方案）：一个已归档月的旧链接（YYYY-MM.md）
+			// 打开归档文件本身，而不是静默变成 null。
+			if (/^\d{4}-\d{2}\.md$/.test(p)) return { zone: 'daily', name: p };
 			if (p === 'MEMORY.md') return { zone: '', name: null };
 			if (/^[^/]+\.md$/.test(p) && zone !== undefined) return { zone, name: p };
 			return null;
@@ -1402,7 +1405,65 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		function ZoneList({ zone, rows, sort, setSort, filter, setFilter, onOpen, daoView, setDaoView, candidates, candidateState, onOpenCandidate, onRetry, candidateAction, candBusy, actMsg, onDeleteDao }) {
+		/**
+		 * Daily month/week grouping (2026-11 月/周折叠方案).
+		 *
+		 * Daily threads keep accumulating forever; a flat list stops being
+		 * scannable. Rows group as 月组 → 周子组 → 日叶子: each month (YYYY-MM)
+		 * carries a fold toggle and — when the month was archived — a button that
+		 * opens the month archive file (YYYY-MM.md, same /file?zone=daily route).
+		 * Inside a month, days group into ISO-week subgroups labeled
+		 * `周 YYYY-Www（MM-DD ~ MM-DD）`. Pure, so the UI test asserts the
+		 * grouping without a browser.
+		 */
+		const pad2n = (n) => String(n).padStart(2, '0');
+		const localDateOf = (d) => `${d.getFullYear()}-${pad2n(d.getMonth() + 1)}-${pad2n(d.getDate())}`;
+		function isoWeekOf(dateStr) {
+			const [y, m, d] = dateStr.split('-').map(Number);
+			const date = new Date(Date.UTC(y, m - 1, d));
+			const dayNum = (date.getUTCDay() + 6) % 7; // Mon=0
+			const monday = new Date(date);
+			monday.setUTCDate(monday.getUTCDate() - dayNum);
+			// ISO week = the ordinal of this week's Thursday within its ISO year.
+			const thursday = new Date(monday);
+			thursday.setUTCDate(thursday.getUTCDate() + 3);
+			const isoYear = thursday.getUTCFullYear();
+			const jan4 = new Date(Date.UTC(isoYear, 0, 4));
+			const firstThu = new Date(jan4);
+			firstThu.setUTCDate(firstThu.getUTCDate() - ((jan4.getUTCDay() + 6) % 7) + 3);
+			const week = 1 + Math.round((thursday - firstThu) / (7 * 86_400_000));
+			const sunday = new Date(monday);
+			sunday.setUTCDate(sunday.getUTCDate() + 6);
+			const iso = (dt) => dt.toISOString().slice(0, 10);
+			return { year: isoYear, week, monday: iso(monday), sunday: iso(sunday) };
+		}
+		function weekLabelOf(dateStr) {
+			const w = isoWeekOf(dateStr);
+			return `周 ${w.year}-W${pad2n(w.week)}（${w.monday.slice(5)} ~ ${w.sunday.slice(5)}）`;
+		}
+		function dailyMonthGroups(rows) {
+			const byMonth = new Map();
+			for (const f of rows) {
+				const month = String(f.name).slice(0, 7);
+				if (!byMonth.has(month)) byMonth.set(month, { month, archive: null, days: [] });
+				const g = byMonth.get(month);
+				if (f.isArchive) g.archive = f;
+				else g.days.push(f);
+			}
+			return [...byMonth.keys()].sort((a, b) => b.localeCompare(a)).map((m) => {
+				const g = byMonth.get(m);
+				const weeks = new Map();
+				for (const f of g.days.slice().sort((a, b) => b.name.localeCompare(a.name))) {
+					const d = f.name.slice(0, 10);
+					const key = `${isoWeekOf(d).year}-W${pad2n(isoWeekOf(d).week)}`;
+					if (!weeks.has(key)) weeks.set(key, { key, label: weekLabelOf(d), days: [] });
+					weeks.get(key).days.push(f);
+				}
+				return { month: m, archive: g.archive, days: g.days, weeks: [...weeks.values()].sort((a, b) => b.key.localeCompare(a.key)) };
+			});
+		}
+
+		function ZoneList({ zone, rows, sort, setSort, filter, setFilter, onOpen, daoView, setDaoView, candidates, candidateState, onOpenCandidate, onRetry, candidateAction, candBusy, actMsg, onDeleteDao, today, openArchive, onToggleArchive, archiveDays }) {
 			const label = ZONE_LABEL[zone] ?? zone;
 			// 道层的两个视图（2026-11-10 用户要求）：正式道 / 候选公理。
 			// 候选不是"另一种道"，它还没生效——所以用**筛选标签**分开，
@@ -1471,26 +1532,21 @@ window.__ModuleLoader__.load({
 								),
 							)
 					: null,
-				!showCandidates && rows.length
+				!showCandidates && rows.length && zone !== 'daily'
 					? h(
 							'div',
 							{ className: 'dmo-rows' },
 							rows.map((f, i) => {
-								// Daily threads accumulate one file per day, so months get a
-								// sticky-ish separator: 100 days stay scannable.
-								const month = f.name.slice(0, 7);
-								const newMonth = zone === 'daily' && (i === 0 || rows[i - 1].name.slice(0, 7) !== month);
 								return h(
 									'div',
 									{ key: f.name, className: 'dmo-group', style: { display: 'flex', alignItems: 'stretch', gap: 6 } },
-									newMonth ? h('div', { key: 'm', className: 'dmo-month' }, month) : null,
 									h(
 										'button',
 										{ key: 'r', type: 'button', className: 'dmo-row', style: { flex: 1, minWidth: 0 }, onClick: () => onOpen(zone, f.name), title: f.name, 'data-dmo': 'row' },
 										h(
 											'div',
 											{ className: 'dmo-row-top' },
-											h('span', { className: 'dmo-row-name' }, zone === 'daily' ? f.name.replace(/\.md$/, '') : f.name.replace(/\.md$/, '')),
+											h('span', { className: 'dmo-row-name' }, f.name.replace(/\.md$/, '')),
 											h('span', { className: 'dmo-row-meta' }, `${relTime(f.mtime)} · ${fmtBytes(f.bytes)}`),
 										),
 										f.summary ? h('div', { className: 'dmo-row-sum' }, f.summary) : null,
@@ -1509,7 +1565,152 @@ window.__ModuleLoader__.load({
 								);
 							}),
 						)
-					: !showCandidates ? h('div', { className: 'dmo-empty' }, filter ? '没有匹配的条目。' : `${label}区还没有文件。`) : null,
+					: null,
+				// 每日分区（2026-11 月/周折叠方案）：月组 → 周子组 → 日叶子。
+				// 月折叠默认展开当月；周折叠默认展开当周。「今天」可注入（缺省本地时区），
+				// 测试与宿主都能固定锚点。
+				!showCandidates && zone === 'daily'
+					? rows.length
+						? h(DailyMonthList, { rows, onOpen, filter, today, openArchive, onToggleArchive, archiveDays })
+						: h('div', { className: 'dmo-empty' }, filter ? '没有匹配的日期。' : '每日区还没有文件。')
+					: null,
+				!showCandidates && !rows.length && zone !== 'daily' ? h('div', { className: 'dmo-empty' }, filter ? '没有匹配的条目。' : `${label}区还没有文件。`) : null,
+			);
+		}
+
+		/**
+		 * Daily month/week fold list. Folding state lives in TWO maps (per-month,
+		 * per-week); the defaults are computed from `today` (injected, local-time
+		 * fallback) — only the CURRENT month and CURRENT week start expanded.
+		 */
+		function DailyMonthList({ rows, onOpen, filter, today, openArchive, onToggleArchive, archiveDays }) {
+			const todayStr = (() => {
+				if (typeof today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(today)) return today;
+				if (today instanceof Date && !Number.isNaN(today.getTime())) return localDateOf(today);
+				return localDateOf(new Date());
+			})();
+			const groups = dailyMonthGroups(rows);
+			const [monthFold, setMonthFold] = useState(() => Object.fromEntries(groups.map((g) => [g.month, g.month === todayStr.slice(0, 7)])));
+			const [weekFold, setWeekFold] = useState(() => Object.fromEntries(groups.flatMap((g) => g.weeks.map((w) => [`${g.month}/${w.key}`, g.month === todayStr.slice(0, 7) && w.key === `${isoWeekOf(todayStr).year}-W${pad2n(isoWeekOf(todayStr).week)}`]))));
+			const q = String(filter ?? '').trim().toLowerCase();
+			// 过滤时不强制折叠：搜索命中应该全部可见，藏起来等于没搜到。
+			const monthOpen = (m) => (q ? true : monthFold[m] !== false);
+			const weekOpen = (k) => (q ? true : weekFold[k] !== false);
+			const dayRow = (f) =>
+				h(
+					'button',
+					{ key: f.name, type: 'button', className: 'dmo-row', style: { flex: 1, minWidth: 0 }, onClick: () => onOpen('daily', f.name), title: f.name, 'data-dmo': 'row' },
+					h(
+						'div',
+						{ className: 'dmo-row-top' },
+						h('span', { className: 'dmo-row-name' }, f.name.replace(/\.md$/, '')),
+						h('span', { className: 'dmo-row-meta' }, `${relTime(f.mtime)} · ${fmtBytes(f.bytes)}`),
+					),
+					f.summary ? h('div', { className: 'dmo-row-sum' }, f.summary) : null,
+				);
+			// 月归档的日线索（按需）：展开归档时才请求 /daily-days（只解析标题行），
+			// 点开某一天走 /file?zone=daily 读整份归档——内容请求发生在点击时。
+			const archiveDayCount = (g) => {
+				if (archiveDays?.data?.name === g.archive?.name) return archiveDays.data.days?.length ?? 0;
+				return g.archive?.dayCount ?? 0;
+			};
+			const archiveSection = (g) => {
+				if (openArchive !== g.archive.name) return null;
+				const res = archiveDays;
+				if (res?.loading) return h('div', { className: 'dmo-meta', style: { padding: '2px 8px 6px' } }, '读取归档日线索…');
+				if (res?.error) return h('div', { className: 'dmo-empty', style: { padding: '2px 8px 6px' } }, `归档日线索读取失败：${res.error}`);
+				const days = res?.data?.name === g.archive.name ? (res.data.days ?? []) : null;
+				if (days === null) return null;
+				if (!days.length) return h('div', { className: 'dmo-meta', style: { padding: '2px 8px 6px' } }, '这份归档没有 ### [日期] 日标题。');
+				return h(
+					'div',
+					{ style: { display: 'flex', flexDirection: 'column' }, 'data-dmo': 'archive-days' },
+					days.map((d) =>
+						h(
+							'button',
+							{
+								key: d.date, type: 'button', className: 'dmo-row', style: { padding: '6px 8px' },
+								onClick: () => onOpen('daily', g.archive.name), title: `${g.archive.name} 里的 ${d.date}`,
+								'data-dmo': 'archive-day',
+							},
+							h(
+								'div',
+								{ className: 'dmo-row-top' },
+								h('span', { className: 'dmo-row-name' }, d.date),
+								d.title ? h('span', { className: 'dmo-row-sum' }, d.title) : null,
+							),
+						),
+					),
+				);
+			};
+			return h(
+				'div',
+				{ className: 'dmo-rows', 'data-dmo': 'daily-months' },
+				groups.map((g) => {
+					const open = monthOpen(g.month);
+					const dayCount = (g.days?.length ?? 0) + (g.archive ? archiveDayCount(g) : 0);
+					return h(
+						'div',
+						{ key: g.month, className: 'dmo-group' },
+						h(
+							'div',
+							{ className: 'dmo-month-row', style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 } },
+							h(
+								'button',
+								{
+									type: 'button', className: 'dmo-month dmo-chip btn', style: { margin: 0 },
+									onClick: () => setMonthFold((m) => ({ ...m, [g.month]: !open })),
+									title: open ? '收起这个月' : '展开这个月', 'data-dmo': 'month-fold',
+								},
+								`${open ? '▾' : '▸'} ${g.month}`,
+							),
+							g.archive
+								? h(
+										Btn,
+										{
+											sm: true, tone: 'outline',
+											// 月归档是**展开开关**，不是直接打开整份文件：展开后按需
+											// 拉日线索，点具体一天才请求内容。只读展示，无任何写入口。
+											onClick: () => onToggleArchive?.(g.archive.name),
+											title: openArchive === g.archive.name ? `收起 ${g.archive.name} 的日线索` : `展开 ${g.archive.name} 的日线索`,
+											'data-dmo': 'month-archive',
+										},
+										`${openArchive === g.archive.name ? '▾' : '▸'} 月归档`,
+									)
+								: null,
+							h('span', { className: 'grow' }),
+							h('span', { className: 'dmo-meta' }, `${dayCount} 日`),
+						),
+						g.archive ? archiveSection(g) : null,
+						open
+							? h(
+									'div',
+									{ style: { display: 'flex', flexDirection: 'column', gap: 2 } },
+									g.weeks.map((w) => {
+										const wk = `${g.month}/${w.key}`;
+										const wOpen = weekOpen(wk);
+										return h(
+											'div',
+											{ key: w.key, className: 'dmo-group' },
+											h(
+												'button',
+												{
+													type: 'button', className: 'dmo-week-head', style: { display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '4px 8px', border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', font: 'inherit' },
+													onClick: () => setWeekFold((m) => ({ ...m, [wk]: !wOpen })),
+													title: wOpen ? '收起这一周' : '展开这一周', 'data-dmo': 'week-fold',
+												},
+												h('span', { className: 'dmo-meta' }, wOpen ? '▾' : '▸'),
+												h('span', { className: 'dmo-meta', style: { fontWeight: 600 } }, w.label),
+												h('span', { className: 'grow' }),
+												h('span', { className: 'dmo-meta' }, `${w.days?.length ?? 0} 日`),
+											),
+											wOpen ? h('div', { style: { display: 'flex', flexDirection: 'column' } }, w.days.map(dayRow)) : null,
+										);
+									}),
+								)
+							: null,
+					);
+				}),
 			);
 		}
 
@@ -2032,6 +2233,11 @@ window.__ModuleLoader__.load({
 			const caps = useApi(`${API}/list?zone=capabilities&v=${tick}`, fixtures);
 			const skills = useApi(`${API}/list?zone=skills&v=${tick}`, fixtures);
 			const dailies = useApi(`${API}/list?zone=daily&v=${tick}`, fixtures);
+			// 月归档的日线索按需取（月/周折叠方案 2026-11）：展开某份归档时才请求
+			// /daily-days（服务端只解析 ### [YYYY-MM-DD] 标题行）；点开具体一天走
+			// 既有 /file?zone=daily 读正文。url=null 即空闲态，hooks 保持无条件。
+			const [archiveOpenName, setArchiveOpenName] = useState(null);
+			const archiveDays = useApi(archiveOpenName ? `${API}/daily-days?name=${enc(archiveOpenName)}&v=${tick}` : null, fixtures);
 			const indexFile = useApi(`${API}/file?name=MEMORY.md&v=${tick}`, fixtures);
 			// Skill library + one host skill's body: fetched ONLY when their view is
 			// active, so opening other zones never hits the host registry (a heavier
@@ -2147,6 +2353,10 @@ window.__ModuleLoader__.load({
 			const indexText = indexFile.data?.text ?? '';
 			const tables = parseIndexTables(indexText);
 			const lists = { functions: funcs.data?.files ?? [], insights: insights.data?.files ?? [], dao: daos.data?.files ?? [], capabilities: caps.data?.files ?? [], skills: skills.data?.files ?? [], daily: dailies.data?.files ?? [] };
+			// 月/周折叠方案（2026-11）：/list?zone=daily 额外返回月归档（YYYY-MM.md）。
+			// 归档行并入 daily 行集（打同一个 /file?zone=daily 接口），旧布局只有
+			// files 时行为一分不变。
+			const dailyArchive = dailies.data?.archive ?? [];
 
 			useEffect(() => {
 				const t = setTimeout(() => setLive(query.trim()), 350);
@@ -2166,7 +2376,9 @@ window.__ModuleLoader__.load({
 			};
 			const rowsOf = (zone) => {
 				const q = filter.trim().toLowerCase();
+				// daily 并入月归档行：归档行带 isArchive 标记，ZoneList 据此分进月组。
 				let rows = lists[zone].map((f) => ({ ...f, summary: summaryOf(zone, f.name) }));
+				if (zone === 'daily') rows = rows.concat(dailyArchive.map((f) => ({ ...f, summary: summaryOf(zone, f.name), isArchive: true })));
 				if (q) rows = rows.filter((f) => f.name.toLowerCase().includes(q) || (f.summary ?? '').toLowerCase().includes(q));
 				if (zone !== 'daily' && sort === 'name') rows.sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh'));
 				else rows.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
@@ -2175,7 +2387,7 @@ window.__ModuleLoader__.load({
 
 			let timeline = [];
 			for (const zone of ['functions', 'insights', 'dao', 'capabilities', 'skills', 'daily'])
-				for (const f of lists[zone]) timeline.push({ zone, name: f.name, bytes: f.bytes, mtime: f.mtime, summary: summaryOf(zone, f.name) });
+				for (const f of zone === 'daily' ? lists[zone].concat(dailyArchive) : lists[zone]) timeline.push({ zone, name: f.name, bytes: f.bytes, mtime: f.mtime, summary: summaryOf(zone, f.name) });
 			timeline.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
 			timeline = timeline.slice(0, 12);
 
@@ -2274,7 +2486,7 @@ window.__ModuleLoader__.load({
 				const zoneRes = { functions: funcs, insights, dao: daos, capabilities: caps, daily: dailies }[view.zone];
 				if (zoneRes?.error) main = h('div', { className: 'dmo-empty', role: 'alert' }, `读取分区失败：${zoneRes.error} `, h(Btn, { tone: 'outline', onClick: () => setTick((n) => n + 1) }, '重试'));
 				else if (zoneRes?.loading && !zoneRes.data) main = h('div', { className: 'dmo-empty' }, '正在读取分区…');
-				else main = h(ZoneList, { zone: view.zone, rows: rowsOf(view.zone), sort, setSort, filter, setFilter, onOpen: openFile, daoView, setDaoView, candidates: candRes.data?.candidates ?? [], candidateState: candRes, onOpenCandidate: (name) => setView({ kind: 'candidate', name }), onRetry: () => setTick((n) => n + 1), candidateAction, candBusy, actMsg, onDeleteDao: deleteDao });
+				else main = h(ZoneList, { zone: view.zone, rows: rowsOf(view.zone), sort, setSort, filter, setFilter, onOpen: openFile, daoView, setDaoView, candidates: candRes.data?.candidates ?? [], candidateState: candRes, onOpenCandidate: (name) => setView({ kind: 'candidate', name }), onRetry: () => setTick((n) => n + 1), candidateAction, candBusy, actMsg, onDeleteDao: deleteDao, openArchive: archiveOpenName, onToggleArchive: (name) => setArchiveOpenName((cur) => (cur === name ? null : name)), archiveDays });
 			}
 			else if (view.kind === 'candidate') {
 				if (candidateDetail.error) main = h('div', { className: 'dmo-empty', role: 'alert' }, `候选正文读取失败：${candidateDetail.error} `, h(Btn, { tone: 'outline', onClick: () => setTick((n) => n + 1) }, '重试'), h(Btn, { onClick: back }, '返回'));
@@ -2417,7 +2629,7 @@ window.__ModuleLoader__.load({
 			},
 			// Pure view logic, exposed so ui-test.mjs can assert the panel's
 			// parsing/folding behaviour without a browser.
-			__internalsForTest: { relTime, plain, parseIndexTables, parseProseSections, splitSections, subTablesOf, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight, tokenizeCode, ZoneList, SkillLibrary },
+			__internalsForTest: { relTime, plain, parseIndexTables, parseProseSections, splitSections, subTablesOf, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight, tokenizeCode, ZoneList, SkillLibrary, dailyMonthGroups, weekLabelOf, isoWeekOf, DailyMonthList },
 		};
 	},
 });

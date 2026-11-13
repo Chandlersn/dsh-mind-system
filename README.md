@@ -97,7 +97,7 @@ memory-manager 默认使用 DSH 数据根下的 `memory/`；`DSH_HOME` 和插件
 
 **发布阻断**：当前源码中的面板 exclusive 归档提交即使正常成功，也会因保留暂存路径而报告清理未知并中断确认、否决或删除流程；采集意图清理的路径替换反例也会误删外来文件。追加式意图日志尚属隔离原型，可信初始化与接入未完成。OS 句柄原语仅在本机隔离环境探索过，这些问题解决并复验前，相关源码不能发布，也不能称为线上已修复。
 
-层级目录、索引、每日记录、顶层账本和配置的宿主技能目录的 `write` / `edit` 与 `str_replace_editor` 写命令经过守卫；shell、其他进程、旧版和其他非合作写入路径仍可绕过，SQLite 合作锁也不是绝对隔离。R26 对账哈希只反映当前内容与记录的关系，不证明真实来源、完整性或未丢记录。
+新源码允许 `write` / `edit` 与 `str_replace_editor` 编辑记忆根顶层每日记录；提示词要求筛选可复用判断、取舍和经验，不抄日常执行流水。筛选依赖模型判断，不是硬性内容过滤。直接编辑不经过插件脱敏或账本登记，R26 可能报告不一致，后续自动采集可能因基线不匹配而停止；不得补造账本。层级目录、索引、顶层账本和宿主技能目录仍受工具守卫保护；shell、其他进程、旧版和其他非合作路径仍可绕过。R26 哈希不能证明真实来源或历史完整性。
 
 主要实现：[`server.js`](packages/dsh-memory-manager/server.js)、[`write-guard.js`](packages/dsh-memory-manager/src/write-guard.js)、[`write-ledger.js`](packages/dsh-memory-manager/src/write-ledger.js)。
 

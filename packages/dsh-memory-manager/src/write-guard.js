@@ -1,8 +1,8 @@
 /**
  * 层级写入守卫（2026-11-10 用户要求）。
  *
- * > "把机制卡死，每个层级的数据和信息编辑来源，只能是插件系统的抽取，
- * > 绝对不可以直接动用编辑工具进行书写。"
+ * 原要求：层级数据由插件通道写入；2026-11-13 用户调整：每日原始层允许
+ * 编辑工具写入并用提示词粗筛，其他层的约束保持不变。
  *
  * `src/write-ledger.js` 做的是**事后对账**（R26 点名），只能发现当前内容与
  * 账本不一致或未记录，不能证明写入者。这里仅对部分编辑工具做前向拦截。
@@ -16,12 +16,14 @@
  * 拦：
  *   - `MEMORY.md`（索引是派生物，只能由 memory_index / 插件落盘）
  *   - `functions/ insights/ dao/ capabilities/ legacy/` 下的任何文件（含 dao/_candidates）
- *   - 每日记录 `<root>/YYYY-MM-DD.md`：属于原始层，同样只能由插件采集写入。
  *   - 宿主技能根（默认 `<dshHome>/skills`，可由宿主配置覆盖）的目录项及后代。
  *   - 记忆根顶层的 `*.jsonl` 旁路账本（.write-ledger / .usage：被改就对不了账）
  *   - 采集协议私有元数据 `.capture-mutex.sqlite`、其 journal/wal/shm 和 `.daily-capture.pending`。
  *
  * 放：
+ *   - 根目录每日记录 `<root>/YYYY-MM-DD.md`：内容筛选由提示词引导，不作为硬拦截。
+ *   - `daily/YYYY-MM.md`（月/周归档，2026-11）：归档文件也是数据文件，允许
+ *     编辑工具维护；daily/ 下其他名字仍拒。
  *   - 根目录其它文档（README.md 之类）：不承载层级数据，不走层闸门。
  *   - 记忆根和宿主技能根以外的路径：本守卫不管其他位置。
  *
@@ -48,8 +50,16 @@ export const INDEX_FILE = 'MEMORY.md';
 /** 稳定错误代号（日志/测试共用）。 */
 export const WRITE_DENIED = 'MEMORY_LAYER_WRITE_DENIED';
 
-/** 每日记录文件名（原始层，直接编辑工具也不得绕过插件）。 */
-const DAILY_RE = /^\d{4}-\d{2}-\d{2}\.md$/i;
+/** 根目录每日记录文件名，与账本的严格键匹配保持一致。 */
+const DAILY_RE = /^\d{4}-\d{2}-\d{2}\.md(?![\s\S])/;
+
+/**
+ * 按月归档文件名（daily/ 下唯一放行的形态）。
+ *
+ * 月/周折叠方案（2026-11）：归档文件也是数据文件，由插件归档通道维护并
+ * 经写入账本登记，允许编辑工具做人为修正；daily/ 下其他名字一律仍拒。
+ */
+const DAILY_MONTH_RE = /^\d{4}-\d{2}\.md(?![\s\S])/;
 
 /** 顶层旁路账本（被改就对不了账）。 */
 const LEDGER_RE = /^[^/\\]+\.jsonl$/i;
@@ -96,8 +106,11 @@ export function classifyWrite(root, abs) {
 	const parts = key.split('/');
 	const top = parts[0];
 
-	// 用户要求覆盖每个层级；原始层也不允许直接编辑。
-	if (parts.length === 1 && DAILY_RE.test(top)) return { block: true, key, reason: 'daily' };
+	// 原始每日记录允许编辑；其他路径和独立技能根仍分别检查。
+	if (parts.length === 1 && DAILY_RE.test(top)) return { block: false, key, reason: 'daily' };
+	// 月/周归档（2026-11）：daily/YYYY-MM.md 也是数据文件，放行；daily/ 下
+	// 其他名字（含 daily/YYYY-MM-DD.md 等非月形）仍按层目录拒绝。
+	if (parts.length === 2 && parts[0] === 'daily' && DAILY_MONTH_RE.test(parts[1])) return { block: false, key, reason: 'daily-archive' };
 	// 索引：派生物。
 	if (parts.length === 1 && top.toLowerCase() === INDEX_FILE.toLowerCase()) {
 		return { block: true, key, reason: 'index' };
@@ -125,11 +138,9 @@ export function denialMessage(key, reason) {
 				? '旁路账本只能由插件追加；它被改过，R26 对账就失效了'
 				: reason === 'capture-metadata'
 					? '采集协议元数据是插件私有文件，只能由插件采集通道维护'
-				: reason === 'daily'
-					? '每日记录只能通过插件采集写入；采集未启用时应如实报告，不可直接编辑'
-					: reason === 'skill'
-						? '宿主技能目录只能通过插件提供的 memory_skill 等写入通道维护'
-						: '层级内容只能由 memory_* 工具落盘（memory_write / memory_insight / memory_dao / memory_capability / memory_fold / memory_rename / memory_usage）';
+				: reason === 'skill'
+					? '宿主技能目录只能通过插件提供的 memory_skill 等写入通道维护'
+					: '层级内容只能由 memory_* 工具落盘（memory_write / memory_insight / memory_dao / memory_capability / memory_fold / memory_rename / memory_usage）';
 	return `拒绝写入 ${key}：${hint}。直接编辑会绕过层级判据与蒸馏闸门（R14/R2）。`;
 }
 

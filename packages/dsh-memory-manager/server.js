@@ -54,6 +54,7 @@ import { withMemoryRootTransaction } from './src/root-transaction.js';
 import { selectCaptureEvents } from './src/capture-events.js';
 import { captureSelectedEvents } from './src/capture-service.js';
 import { inspectCaptureIntent } from './src/capture-intent.js';
+import { archiveDailyMonths, readArchivedDay, latestArchivedDay } from './src/daily-archive.js';
 import { createCaptureStatus } from './src/capture-status.js';
 import { tokensOf, matchIndexRows, buildRecallMessage, buildBudgetedRecall, skillNameOf, archiveBlocks, eligibleIndexRows, RECALL_BUDGET_TOKENS } from './src/recall.js';
 import { redactSecrets, scanSecrets } from './src/secrets.js';
@@ -904,6 +905,28 @@ async function runHealthCheck(root, opts) {
 		scanForSecrets(dtext, f, add);
 	}
 
+	// 月归档（2026-11 月/周折叠方案）：daily/YYYY-MM.md 与顶层日记同属 daily 层，
+	// 体检同样跑链接与 R21（文件级扫描即可，不要求周节粒度）。枚举失败只报
+	// 该范围未知，不把"没有归档"冒充成"已检查"。
+	let archiveNames = [];
+	try {
+		archiveNames = (await readdir(path.join(root, 'daily'))).filter((n) => /^\d{4}-\d{2}\.md$/.test(n));
+	} catch (err) {
+		if (err?.code !== 'ENOENT') add('WARN', 'R10', `每日归档目录无法枚举（${err?.code ?? 'unknown'}），daily/YYYY-MM.md 的链接及 R21 检查状态未知`);
+	}
+	for (const f of archiveNames) {
+		const fp = path.join(root, 'daily', f);
+		let atext;
+		try {
+			atext = await readFile(fp, 'utf8');
+		} catch (err) {
+			add('WARN', 'R10', `每日归档 daily/${f} 无法读取（${err?.code ?? 'unknown'}），该归档的链接及 R21 检查状态未知`);
+			continue;
+		}
+		await checkLinks(atext, fp, root, add);
+		scanForSecrets(atext, `daily/${f}`, add);
+	}
+
 	try {
 		for (const f of await readdir(path.join(root, 'legacy'))) {
 			if (!f.endsWith('.md')) continue;
@@ -1633,10 +1656,16 @@ function memoryReadTool(opts) {
 			}
 			// daily
 			if (typeof args.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.date.trim())) {
-				const p = path.join(root, `${args.date.trim()}.md`);
+				const day = args.date.trim();
+				const p = path.join(root, `${day}.md`);
 				const text = await readIfExists(p);
-				if (text !== undefined) await appendUsage(root, { href: `${args.date.trim()}.md`, kind: 'read' });
-				return { found: text !== undefined, path: p, content: text ?? '', listing: [] };
+				if (text !== undefined) await appendUsage(root, { href: day, kind: 'read' });
+				if (text !== undefined) return { found: true, path: p, content: text, listing: [] };
+				// 月/周折叠方案（2026-11）：顶层没有这份日记时回落到按月归档的
+				// 日节（只读，不补造文件）。回落命中如实标注来源路径是归档文件。
+				const archived = await readArchivedDay(root, day);
+				if (archived) return { found: true, path: archived.file, content: archived.text, listing: [] };
+				return { found: false, path: p, content: '', listing: [] };
 			}
 			let latest;
 			try {
@@ -1646,9 +1675,17 @@ function memoryReadTool(opts) {
 			} catch {
 				/* root missing */
 			}
-			const p = latest ? path.join(root, latest) : path.join(root, `${localDateStr()}.md`);
-			const text = latest ? await readIfExists(p) : undefined;
-			return { found: text !== undefined, path: p, content: text ?? '', listing: [] };
+			if (latest) {
+				const p = path.join(root, latest);
+				const text = await readIfExists(p);
+				return { found: text !== undefined, path: p, content: text ?? '', listing: [] };
+			}
+			// 月/周折叠方案（2026-11）：顶层无任何日文件（可能全部已归档）时，
+			// 回落到最新归档文件的最新日节；再没有就保持旧行为（指向今天路径）。
+			const latestArch = await latestArchivedDay(root);
+			if (latestArch) return { found: true, path: latestArch.file, content: latestArch.text, listing: [] };
+			const p = path.join(root, `${localDateStr()}.md`);
+			return { found: false, path: p, content: '', listing: [] };
 		},
 	});
 }
@@ -1793,7 +1830,7 @@ function memoryUsageTool(opts) {
 			'Record and read USAGE signals, the data that lets the memory sort itself. action=record logs one event against a memory file (kind: correction = the user corrected / rejected what was recalled or written; positive = explicit confirmation like "对了/就是这个"; recall/read are logged automatically). action=report aggregates the last N days per file and suggests a layer: 实验 (<3 uses), 专项 (>=3 uses + >=1 confirmation), 通用 (>=10 uses + >=2 confirmations + correction rate <20%). Uses count ENGAGEMENT only (read + verdicts): a recall injection is EXPOSURE, not use — counting it would let the plugin\'s own output inflate the popularity that decides what gets recalled next. Layers are suggestions for the model to act on — this tool never moves files.',
 		parameters: {
 			action: { type: 'string', required: true, enum: ['record', 'report'], description: 'record=记一次信号；report=按天聚合出分层建议。' },
-			href: { type: 'string', description: 'record 必填：目标记忆文件，如 `functions/批印坊工程加固.md`、`insights/逐帧渲染取帧三闸.md`、`2026-10-18.md`。' },
+			href: { type: 'string', description: 'record 必填：目标记忆文件，如 `functions/批印坊工程加固.md`、`insights/逐帧渲染取帧三闸.md`、`2026-10-18.md`、`daily/2026-10.md`（月归档）。' },
 			kind: { type: 'string', enum: ['correction', 'positive', 'recall', 'read'], description: 'record 必填：correction=用户纠正/否定，positive=用户明确认可，recall/read 一般由插件自动记录。' },
 			note: { type: 'string', description: 'record 强烈建议填写：一句话说明这次判定针对的是**哪件事**（例如用户原话）。它不只是备注——翻转计数靠它区分「同一结论被推翻」与「同一个文件被纠正了不同的事」；不写就只能按相邻判定猜，容易把无关纠正误报成结论不稳定。' },
 			days: { type: 'integer', description: 'report 的统计窗口（天，默认 30）。' },
@@ -1857,8 +1894,12 @@ function memoryUsageTool(opts) {
 				// evidence gate reads positives on `skills/<name>/SKILL.md`, and until
 				// now the contract REJECTED exactly that href (hit twice in practice).
 				const skillM = /^skills\/([^/]+)\/SKILL\.md$/.exec(href);
-				if (!ZONE_RE_FILE_EXACT.test(href) && !/^\d{4}-\d{2}-\d{2}\.md$/.test(href) && !skillM) {
-					throw new Error('href 必须是 functions/<名>.md、insights/<名>.md、dao/<名>.md、capabilities/<名>.md、skills/<技能>/SKILL.md 或 YYYY-MM-DD.md');
+				// 月/周折叠方案（2026-11）：daily/YYYY-MM.md 月归档也是可记录
+				// 信号的数据文件（读它/纠正它都要能记账），与 isTracked 的
+				// daily/ 前缀口径一致；严格月号校验，其他 daily/ 路径仍拒。
+				const dailyArchiveM = /^daily\/\d{4}-(?:0[1-9]|1[0-2])\.md$/.exec(href);
+				if (!ZONE_RE_FILE_EXACT.test(href) && !/^\d{4}-\d{2}-\d{2}\.md$/.test(href) && !skillM && !dailyArchiveM) {
+					throw new Error('href 必须是 functions/<名>.md、insights/<名>.md、dao/<名>.md、capabilities/<名>.md、skills/<技能>/SKILL.md、YYYY-MM-DD.md 或 daily/YYYY-MM.md');
 				}
 				if (skillM && !isSkillName(skillM[1])) throw new Error(`技能名必须是 kebab-case，收到：${skillM[1]}`);
 				const kind = ['correction', 'positive', 'recall', 'read'].includes(args.kind) ? args.kind : null;
@@ -1995,7 +2036,9 @@ function memoryFederationTool(opts) {
 				const counts = {
 					functions: await count(path.join(p.root, 'functions'), (n) => n.endsWith('.md')),
 					insights: await count(path.join(p.root, 'insights'), (n) => n.endsWith('.md')),
-					daily: await count(p.root, (n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)),
+					// 月/周折叠方案（2026-11）：日线索计数含顶层日文件与 daily/ 下的
+					// 月归档（与面板 zoneCounts 同口径）。
+					daily: await count(p.root, (n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)) + await count(path.join(p.root, 'daily'), (n) => /^\d{4}-\d{2}\.md$/.test(n)),
 				};
 				const bytes = source.status === 'present' ? byteLen(source.text) : 0;
 				let copyStatus = 'unknown';
@@ -2840,7 +2883,7 @@ function memoryWriteTool(opts) {
 	return defineTool({
 		name: 'memory_write',
 		description:
-			'Append ONE iteration block to functions/<feature>.md (distilled conclusion, not a process log; dates are tags, blocks are append-only) and refresh the file-head stable-state summary via `currentState`. The daily log (YYYY-MM-DD.md) is the RAW evidence layer and is never rewritten by this tool; it may only be written through plugin collection. **Cadence rule (user, 2026-11-09): a block synthesizes >=3 TOPIC-RELEVANT days of daily-log material, not a single day and not a sliding 3-day window** — pick the days yourself: define the theme, search ALL daily logs (memory_search), select the dates genuinely related to it (may be non-contiguous, weeks apart), and note in the block why those days were chosen. Evidence relevance, not calendar adjacency. Write what HOLDS across those days (evolution, recurrence, reversal). Under 3 relevant days: keep accumulating, distill at the weekly review. Exceptions (note the reason in the block): explicit user request, or same-day pitfall-causality/safety constraints. The MEMORY.md index row is written separately (memory_index) once a feature area stabilizes, so distillation flows daily → functions → index, one direction per step. Hard limits enforced on write: block body ≤900 chars, 概括 ≤110 chars (over-length is rejected as a process log, not a distilled conclusion). A block is a DISTILLED conclusion (动因 / 改动 / 判据 / 待观察, one line each): per-step changelists, code-level enumerations and debugging process stay in the session, the daily log and the code — writing them into the block is the failure R14 flags.',
+			'Append ONE iteration block to functions/<feature>.md (distilled conclusion, not a process log; dates are tags, blocks are append-only) and refresh the file-head stable-state summary via `currentState`. The daily log (YYYY-MM-DD.md) is the RAW evidence layer and is never rewritten by this tool; agent editing is permitted, but direct edits are not authenticated plugin collection and their provenance may be unknown. **Cadence rule (user, 2026-11-09): a block synthesizes >=3 TOPIC-RELEVANT days of daily-log material, not a single day and not a sliding 3-day window** — pick the days yourself: define the theme, search ALL daily logs (memory_search), select the dates genuinely related to it (may be non-contiguous, weeks apart), and note in the block why those days were chosen. Evidence relevance, not calendar adjacency. Write what HOLDS across those days (evolution, recurrence, reversal). Under 3 relevant days: keep accumulating, distill at the weekly review. Exceptions (note the reason in the block): explicit user request, or same-day pitfall-causality/safety constraints. The MEMORY.md index row is written separately (memory_index) once a feature area stabilizes, so distillation flows daily → functions → index, one direction per step. Hard limits enforced on write: block body ≤900 chars, 概括 ≤110 chars (over-length is rejected as a process log, not a distilled conclusion). A block is a DISTILLED conclusion (动因 / 改动 / 判据 / 待观察, one line each): per-step changelists, code-level enumerations and debugging process stay in the session, the daily log and the code — writing them into the block is the failure R14 flags.',
 		parameters: {
 			// Declaration order is display order: the host's generic tool card shows
 			// `name · first string argument`, so the FIRST parameter must be the
@@ -2888,7 +2931,7 @@ function memoryWriteTool(opts) {
 					`功能文件：${v.featureFile}（${v.functionBytes}B${v.createdFunctionFile ? '，新建' : ''}）`,
 				];
 				if (v.resolvedDailyLogs.length) lines.push(`✅ 已勾掉待观察项：${v.resolvedDailyLogs.join('、')}`);
-				lines.push('ℹ 索引行未自动写入——功能域稳定后用 memory_index 收进索引；每日记录属于原始层，只能通过插件采集写入。');
+				lines.push('ℹ 索引行未自动写入——功能域稳定后用 memory_index 收进索引；本工具不改写每日原始记录，直接编辑的来源可能未知。');
 				// 自检结果必须显示：合格给一句确认，不合格逐项点名。
 				if (v.selfCheck) {
 					lines.push(v.selfCheck.ok ? `✓ ${v.selfCheck.layer}层自检通过` : `⛔ ${v.selfCheck.layer}层自检未过：`);
@@ -3029,7 +3072,7 @@ function memoryWriteTool(opts) {
 			// integration layer (memory_index), written once a feature area
 			// stabilizes — distillation flows daily → functions → index.
 
-			// The daily log is raw evidence: only plugin collection may write it.
+			// This tool preserves historical daily evidence, regardless of its source.
 			// Keep resolve and resolvedDailyLogs for existing callers, but do not
 			// rewrite the historical evidence or imply that entries were resolved.
 			const resolvedIn = [];
@@ -3982,6 +4025,17 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = 
 			/* root absent */
 		}
 		for (const n of names) files.push({ zone: 'daily', name: n, file: path.join(root, n) });
+		// 月/周折叠方案（2026-11）：归档月文件同样计入检索范围（全文检索）。
+		// 日期归属用日节标题（### [YYYY-MM-DD]）：归档件文件名只有月份，无法
+		// 单独给命中行定日，解析不到就按"未知日期"放行（与文件级 mtime 兜底
+		// 同口径——不确定就如实标注，不冒充已确认）。
+		let archNames = [];
+		try {
+			archNames = (await readdir(path.join(root, 'daily'))).filter((n) => /^\d{4}-\d{2}\.md$/.test(n)).sort().reverse();
+		} catch {
+			/* daily/ absent: no archives */
+		}
+		for (const n of archNames) files.push({ zone: 'daily', name: n, file: path.join(root, 'daily', n), archive: true });
 	}
 	const hits = [];
 	for (const f of files) {
@@ -4012,6 +4066,9 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = 
 		let heading = '';
 		let blockDate = '';
 		const fileHits = [];
+		// 月归档（2026-11）：日节标题 ### [YYYY-MM-DD] 给其后各行归属日期，
+		// 尽力而为——解析不到的行日期为空串（未知），不冒充已确认。
+		let archDayDate = '';
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
 			const lower = line.toLowerCase();
@@ -4019,6 +4076,12 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = 
 			if (hm) heading = hm[1].trim();
 			const dm = /^##\s*\[(\d{4}-\d{2}-\d{2})/.exec(line.trim());
 			if (dm) blockDate = dm[1];
+			if (f.archive) {
+				const daym = /^###\s*\[(\d{4}-\d{2}-\d{2})\]/.exec(line.trim());
+				if (daym) archDayDate = daym[1];
+				// 周节（## 周…）开新分组：重置日归属，避免上一周的日期漏给下一周。
+				else if (/^##\s/.test(line.trim())) archDayDate = '';
+			}
 			let score = 0;
 			if (lower.includes(q)) score += 3;
 			if (heading && heading.toLowerCase().includes(q)) score += 2;
@@ -4026,7 +4089,7 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = 
 			for (const tk of tokens) if (lower.includes(tk)) tokenHits++;
 			score += tokenHits;
 			if (score === 0) continue;
-			const hitDate = await dateOf(blockDate);
+			const hitDate = f.archive ? (archDayDate || await dateOf('')) : await dateOf(blockDate);
 			// A line whose date cannot be resolved at all passes both bounds —
 			// never hide a hit whose age is unknown; the date field shows why.
 			if (after && hitDate && hitDate < after) continue;
@@ -4489,7 +4552,7 @@ const DISCIPLINE_TEXT = [
 	'',
 	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十四个工具：memory_read / memory_search / memory_capability / memory_write / memory_index / memory_insight / memory_dao / memory_fold / memory_rename / memory_check / memory_usage / memory_federation / memory_skill / memory_inbox；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向五层，每层只吃上一层的产出**：',
 	'',
-	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 是任务与对话过程的第一手数据，内容可保留决策、对话和踩坑，但按用户要求只能通过插件采集写入，不可直接用编辑工具、shell 或脚本修改；未启用采集时如实报告缺口。它是一切蒸馏的原料；同一事实只在这里是"过程"，其余层只见结论。只有一条轻过滤：**执行式日志（命令输出、PID、退出码、耗时流水）不要抄**——会话转录与日志文件里本来就有，抄进每日记录只会稀释蒸馏原料；值得记的是日志里没有的：判断与取舍、用户原话、踩坑的因果、待验证的下一步。',
+	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 可由 agent 使用编辑工具记录；每天留意有价值的判断、取舍、经验、踩坑因果和待验证事项，没有值得记录的内容时不强制当天有条目。粗粒度筛选：**执行式日志（常规命令输出、PID、退出码、耗时流水）不要抄**，理解关键因果必需的细节可少量保留；不补造历史，不记录凭据。直接编辑不等于插件采集或来源认证，也不自动脱敏；来源不明时如实标记未知，可能触发 R26 对账或采集基线不匹配，不得补造账本。插件用户消息采集默认关闭，开启后只采集符合条件的用户原话并脱敏、截断，不自动记录助手判断，也不保证来源认证或完整性；未启用时如实说明采集缺口。其他记忆层仍按各自插件工具与保护机制写入。',
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一个 functions/<功能域>.md 迭代块 = **≥3 个主题相关素材日的综合结论**（蒸馏结论：动因/改动/判据/待观察 各一句；2026-11-09 用户要求：不以单日为单位蒸馏，单日事件多是过程片段，多天的演化/反复/被推翻才值得归档）。**素材日由 agent 围绕主题检索推理挑选**（memory_search 全库找相关日，可不连续、可跨周月），不是机械取最近 3 天——选证据关联不选日历相邻，块内说明为何选这些日。相关素材不足 3 天先积累不蒸馏（周检是天然时机）；用户显式要求或踩坑因果/安全约束可豁免，块内注明素材日期与理由。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
 	'- **第 2 层 · 创新思想（memory_insight）**：从功能划分中**再提取**可迁移原则（会重套的、不绑定单一功能机制的），回链来源功能域；取代旧思想传 `supersedes`。',
 	'- **第 3 层 · 索引与总览（memory_index）**：**整合层**——功能域稳定后（有 ≥2 个迭代块，或用户可感知为独立主题时）用 memory_index 把它收进 MEMORY.md 索引；索引行摘要 = 从各迭代块的概括中提炼的"这个功能是什么"。索引是展示与检索的派生物，不与单次写入强绑。',
@@ -4592,7 +4655,10 @@ async function zoneCounts(root, skillRoot = '') {
 		// 5.24.0: skills are host bundles — the badge counts directories that
 		// actually carry a SKILL.md.
 		skills: await countBundles(skillRoot || path.join(dshHome(), 'skills')),
-		daily: await count(root, (n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)),
+		// 月/周折叠方案（2026-11）：口径变更 —— counts.daily 含归档月文件
+		// （daily/YYYY-MM.md）在内；归档本身的数量另立 archived 计数，汇报时注明。
+		archived: await count(path.join(root, 'daily'), (n) => /^\d{4}-\d{2}\.md$/.test(n)),
+		daily: await count(root, (n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)) + await count(path.join(root, 'daily'), (n) => /^\d{4}-\d{2}\.md$/.test(n)),
 	};
 }
 
@@ -4684,15 +4750,45 @@ function memoryPanelApi(opts, connection, inbox) {
 				if (!['', ...SEARCH_ZONES].includes(zone)) {
 					return json(res, 400, { error: 'invalid zone' });
 				}
-				if (zone === 'daily' && !/^\d{4}-\d{2}-\d{2}\.md$/.test(name)) {
-					return json(res, 400, { error: 'daily zone accepts only YYYY-MM-DD.md' });
+				if (zone === 'daily' && !/^\d{4}-\d{2}(-\d{2})?\.md$/.test(name)) {
+					// 月/周折叠方案（2026-11）：每日分区同时放行日线程（YYYY-MM-DD.md）
+					// 与月归档（YYYY-MM.md）。两种形态都是严格的日期形名字 —— join 只能
+					// 落在记忆根下，MEMORY.md 等杂文件天然被这条正则拒绝。
+					return json(res, 400, { error: 'daily zone accepts only YYYY-MM-DD.md or YYYY-MM.md' });
 				}
-				// zone is whitelisted and name rejects separators, so the join can
-				// only land inside the memory root.
-				const full = zone === 'daily' ? path.join(root, name) : path.join(root, zone, name);
+				if (zone === 'daily' && /^\d{4}-\d{2}\.md$/.test(name)) {
+					// 月形名做真实月份校验：13 月这类不可能日期拒绝在 400，而不是
+					// 落到 404 让调用方误以为格式合法但文件不存在。
+					const monthNum = Number(name.slice(5, 7));
+					if (!(monthNum >= 1 && monthNum <= 12)) {
+						return json(res, 400, { error: 'daily zone accepts months 01-12' });
+					}
+				}
+				// 归档文件固定落在 root/daily/ 下；根层仍只放日线程。先验月形名，
+				// 再决定目录——穿越与杂文件在上一条已拒。
+				const isMonthArchive = zone === 'daily' && /^\d{4}-\d{2}\.md$/.test(name);
+				const full = zone === 'daily'
+					? path.join(isMonthArchive ? path.join(root, 'daily') : root, name)
+					: path.join(root, zone, name);
 				const text = await readIfExists(full);
 				if (text === undefined) return json(res, 404, { error: 'file not found' });
 				return json(res, 200, { name, text });
+			}
+			// 月归档的日线索（月/周折叠方案 2026-11）：只解析 `### [YYYY-MM-DD]`
+			// 标题行，不读全文。展开归档时前端先拿这份索引，点开某一天再走
+			// /file?zone=daily 按需取正文 —— 归档月可能有几十天，一次性全文会拖慢列表。
+			if (seg === 'daily-days') {
+				const name = url.searchParams.get('name');
+				if (!name || !/^\d{4}-\d{2}\.md$/.test(name) || !/^\d{4}-(0[1-9]|1[0-2])\.md$/.test(name)) {
+					return json(res, 400, { error: 'daily-days accepts only YYYY-MM.md' });
+				}
+				// 严格月形名 + 无分隔符（上面已拒 .. 与 /）→ join 只能落在 root/daily/。
+				const text = await readIfExists(path.join(root, 'daily', name));
+				if (text === undefined) return json(res, 404, { error: 'archive not found' });
+				// 标题行解析必须**不跨行**：`\s*` 会吃掉 \n 把下一天的正文第一行当成
+				// 标题尾（实测踩过）。行内空白用 [ \t]*，标题只可能是同一行的尾巴。
+				const days = [...text.matchAll(/^###[ \t]*\[(\d{4}-\d{2}-\d{2})\][ \t]*([^\n]*)$/gm)].map((m) => ({ date: m[1], title: m[2].trim() }));
+				return json(res, 200, { name, days });
 			}
 			// Recall preview (MemOS borrow ②): run the REAL pre-step pipeline
 			// against an arbitrary query and return what would be injected, with
@@ -5152,8 +5248,7 @@ function memoryPanelApi(opts, connection, inbox) {
 			}
 			if (seg === 'list') {
 				const zone = url.searchParams.get('zone');
-				if (!SEARCH_ZONES.includes(zone)) return json(res, 400, { error: 'invalid zone' });
-				// 5.24.0: skills are host bundles, not memory-root files. The panel
+				if (!SEARCH_ZONES.includes(zone)) return json(res, 400, { error: 'invalid zone' });				// 5.24.0: skills are host bundles, not memory-root files. The panel
 				// skill zone IS the library endpoint (/skills); /list?zone=skills
 				// keeps answering with bundle SKILL.md rows so an older caller
 				// reading the list zone still gets real rows.
@@ -5187,18 +5282,37 @@ function memoryPanelApi(opts, connection, inbox) {
 				// Daily zone lists ONLY decision threads (YYYY-MM-DD.md). The index
 				// (MEMORY.md) has its own zone and must never appear under 每日,
 				// and neither may stray non-dated files at the root. Newest first.
-				if (zone === 'daily') names = names.filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n));
+				// 月/周折叠方案（2026-11）：月归档（YYYY-MM.md）不再混进 files，
+				// 单独作为 archive 数组返回 —— 前端按周子折叠展示，旧的直线列表
+				// 消费者拿到的 files 形状不变（两布局兼容）。
+				let archive = [];
+				const archiveDir = path.join(root, 'daily');
+				if (zone === 'daily') {
+					const dated = names.filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n));
+					names = dated;
+					try {
+						archive = (await readdir(archiveDir)).filter((n) => /^\d{4}-\d{2}\.md$/.test(n));
+					} catch {
+						/* daily/ absent: no archives yet */
+					}
+				}
 				names.sort(zone === 'daily' ? (a, b) => b.localeCompare(a) : undefined);
+				const toRow = async (dir2, n) => {
+					const st = await stat(path.join(dir2, n));
+					return { name: n, bytes: st.size, mtime: st.mtime.toISOString() };
+				};
 				const files = [];
-				for (const n of names) {
-					const st = await stat(path.join(dir, n));
-					files.push({ name: n, bytes: st.size, mtime: st.mtime.toISOString() });
+				for (const n of names) files.push(await toRow(dir, n));
+				const archiveRows = [];
+				if (zone === 'daily') {
+					for (const n of archive.sort((a, b) => b.localeCompare(a))) archiveRows.push(await toRow(archiveDir, n));
 				}
 				// Newest-first for every zone (the panel and any other consumer
 				// display the top row first). Names were pre-sorted per zone, so
 				// this single mtime pass makes the order uniform.
 				files.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
-				return json(res, 200, { files });
+				archiveRows.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
+				return json(res, 200, zone === 'daily' ? { files, archive: archiveRows } : { files });
 			}
 			if (seg === 'check') {
 				return json(res, 200, panelizeHealth(await runHealthCheck(root, opts)));
@@ -5275,8 +5389,9 @@ function memoryPanelApi(opts, connection, inbox) {
 				'<p>该插件的可视面板在 Harness Web UI 的侧栏（记忆图标）。此只读 API 供面板取数；记忆根由服务端解析，请求不能指定路径：</p>' +
 					'<ul><li><code>GET /api/memory-org/overview</code> — 全局记忆体检 + 各分区计数</li>' +
 					'<li><code>GET /api/memory-org/check</code> — 体检</li>' +
-					'<li><code>GET /api/memory-org/list?zone=functions|insights|daily</code> — 分区文件列表</li>' +
-					'<li><code>GET /api/memory-org/file?zone=functions&amp;name=&lt;file&gt;.md</code> — 读记忆文件（省略 zone 即索引）</li>' +
+					'<li><code>GET /api/memory-org/list?zone=functions|insights|daily</code> — 分区文件列表（daily 额外返回 archive 月归档数组）</li>' +
+					'<li><code>GET /api/memory-org/file?zone=functions&amp;name=&lt;file&gt;.md</code> — 读记忆文件（省略 zone 即索引；zone=daily 放行日线程与 daily/ 下的月归档）</li>' +
+					'<li><code>GET /api/memory-org/daily-days?name=YYYY-MM.md</code> — 月归档的日线索（只解析 ### [YYYY-MM-DD] 标题行，不读全文）</li>' +
 					'<li><code>GET /api/memory-org/skills</code> — 技能库（宿主目录包单一存储；agent_created 分「结晶/系统」两栏，各带文件树）</li>' +
 					'<li><code>GET /api/memory-org/skill?name=&lt;bundle&gt;</code> — 技能包正文 + 文件清单（服务端解析根，请求只给名字）</li>' +
 					'<li><code>GET /api/memory-org/skillfile?name=&lt;bundle&gt;&amp;file=&lt;rel&gt;</code> — 包内资源文件原文（scripts/references；相对路径禁穿越）</li>' +
@@ -5340,6 +5455,13 @@ export function apply(ctx, config) {
 			? Math.min(65536, Math.floor(config.recallOptionalBudgetBytes)) : 8192,
 		// Passive capture into the raw daily layer (off unless opted in).
 		captureUserTurns: config?.captureUserTurns === true,
+		// Daily month archive (2026-11-13, user-enabled): 0 disables. Config may
+		// delay or slow it; it never extends past one day (protects the current
+		// month from being archived away by a stale clock).
+		dailyArchiveFirstDelayMs: Number.isFinite(config?.dailyArchiveFirstDelayMs) && config.dailyArchiveFirstDelayMs >= 0
+			? Math.min(config.dailyArchiveFirstDelayMs, 86_400_000) : DEFAULTS.dailyArchiveFirstDelayMs,
+		dailyArchiveIntervalMs: Number.isFinite(config?.dailyArchiveIntervalMs) && config.dailyArchiveIntervalMs >= 0
+			? Math.min(config.dailyArchiveIntervalMs, 86_400_000) : DEFAULTS.dailyArchiveIntervalMs,
 		// Opt-in three-tier federation: { root, projects: [{ key, root }] }.
 		federation: config?.federation && typeof config.federation === 'object' ? config.federation : undefined,
 		// Hot reload (5.25.0): the panel's /reload endpoint calls this. selfReload
@@ -5364,6 +5486,30 @@ export function apply(ctx, config) {
 	// Instance-local observations only; no event, inbox post or durable data.
 	const captureStatus = createCaptureStatus({ enabled: opts.captureUserTurns });
 	opts.captureStatus = () => captureStatus.snapshot();
+
+	// —— 每日按月归档定时器（2026-11-13 用户启用）——
+	//
+	// 启动 60s 后首跑、每 6h 一次（0 关闭）。归档只处理**非当月**的顶层日文件，
+	// 当月文件永不触碰；写入走 writeText 记账、删除走 delete_intent/delete 配对，
+	// 失败保留源文件。withMemoryRootTransaction 与其他写入共享同进程根队列；
+	// 失败只记本实例状态，不投递收件箱（体检 R10/R21/R26 会对归档结果对账）。
+	// disposers 数组在下方才初始化，定时器清理器先暂存、注册时再并入。
+	const archiveDisposers = [];
+	if (opts.dailyArchiveFirstDelayMs > 0 && opts.dailyArchiveIntervalMs > 0) {
+		let archiveBusy = false;
+		const runArchive = () => {
+			if (archiveBusy) return;
+			archiveBusy = true;
+			void withMemoryRootTransaction(resolveRoot(opts), () => archiveDailyMonths(resolveRoot(opts)))
+				.catch(() => {})
+				.finally(() => { archiveBusy = false; });
+		};
+		const archiveTimer = setTimeout(runArchive, opts.dailyArchiveFirstDelayMs);
+		archiveTimer.unref?.();
+		const archiveInterval = setInterval(runArchive, opts.dailyArchiveIntervalMs);
+		archiveInterval.unref?.();
+		archiveDisposers.push(() => { clearTimeout(archiveTimer); clearInterval(archiveInterval); });
+	}
 
 	// 收件箱先建：memory_check 的自动投递要用它（发现→跟踪零配合）。
 	const inbox = new MemoryInbox(dshHome);
@@ -5404,6 +5550,7 @@ export function apply(ctx, config) {
 	disposers.push(
 		ctx.tools.register(memoryInboxTool(opts, inbox)),
 	);
+	disposers.push(...archiveDisposers);
 
 	// 订阅其他插件的健康通报 —— 这是"问题投递"的自动通道。
 	// 用 ctx.on 注册，随插件卸载自动取消（Cordis 保证）。

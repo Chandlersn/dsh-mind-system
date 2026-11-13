@@ -20,6 +20,10 @@ export const DEFAULTS = {
 	// is noise (and a privacy question). Captured lines are truncated.
 	captureUserTurns: false,
 	captureMaxChars: 160,
+	// 每日按月归档（2026-11-13 用户启用）：插件启动 60s 后首跑、此后每 6h 一次，
+	// 把非当月的顶层 YYYY-MM-DD.md 折进 daily/YYYY-MM.md（账本配对删除）。0 关闭。
+	dailyArchiveFirstDelayMs: 60_000,
+	dailyArchiveIntervalMs: 6 * 60 * 60 * 1000,
 };
 
 // Index tables — one row per entry with TWO columns: a clickable name and its

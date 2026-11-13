@@ -10,7 +10,7 @@
 把**反复跑通且被验证的操作**结晶成可直接调用的 `skills/`，
 索引只留一行摘要，并让每个会话开局就被注入这套纪律。
 
-- 记忆工具、系统提示纪律、`agent/pre-step` 主动回忆钩子与 Web 记忆面板；部分面板操作经插件写入通道执行。
+- 十四个记忆工具、系统提示纪律、`agent/pre-step` 主动回忆钩子与 Web 记忆面板；部分面板操作经插件写入通道执行。
 - 写入即建档：`summary` 与 `currentState` 是必填参数，索引行不会漂移
 - 带机械体检（R0–R27 + 温度分析，规则号会增长故不写死条数），坏了能被检查出来，而不是靠记性
 - **能力台账**：用过的外部 CLI / MCP / 本地工具（不含 harness 自带能力与本项目自己的脚本/API）登记在 `capabilities/`，下次同类任务先查台账，不重复摸索
@@ -49,7 +49,7 @@ memory/
 核心不是"按功能分文件"，而是**先有原料、后有提炼**——数据只向下流动，每一层都对上一层有据可查：
 
 ```
-第 0 层 · 每日记录 YYYY-MM-DD.md（原始层，仅插件采集写入）
+第 0 层 · 每日记录 YYYY-MM-DD.md（原始层，可经编辑工具筛选写入）
         当前可选采集只处理用户原话，默认关闭；助手判断尚无自动采集通道
         │ 归纳汲取（memory_write）
 第 1 层 · functions/<功能域>.md 迭代块：动因 / 改动结论 / 判据 / 待观察（各一句）
@@ -66,7 +66,8 @@ memory/
   单条 >150 字、没有任何记忆文件链接、或声称"跨功能/全局"却只指向 1 个来源域，都会报警。
   约束不是意见，它得能指回证据。
 
-- **每日记录是原始层**：按用户要求，写入只能通过插件采集，不能直接使用编辑工具。真实 `captureUserTurns` 继续关闭；本轮新源码尚未构建部署。隔离实现只从获准进入的 `role=user`、`source.kind=user` 且带稳定 ID 的消息提取并脱敏；这些字段、ID 和哈希都不是身份或来源认证，不能保证采集不漏，也不自动生成助手判断。
+- **每日记录是原始层**：新源码允许编辑工具写入，并以提示词筛选值得复用的判断、取舍、因果和待验证事项，不抄日常流水。提示词不是硬过滤；直接编辑不会自动脱敏或登记账本，可能触发 R26 和采集基线拒绝。真实 `captureUserTurns` 继续关闭；本轮新源码尚未构建部署。隔离采集实现只从获准进入的 `role=user`、`source.kind=user` 且带稳定 ID 的消息提取并脱敏；这些字段、ID 和哈希都不是身份或来源认证，不能保证采集不漏，也不自动生成助手判断。
+- **每日按月/周归档（2026-11-13 用户启用）**：插件启动 60s 后首跑、每 6h 一次，把**非当月**的顶层 `YYYY-MM-DD.md` 折进 `daily/YYYY-MM.md`（ISO 周分节 + 每日标题，原文逐字保留）；当月文件永不触碰。归档走账本配对（归档件记账 → 源文件 delete_intent/delete 配对删除），任何一步失败保留源文件。体检 R10/R21 双来源扫描，`memory_read`/`memory_search` 计入归档，面板按月组→周子折叠→日线索展示。配置 `dailyArchiveFirstDelayMs` / `dailyArchiveIntervalMs` 可调（0 关闭，上限一天）。
 - **隔离中的采集协议**：写前检查现有文件与账本基线，历史正文保持原样；合作采集进程以 SQLite 锁串行化（Node 22 的 `node:sqlite` 为实验性功能）。写入前留持久 pending 意图；崩溃后意图未完成则停写，不自动恢复或补账。文件与账本并非崩溃原子，非幂等副作用仍待处理；shell、旧版、其他非合作进程不受该锁保护。概览提供本实例状态及失败、意图现场，不代表全局或端到端送达。此前本机只读核对发现 13 份历史日记没有账本记录，不能补造来源。
 - **历史保留与未知范围**：新源码中 `memory_write` 的 `resolve` 不修改或勾选历史每日记录；`memory_rename` 不改写历史每日链接，可能留有旧名。R10 遇到根目录无法枚举或每日文件不可读，报告该范围未知，已发现死链数只是下界。上述均仅经隔离验证，尚未经真实宿主部署验证。
 - **发布阻断**：当前源码的面板 exclusive 提交为避免误删他人文件保留暂存路径，即使正常提交并记账也会中断确认、否决或删除。采集意图按路径清理也已在隔离反例中误删替换文件；追加式日志仅为未接入的原型。OS 句柄原语仅经本机隔离探索，问题未解决；不得发布，也不能声称线上已修复。
@@ -295,7 +296,10 @@ Node ≥ 22.12），返回的正是 Host 已加载的同一份命名空间。
   失败自动回滚并报告）。本插件敢这么做是因为它没有长驻内存状态（记忆在磁盘、工具/召回钩子/路由随 apply 重建）。
   宿主没有 loader/registry 时接口直接 501，不会假接受。**client 半改动仍需刷新页面**（重载后请刷新浏览器）
 - **阅读**：功能文件按迭代块折起，默认只展开最新一块（短文件全展开），顶部日期跳转条 + "展开全部"；
-  思想/每日按小节展开；索引页把"功能模块索引 / 创新优化思想索引"渲染成**可点击的导航表**，其余小节折叠
+  思想/每日按小节展开；索引页把"功能模块索引 / 创新优化思想索引"渲染成**可点击的导航表**，其余小节折叠。
+  每日分区按**月组 → 周子组**折叠（2026-11 月/周折叠方案）：月头 `▾ YYYY-MM` 默认展开当月，
+  周子组标 `周 YYYY-Www（MM-DD ~ MM-DD）`（ISO 周，周一为一周之始）默认展开当周；
+  已归档月显示「月归档」按钮打开 `daily/YYYY-MM.md`（节内 `## 周 YYYY-Www` + `### [YYYY-MM-DD]` 日标题）
 - **跳转**：正文里的 `functions/x.md`、`insights/y.md`、`YYYY-MM-DD.md` 链接在面板内跳转，不离开记忆视图
 - **搜索**：顶栏全局搜索（防抖 350ms，≥2 字符），与 `memory_search` 共用同一套相关度排序；
   命中行带**命中词高亮**、分区标签、行号与小节标题；顶栏右侧的**分区筛选**（全部/索引/功能/思想/道/能力/技能/每日）
@@ -323,7 +327,7 @@ Node ≥ 22.12），返回的正是 Host 已加载的同一份命名空间。
 
 | 响应 | 字段 |
 |---|---|
-| `overview`（数组，单元素） | `root`、`initialized`、`failCount`、`warnCount`、**`results`**（体检条目：`level`/`rule`/`message`；不是 `problems`）、`counts{functions,insights,capabilities,skills,daily}`、`usage{signalCount,layers,hotspots}`、`env{version,canReload,hotReloadRunning,memoryRoot,skillRoot,indexBytes,indexComfortBytes,indexHardBytes}`（`skillRoot` 为**已解析**的存储路径：无覆盖时 = `<dshHome>/skills`，与 config 项同名同义） |
+| `overview`（数组，单元素） | `root`、`initialized`、`failCount`、`warnCount`、**`results`**（体检条目：`level`/`rule`/`message`；不是 `problems`）、`counts{functions,insights,capabilities,skills,daily,archived}`（`daily` **含归档月**在内，`archived` 只数 `daily/YYYY-MM.md`；2026-11 口径变更）、`usage{signalCount,layers,hotspots}`、`env{version,canReload,hotReloadRunning,memoryRoot,skillRoot,indexBytes,indexComfortBytes,indexHardBytes}`（`skillRoot` 为**已解析**的存储路径：无覆盖时 = `<dshHome>/skills`，与 config 项同名同义） |
 | `list` | `files[]{name,bytes,mtime}` |
 | `file` | `{name,text}` |
 | `search` | `hits[]{zone,name,line,heading,snippet}`（片段是 `snippet`，不是 `text`） |
@@ -339,7 +343,7 @@ DSH_INSTALL_DIR=<DSH 安装目录> npm test   # harness-test.mjs + api-test.mjs 
 - `harness-test.mjs`：用假 ctx 捕获工具定义，在临时记忆根上跑完整闭环（写/读/思想/折叠/改名/体检/回忆）
 - `api-test.mjs`：用 stub req/res 直接驱动面板 HTTP 处理器，并对真实全局记忆根做断言
 - `ui-test.mjs`：给面板注入**最小 React 替身**（createElement + 静态 hooks），把六种视图渲染成标记后断言
-  （索引表导航、迭代块折叠、分区摘要/排序/过滤、每日按月分组、内部链接解析）；纯解析逻辑由
+  （索引表导航、迭代块折叠、分区摘要/排序/过滤、每日按月/周两级分组、内部链接解析）；纯解析逻辑由
   `__internalsForTest` 直接测
 
 Host 安装目录探测不到时需要 `DSH_INSTALL_DIR`（测试进程的 CLI 入口不是 DSH 自己，所以自动探测失效）。
