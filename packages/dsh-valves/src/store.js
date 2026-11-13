@@ -25,12 +25,81 @@ import { requirePermit, VIOLATIONS } from './guard.js';
 
 export const LEDGER_FILE = 'mind-valves.jsonl';
 export const RULES_FILE = 'mind-negative-rules.json';
+/** IV-3：规则命中流水（只追加）。沉底判据要回答"这条规则最近还起过作用吗"。 */
+export const TRIGGERS_FILE = 'mind-rule-triggers.jsonl';
 
 export function ledgerPath(storageDir) {
 	return join(storageDir, LEDGER_FILE);
 }
 export function rulesPath(storageDir) {
 	return join(storageDir, RULES_FILE);
+}
+export function triggersPath(storageDir) {
+	return join(storageDir, TRIGGERS_FILE);
+}
+
+/**
+ * IV-3 沉底的触发流水：一次命中一行（只追加，永不改写）。
+ *
+ * 为什么单独一个文件而不是写回规则库：命中是**读路径**上的高频事件，
+ * 每次命中都重写规则库会让"读一条规则"变成"写一个共享文件"，既慢又会
+ * 在并发下互相覆盖。追加流水是单向的，读的时候再聚合。
+ *
+ * @param {string} storageDir storages 根。
+ * @param {{ruleIds: string[], at?: string, text?: string}} entry
+ * @returns {Promise<boolean>} 写失败返回 false（记账不能破坏拦截本身）。
+ */
+export async function appendRuleTrigger(storageDir, entry) {
+	const ids = Array.isArray(entry?.ruleIds) ? entry.ruleIds.filter((id) => typeof id === 'string' && id.trim()) : [];
+	if (!ids.length) return false;
+	try {
+		await mkdir(storageDir, { recursive: true });
+		const line = JSON.stringify({ t: entry?.at ?? new Date().toISOString(), ids });
+		await appendFile(triggersPath(storageDir), `${line}\n`, 'utf8');
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * 读触发流水。ENOENT → []（从未命中过是正常态）；其它失败 → undefined
+ * （读不到 ≠ 从未命中，调用方不得据此把在用的规则沉底）。
+ */
+export async function readRuleTriggers(storageDir) {
+	let text;
+	try {
+		text = await readFile(triggersPath(storageDir), 'utf8');
+	} catch (err) {
+		if (err?.code === 'ENOENT') return [];
+		return undefined;
+	}
+	const out = [];
+	for (const line of text.split('\n')) {
+		const s = line.trim();
+		if (!s) continue;
+		try {
+			const parsed = JSON.parse(s);
+			const t = Date.parse(parsed?.t);
+			if (!Number.isFinite(t) || !Array.isArray(parsed?.ids)) continue;
+			out.push({ t: parsed.t, ms: t, ids: parsed.ids.filter((id) => typeof id === 'string' && id) });
+		} catch {
+			/* skip corrupt line */
+		}
+	}
+	return out;
+}
+
+/** 每条规则最近一次命中的时间戳（ms）；从未命中则不出现。 */
+export function lastTriggeredMap(triggers) {
+	const map = new Map();
+	for (const line of triggers ?? []) {
+		for (const id of line.ids) {
+			const prev = map.get(id);
+			if (prev === undefined || line.ms > prev) map.set(id, line.ms);
+		}
+	}
+	return map;
 }
 
 /** 追加一条判定记录。永不抛错（记账不能破坏执行）。 */
@@ -276,21 +345,133 @@ export async function rollbackNegativeRule(storageDir, ruleId, options = {}) {
  * 后续增强，需要 embedder 可选 peer——现在不引入（N4 降级纪律：
  * 附加能力缺了要降级，不是让核心等它）。
  *
+ * IV-3 沉底：`status === 'sunk'` 的规则**不参与拦截**（它已过期，继续拦
+ * 就是把一条没人再触发的旧禁令当成现行法律），但仍留在库里可检索——
+ * 传 `{ includeSunk: true }` 就能查回来当反例资产用。
+ *
  * @param rules readNegativeRules 的结果（undefined 时返回 undefined，
  *   调用方必须区分"没命中"与"没查成"）。
  * @param text 候选路径/约束的描述文本。
+ * @param {{includeSunk?: boolean}} [options]
  * @returns 命中的规则 id 列表；rules 为 undefined 时返回 undefined。
  */
-export function matchNegativeRules(rules, text) {
+export function matchNegativeRules(rules, text, options = {}) {
 	if (rules === undefined) return undefined;
 	const t = String(text ?? '').toLowerCase();
 	if (!t.trim()) return [];
+	const includeSunk = options?.includeSunk === true;
 	const hits = [];
 	for (const r of rules) {
+		if (!includeSunk && r?.status === 'sunk') continue;
 		const keywords = Array.isArray(r?.keywords) ? r.keywords : [];
 		if (keywords.some((k) => typeof k === 'string' && k.trim() && t.includes(k.toLowerCase()))) {
 			hits.push(r.id);
 		}
 	}
 	return hits;
+}
+
+/** 日 → 毫秒（沉底窗口用）。 */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * IV-3 沉底候选：活跃规则里，最近一次"活动"已超过窗口的那些。
+ *
+ * 活动时间 = max(最近命中, confirmed_at)。取最大值是刻意的：
+ * - 只看命中：一条刚确认、还没遇到机会的规则会立刻被判过期（误杀）。
+ * - 只看确认时间：一条天天命中的规则会因为确认得早而被判过期（更糟）。
+ *
+ * 读不到触发流水（undefined）时返回 `{ candidates: [], unknown: true }`：
+ * 没查成不等于都没命中，不能拿"读失败"当沉底依据。
+ *
+ * @returns {{candidates: {id: string, lastActivityAt: string, reason: string}[], unknown: boolean}}
+ */
+export function findSinkCandidates(rules, triggers, options = {}) {
+	const windowDays = Number.isFinite(options?.windowDays) ? options.windowDays : 90;
+	const now = Number.isFinite(options?.now) ? options.now : Date.now();
+	if (triggers === undefined) return { candidates: [], unknown: true };
+	const last = lastTriggeredMap(triggers);
+	const cutoff = now - windowDays * DAY_MS;
+	const candidates = [];
+	for (const r of rules ?? []) {
+		if (!r || r.status === 'sunk') continue;
+		const confirmed = Date.parse(r.confirmed_at);
+		const triggered = last.get(r.id);
+		const activity = Math.max(Number.isFinite(confirmed) ? confirmed : 0, triggered ?? 0);
+		// 时间不可判定（无 confirmed_at 也无命中）→ 不判过期，留给人工。
+		if (activity <= 0) continue;
+		if (activity < cutoff) {
+			candidates.push({
+				id: String(r.id),
+				lastActivityAt: new Date(activity).toISOString(),
+				reason: triggered === undefined ? 'never_triggered_since_confirm' : 'no_trigger_within_window',
+			});
+		}
+	}
+	return { candidates, unknown: false };
+}
+
+/**
+ * IV-3 把规则沉底：移出拦截、保留内容（不删除）。
+ *
+ * 与 confirm/rollback 同一纪律：这是**改规则库**的写操作，必须走人工通道
+ * （permit 或显式 human）。自动沉底不提供——"这条禁令该不该退休"是判断，
+ * 不是可由定时器代劳的操作；定时巡检只报候选（findSinkCandidates）。
+ *
+ * 写前快照（III-4）：沉底后仍可回退到沉底前那一版（回退=重新激活）。
+ *
+ * @param {string} storageDir storages 根。
+ * @param {string[]} ruleIds 要沉底的规则 id。
+ * @param {{human?: boolean, permit?: string, permits?: string[], reason?: string, now?: number}} [options]
+ */
+export async function sinkRules(storageDir, ruleIds, options = {}) {
+	const ids = Array.isArray(ruleIds) ? ruleIds.filter((id) => typeof id === 'string' && id.trim()) : [];
+	if (!ids.length) return { ok: false, error: '需要至少一条规则 id' };
+	// 票绑定 ruleId（III-5：拿 A 的票写 B 会被拒），所以批量沉底必须**一票对一条**：
+	// permits 数组与 ids 一一对应；单条调用可直接传 permit 字符串。
+	const permits = Array.isArray(options.permits) ? options.permits : [options.permit];
+	if (permits.some((t) => t !== undefined && t !== null)) {
+		for (let i = 0; i < ids.length; i++) {
+			const token = Array.isArray(options.permits) ? options.permits[i] : options.permit;
+			const ok = requirePermit(token, { ruleId: ids[i] }, options);
+			if (!ok.ok) return { ok: false, error: ok.error, violation: ok.violation };
+		}
+	} else if (options.human !== true) {
+		return { ok: false, error: 'not_human_confirmed', violation: VIOLATIONS.unconfirmedCandidate };
+	}
+	const existing = await readNegativeRules(storageDir);
+	if (existing === undefined) return { ok: false, error: '负向规则库读取失败，拒绝盲写' };
+	const targets = existing.filter((r) => ids.includes(String(r?.id)));
+	if (!targets.length) return { ok: false, error: '没有匹配的规则 id（未做任何写入）' };
+	// 只快照真正要改的那几条；跳过已沉底的（幂等）。
+	const toSink = targets.filter((r) => r.status !== 'sunk');
+	if (!toSink.length) return { ok: true, sunk: [], alreadySunk: ids, count: existing.length };
+	for (const r of toSink) {
+		const snap = await writeSnapshot(storageDir, String(r.id), r);
+		if (!snap.ok) return { ok: false, error: `快照失败，拒绝沉底（无法建立回退点）：${snap.error}` };
+	}
+	const at = new Date(Number.isFinite(options.now) ? options.now : Date.now()).toISOString();
+	const sunkIds = [];
+	const next = existing.map((r) => {
+		if (!toSink.includes(r)) return r;
+		sunkIds.push(String(r.id));
+		return {
+			...r,
+			status: 'sunk',
+			sunk_at: at,
+			...(typeof options.reason === 'string' && options.reason.trim() ? { sink_reason: options.reason.trim() } : {}),
+		};
+	});
+	try {
+		await mkdir(storageDir, { recursive: true });
+		await writeFile(rulesPath(storageDir), `${JSON.stringify({ rules: next }, null, 2)}\n`, 'utf8');
+		return { ok: true, sunk: sunkIds, count: next.length, deleted: false };
+	} catch (err) {
+		return { ok: false, error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
+/** 沉底规则（保留为反例资产）：给检索/展示用，不参与拦截。 */
+export function sunkRules(rules) {
+	return (rules ?? []).filter((r) => r?.status === 'sunk');
 }

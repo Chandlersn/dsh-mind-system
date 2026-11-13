@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm, realpath, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createWriteGuard, classifyWrite, WRITE_DENIED } from '../src/write-guard.js';
+import { createWriteGuard, classifyWrite, denialMessage, WRITE_DENIED } from '../src/write-guard.js';
 
 // Faithful local-path resolver: display spelling plus physical identity for missing files.
 async function resolveTarget(input, options = {}) {
@@ -175,6 +175,13 @@ test('invalid or unresolved skill root fails closed while read-only operations p
 test('index, layers, ledger and capture metadata remain protected while root daily logs are writable', () => {
 	const root = path.resolve('memory-root');
 	for (const file of ['MEMORY.md', '.usage.jsonl', '.write-ledger.jsonl', '.capture-mutex.sqlite', '.capture-mutex.sqlite-wal', '.daily-capture.pending', 'functions/2026-11-10.md', 'insights/x.md', 'dao/_candidates/x.md', 'capabilities/x.md', 'legacy/x.md', 'skills/old.md', 'daily/legacy.md']) assert.equal(classifyWrite(root, path.join(root, file)).block, true, file);
+	// 暂存目录（2026-11-13）：仅插件提交通道使用，编辑工具一律拒绝。
+	for (const file of ['.stage', '.stage/x.stage-abc.tmp', '.stage/nested/deep.tmp']) {
+		const verdict = classifyWrite(root, path.join(root, file));
+		assert.equal(verdict.block, true, file);
+		assert.equal(verdict.reason, 'stage', file);
+	}
+	assert.match(denialMessage('.stage/x.tmp', 'stage'), /暂存目录仅插件提交通道使用|暂存目录（\.stage\/）仅插件/, 'stage 拒绝信息必须可行动');
 	for (const file of ['2026-11-10.md', 'README.md', '../memory-root-other/a']) assert.equal(classifyWrite(root, path.resolve(root, file)).block, false, file);
 });
 

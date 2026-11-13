@@ -135,7 +135,9 @@ test('归档件写入失败时源文件保留并给出明确阶段', async (t) =
 	const originalRename = fs.promises.rename;
 	let faulted = 0;
 	fs.promises.rename = async function (from, ...args) {
-		if (String(from).includes('.tmp-')) {
+		// 2026-11-13：writeText 暂存已移入 .stage/（`<名>.stage-<uuid>.tmp`）；
+		// 精确命中归档提交 rename，同时不误伤删除配对等其余 rename。
+		if (String(from).endsWith('.tmp')) {
 			faulted++;
 			throw Object.assign(new Error('synthetic rename failure'), { code: 'EPERM' });
 		}

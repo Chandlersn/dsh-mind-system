@@ -77,16 +77,23 @@ function responseText(result) { return JSON.stringify(result.body); }
 test('真实面板否决：正文写了一部分后 EIO，正式归档路径不得暴露残片，源保留', async (t) => {
   const f = await fixture(t);
   let injected = false;
-  f.io.writeFile = async (file, data, ...args) => {
-    // Target or a sibling temporary file used for the target: inject before commit.
-    if (!injected && typeof file === 'string' && pathIs(path.dirname(file), path.dirname(f.target))) {
+  // 2026-11-13：暂存已移入 .stage/，正文写入走 handle.writeFile（open 'wx'）。
+  // 故障注入改为：拦截 open，命中 .stage- 命名后替换 handle.writeFile 为
+  // "写一半再抛 EIO"。
+  const originalOpen = f.io.open;
+  f.io.open = async (file, ...args) => {
+    const handle = await originalOpen.call(f.io, file, ...args);
+    if (!injected && typeof file === 'string' && args[0] === 'wx' && pathIs(path.dirname(file), path.join(f.root, '.stage')) && String(file).endsWith('.tmp')) {
       injected = true;
-      const partial = String(data).slice(0, 8);
-      assert.ok(partial.length > 0 && partial.length < String(data).length);
-      await f.original.writeFile.call(f.io, file, partial, ...args);
-      throw injectedError();
+      const originalWrite = handle.writeFile.bind(handle);
+      handle.writeFile = async (data, ...rest) => {
+        const partial = String(data).slice(0, 8);
+        assert.ok(partial.length > 0 && partial.length < String(data).length);
+        await originalWrite(partial, ...rest);
+        throw injectedError();
+      };
     }
-    return f.original.writeFile.call(f.io, file, data, ...args);
+    return handle;
   };
   syncBuiltinESMExports();
   const result = await f.rejectCandidate();

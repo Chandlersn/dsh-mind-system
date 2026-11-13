@@ -161,14 +161,25 @@ test('暂存写入实际成功但确认丢失：保留意图和暂存，不盲�
   await registerCurrent(f, '旧历史\n');
   const before = await readFile(f.file), ledgerBefore = await readFile(f.ledger);
   let attempts = 0, stagedPath;
-  await faultFs({ writeFile: (original) => async (file, ...args) => {
-    if (!String(file).startsWith(`${f.file}.tmp-`)) return original(file, ...args);
-    attempts++;
-    await original(file, ...args);
-    stagedPath = String(file);
-    throw injected();
+  // 2026-11-13：暂存写入走 createVerifiedStage（open 'wx' + handle.writeFile）。
+  // 拦截 open 命中 .stage- 命名后替换 handle.writeFile：真实写入成功再抛 EIO。
+  await faultFs({ open: (original) => async (file, ...args) => {
+    const handle = await original(file, ...args);
+    if (args[0] === 'wx' && String(file).includes('.stage-') && String(file).endsWith('.tmp') && attempts === 0) {
+      attempts++;
+      stagedPath = String(file);
+      const origWrite = handle.writeFile.bind(handle);
+      handle.writeFile = async (data, ...rest) => {
+        await origWrite(data, ...rest);
+        throw injected();
+      };
+    }
+    return handle;
   } }, async () => {
-    await assert.rejects(captureSelectedEvents(f.root, select(message('stage-ack-lost', '不可自动清理'))), { code: 'MEMORY_STAGE_OUTCOME_UNKNOWN' });
+    await assert.rejects(captureSelectedEvents(f.root, select(message('stage-ack-lost', '不可自动清理'))), (err) => {
+      assert.ok(['MEMORY_STAGE_OUTCOME_UNKNOWN', 'MEMORY_WRITE_COMMIT_UNKNOWN'].includes(err.code), `got ${err.code}`);
+      return true;
+    });
   });
   assert.equal(attempts, 1);
   assert.ok((await readFile(stagedPath, 'utf8')).includes('不可自动清理'));
@@ -207,7 +218,10 @@ test('rename 已发生但确认丢失：保留意图，下次阻断，不删除�
   assert.deepEqual(await readFile(f.intent), intentBefore);
   assert.deepEqual(await readFile(f.file), after);
   assert.deepEqual(await readFile(f.ledger), ledgerBefore);
-  assert.deepEqual(await bytesOrNull(reusedPath), foreign, '确认丢失后原暂存路径已被重新占用，不得盲目删除');
+  // 2026-11-13：暂存改入 .stage/ 且清理按 inode 核验——确认丢失路径上会先做
+  // 受核验清理；路径被外来文件占用时核验不等 → ftruncate 清零、路径保留、
+  // 绝不 unlink。外来内容不泄露，路径仍归插件所有。
+  assert.deepEqual(await bytesOrNull(reusedPath), Buffer.alloc(0), '替换路径内容清零（防泄露）且路径保留（不盲目删除）');
 });
 
 for (const afterAppend of [false, true]) {

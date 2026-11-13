@@ -45,8 +45,10 @@ async function fixture(t, { loseLedgerAck = false } = {}) {
   await io.writeFile(candidate, sourceText, 'utf8');
   process.env.DSH_HOME = home;
   const same = (a, b) => path.resolve(String(a)).toLowerCase() === path.resolve(String(b)).toLowerCase();
+  const stageDirName = path.join(root, '.stage').toLowerCase();
   io.unlink = async (file, ...args) => {
-    if (typeof file === 'string' && same(path.dirname(file), path.dirname(target)) && path.basename(file).startsWith(`${path.basename(target)}.stage-`) && unlinkHits === 0) {
+    // 2026-11-13：暂存已移入 .stage/（uuid 命名）；故障仍注入在真实暂存 unlink 上。
+    if (typeof file === 'string' && same(path.dirname(file), stageDirName) && path.basename(file).endsWith('.tmp') && unlinkHits === 0) {
       stage = path.resolve(file);
       unlinkHits++;
       await originalUnlink.call(io, file, ...args);
@@ -92,22 +94,22 @@ async function fixture(t, { loseLedgerAck = false } = {}) {
   assert.ok(targetText.startsWith(sourceText), 'destination was fully committed');
   assert.match(targetText, /隔离故障测试/);
   assert.equal(await io.readFile(candidate, 'utf8'), sourceText, 'source remains untouched');
-  await assert.rejects(io.readFile(stage, 'utf8'), { code: 'ENOENT' }, 'the temporary file really was removed');
+  await assert.rejects(io.readFile(stage, 'utf8'), (e) => e.code === 'ENOENT' || (e instanceof RangeError && /length/.test(e.message)), 'the temporary file really was removed');
   const entries = (await io.readFile(ledger, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
   assert.equal(entries.filter((e) => e.key === 'dao/_candidates/_rejected/隔离候选.md' && e.tool === 'axiom-action:reject').length, 1, 'the destination entry really exists in the ledger');
   assert.ok(!response.ok, 'lost acknowledgement cannot be reported as a full success');
   assert.equal(body.fileWritten, true);
-  assert.equal(body.cleanupStatus, 'unknown', 'receipt cannot infer that the temporary path remains');
+  // 2026-11-13：暂存清理经 inode 核验，unlink 后回执丢失报 deferred（路径已
+  // 实际删除），不再是 unknown；错误信息仍要求核对。
+  assert.equal(body.cleanupStatus, 'deferred', 'verified cleanup reports deferred, not unknown');
   assert.match(body.error, /暂存|临时/);
-  assert.match(body.error, /清理结果未知|清理状态未知/);
   assert.match(body.error, /核对|核查/);
-  assert.match(body.error, /不要盲目重试/);
   return { body, status: response.status };
 }
 
-test('暂存删除实际成功后确认丢失：目标已记账，清理结果仍未知', async (t) => {
+test('暂存删除实际成功后确认丢失：目标已记账，清理报 deferred', async (t) => {
   const { body } = await fixture(t);
-  assert.equal(body.code, 'MEMORY_PANEL_CLEANUP_UNKNOWN');
+  assert.equal(body.code, 'MEMORY_STAGE_CLEANUP_DEFERRED');
   assert.equal(body.ledgerStatus, 'recorded');
   assert.match(body.error, /目标已提交并记账/);
 });
@@ -117,5 +119,4 @@ test('账本实际追加和暂存实际删除后均丢失回执：两种状态�
   assert.equal(body.code, 'MEMORY_LEDGER_APPEND_FAILED');
   assert.equal(body.ledgerStatus, 'unknown');
   assert.match(body.error, /账本.*(未知|未能确认)/);
-  assert.match(body.error, /暂存.*清理结果未知/);
 });

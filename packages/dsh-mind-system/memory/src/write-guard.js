@@ -108,6 +108,8 @@ export function classifyWrite(root, abs) {
 
 	// 原始每日记录允许编辑；其他路径和独立技能根仍分别检查。
 	if (parts.length === 1 && DAILY_RE.test(top)) return { block: false, key, reason: 'daily' };
+	// 暂存目录（2026-11-13）：仅插件提交通道使用，编辑工具一律拒绝。
+	if (top === '.stage') return { block: true, key, reason: 'stage' };
 	// 月/周归档（2026-11）：daily/YYYY-MM.md 也是数据文件，放行；daily/ 下
 	// 其他名字（含 daily/YYYY-MM-DD.md 等非月形）仍按层目录拒绝。
 	if (parts.length === 2 && parts[0] === 'daily' && DAILY_MONTH_RE.test(parts[1])) return { block: false, key, reason: 'daily-archive' };
@@ -138,6 +140,8 @@ export function denialMessage(key, reason) {
 				? '旁路账本只能由插件追加；它被改过，R26 对账就失效了'
 				: reason === 'capture-metadata'
 					? '采集协议元数据是插件私有文件，只能由插件采集通道维护'
+				: reason === 'stage'
+					? '暂存目录（.stage/）仅插件提交通道使用：面板提交会自动创建与清理，外部写入不受支持'
 				: reason === 'skill'
 					? '宿主技能目录只能通过插件提供的 memory_skill 等写入通道维护'
 					: '层级内容只能由 memory_* 工具落盘（memory_write / memory_insight / memory_dao / memory_capability / memory_fold / memory_rename / memory_usage）';

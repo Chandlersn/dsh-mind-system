@@ -173,7 +173,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "c16d717fa117d6963027aceef686d66fb0436d791bca919f520108f22ecbbe7e"
+      "sha256": "802b0d9702f59925958f1aab43e0fffe4b49cd53f70deafaf10e4a7c02f79815"
     },
     "memory/src/axiom-candidate.js": {
       "source": "dsh-memory-manager/src/axiom-candidate.js",
@@ -255,13 +255,17 @@
       "source": "dsh-memory-manager/src/secrets.js",
       "sha256": "a171e95dfd3d45a39b39bde8e59a39a2585ed0f3281d38238e1bbb80c069f0bd"
     },
+    "memory/src/stage.js": {
+      "source": "dsh-memory-manager/src/stage.js",
+      "sha256": "db5a58b0efb806d9d5616a7a1d61287f064a178ec820c499182d6fb0f10f7d57"
+    },
     "memory/src/usage.js": {
       "source": "dsh-memory-manager/src/usage.js",
       "sha256": "f42c5cfded518dd3dbbd79140c926ad4a605e2b81c9dadc96f92272d56d20d76"
     },
     "memory/src/util.js": {
       "source": "dsh-memory-manager/src/util.js",
-      "sha256": "e46c07ef2c34c5d54aa78c42224b156cf143593e5d1b1b748d54418344b114b6"
+      "sha256": "fc4d7f4fab4948885b622e7096a841921196df60922da9838eb959a8dbeaa87f"
     },
     "memory/src/valves-bridge.js": {
       "source": "dsh-memory-manager/src/valves-bridge.js",
@@ -269,7 +273,7 @@
     },
     "memory/src/write-guard.js": {
       "source": "dsh-memory-manager/src/write-guard.js",
-      "sha256": "6fd5e178a89cfad7ad55cff84e786a13ce640512d5f3a6ca19c7a64d0a14fc1f"
+      "sha256": "86e0199e47237630f839ba031e160cb8f7f31ea1e3e249248c80866d752b2be0"
     },
     "memory/src/write-ledger.js": {
       "source": "dsh-memory-manager/src/write-ledger.js",
@@ -285,7 +289,7 @@
     },
     "memory/tests/capture-crash.test.js": {
       "source": "dsh-memory-manager/tests/capture-crash.test.js",
-      "sha256": "6802799972e45f9b4d35e302d586d84568a14c666e4dc9972d8192776ec5e882"
+      "sha256": "035bd029023e56109770b6bed6cade9e9545603b02e0bcb3fe25803e784d5590"
     },
     "memory/tests/capture-events.test.js": {
       "source": "dsh-memory-manager/tests/capture-events.test.js",
@@ -317,7 +321,7 @@
     },
     "memory/tests/capture-service.test.js": {
       "source": "dsh-memory-manager/tests/capture-service.test.js",
-      "sha256": "6c6fc20a94d952a6998b2b975db2e1e8b462bd45d4065857b5a38ba8561ec67c"
+      "sha256": "090473fd8fbf3d423b8360043cd272b1f140c37f5628986d360685b86fab6a44"
     },
     "memory/tests/capture-status.test.js": {
       "source": "dsh-memory-manager/tests/capture-status.test.js",
@@ -345,7 +349,7 @@
     },
     "memory/tests/daily-archive.test.js": {
       "source": "dsh-memory-manager/tests/daily-archive.test.js",
-      "sha256": "f520e9b32935f6917950514636af27bbe1fae164f0ec7b0dd857198ff815bc67"
+      "sha256": "aa42d0ca14303703fd8e5c4424889aa9ab0563253ee23b1fc6eb34a8c890173b"
     },
     "memory/tests/daily-capture-alias.test.js": {
       "source": "dsh-memory-manager/tests/daily-capture-alias.test.js",
@@ -453,7 +457,7 @@
     },
     "memory/tests/panel-cleanup-ack-lost.test.js": {
       "source": "dsh-memory-manager/tests/panel-cleanup-ack-lost.test.js",
-      "sha256": "e849acb73d02385938e0bab8abdbbb876c02276036a747e4b41478a1c07676a1"
+      "sha256": "24f67ec2366d0ae973022741720d61b8faae846fbe1625edf20163a4101fb2cf"
     },
     "memory/tests/panel-concurrency.test.js": {
       "source": "dsh-memory-manager/tests/panel-concurrency.test.js",
@@ -461,15 +465,15 @@
     },
     "memory/tests/panel-stage-cleanup.test.js": {
       "source": "dsh-memory-manager/tests/panel-stage-cleanup.test.js",
-      "sha256": "fdf59cd4252730b91539884a51cf00a9c7c360eda07822d92efcf8281f055ba5"
+      "sha256": "4a7c60b9b90396adb8596b4591602050e1bc0a2eb86767879565d60d12566e83"
     },
     "memory/tests/panel-staging-collision.test.js": {
       "source": "dsh-memory-manager/tests/panel-staging-collision.test.js",
-      "sha256": "2785080a508776418d1549100d26ed2f1f019037956a0d9f0eb62500f58bd84a"
+      "sha256": "17999358b0eecbbb726b1a2cf39bd93faeebab01aae7bc3d8a35a395fbdeb16b"
     },
     "memory/tests/panel-write-partial.test.js": {
       "source": "dsh-memory-manager/tests/panel-write-partial.test.js",
-      "sha256": "27d442209e92f8f2a5c2f8fe742e7040da8c9defa8e21401f7269f677f79c132"
+      "sha256": "2ef3f63252fe4ce963fb564440203ddec7b8f390b409bcbe575fd53f29207762"
     },
     "memory/tests/r10-daily-unknown.test.js": {
       "source": "dsh-memory-manager/tests/r10-daily-unknown.test.js",
@@ -545,11 +549,11 @@
     },
     "memory/tests/rename-staging-uncertain.test.js": {
       "source": "dsh-memory-manager/tests/rename-staging-uncertain.test.js",
-      "sha256": "4829e9b5dbbb637f115b77866ec1f055f8a4d0b34ddf5ab0e7837f87833275ec"
+      "sha256": "77f2a14be2691049f9194957a67a2d8481e92836ee1078dcc51bd9e98ddecaae"
     },
     "memory/tests/rename-target-uncertain.test.js": {
       "source": "dsh-memory-manager/tests/rename-target-uncertain.test.js",
-      "sha256": "8882e05c9252d7896af7857c870f16fa540c65b6e7561e0749e237f9c5d4dd69"
+      "sha256": "cf2d4b1a3e3dae530a27ed40e51c71cff7fbf2bca56db10b61b44c37e6881eb4"
     },
     "memory/tests/resolve-safety.test.js": {
       "source": "dsh-memory-manager/tests/resolve-safety.test.js",
@@ -573,7 +577,7 @@
     },
     "memory/tests/staging-ownership-after-commit.test.js": {
       "source": "dsh-memory-manager/tests/staging-ownership-after-commit.test.js",
-      "sha256": "cb0f04b21d6548140a60503f8893df1b38aa721892e1a63cb50302e3c067f300"
+      "sha256": "2904c5b1851ba861f6559e612fd85273ff574406cadee2c46c73b6c0c5281092"
     },
     "memory/tests/stat-exists-safety.test.js": {
       "source": "dsh-memory-manager/tests/stat-exists-safety.test.js",
@@ -589,7 +593,7 @@
     },
     "memory/tests/write-guard.test.js": {
       "source": "dsh-memory-manager/tests/write-guard.test.js",
-      "sha256": "282662cd9aaa1963fd5a0b3678015213bf74b281fc5818e5aab68ca834a383ff"
+      "sha256": "ce1408bb073fb06fac10807c0f7d5308be9a360cc476ee7c30b2f727621cb7c3"
     },
     "memory/tests/write-intent.test.js": {
       "source": "dsh-memory-manager/tests/write-intent.test.js",
@@ -601,11 +605,11 @@
     },
     "memory/tests/write-rename-uncertain.test.js": {
       "source": "dsh-memory-manager/tests/write-rename-uncertain.test.js",
-      "sha256": "99af6e82b513cc6ac8c51308fb6c6fac191cc32bebbc69f161c77fc259fa900b"
+      "sha256": "3e7c26543b0dc53458c4b6cf40ff2b743208a143b6bea0283ffca13cd310fdf2"
     },
     "memory/tests/write-staging-exclusive.test.js": {
       "source": "dsh-memory-manager/tests/write-staging-exclusive.test.js",
-      "sha256": "0e7ea3cf2ab8a3b625f905d28ca62ff968b91e2977ccbe62d4ad79767d2c177c"
+      "sha256": "b8d1b1ad0e3a4afb5d936bbe85462077ec2799c8037b807abba57a2d3f7895a2"
     },
     "memory/ui-test.mjs": {
       "source": "dsh-memory-manager/ui-test.mjs",

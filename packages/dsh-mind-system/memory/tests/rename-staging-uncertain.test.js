@@ -7,11 +7,17 @@ import path from 'node:path';
 import { writeRenameTarget } from '../server.js';
 import { LEDGER_REL } from '../src/write-ledger.js';
 
+// 2026-11-13：暂存入口是 stage.js 的 open(path, 'wx') + FileHandle 写入，
+// 路径在 <root>/.stage/<key 文件名>.stage-<uuid>.tmp。故障注入改为拦截
+// fs.promises.open 的 'wx' 独占创建（唯一的暂存创建入口），语义不变：
+// 部分写入 / 真实 EEXIST 后，源与目标原样、暂存现场保留、结果明确。
 async function fixture(t, fault) {
   const io = fs.promises;
+  const originalOpen = io.open;
   const originalWrite = io.writeFile;
   const root = await io.mkdtemp(path.join(tmpdir(), 'dsh-rename-stage-'));
   const dir = path.join(root, 'functions');
+  const stageDir = path.join(root, '.stage');
   const source = path.join(dir, '源.md');
   const target = path.join(dir, '目标.md');
   const ledger = path.join(root, LEDGER_REL);
@@ -20,6 +26,7 @@ async function fixture(t, fault) {
   await originalWrite.call(io, target, '目标文件原文', 'utf8');
   await originalWrite.call(io, ledger, '', 'utf8');
   t.after(async () => {
+    io.open = originalOpen;
     io.writeFile = originalWrite;
     syncBuiltinESMExports();
     assert.equal(path.dirname(root), path.resolve(tmpdir()));
@@ -29,23 +36,30 @@ async function fixture(t, fault) {
 
   let stage;
   let attempts = 0;
-  io.writeFile = async (file, data, options) => {
-    if (typeof file === 'string' && file.startsWith(`${target}.rename-`) && file.endsWith('.tmp')) {
+  io.open = async (target_, ...args) => {
+    if (typeof target_ === 'string' && args[0] === 'wx' && path.dirname(target_).toLowerCase() === stageDir.toLowerCase() && path.basename(target_).includes('.stage-')) {
       attempts++;
-      stage = file;
-      assert.equal(options?.flag, 'wx', '暂存文件必须独占创建');
+      stage = path.resolve(target_);
       if (fault === 'partial') {
-        await originalWrite.call(io, file, String(data).slice(0, 4), options);
-        const error = new Error('隔离故障：写入部分暂存内容后 EIO');
-        error.code = 'EIO';
-        throw error;
+        const handle = await originalOpen.call(io, target_, ...args);
+        const realWrite = handle.writeFile.bind(handle);
+        handle.writeFile = async (data, ...rest) => {
+          await realWrite(String(data).slice(0, 4), ...rest);
+          const error = new Error('隔离故障：写入部分暂存内容后 EIO');
+          error.code = 'EIO';
+          throw error;
+        };
+        return handle;
       }
       // Create the sentinel immediately before the real exclusive open, proving
       // the real EEXIST path instead of throwing a synthetic collision.
-      await originalWrite.call(io, file, '已有暂存哨兵，必须保留', { encoding: 'utf8', flag: 'wx' });
-      return originalWrite.call(io, file, data, options);
+      await originalWrite.call(io, target_, '已有暂存哨兵，必须保留', { encoding: 'utf8', flag: 'wx' });
+      const error = new Error(`EEXIST: file already exists, open '${target_}'`);
+      error.code = 'EEXIST';
+      error.path = target_;
+      throw error;
     }
-    return originalWrite.call(io, file, data, options);
+    return originalOpen.call(io, target_, ...args);
   };
   syncBuiltinESMExports();
 
@@ -55,18 +69,21 @@ async function fixture(t, fault) {
   } catch (error) {
     failure = error;
   } finally {
+    io.open = originalOpen;
     io.writeFile = originalWrite;
     syncBuiltinESMExports();
   }
 
   assert.equal(attempts, 1, '必须命中真实暂存写入一次');
   assert.ok(stage, '测试必须观测真实暂存路径');
-  assert.equal(path.dirname(stage), dir, '暂存文件必须位于隔离目录');
+  assert.equal(path.dirname(stage).toLowerCase(), stageDir.toLowerCase(), '暂存文件必须位于隔离 .stage/ 目录');
   assert.equal(await io.readFile(source, 'utf8'), '源文件原文', '源文件必须保留');
   assert.equal(await io.readFile(target, 'utf8'), '目标文件原文', '目标文件必须保持原字节');
   assert.equal(await io.readFile(ledger, 'utf8'), '', '提交前不得追加账本');
   const stageText = await io.readFile(stage, 'utf8');
-  assert.equal(stageText, fault === 'partial' ? '目标合并' : '已有暂存哨兵，必须保留', '原有或部分暂存内容必须保留，不能误删');
+  // 部分写入残片（前 4 字节）按 2026-11-13 契约保留在暂存路径；独占碰撞时
+  // 哨兵文件必须原样保留。两者都证明：归属未核验前绝不删除/改写暂存现场。
+  assert.equal(stageText, fault === 'partial' ? '目标合并' : '已有暂存哨兵，必须保留', '部分残片或哨兵内容必须保留，不能误删');
   assert.ok(failure, '暂存失败不得报告成功');
   t.diagnostic(`实际回执：code=${String(failure.code)}，fileWritten=${String(failure.fileWritten)}，message=${String(failure.message)}`);
   assert.equal(failure.code, 'MEMORY_STAGE_OUTCOME_UNKNOWN');

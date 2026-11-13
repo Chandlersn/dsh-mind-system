@@ -8,6 +8,7 @@ import { homedir } from 'node:os';
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import { redactSecrets } from './secrets.js';
+import { createVerifiedStage, removeVerifiedStage } from './stage.js';
 
 const pad2 = (n) => String(n).padStart(2, '0');
 
@@ -153,36 +154,78 @@ export async function writeText(p, content, options = {}) {
 	return withWriteCommitLock(p, async () => {
 		// Reject an untracked commit state before creating any staging path.
 		await checkTrackedWriteIntent(p, options?.memoryRoot);
-		const tmp = `${p}.tmp-${randomUUID()}`;
-		try {
-			await writeFile(tmp, text, { encoding: 'utf8', flag: 'wx' });
-		} catch (cause) {
-			// An unacknowledged creation may belong to another process.
-			throw new MemoryStageOutcomeUnknown(tmp, cause);
+		// Stage under the memory root's .stage/ when available (2026-11-13): the
+		// stage creation records (dev, ino) so the post-commit cleanup can verify
+		// ownership instead of guessing by pathname. Falls back to the legacy
+		// beside-destination name when the root is unknown (untracked writes).
+		const memoryRoot = typeof options?.memoryRoot === 'string' && options.memoryRoot.trim() ? options.memoryRoot : undefined;
+		let tmp = `${p}.tmp-${randomUUID()}`;
+		let stageEntry = null;
+		if (memoryRoot) {
+			try {
+				const { ledgerKey: lk } = await import('./write-ledger.js');
+				stageEntry = await createVerifiedStage(memoryRoot, lk(memoryRoot, p), text);
+				tmp = stageEntry.path;
+			} catch (cause) {
+				// 暂存创建的任何失败都必须如实报告，不能悄悄回退到目标旁边的
+				// 可预测暂存名继续写——EEXIST 是碰撞（要防覆盖），EIO 等是
+				// 部分写入后回执丢失（要防提交半截）。两者都属于"结果未知"。
+				// stage.js 把尝试路径放在 error.stagePath 上；没有时退 tmp。
+				throw new MemoryStageOutcomeUnknown(cause?.stagePath ?? tmp, cause);
+			}
+		}
+		if (!stageEntry) {
+			try { await writeFile(tmp, text, { encoding: 'utf8', flag: 'wx' }); }
+			catch (cause) {
+				// An unacknowledged creation may belong to another process.
+				throw new MemoryStageOutcomeUnknown(tmp, cause);
+			}
 		}
 		try {
 			try { await rename(tmp, p); }
-			catch (cause) { const err = new MemoryWriteCommitUnknown(p, cause); err.ledgerStatus = 'not_attempted'; throw err; }
-			await recordTrackedWrite(p, text, options?.memoryRoot, options?.tool);
-			let stagePresent = false;
-			try { await lstat(tmp); stagePresent = true; }
 			catch (cause) {
-				if (cause?.code !== 'ENOENT') {
-					const err = new Error(`目标已写入，但暂存路径无法检查（${tmp}）；请先核对，不要盲目重试。`, { cause });
+				// 回执丢失路径也要尝试受核验清理：暂存可能在 rename 后被替换。
+				if (stageEntry) {
+					try { await removeVerifiedStage(stageEntry); } catch { /* 清理失败不掩盖提交未知 */ }
+				}
+				const err = new MemoryWriteCommitUnknown(p, cause); err.ledgerStatus = 'not_attempted'; throw err;
+			}
+			await recordTrackedWrite(p, text, options?.memoryRoot, options?.tool);
+			// Verified-stage cleanup: rename consumes the stage (ENOENT → removed);
+			// a replaced path is truncated (content zeroed, path kept) rather than
+			// unlinked, and never deleted unless the inode matches our record.
+			let cleanup = null;
+			if (stageEntry) {
+				try { cleanup = await removeVerifiedStage(stageEntry); }
+				catch (cause) { cleanup = { removed: false, deferred: true, reason: cause?.code ?? 'cleanup-unknown' }; }
+			} else {
+				let stagePresent = false;
+				try { await lstat(tmp); stagePresent = true; }
+				catch (cause) {
+					if (cause?.code !== 'ENOENT') {
+						const err = new Error(`目标已写入，但暂存路径无法检查（${tmp}）；请先核对，不要盲目重试。`, { cause });
+						err.code = 'MEMORY_STAGE_PATH_UNKNOWN'; err.fileWritten = true; err.ledgerStatus = 'unknown'; throw err;
+					}
+				}
+				if (stagePresent) {
+					const err = new Error(`目标已写入，原暂存路径现有文件（${tmp}），归属未知；请先核对，不要盲目重试。`);
 					err.code = 'MEMORY_STAGE_PATH_UNKNOWN'; err.fileWritten = true; err.ledgerStatus = 'unknown'; throw err;
 				}
 			}
-			if (stagePresent) {
-				const err = new Error(`目标已写入，原暂存路径现有文件（${tmp}），归属未知；请先核对，不要盲目重试。`);
-				err.code = 'MEMORY_STAGE_PATH_UNKNOWN'; err.fileWritten = true; err.ledgerStatus = 'unknown'; throw err;
+			if (cleanup && !cleanup.removed) {
+				const err = new Error(`目标已写入并记账（${p}），暂存清理 deferred（${cleanup.reason ?? 'unknown'}）：内容已清零，路径 ${tmp} 保留待孤儿清扫；请核对。`);
+				err.code = 'MEMORY_STAGE_CLEANUP_DEFERRED'; err.fileWritten = true; err.ledgerStatus = 'recorded'; err.cleanupStatus = 'deferred'; err.stagePath = tmp;
+				throw err;
 			}
 			return { hits };
 		} catch (err) {
 			// Creation did not give us a perpetual right to unlink this pathname.
 			// After rename, even its continued existence could mean reuse by another.
-			err.cleanupStatus = 'unknown';
-			err.stagePath = tmp;
-			err.message += ` 暂存路径状态未知（${tmp}），未自动清理；请先核对，不要盲目重试。`;
+			err.cleanupStatus = err.cleanupStatus ?? (stageEntry ? 'deferred' : 'unknown');
+			err.stagePath = err.stagePath ?? tmp;
+			if (err.cleanupStatus === 'unknown') {
+				err.message += ` 暂存路径状态未知（${tmp}），未自动清理；请先核对，不要盲目重试。`;
+			}
 			throw err;
 		}
 	});

@@ -105,7 +105,7 @@ memory-manager 默认使用 DSH 数据根下的 `memory/`；`DSH_HOME` 和插件
 
 valves 将候选输入与判据裁决分开：`valve_check` 检查下行、上行、原则失效或语义标记；`valve_nominate` 从现有数据提名候选；`valve_metrics` 汇总已评估、放行和跳过的数据。判定结果不等同于规则自动生效；负向规则有单独确认和回退通道。
 
-阈值集中在 [`thresholds.js`](packages/dsh-valves/src/thresholds.js)，目前是**暂定值**，应根据真实任务数据与反例校准，而不是把当前数字当作经过充分验证的科学常量。`valve_confirm` 的工具说明要求用户事先明确确认，但代码中的会话与工具调用本身不能证明真人授权；涉及规则生效时必须遵守这一操作约束。
+阈值集中在 [`thresholds.js`](packages/dsh-valves/src/thresholds.js)，目前是**暂定值**，应根据真实任务数据与反例校准，而不是把当前数字当作经过充分验证的科学常量。`valve_confirm` 的工具说明要求用户事先明确确认，但代码中的会话与工具调用本身不能证明真人授权；涉及规则生效时必须遵守这一操作约束。`valve_confirm` 除 `confirm` / `rollback` 外还支持 `action=sink`：把超过 `negativeRuleSinkDays`（默认 90 天，I-5/D3 定案）未触发的负向规则移出拦截，但**保留内容为反例资产**（不删除、`sunkNegativeRules` 可查回），写前快照因此可回退重新激活。命中流水在 `mind-rule-triggers.jsonl`；周检只报沉底候选，不代替人做去留决定。
 
 定时巡检默认启用调度，但不代表默认输入齐全：周检需要原则清单、候选来源或对应回调；未提供输入会报告 `no_input`。季度巡检缺少层统计回调时会跳过。应检查报告中的输入、状态和时间，不能把“定时器已注册”当作“内容已检查”。
 

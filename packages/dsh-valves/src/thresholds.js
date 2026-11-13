@@ -50,6 +50,12 @@ export const DEFAULT_THRESHOLDS = {
 	principleInvalidCoverageBelow: 0.5,
 	/** 外层治理：反例统计窗口轮数（§4.1 默认 20 轮）。 */
 	principleWindowRounds: 20,
+	/**
+	 * IV-3 负向规则沉底窗口（天）。来自 I-5 的 D3 定案：长期未触发的规则
+	 * 移出拦截、保留为反例资产。90 天是经验值，尚未有真实分布支撑——
+	 * 校准依据是 mind-rule-triggers.jsonl 里"多久算久不触发"的实际间隔。
+	 */
+	negativeRuleSinkDays: 90,
 };
 
 /**
