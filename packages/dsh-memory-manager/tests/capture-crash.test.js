@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, lstat, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -146,6 +146,10 @@ async function snapshot(root) {
     // SQLite can update sidecar files as part of locking; verify it by inode
     // separately, and compare every other artifact byte-for-byte.
     if (name === SENTINEL || name.startsWith(`${SENTINEL}-`)) continue;
+    // 2026-11-13：writeText 暂存移入 <root>/.stage/（目录）；快照只对文件做
+    // 字节比较，目录（内部残留暂存）不进入该比对面。
+    const st = await lstat(path.join(root, name)).catch(() => null);
+    if (st?.isDirectory()) continue;
     entries[name] = (await readFile(path.join(root, name))).toString('base64');
   }
   return { daily: daily[0], entries };

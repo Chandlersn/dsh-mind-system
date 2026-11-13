@@ -10,7 +10,8 @@ import path from 'node:path';
 import { createUserMessage } from '../src/host.js';
 import { localDateStr } from '../src/util.js';
 import { dailyTemplate } from '../src/markdown.js';
-import { readLedger, contentHash } from '../src/write-ledger.js';
+import { readLedger, contentHash, recordWrite, reconcile } from '../src/write-ledger.js';
+import { setTimeout as delay } from 'node:timers/promises';
 import { withMemoryRootTransaction } from '../src/root-transaction.js';
 
 const sample = '隔离日记别名测试：采集必须保护原始材料';
@@ -46,6 +47,7 @@ async function fixture(t) {
     dispose?.();
     await withMemoryRootTransaction(root, async () => {});
     if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome;
+    if (!t.passed) { t.diagnostic(`isolated fixture preserved for diagnosis: ${home}`); return; }
     assert.equal(path.dirname(home), path.resolve(tmpdir()));
     assert.match(path.basename(home), /^daily-capture-alias-/);
     await rm(home, { recursive: true, force: true });
@@ -58,8 +60,9 @@ async function fixture(t) {
     });
     assert.equal(decision.kind, 'enter');
     assert.equal(nextCalls, 1);
-    // The fire-and-forget capture enqueues its transaction before pre-step returns.
-    // Wait behind it, so negative assertions cannot pass merely because it is late.
+    // Admission precedes a Promise.resolve capture schedule: this barrier alone
+    // may run before capture enqueues. observeDailyLstat waits for the real hook
+    // and drains the queue again before any negative assertion.
     await withMemoryRootTransaction(root, async () => {});
     assert.equal(localDateStr(), today, 'local date must not change during this isolated test');
   }
@@ -76,7 +79,11 @@ async function observeDailyLstat(daily, operation) {
   syncBuiltinESMExports();
   try {
     await operation();
+    const deadline = Date.now() + 5000;
+    while (!observed && Date.now() < deadline) await delay(10);
     assert.ok(observed > 0, 'production capture must inspect the exact daily path');
+    // lstat is called from the running transaction, so this barrier follows it.
+    await withMemoryRootTransaction(path.dirname(daily), async () => {});
   } finally {
     fs.promises.lstat = original;
     syncBuiltinESMExports();
@@ -113,6 +120,8 @@ test('普通每日文件正控：同一采集链路追加用户原话并登记�
   const f = await fixture(t);
   const original = dailyTemplate(f.today);
   await writeFile(f.daily, original, 'utf8');
+  assert.equal(await recordWrite(f.root, { key: f.dailyName, hash: contentHash(original), tool: 'test.fixture' }), true, 'positive baseline must be registered');
+  assert.equal(reconcile({ key: f.dailyName, text: original, ledger: await readLedger(f.root) }).verdict, 'ok', 'positive baseline must reconcile');
   assert.equal((await lstat(f.daily)).nlink, 1);
   await observeDailyLstat(f.daily, f.run);
   const text = await readFile(f.daily, 'utf8');

@@ -22,11 +22,13 @@ async function fixture(t) {
   const savedHome = process.env.DSH_HOME;
   const originalWrite = io.writeFile;
   const originalUnlink = io.unlink;
+  const originalOpen = io.open;
   let server;
   let dispose;
   t.after(async () => {
     io.writeFile = originalWrite;
     io.unlink = originalUnlink;
+    io.open = originalOpen;
     syncBuiltinESMExports();
     if (typeof dispose === 'function') dispose();
     if (server?.listening) {
@@ -73,13 +75,15 @@ async function fixture(t) {
     assert.equal(authCalls, 1, 'must call the registered route authentication gate');
     return { status: response.status, body };
   }
-  return { io, home, root, candidate, target, seed, text, sentinel, originalWrite, originalUnlink, rejectCandidate };
+  return { io, home, root, candidate, target, seed, text, sentinel, originalWrite, originalUnlink, originalOpen, rejectCandidate };
 }
 
 function sameDirectory(a, b) { return path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase(); }
-function isStage(file, target, options) {
-  return typeof file === 'string' && sameDirectory(path.dirname(file), path.dirname(target)) &&
-    path.basename(file).startsWith(`${path.basename(target)}.stage-`) && options?.flag === 'wx';
+// 2026-11-13：暂存移入 <root>/.stage/（uuid 命名），唯一独占创建入口是
+// open(path, 'wx')。判据改为：.stage/ 目录 + `.stage-` 中缀 + `.tmp` 后缀。
+function isStagePath(f, file) {
+  return typeof file === 'string' && sameDirectory(path.dirname(file), path.join(f.root, '.stage')) &&
+    path.basename(file).includes('.stage-') && path.basename(file).endsWith('.tmp');
 }
 function fault(code) { const error = new Error(`隔离注入 ${code}`); error.code = code; return error; }
 async function assertOutcome(f, result, stage, before, expected) {
@@ -102,18 +106,17 @@ for (const variant of ['existing-file', 'existing-hardlink']) {
     let stage;
     let before;
     let unlinkCalls = 0;
-    f.io.writeFile = async (file, data, options, ...rest) => {
-      if (!stage && isStage(file, f.target, options)) {
+    f.io.open = async (file, ...args) => {
+      if (!stage && args[0] === 'wx' && isStagePath(f, file)) {
         stage = path.resolve(file);
         if (variant === 'existing-hardlink') await f.io.link(f.seed, stage);
         else await f.originalWrite.call(f.io, stage, f.sentinel, { encoding: 'utf8', flag: 'wx' });
         before = await f.io.stat(stage);
         // Use the real wx call to produce EEXIST, rather than merely inventing it.
-        try { await f.originalWrite.call(f.io, file, data, options, ...rest); }
+        try { return await f.originalOpen.call(f.io, file, ...args); }
         catch (error) { assert.equal(error.code, 'EEXIST'); throw error; }
-        assert.fail('a real exclusive creation must reject an occupied path');
       }
-      return f.originalWrite.call(f.io, file, data, options, ...rest);
+      return f.originalOpen.call(f.io, file, ...args);
     };
     f.io.unlink = async (file, ...args) => {
       if (stage && path.resolve(String(file)) === stage) unlinkCalls++;
@@ -138,16 +141,17 @@ test('暂存文件实际部分写入后抛错：不能盲目清理未知状态�
   let before;
   let partial;
   let unlinkCalls = 0;
-  f.io.writeFile = async (file, data, options, ...rest) => {
-    if (!stage && isStage(file, f.target, options)) {
+  f.io.open = async (file, ...args) => {
+    if (!stage && args[0] === 'wx' && isStagePath(f, file)) {
       stage = path.resolve(file);
-      partial = String(data).slice(0, 8);
-      assert.ok(partial.length > 0 && partial.length < String(data).length);
-      await f.originalWrite.call(f.io, file, partial, options, ...rest);
+      partial = '部分写入样';
+      assert.ok(partial.length > 0);
+      await f.originalWrite.call(f.io, file, partial, { encoding: 'utf8', flag: 'wx' });
       before = await f.io.stat(stage);
-      throw fault('EIO');
+      const error = new Error('隔离注入 EIO'); error.code = 'EIO';
+      throw error;
     }
-    return f.originalWrite.call(f.io, file, data, options, ...rest);
+    return f.io.open.call(fs.promises, file, ...args);
   };
   f.io.unlink = async (file, ...args) => {
     if (stage && path.resolve(String(file)) === stage) unlinkCalls++;

@@ -2,7 +2,7 @@
  * Small shared helpers: dates, atomic file writes, slugs, iteration-block
  * parsing and memory-root resolution. No Host dependency.
  */
-import { readFile, writeFile, rename, unlink, mkdir, stat, lstat, realpath } from 'node:fs/promises';
+import { readFile, writeFile, rename, mkdir, stat, lstat, realpath } from 'node:fs/promises';
 import * as path from 'node:path';
 import { homedir } from 'node:os';
 import { Buffer } from 'node:buffer';
@@ -32,8 +32,46 @@ export function oneLine(s) {
 export async function readIfExists(p) {
 	try {
 		return await readFile(p, 'utf8');
-	} catch {
-		return undefined;
+	} catch (readError) {
+		if (readError?.code !== 'ENOENT' && readError?.code !== 'ENOTDIR') throw readError;
+		const unknown = (cause) => {
+			const error = new Error(`无法确认读取路径是否真正不存在：${String(p)}；请核查后再写入。`, { cause });
+			error.code = 'MEMORY_READ_STATE_UNKNOWN';
+			error.readError = readError;
+			return error;
+		};
+		try {
+			// lstat does not follow the last entry: a dangling link is not absence.
+			await lstat(p);
+		} catch (cause) {
+			if (cause?.code !== 'ENOENT' && cause?.code !== 'ENOTDIR') throw unknown(cause);
+			// lstat of a descendant also reports ENOENT for a dangling ancestor.
+			// Verify the nearest existing ancestor resolves before accepting absence.
+			let current;
+			try {
+				const value = p instanceof URL ? (await import('node:url')).fileURLToPath(p) : p;
+				if (typeof value !== 'string') throw new TypeError('unsupported path for absence verification');
+				current = path.dirname(path.resolve(value));
+			} catch (error) { throw unknown(error); }
+			for (;;) {
+				try { await lstat(current); }
+				catch (error) {
+					if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw unknown(error);
+					const parent = path.dirname(current);
+					if (parent === current) throw unknown(error);
+					current = parent;
+					continue;
+				}
+				// An existing ancestor must resolve to a directory; a regular-file
+				// ancestor is a broken path structure, not a new writable leaf.
+				try {
+					await realpath(current);
+					if (!(await stat(current)).isDirectory()) throw new Error('nearest existing ancestor is not a directory');
+				} catch (error) { throw unknown(error); }
+				return undefined;
+			}
+		}
+		throw unknown(readError);
 	}
 }
 
@@ -99,9 +137,12 @@ export async function withWriteCommitLock(p, fn) {
  * The returned `{ hits }` lets callers surface what changed in the tool receipt;
  * callers that ignore the return value keep working. Callers using a configured
  * memory root must pass `{ memoryRoot: root }`; otherwise only the default root
- * is considered for the write ledger. For a tracked target, a ledger failure
- * after replacement throws MEMORY_LEDGER_APPEND_FAILED with fileWritten=true:
- * the operation is partially complete, and blindly retrying can duplicate work.
+ * is considered for the write ledger. `options.tool` names the writer in the
+ * ledger (default 'memory-manager'); the daily-archive channel passes
+ * 'daily-archive' so its writes are traceable. For a tracked target, a ledger
+ * failure after replacement throws MEMORY_LEDGER_APPEND_FAILED with
+ * fileWritten=true: the operation is partially complete, and blindly retrying
+ * can duplicate work.
  */
 export async function writeText(p, content, options = {}) {
 	if (options?.memoryRoot !== undefined && (typeof options.memoryRoot !== 'string' || !options.memoryRoot.trim())) {
@@ -109,46 +150,42 @@ export async function writeText(p, content, options = {}) {
 	}
 	const { text, hits } = redactSecrets(content);
 	await mkdir(path.dirname(p), { recursive: true });
-	// Exclusive creation prevents collisions and existing links from being opened.
-	const tmp = `${p}.tmp-${randomUUID()}`;
-	let staged = false;
-	try {
+	return withWriteCommitLock(p, async () => {
+		// Reject an untracked commit state before creating any staging path.
+		await checkTrackedWriteIntent(p, options?.memoryRoot);
+		const tmp = `${p}.tmp-${randomUUID()}`;
 		try {
 			await writeFile(tmp, text, { encoding: 'utf8', flag: 'wx' });
-			staged = true;
 		} catch (cause) {
-			// A failed acknowledgement may mean a partially written stage exists,
-			// or that the path already belonged to someone else. Do not unlink it.
+			// An unacknowledged creation may belong to another process.
 			throw new MemoryStageOutcomeUnknown(tmp, cause);
 		}
-		return await withWriteCommitLock(p, async () => {
-			// A pending delete must remain the last ledger event until it is resolved.
-			// Check before replacing the directory entry under the same commit lock.
-			await checkTrackedWriteIntent(p, options?.memoryRoot);
-			try {
-				await rename(tmp, p);
-			} catch (cause) {
-				// A failed acknowledgement does not establish whether the OS
-				// replaced the target. A retry could repeat a committed operation.
-				throw new MemoryWriteCommitUnknown(p, cause);
+		try {
+			try { await rename(tmp, p); }
+			catch (cause) { const err = new MemoryWriteCommitUnknown(p, cause); err.ledgerStatus = 'not_attempted'; throw err; }
+			await recordTrackedWrite(p, text, options?.memoryRoot, options?.tool);
+			let stagePresent = false;
+			try { await lstat(tmp); stagePresent = true; }
+			catch (cause) {
+				if (cause?.code !== 'ENOENT') {
+					const err = new Error(`目标已写入，但暂存路径无法检查（${tmp}）；请先核对，不要盲目重试。`, { cause });
+					err.code = 'MEMORY_STAGE_PATH_UNKNOWN'; err.fileWritten = true; err.ledgerStatus = 'unknown'; throw err;
+				}
 			}
-			// Keep the lock until the redacted contents have been recorded. Without
-			// this, another rename can win before this write appends its older hash.
-			// The lock cannot make file + ledger a crash-safe transaction or stop
-			// other processes. Report an append failure as a partial write.
-			await recordTrackedWrite(p, text, options?.memoryRoot);
+			if (stagePresent) {
+				const err = new Error(`目标已写入，原暂存路径现有文件（${tmp}），归属未知；请先核对，不要盲目重试。`);
+				err.code = 'MEMORY_STAGE_PATH_UNKNOWN'; err.fileWritten = true; err.ledgerStatus = 'unknown'; throw err;
+			}
 			return { hits };
-		});
-	} catch (err) {
-		if (staged) {
-			try {
-				await unlink(tmp);
-			} catch {
-				/* tmp may already have been renamed */
-			}
+		} catch (err) {
+			// Creation did not give us a perpetual right to unlink this pathname.
+			// After rename, even its continued existence could mean reuse by another.
+			err.cleanupStatus = 'unknown';
+			err.stagePath = tmp;
+			err.message += ` 暂存路径状态未知（${tmp}），未自动清理；请先核对，不要盲目重试。`;
+			throw err;
 		}
-		throw err;
-	}
+	});
 }
 
 /** Refuse tracked replacements if their ledger is unknown or deletion is pending. */
@@ -252,7 +289,7 @@ export class MemoryLedgerAppendError extends Error {
 }
 
 /** Record tracked targets only; do not silently hide a post-commit failure. */
-async function recordTrackedWrite(absPath, text, memoryRoot) {
+async function recordTrackedWrite(absPath, text, memoryRoot, tool = undefined) {
 	const { recordWrite, isTracked, ledgerKey, contentHash } = await import('./write-ledger.js');
 	const configuredRoot = memoryRoot === undefined ? resolveRoot({}) : path.resolve(memoryRoot);
 	const logicalKey = ledgerKey(configuredRoot, path.resolve(absPath));
@@ -269,8 +306,10 @@ async function recordTrackedWrite(absPath, text, memoryRoot) {
 	}
 	const key = ledgerKey(root, target);
 	if (!isTracked(key)) return;
+	// tool 可由调用方指定（归档通道要求账本可追溯 tool='daily-archive'）；
+	// 缺省保持原 'memory-manager' 身份，既有账本语义一分不变。
 	try {
-		const recorded = await recordWrite(root, { key, hash: contentHash(text), tool: 'memory-manager', bytes: byteLenLocal(text) });
+		const recorded = await recordWrite(root, { key, hash: contentHash(text), tool: typeof tool === 'string' && tool.trim() ? tool : 'memory-manager', bytes: byteLenLocal(text) });
 		if (!recorded) throw new MemoryLedgerAppendError(absPath, key);
 	} catch (err) {
 		if (err instanceof MemoryLedgerAppendError) throw err;
@@ -284,8 +323,9 @@ export async function statExists(p) {
 	try {
 		await stat(p);
 		return true;
-	} catch {
-		return false;
+	} catch (error) {
+		if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false;
+		throw error;
 	}
 }
 

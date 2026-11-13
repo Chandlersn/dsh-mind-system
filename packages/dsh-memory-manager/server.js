@@ -29,6 +29,7 @@ import { Buffer } from 'node:buffer';
 import { createRequire } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
 import { recordDeleteEvent, recordWrite, readLedger, ledgerKey, isTracked, contentHash } from './src/write-ledger.js';
+import { createVerifiedStage, removeVerifiedStage, sweepStaleStages, STAGE_ORPHAN_MS, stageDir } from './src/stage.js';
 // ---------------------------------------------------------------------------
 // shared layers — the plugin is a folder, not one 3.5k-line file
 // ---------------------------------------------------------------------------
@@ -120,9 +121,14 @@ export async function deleteTrackedFile(root, file, expectedText, { tool, to, wr
 export async function writeRenameTarget(root, file, expected, text) {
 	const key = ledgerKey(root, file);
 	const redacted = redactSecrets(text).text;
-	const tmp = `${file}.rename-${randomUUID()}.tmp`;
-	try { await writeFile(tmp, redacted, { encoding: 'utf8', flag: 'wx' }); }
-	catch (cause) { throw new MemoryStageOutcomeUnknown(tmp, cause); }
+	// 暂存移入 .stage/（与目标同卷）；创建时记录 (dev, ino)，提交后按 inode
+	// 核验清理——路径被外来文件替换时只清空内容，绝不 unlink 陌生文件。
+	// 创建失败（含独占 EEXIST / 写入 EIO）包成 MEMORY_STAGE_OUTCOME_UNKNOWN：
+	// 目标尚未替换，与 writeText 的暂存失败契约一致。
+	let stageEntry;
+	try { stageEntry = await createVerifiedStage(root, key, redacted); }
+	catch (cause) { throw new MemoryStageOutcomeUnknown(cause?.stagePath ?? path.join(root, '.stage', `${key.split('/').pop() ?? 'file'}.stage-?`), cause); }
+	const tmp = stageEntry.path;
 	try {
 		return await withWriteCommitLock(file, async () => {
 			const ledger = await readLedger(root);
@@ -131,32 +137,32 @@ export async function writeRenameTarget(root, file, expected, text) {
 			try { current = await readFile(file, 'utf8'); } catch (err) { if (err?.code !== 'ENOENT') throw err; }
 			if (current !== expected) throw new Error(`${key} 在操作期间发生变化，未覆盖；源文件尚未删除`);
 			try { await rename(tmp, file); }
-			catch (cause) { const err = new MemoryWriteCommitUnknown(file, cause); err.ledgerStatus = 'not_attempted'; throw err; }
+			catch (cause) {
+				// 回执丢失路径也要尝试受核验清理：暂存可能在 rename 后被替换。
+				try { await removeVerifiedStage(stageEntry); } catch { /* 清理失败不掩盖提交未知 */ }
+				const err = new MemoryWriteCommitUnknown(file, cause); err.ledgerStatus = 'not_attempted'; throw err;
+			}
 			try {
 				if (!(await recordWrite(root, { key, hash: contentHash(redacted), tool: 'memory_rename' }))) throw new MemoryLedgerAppendError(file, key);
 			} catch (cause) {
 				if (cause instanceof MemoryLedgerAppendError) throw cause;
 				throw new MemoryLedgerAppendError(file, key, cause);
 			}
-			let stagePresent = false;
-			try { await lstat(tmp); stagePresent = true; }
-			catch (cause) {
-				if (cause?.code !== 'ENOENT') {
-					const err = new Error(`目标已写入并记账，但暂存路径无法检查（${tmp}）；请先核对，不要盲目重试。`, { cause });
-					err.code = 'MEMORY_STAGE_PATH_UNKNOWN'; err.fileWritten = true; err.ledgerStatus = 'recorded'; throw err;
-				}
-			}
-			if (stagePresent) {
-				const err = new Error(`目标已写入并记账，原暂存路径现有文件（${tmp}），归属未知；请先核对，不要盲目重试。`);
-				err.code = 'MEMORY_STAGE_PATH_UNKNOWN'; err.fileWritten = true; err.ledgerStatus = 'recorded'; throw err;
+			const cleanup = await removeVerifiedStage(stageEntry).catch((cause) => ({ removed: false, deferred: true, reason: cause?.code ?? 'cleanup-unknown' }));
+			if (!cleanup.removed) {
+				const err = new Error(`目标已写入并记账（${key}），暂存清理 deferred（${cleanup.reason ?? 'unknown'}）：内容已清零，路径 ${tmp} 保留待孤儿清扫；请核对。`);
+				err.code = 'MEMORY_STAGE_CLEANUP_DEFERRED'; err.fileWritten = true; err.ledgerStatus = 'recorded'; err.cleanupStatus = 'deferred'; err.stagePath = tmp;
+				throw err;
 			}
 		});
 	} catch (err) {
 		// The stage pathname may have been reused after rename or replaced while
 		// the commit was pending; its current ownership cannot be inferred.
-		err.cleanupStatus = 'unknown';
-		err.stagePath = tmp;
-		err.message += ` 暂存路径状态未知（${tmp}），未自动清理；请先核对，不要盲目重试。`;
+		err.cleanupStatus = err.cleanupStatus ?? 'deferred';
+		err.stagePath = err.stagePath ?? tmp;
+		if (err.cleanupStatus === 'unknown') {
+			err.message += ` 暂存路径状态未知（${tmp}），未自动清理；请先核对，不要盲目重试。`;
+		}
 		throw err;
 	}
 }
@@ -173,6 +179,12 @@ async function deleteAfterPanelCopy(root, file, text, options) {
 
 // Panel-created archives previously bypassed the write ledger. Keep exclusive
 // creation semantics when requested and report a failed append after disk write.
+//
+// 暂存清理（2026-11-13）：暂存移入记忆根下 .stage/，创建时经句柄记录
+// (dev, ino)；提交后 removeVerifiedStage 只在 inode 核验一致时 unlink——
+// 删的必是自己创建的文件对象，路径被外来文件替换时只清空内容保留路径。
+// 因此 exclusive 提交成功不再抛 MEMORY_PANEL_CLEANUP_UNKNOWN（面板候选
+// 确认/否决/删除恢复可用）；只有归属完全无法核验时如实报 deferred。
 async function writeTrackedPanelFile(root, file, text, { exclusive = false, tool } = {}) {
 	const key = ledgerKey(root, file);
 	if (!isTracked(key)) throw new Error(`拒绝登记无效写入路径：${key}`);
@@ -182,22 +194,23 @@ async function writeTrackedPanelFile(root, file, text, { exclusive = false, tool
 		if (exclusive && await statExists(file)) {
 			const error = new Error(`目标已存在，未写入 ${key}`); error.code = 'EEXIST'; throw error;
 		}
-		// Stage the entire body beside the destination. link() commits without
-		// overwriting an existing archive; a partial stage is never visible there.
-		const tmp = `${file}.stage-${randomUUID()}.tmp`;
-		let failure;
+		// Stage the entire body under .stage/ (same volume as the destination,
+		// so link never sees EXDEV). A partial stage is never visible at the
+		// destination path.
+		let stageEntry;
 		let staged = false;
 		let committed = false;
+		let failure;
 		try {
-			try { await writeFile(tmp, text, { encoding: 'utf8', flag: 'wx' }); staged = true; }
+			try { stageEntry = await createVerifiedStage(root, key, text); staged = true; }
 			catch (cause) {
-				const err = new Error(`目标 ${key} 尚未提交、源文件尚未删除；临时文件写入失败且可能残留，请先核对后处理。`, { cause });
+				const err = new Error(`目标 ${key} 尚未提交、源文件尚未删除；暂存创建失败，请先核对后处理。`, { cause });
 				err.code = 'MEMORY_PANEL_STAGING_FAILED'; err.fileWritten = false; err.ledgerStatus = 'not_attempted'; err.cleanupStatus = 'unknown';
 				throw err;
 			}
 			try {
-				if (exclusive) await link(tmp, file);
-				else await rename(tmp, file);
+				if (exclusive) await link(stageEntry.path, file);
+				else await rename(stageEntry.path, file);
 				committed = true;
 			} catch (cause) { const err = new MemoryWriteCommitUnknown(file, cause); err.ledgerStatus = 'not_attempted'; throw err; }
 			try {
@@ -206,37 +219,36 @@ async function writeTrackedPanelFile(root, file, text, { exclusive = false, tool
 				if (cause instanceof MemoryLedgerAppendError) throw cause;
 				throw new MemoryLedgerAppendError(file, key, cause);
 			}
-			if (!exclusive) {
-				let stagePresent = false;
-				try { await lstat(tmp); stagePresent = true; }
-				catch (cause) {
-					if (cause?.code !== 'ENOENT') {
-						const err = new Error(`目标已提交并记账，但暂存路径无法检查（${tmp}）；请先核对，不要盲目重试。`, { cause });
-						err.code = 'MEMORY_STAGE_PATH_UNKNOWN'; err.fileWritten = true; err.ledgerStatus = 'recorded'; throw err;
-					}
-				}
-				if (stagePresent) {
-					const err = new Error(`目标已提交并记账，原暂存路径现有文件（${tmp}），归属未知；请先核对，不要盲目重试。`);
-					err.code = 'MEMORY_STAGE_PATH_UNKNOWN'; err.fileWritten = true; err.ledgerStatus = 'recorded'; throw err;
-				}
-			}
 		} catch (err) { failure = err; }
-		// A pathname can be replaced even after exclusive creation or a successful
-		// link. A separate lstat followed by unlink would still have a race; no
-		// portable Node primitive atomically unlinks only the inode we created.
-		// Rename consumes its stage on success. For link the stage may remain, so
-		// retain it and report partial completion instead of deleting another file.
-		if (staged && (failure || exclusive)) {
-			if (failure) {
-				failure.message += ` 暂存路径清理状态未知（${tmp}），未自动清理；请先核对，不要盲目重试。`;
-				failure.cleanupStatus = 'unknown';
-				failure.stagePath = tmp;
-			} else if (committed) {
-				failure = new Error(`目标已提交并记账（${key}），但暂存路径清理状态未知（${tmp}）；源文件尚未删除，请先核对，不要盲目重试。`);
-				failure.code = 'MEMORY_PANEL_CLEANUP_UNKNOWN'; failure.fileWritten = true; failure.ledgerStatus = 'recorded'; failure.cleanupStatus = 'unknown'; failure.stagePath = tmp;
+		// Clean the stage through the verified-inode path. For rename the stage
+		// is already consumed (ENOENT → removed). For link the stage remains and
+		// is unlinked only when it is still the inode we created; a replaced
+		// path is truncated to zero bytes and left for the orphan sweep.
+		let cleanup = null;
+		if (staged) {
+			try { cleanup = await removeVerifiedStage(stageEntry); }
+			catch (cause) {
+				cleanup = { removed: false, deferred: true, reason: cause?.code ?? 'cleanup-unknown' };
 			}
 		}
-		if (failure) throw failure;
+		if (failure) {
+			// 目标未提交的失败路径：暂存清理成功则不再提"状态未知"；否则如实保留现场。
+			if (!staged || cleanup?.removed) { /* stage gone: nothing to report */ }
+			else {
+				failure.message += ` 暂存保留于 ${stageEntry.path}（清理${cleanup.deferred ? 'deferred' : '未知'}）；请先核对，不要盲目重试。`;
+				failure.cleanupStatus = cleanup.deferred ? 'deferred' : 'unknown';
+				failure.stagePath = stageEntry.path;
+			}
+			throw failure;
+		}
+		if (cleanup && !cleanup.removed) {
+			// 目标已提交并记账，仅暂存归属无法核验：如实报部分完成，但这是
+			// deferred（内容已清零、路径待孤儿清扫）而不是 unknown——面板主流程
+			// 不再被阻断。
+			const err = new Error(`目标已提交并记账（${key}），暂存清理 deferred（${cleanup.reason ?? 'unknown'}）：内容已清零，路径 ${stageEntry.path} 保留待孤儿清扫；请核对。`);
+			err.code = 'MEMORY_STAGE_CLEANUP_DEFERRED'; err.fileWritten = true; err.ledgerStatus = 'recorded'; err.cleanupStatus = 'deferred'; err.stagePath = stageEntry.path;
+			throw err;
+		}
 	});
 }
 
@@ -5524,6 +5536,15 @@ export function apply(ctx, config) {
 		archiveInterval.unref?.();
 		archiveDisposers.push(() => { clearTimeout(archiveTimer); clearInterval(archiveInterval); });
 	}
+
+	// —— .stage/ 孤儿清扫（2026-11-13）——
+	// 暂存 deferred 时路径保留（内容已清零），靠启动清扫兜底：超龄（7 天）
+	// 视为崩溃遗留按名删除；目录插件独占 + uuid 命名覆盖风险面。失败忽略。
+	const sweepTimer = setTimeout(() => {
+		void sweepStaleStages(resolveRoot(opts)).catch(() => {});
+	}, 30_000);
+	sweepTimer.unref?.();
+	archiveDisposers.push(() => clearTimeout(sweepTimer));
 
 	// 收件箱先建：memory_check 的自动投递要用它（发现→跟踪零配合）。
 	const inbox = new MemoryInbox(dshHome);

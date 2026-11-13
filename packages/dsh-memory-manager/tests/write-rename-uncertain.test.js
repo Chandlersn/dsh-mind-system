@@ -76,10 +76,12 @@ test('临时文件写入在 rename 前确定失败：目标和账本不变', asy
   let error;
   await withFsFault({
     rename: (original) => async (...args) => { renameAttempts++; return original(...args); },
-    writeFile: (original) => async (target, ...args) => {
-      if (String(target).startsWith(`${file}.tmp-`)) {
+    // 2026-11-13：暂存写入走 createVerifiedStage（open 'wx' + handle.writeFile）；
+    // 拦截 open 命中 .stage- 命名后抛 EACCES，等价于旧 writeFile 注入。
+    open: (original) => async (target, ...args) => {
+      if (args[0] === 'wx' && String(target).includes('.stage-') && String(target).endsWith('.tmp')) {
         intercepted++;
-        const failure = new Error('模拟临时文件写入失败');
+        const failure = new Error('模拟暂存创建失败');
         failure.code = 'EACCES';
         throw failure;
       }

@@ -1,10 +1,8 @@
 /**
- * Canonical file templates + markdown surgery (index rows, sections, open-item
- * resolution). Pure text handling — no Host dependency, no tool definitions.
+ * Canonical file templates + markdown surgery (index rows and sections).
+ * Pure text handling — no Host dependency, no tool definitions.
  */
-import { readdir, readFile } from 'node:fs/promises';
-import * as path from 'node:path';
-import { oneLine, writeText } from './util.js';
+import { oneLine } from './util.js';
 import {
 	FUNC_TABLE_HEADING,
 	INSIGHT_TABLE_HEADING,
@@ -92,8 +90,8 @@ export function dailyTemplate(date) {
 	return [
 		`# ${date} 记录`,
 		'',
-		'> 本文件是原始层，只能通过插件采集写入，不可直接使用编辑工具。当前可选采集仅提取用户原话并脱敏、截断，不自动记录助手的判断与取舍；未启用采集时如实报告缺口。',
-		'> 执行式日志通常已有原始记录，不应机械重复；助手判断、取舍和踩坑因果目前缺少采集通道，不能直接补写或事后编造。',
+		'> 本文件是原始层，可由 agent 使用编辑工具记录；直接编辑不等于插件采集或来源认证，也不自动脱敏；来源不明时如实标记未知，可能触发 R26 对账或采集基线不匹配，不得补造账本。插件用户消息采集默认关闭；开启时只采集符合条件的用户原话并脱敏、截断，不自动记录助手判断，不保证来源认证或完整性。',
+		'> 每天留意有价值的判断、取舍、经验、踩坑因果和待验证事项，没有值得记录的内容时不强制当天有条目；执行式日志（常规命令输出、PID、退出码、耗时流水）不要抄，理解关键因果必需的细节可少量保留；不补造历史，不记录凭据。',
 		'',
 	].join('\n');
 }
@@ -412,48 +410,6 @@ export function appendUnderHeading(text, sectionHeading, line) {
 	while (at > secStart + 1 && lines[at - 1].trim() === '') at--;
 	lines.splice(at, 0, line);
 	return { text: lines.join('\n'), duplicate: false };
-}
-
-/**
- * Mark still-open daily-log entries that reference `feature` with a ✅ resolved
- * stamp (the R2 "勾掉" move): the thread stays in the day it was raised, gains
- * a bare ✅ (no second pointer), and is never re-copied forward. The raw layer
- * is free-form, so this scans every bullet that links the feature file — no
- * fixed section heading is required. Applies to every daily log from
- * `sinceDate` to today. Returns files touched.
- */
-export async function resolveOpenItems(root, feature, sinceDate, today) {
-	const touched = [];
-	try {
-		for (const f of await readdir(root)) {
-			if (!/^\d{4}-\d{2}-\d{2}\.md$/.test(f)) continue;
-			if (f.slice(0, 10) < sinceDate) continue;
-			if (f.slice(0, 10) > today) continue;
-			const p = path.join(root, f);
-			const text = await readFile(p, 'utf8');
-			const lines = text.split('\n');
-			let changed = false;
-			for (let i = 0; i < lines.length; i++) {
-				if (lines[i].includes('✅')) continue;
-				if (!lines[i].includes(`functions/${feature}.md`)) continue;
-				// Only thread lines (raise site): a bullet that links the feature
-				// file. Resolution notes are added inline at the raise site.
-				if (!/^- .+→/.test(lines[i])) continue;
-				// The raise-site line already ends with a link to the same file —
-				// appending the full resolution pointer would duplicate the target
-				// twice in one row. Stamp a bare marker instead.
-				lines[i] = `${lines[i]}（✅ ${today} 已解决）`;
-				changed = true;
-			}
-			if (changed) {
-				await writeText(p, lines.join('\n'));
-				touched.push(f);
-			}
-		}
-	} catch (err) {
-		throw new Error(`每日记录更新失败（已完成 ${touched.length} 个文件${touched.length ? `：${touched.join('、')}` : ''}）：${String(err?.message ?? err)}`, { cause: err });
-	}
-	return touched;
 }
 
 /** Replace the `## 当前状态摘要` heading date + bullets with fresh content. */

@@ -45,12 +45,17 @@ import {
 import { usagePath, appendUsage, readUsage, summarizeUsage, insightTrust, trustLineFor, refreshTrustLine, canonicalHref } from './src/usage.js';
 import {
 	memoryIndexTemplate, functionFileTemplate, dailyTemplate, insightTemplate, sepOf,
-	upsertIndexRow, appendUnderHeading, resolveOpenItems, refreshSummarySection, replaceSection,
+	upsertIndexRow, appendUnderHeading, refreshSummarySection, replaceSection,
 	dropIndexRow, rowSlug,
 } from './src/markdown.js';
 import { selfReload, isReloading } from './src/reload.js';
 import { createWriteGuard } from './src/write-guard.js';
 import { withMemoryRootTransaction } from './src/root-transaction.js';
+import { selectCaptureEvents } from './src/capture-events.js';
+import { captureSelectedEvents } from './src/capture-service.js';
+import { inspectCaptureIntent } from './src/capture-intent.js';
+import { archiveDailyMonths, readArchivedDay, latestArchivedDay, setDeleteImplementation } from './src/daily-archive.js';
+import { createCaptureStatus } from './src/capture-status.js';
 import { tokensOf, matchIndexRows, buildRecallMessage, buildBudgetedRecall, skillNameOf, archiveBlocks, eligibleIndexRows, RECALL_BUDGET_TOKENS } from './src/recall.js';
 import { redactSecrets, scanSecrets } from './src/secrets.js';
 import { gateDao, gateFa, concreteMarkersOf, MIN_DAO_SOURCES, MAX_DAO_ENTRIES, daoSourceSlugs, daoReservedHeadingCollisions } from './src/layer-gate.js';
@@ -63,6 +68,12 @@ import { AXIOM_CANDIDATE_STATES, confirmAxiomCandidate, rejectAxiomCandidate, de
 // 阀门桥（2026-11-09）：对 dsh-valves 的可选依赖——负向规则召回注入 + 上行评估留痕。
 // 缺 valves 时全部返回 undefined，既有行为一分不变（N4 降级）。
 import { relevantNegativeRules, recordUpwardWrite, upwardEntryFromWrite } from './src/valves-bridge.js';
+
+// 归档通道（daily-archive.js）默认自带删除配对实现；这里把本文件的真身
+// deleteTrackedFile 注入进去，使归档删除与 memory_rename 同一语义（intent/
+// complete 配对、to 指向归档位置、withWriteCommitLock 排队）。模块加载即注入：
+// daily-archive 不会在 server.js 加载前被独立使用。
+setDeleteImplementation(deleteTrackedFile);
 
 // Keep unlink and its intent/completion records ordered with writeText commits in
 // this process. Disk and ledger remain separate writes: incomplete intent is
@@ -120,15 +131,34 @@ export async function writeRenameTarget(root, file, expected, text) {
 			try { current = await readFile(file, 'utf8'); } catch (err) { if (err?.code !== 'ENOENT') throw err; }
 			if (current !== expected) throw new Error(`${key} 在操作期间发生变化，未覆盖；源文件尚未删除`);
 			try { await rename(tmp, file); }
-			catch (cause) { throw new MemoryWriteCommitUnknown(file, cause); }
+			catch (cause) { const err = new MemoryWriteCommitUnknown(file, cause); err.ledgerStatus = 'not_attempted'; throw err; }
 			try {
 				if (!(await recordWrite(root, { key, hash: contentHash(redacted), tool: 'memory_rename' }))) throw new MemoryLedgerAppendError(file, key);
 			} catch (cause) {
 				if (cause instanceof MemoryLedgerAppendError) throw cause;
 				throw new MemoryLedgerAppendError(file, key, cause);
 			}
+			let stagePresent = false;
+			try { await lstat(tmp); stagePresent = true; }
+			catch (cause) {
+				if (cause?.code !== 'ENOENT') {
+					const err = new Error(`目标已写入并记账，但暂存路径无法检查（${tmp}）；请先核对，不要盲目重试。`, { cause });
+					err.code = 'MEMORY_STAGE_PATH_UNKNOWN'; err.fileWritten = true; err.ledgerStatus = 'recorded'; throw err;
+				}
+			}
+			if (stagePresent) {
+				const err = new Error(`目标已写入并记账，原暂存路径现有文件（${tmp}），归属未知；请先核对，不要盲目重试。`);
+				err.code = 'MEMORY_STAGE_PATH_UNKNOWN'; err.fileWritten = true; err.ledgerStatus = 'recorded'; throw err;
+			}
 		});
-	} finally { await unlink(tmp).catch(() => {}); }
+	} catch (err) {
+		// The stage pathname may have been reused after rename or replaced while
+		// the commit was pending; its current ownership cannot be inferred.
+		err.cleanupStatus = 'unknown';
+		err.stagePath = tmp;
+		err.message += ` 暂存路径状态未知（${tmp}），未自动清理；请先核对，不要盲目重试。`;
+		throw err;
+	}
 }
 
 // A panel archive or promotion has already been committed before source deletion.
@@ -169,28 +199,41 @@ async function writeTrackedPanelFile(root, file, text, { exclusive = false, tool
 				if (exclusive) await link(tmp, file);
 				else await rename(tmp, file);
 				committed = true;
-			} catch (cause) { throw new MemoryWriteCommitUnknown(file, cause); }
+			} catch (cause) { const err = new MemoryWriteCommitUnknown(file, cause); err.ledgerStatus = 'not_attempted'; throw err; }
 			try {
 				if (!(await recordWrite(root, { key, hash: contentHash(text), tool }))) throw new MemoryLedgerAppendError(file, key);
 			} catch (cause) {
 				if (cause instanceof MemoryLedgerAppendError) throw cause;
 				throw new MemoryLedgerAppendError(file, key, cause);
 			}
-		} catch (err) { failure = err; }
-		// Until exclusive creation is acknowledged the path may be somebody
-		// else's pre-existing file, so never unlink it on that failure path.
-		try { if (staged) await unlink(tmp); }
-		catch (cause) {
-			// A successful rename consumes its source; all other cleanup failures
-			// may leave a link to the target and must not be reported as success.
-			if (!(cause?.code === 'ENOENT' && committed && !exclusive)) {
-				if (failure) {
-					failure.message += ` 暂存文件清理结果未知（${tmp}）；请核对，不要盲目重试。`;
-					failure.cleanupStatus = 'unknown';
-				} else {
-					failure = new Error(`目标已提交并记账（${key}），但暂存文件清理结果未知（${tmp}）；源文件尚未删除，请先核对，不要盲目重试。`, { cause });
-					failure.code = 'MEMORY_PANEL_CLEANUP_UNKNOWN'; failure.fileWritten = true; failure.ledgerStatus = 'recorded'; failure.cleanupStatus = 'unknown';
+			if (!exclusive) {
+				let stagePresent = false;
+				try { await lstat(tmp); stagePresent = true; }
+				catch (cause) {
+					if (cause?.code !== 'ENOENT') {
+						const err = new Error(`目标已提交并记账，但暂存路径无法检查（${tmp}）；请先核对，不要盲目重试。`, { cause });
+						err.code = 'MEMORY_STAGE_PATH_UNKNOWN'; err.fileWritten = true; err.ledgerStatus = 'recorded'; throw err;
+					}
 				}
+				if (stagePresent) {
+					const err = new Error(`目标已提交并记账，原暂存路径现有文件（${tmp}），归属未知；请先核对，不要盲目重试。`);
+					err.code = 'MEMORY_STAGE_PATH_UNKNOWN'; err.fileWritten = true; err.ledgerStatus = 'recorded'; throw err;
+				}
+			}
+		} catch (err) { failure = err; }
+		// A pathname can be replaced even after exclusive creation or a successful
+		// link. A separate lstat followed by unlink would still have a race; no
+		// portable Node primitive atomically unlinks only the inode we created.
+		// Rename consumes its stage on success. For link the stage may remain, so
+		// retain it and report partial completion instead of deleting another file.
+		if (staged && (failure || exclusive)) {
+			if (failure) {
+				failure.message += ` 暂存路径清理状态未知（${tmp}），未自动清理；请先核对，不要盲目重试。`;
+				failure.cleanupStatus = 'unknown';
+				failure.stagePath = tmp;
+			} else if (committed) {
+				failure = new Error(`目标已提交并记账（${key}），但暂存路径清理状态未知（${tmp}）；源文件尚未删除，请先核对，不要盲目重试。`);
+				failure.code = 'MEMORY_PANEL_CLEANUP_UNKNOWN'; failure.fileWritten = true; failure.ledgerStatus = 'recorded'; failure.cleanupStatus = 'unknown'; failure.stagePath = tmp;
 			}
 		}
 		if (failure) throw failure;
@@ -343,6 +386,15 @@ async function checkLinks(text, filePath, root, add) {
 	const base = path.dirname(filePath);
 	const rootAbs = path.resolve(root);
 	const seen = new Set();
+	const inspectTarget = async (target, source, rel) => {
+		try {
+			return await statExists(target);
+		} catch (err) {
+			if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return false;
+			add('WARN', 'R10', `链接目标检查失败：${source} -> ${rel}（${err?.code ?? 'unknown'}），目标存在状态未知`);
+			return undefined;
+		}
+	};
 	// Slugs may contain spaces (safeSlug only forbids separators); a [^)\s]
 	// pattern silently SKIPPED those links, so a dangling spaced href never
 	// tripped R10. Match the same surface the writer produces.
@@ -365,7 +417,7 @@ async function checkLinks(text, filePath, root, add) {
 			const key = `${filePath}→${abs}`;
 			if (seen.has(key)) continue;
 			seen.add(key);
-			if (!(await statExists(abs))) add('FAIL', 'R10', `dangling link in ${label()} -> ${rel}`);
+			if (await inspectTarget(abs, label(), rel) === false) add('FAIL', 'R10', `dangling link in ${label()} -> ${rel}`);
 			continue;
 		}
 		if (rel.startsWith('/')) continue;
@@ -373,10 +425,10 @@ async function checkLinks(text, filePath, root, add) {
 		const key = `${filePath}→${resolved}`;
 		if (seen.has(key)) continue;
 		seen.add(key);
-		const exists = await statExists(resolved);
-		if (!exists) add('FAIL', 'R10', `dangling link in ${label()} -> ${rel}`);
+		const exists = await inspectTarget(resolved, label(), rel);
+		if (exists === false) add('FAIL', 'R10', `dangling link in ${label()} -> ${rel}`);
 		else if (resolved !== rootAbs && !resolved.startsWith(rootAbs + path.sep)) {
-			add('WARN', 'R10e', `link in ${label()} escapes memory root -> ${rel}`);
+			add('WARN', 'R10e', `link in ${label()} escapes memory root -> ${rel}${exists === undefined ? '（目标存在状态未知）' : ''}`);
 		}
 	}
 }
@@ -529,8 +581,12 @@ async function runHealthCheck(root, opts) {
 		const key = p.toLowerCase();
 		if (checkedPaths.has(key)) continue;
 		checkedPaths.add(key);
-		if (!(await statExists(p))) {
-			add('WARN', 'R16', `环境常量引用的路径已不存在 -> ${p}（索引里的环境常量被未来召回盲信，确认新路径后更新）`);
+		try {
+			if (!(await statExists(p))) {
+				add('WARN', 'R16', `环境常量引用的路径已不存在 -> ${p}（索引里的环境常量被未来召回盲信，确认新路径后更新）`);
+			}
+		} catch (error) {
+			add('WARN', 'R16', `环境常量引用的路径检查失败（${error?.code ?? 'unknown'}），状态未知 -> ${p}`);
 		}
 	}
 
@@ -635,8 +691,11 @@ async function runHealthCheck(root, opts) {
 			let names = [];
 			try {
 				names = (await readdir(path.join(root, zone))).filter((f) => f.endsWith('.md'));
-			} catch {
-				continue; // zone absent
+			} catch (err) {
+				if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') {
+					add('WARN', 'R5', `未索引检查不完整：${zone}/ 目录枚举失败（${err?.code ?? 'unknown'}），路径状态未知`);
+				}
+				continue;
 			}
 			for (const f of names.sort()) {
 				const slug = f.replace(/\.md$/, '');
@@ -646,7 +705,14 @@ async function runHealthCheck(root, opts) {
 				// absence from the index is correct, not a defect. R23 already
 				// excludes it from the budget for the same reason.
 				if (zone === 'insights' || zone === 'dao') {
-					const body = (await readIfExists(path.join(root, zone, f))) ?? '';
+					let body;
+					try {
+						body = await readIfExists(path.join(root, zone, f));
+						if (body === undefined) throw Object.assign(new Error('enumerated file no longer readable'), { code: 'ENOENT' });
+					} catch (err) {
+						add('WARN', 'R5', `未索引检查不完整：${zone}/${f} 读取失败（${err?.code ?? 'unknown'}），路径状态未知`);
+						continue;
+					}
 					if (/^>\s*⚠️\s*已被取代/m.test(body)) continue;
 				}
 				orphans.push(`${zone}/${f}`);
@@ -665,30 +731,51 @@ async function runHealthCheck(root, opts) {
 	// reads instead of hitting the disk a second time for every file.
 	const fnTexts = new Map();
 	const fnMtimes = new Map();
+	const fnMtimeUnknown = new Set();
 	const insightTexts = [];
 	// Keyed by slug so the R23 source-count check reuses these reads instead of
 	// re-reading every insight file a second time.
 	const insightTextByFile = new Map();
+	let temperatureInputsUnknown = false;
+	const markZoneUnknown = (zone, label, err) => {
+		// Report the checks whose evidence could not be read. Keep rule identities
+		// stable for callers that interpret a missing finding as a clean result.
+		const affected = ['R10', 'R10e', 'R21'];
+		if (zone === 'functions') affected.push('R3', 'R8', 'R9', 'R14');
+		if (zone === 'insights') affected.push('R23');
+		if (zone === 'dao') affected.push('R24');
+		if (zone === 'skills') affected.push('R20', 'R20e');
+		if (zone === 'functions' || zone === 'insights') {
+			temperatureInputsUnknown = true;
+			affected.push('TEMP');
+		}
+		for (const rule of affected) add('WARN', rule, `${label} 检查不完整（${err?.code ?? 'unknown'}），状态未知`);
+	};
 
 	for (const zone of MEMORY_ZONES) {
 		const dir = path.join(root, zone);
 		let files = [];
 		try {
 			files = (await readdir(dir)).filter((f) => f.endsWith('.md'));
-		} catch {
-			/* zone absent */
+		} catch (err) {
+			if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') markZoneUnknown(zone, `${zone}/ 扫描`, err);
 		}
 		for (const f of files.sort()) {
 			const fp = path.join(dir, f);
-			const text = await readFile(fp, 'utf8');
+			let text;
+			try { text = await readFile(fp, 'utf8'); }
+			catch (err) { markZoneUnknown(zone, `${zone}/${f} 读取`, err); continue; }
 			const stripped = stripCode(text);
 			if (zone === 'functions') {
 				const slug = f.replace(/\.md$/, '');
 				fnTexts.set(slug, text);
 				try {
 					fnMtimes.set(slug, (await stat(fp)).mtimeMs);
-				} catch {
-					/* mtime is best-effort */
+				} catch (err) {
+					if (err?.code !== 'ENOENT' && opts.newFeatureGraceDays > 0) {
+						fnMtimeUnknown.add(slug);
+						add('WARN', 'TEMP', `冷记忆检查不完整：functions/${f} 修改时间不可读取（${err?.code ?? 'unknown'}），宽限期状态未知`, { subtype: 'check-incomplete', subject: `functions/${f}` });
+					}
 				}
 				const size = byteLen(text);
 				if (size > opts.maxFunctionBytes) {
@@ -750,6 +837,9 @@ async function runHealthCheck(root, opts) {
 			await checkLinks(text, fp, root, add);
 		}
 	}
+	// Missing backlink sources could make healthy files appear cold. Do not run
+	// that analysis with partial inputs; the TEMP warning above records why.
+	if (temperatureInputsUnknown) fnTexts.clear();
 
 	// THE BUNDLE STORE JOINED THE LINT (5.27.0, adversarial audit): since 5.24.0
 	// skills live OUTSIDE the memory root, so the zone walk above never sees
@@ -778,12 +868,18 @@ async function runHealthCheck(root, opts) {
 		let bundles = [];
 		try {
 			bundles = (await readdir(sdir, { withFileTypes: true })).filter((e) => e.isDirectory() && e.name !== '.history');
-		} catch {
-			/* no skill store yet */
+		} catch (err) {
+			if (err?.code !== 'ENOENT') add('WARN', 'R20e', `技能目录检查不完整：无法枚举技能目录（${err?.code ?? 'unknown'}），技能状态和链接未知`, { subtype: 'check-incomplete', subject: 'skill-root' });
 		}
 		for (const e of bundles) {
 			const bp = path.join(sdir, e.name, 'SKILL.md');
-			const btext = await readIfExists(bp);
+			let btext;
+			try {
+				btext = await readIfExists(bp);
+			} catch (err) {
+				add('WARN', 'R20e', `技能「${e.name}」的 SKILL.md 读取失败（${err?.code ?? 'unknown'}），该技能未检查，状态和链接未知`, { subtype: 'check-incomplete', subject: `skill:${e.name}` });
+				continue;
+			}
 			if (btext === undefined) continue;
 			await checkLinks(btext, bp, root, add);
 			if (!/^(?:true|1)$/i.test(String(parseSkillText(btext).fields.agent_created ?? ''))) continue;
@@ -795,30 +891,61 @@ async function runHealthCheck(root, opts) {
 		}
 	}
 
+	let dailyNames = [];
 	try {
-		for (const f of await readdir(root)) {
-			if (!/^\d{4}-\d{2}-\d{2}\.md$/.test(f)) continue;
-			const dtext = await readFile(path.join(root, f), 'utf8');
-			await checkLinks(dtext, path.join(root, f), root, add);
-			// R21 (memory defence, Hindsight-borrowed): the daily RAW layer is
-			// where a pasted token most often lands — the write-side redactor
-			// never routes it (the model writes daily files itself), so the
-			// health check is what catches it, retroactively for pre-defence
-			// content too.
-			scanForSecrets(dtext, f, add);
+		dailyNames = await readdir(root);
+	} catch (err) {
+		add('WARN', 'R10', `每日记录根目录无法枚举（${err?.code ?? 'unknown'}），日记范围的链接及 R21 检查状态未知`);
+	}
+	for (const f of dailyNames) {
+		if (!/^\d{4}-\d{2}-\d{2}\.md$/.test(f)) continue;
+		let dtext;
+		try {
+			dtext = await readFile(path.join(root, f), 'utf8');
+		} catch (err) {
+			add('WARN', 'R10', `每日记录 ${f} 无法读取（${err?.code ?? 'unknown'}），该日记的链接及 R21 检查状态未知`);
+			continue;
 		}
-	} catch {
-		/* root absent */
+		await checkLinks(dtext, path.join(root, f), root, add);
+		// R21 also scans readable historical records for secrets predating the redactor.
+		scanForSecrets(dtext, f, add);
+	}
+
+	// 月归档（2026-11 月/周折叠方案）：daily/YYYY-MM.md 与顶层日记同属 daily 层，
+	// 体检同样跑链接与 R21（文件级扫描即可，不要求周节粒度）。枚举失败只报
+	// 该范围未知，不把"没有归档"冒充成"已检查"。
+	let archiveNames = [];
+	try {
+		archiveNames = (await readdir(path.join(root, 'daily'))).filter((n) => /^\d{4}-\d{2}\.md$/.test(n));
+	} catch (err) {
+		if (err?.code !== 'ENOENT') add('WARN', 'R10', `每日归档目录无法枚举（${err?.code ?? 'unknown'}），daily/YYYY-MM.md 的链接及 R21 检查状态未知`);
+	}
+	for (const f of archiveNames) {
+		const fp = path.join(root, 'daily', f);
+		let atext;
+		try {
+			atext = await readFile(fp, 'utf8');
+		} catch (err) {
+			add('WARN', 'R10', `每日归档 daily/${f} 无法读取（${err?.code ?? 'unknown'}），该归档的链接及 R21 检查状态未知`);
+			continue;
+		}
+		await checkLinks(atext, fp, root, add);
+		scanForSecrets(atext, `daily/${f}`, add);
 	}
 
 	try {
 		for (const f of await readdir(path.join(root, 'legacy'))) {
 			if (!f.endsWith('.md')) continue;
-			const text = await readFile(path.join(root, 'legacy', f), 'utf8');
+			let text;
+			try { text = await readFile(path.join(root, 'legacy', f), 'utf8'); }
+			catch (err) {
+				if (err?.code !== 'ENOENT') add('WARN', 'R13', `历史文件检查不完整：legacy/${f} 读取失败（${err?.code ?? 'unknown'}），头部状态未知`, { subtype: 'check-incomplete', subject: `legacy/${f}` });
+				continue;
+			}
 			if (!text.includes('历史原貌')) add('WARN', 'R13', `legacy/${f} 缺少“历史原貌”头部（不得并入当前 functions/）`);
 		}
-	} catch {
-		/* no legacy dir */
+	} catch (err) {
+		if (err?.code !== 'ENOENT') add('WARN', 'R13', `历史文件检查不完整：legacy/ 枚举失败（${err?.code ?? 'unknown'}），头部状态未知`, { subtype: 'check-incomplete', subject: 'legacy/' });
 	}
 
 	// Memory temperature (cold-area candidates): for every function file count
@@ -834,6 +961,7 @@ async function runHealthCheck(root, opts) {
 		if (fnNames.length > 1) {
 			const refText = [...insightTexts, ...fnTexts.values()].join('\n');
 			for (const name of fnNames) {
+				if (fnMtimeUnknown.has(name)) continue;
 				const mtime = fnMtimes.get(name);
 				if (graceMs > 0 && typeof mtime === 'number' && Date.now() - mtime < graceMs) continue;
 				const own = fnTexts.get(name) ?? '';
@@ -885,8 +1013,8 @@ async function runHealthCheck(root, opts) {
 				}
 			}
 		}
-	} catch {
-		/* usage log is optional */
+	} catch (err) {
+		add('WARN', 'R18', `使用记录检查不完整，纠正率状态未知（${err?.code ?? 'UNKNOWN'}）`, { subtype: 'check-incomplete', subject: 'R18' });
 	}
 
 	// R22 (insight trust): an idea whose corrections reached its confirmations
@@ -904,8 +1032,8 @@ async function runHealthCheck(root, opts) {
 				}
 			}
 		}
-	} catch {
-		/* usage log is optional */
+	} catch (err) {
+		if (err?.code !== 'ENOENT') add('WARN', 'R22', `使用记录检查不完整，思想信任状态未知（${err?.code ?? 'unknown'}）`, { subtype: 'check-incomplete', subject: 'usage-log' });
 	}
 
 	// R23 (the principle layer's retirement budget): every other zone can shrink
@@ -925,8 +1053,8 @@ async function runHealthCheck(root, opts) {
 		let insightNames = [];
 		try {
 			insightNames = (await readdir(path.join(root, 'insights'))).filter((f) => f.endsWith('.md'));
-		} catch {
-			/* zone absent */
+		} catch (err) {
+			if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') throw err;
 		}
 		if (insightNames.length) {
 			// A superseded principle is DECISION HISTORY, not a live entry: it keeps
@@ -981,24 +1109,31 @@ async function runHealthCheck(root, opts) {
 				}
 			}
 			const missing = [];
+			const unknown = [];
 			for (const h of hrefs) {
 				// Only memory-root targets are checkable; skill bundles live outside
 				// the root and their absence is R20e's business.
 				if (!ZONE_RE_SKILLS.test(h)) continue;
 				if (/^skills\//.test(h)) continue;
-				if (await statExists(path.join(root, h))) continue;
-				missing.push(h);
+				try { await stat(path.join(root, h)); }
+				catch (err) {
+					if (err?.code === 'ENOENT') missing.push(h);
+					else unknown.push({ href: h, code: err?.code ?? 'unknown' });
+				}
+			}
+			if (unknown.length) {
+				add('WARN', 'R23', `.usage.jsonl 有 ${unknown.length} 个 href 的目标存在状态未知（${unknown.slice(0, 4).map((x) => `${x.href}: ${x.code}`).join('、')}${unknown.length > 4 ? ' 等' : ''}）：本次扫描不完整，不能判定这些目标缺失或正常`);
 			}
 			if (missing.length >= (opts.insightBudget?.minLedgerMisses ?? INSIGHT_BUDGET.minLedgerMisses)) {
 				add(
 					'WARN',
 					'R23',
-					`.usage.jsonl 有 ${missing.length} 个 href 指向已不存在的文件（${missing.slice(0, 4).join('、')}${missing.length > 4 ? ' 等' : ''}）：该条目的认可/纠正记录已成孤儿，信任与分层建议都在读空——这些文件是被改名或删除了，确认它们的证据该归到哪个现存条目`,
+					`.usage.jsonl 有 ${unknown.length ? '至少 ' : ''}${missing.length} 个 href 指向已不存在的文件（${missing.slice(0, 4).join('、')}${missing.length > 4 ? ' 等' : ''}）：该条目的认可/纠正记录已成孤儿，信任与分层建议都在读空——这些文件是被改名或删除了，确认它们的证据该归到哪个现存条目`,
 				);
 			}
 		}
-	} catch {
-		/* budget checks are best-effort */
+	} catch (err) {
+		add('WARN', 'R23', `思想层与使用账本检查不完整，状态未知（${err?.code ?? 'UNKNOWN'}）`, { subtype: 'check-incomplete', subject: 'R23' });
 	}
 
 	// R25 (2026-10-28): 一次删掉很多记忆文件时，必须有人说话。
@@ -1026,19 +1161,29 @@ async function runHealthCheck(root, opts) {
 				}
 			}
 			const vanished = [];
-			for (const h of seen) if (!(await statExists(path.join(root, h)))) vanished.push(h);
+			const unknown = [];
+			for (const h of seen) {
+				try { await stat(path.join(root, h)); }
+				catch (err) {
+					if (err?.code === 'ENOENT') vanished.push(h);
+					else unknown.push({ href: h, code: err?.code ?? 'unknown' });
+				}
+			}
+			if (unknown.length) {
+				add('WARN', 'R25', `有 ${unknown.length} 个曾经有使用证据的记忆文件存在状态未知（${unknown.slice(0, 4).map((x) => `${x.href}: ${x.code}`).join('、')}${unknown.length > 4 ? ' 等' : ''}）：本次扫描不完整，不能判定这些文件缺失或正常`);
+			}
 			// 台账里的 href 若被人工重定向过（收敛时做过），这里就看不到删除；
 			// 那是正确的——证据已归到现存条目，不算消失。
 			if (vanished.length >= VANISHED_FILES_WARN) {
 				add(
 					'WARN',
 					'R25',
-					`有 ${vanished.length} 个曾经有使用证据的记忆文件不见了（${vanished.slice(0, 4).join('、')}${vanished.length > 4 ? ' 等' : ''}）：若是有意收敛，确认它们的结论已写进现存文件（functions/ 迭代块或更上层）；若是误删/覆盖，现在恢复还来得及（记忆根有 git）`,
+					`有 ${unknown.length ? '至少 ' : ''}${vanished.length} 个曾经有使用证据的记忆文件不见了（${vanished.slice(0, 4).join('、')}${vanished.length > 4 ? ' 等' : ''}）：若是有意收敛，确认它们的结论已写进现存文件（functions/ 迭代块或更上层）；若是误删/覆盖，现在恢复还来得及（记忆根有 git）`,
 				);
 			}
 		}
-	} catch {
-		/* 删除检测是增强检查，失败不影响其余体检 */
+	} catch (err) {
+		add('WARN', 'R25', `历史使用目标检查不完整，删除状态未知（${err?.code ?? 'UNKNOWN'}）`, { subtype: 'check-incomplete', subject: 'R25' });
 	}
 
 	// R24 (2026-10-27): the 道 layer's own integrity + extraction prompt.
@@ -1053,15 +1198,25 @@ async function runHealthCheck(root, opts) {
 		let daoFiles = [];
 		try {
 			daoFiles = (await readdir(daoDir)).filter((f) => f.endsWith('.md'));
-		} catch {
-			/* dao/ 尚未建立 */
+		} catch (err) {
+			if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') throw err;
 		}
 		const liveDao = [];
+		let unknownDaoCount = 0;
 		for (const f of daoFiles) {
-			const body = (await readIfExists(path.join(daoDir, f))) ?? '';
+			let body;
+			try {
+				body = await readIfExists(path.join(daoDir, f));
+				if (body === undefined) throw Object.assign(new Error('扫描后文件消失'), { code: 'ENOENT' });
+			} catch (err) {
+				unknownDaoCount++;
+				add('WARN', 'R24', `dao/${f} 读取失败，状态未知（${err?.code ?? 'UNKNOWN'}）；检查不完整，其来源法认领情况未知`, { subtype: 'dao-read-unknown', subject: `dao/${f}` });
+				continue;
+			}
 			if (/^>\s*⚠️\s*已被取代/m.test(body)) continue;
 			liveDao.push({ slug: f.replace(/\.md$/, ''), body });
 		}
+		const daoLowerBound = unknownDaoCount ? `（已确认下界；另有 ${unknownDaoCount} 条道状态未知）` : '';
 
 		// (a) 命题的抽象度（复用 layer-gate 的判据，与写入闸门同源）
 		const unabstract = [];
@@ -1093,7 +1248,7 @@ async function runHealthCheck(root, opts) {
 			add(
 				'WARN',
 				'R24',
-				`dao/ 有 ${unindexed.length} 条没有写进 MEMORY.md 的道层小节：${unindexed.join('、')}——索引是唯一的检索面，没登记的道等于只有磁盘知道（memory_dao 不会替你登记，手工补一行）`,
+				`dao/ 有 ${unindexed.length} 条没有写进 MEMORY.md 的道层小节${daoLowerBound}：${unindexed.join('、')}——索引是唯一的检索面，没登记的道等于只有磁盘知道（memory_dao 不会替你登记，手工补一行）`,
 			);
 		}
 
@@ -1101,14 +1256,14 @@ async function runHealthCheck(root, opts) {
 			add(
 				'WARN',
 				'R24',
-				`dao/ 有 ${headless.length} 条缺少「## 命题」小节：${headless.join('、')}——没有这一节，抽象度检查整条被跳过（道必须有一句能用来说的命题）`,
+				`dao/ 有 ${headless.length} 条缺少「## 命题」小节${daoLowerBound}：${headless.join('、')}——没有这一节，抽象度检查整条被跳过（道必须有一句能用来说的命题）`,
 			);
 		}
 		if (unabstract.length) {
 			add(
 				'WARN',
 				'R24',
-				`dao/ 有 ${unabstract.length} 条命题含具体技术/项目标记：${unabstract.join('；')}——道必须能「换一个领域依然成立」，含具体名词的是法伪装成道`,
+				`dao/ 有 ${unabstract.length} 条命题含具体技术/项目标记${daoLowerBound}：${unabstract.join('；')}——道必须能「换一个领域依然成立」，含具体名词的是法伪装成道`,
 			);
 		}
 
@@ -1120,21 +1275,28 @@ async function runHealthCheck(root, opts) {
 			const refs = daoSourceSlugs(body);
 			if (refs.length < MIN_DAO_SOURCES) {
 				add('WARN', 'R24', `dao/${slug}.md 只列出 ${refs.length} 条来源法（< ${MIN_DAO_SOURCES}）：道的依据不足，确认它是否被拆散或手工删减过`);
-				continue;
 			}
 			const gone = [];
+			let unknownRefs = 0;
 			for (const r of refs) {
-				const txt = await readIfExists(path.join(root, 'insights', `${r}.md`));
+				let txt;
+				try { txt = await readIfExists(path.join(root, 'insights', `${r}.md`)); }
+				catch (err) {
+					unknownRefs++;
+					add('WARN', 'R24', `insights/${r}.md 来源于 dao/${slug}.md，读取失败，状态未知（${err?.code ?? 'UNKNOWN'}）`, { subtype: 'source-read-unknown', subject: `insights/${r}.md` });
+					continue;
+				}
 				if (txt === undefined || /^>\s*⚠️\s*已被取代/m.test(txt)) gone.push(r);
 			}
 			if (gone.length) {
-				add('WARN', 'R24', `dao/${slug}.md 的来源法有 ${gone.length} 条已不存在或已被取代（${gone.join('、')}）：道的依据缺了，要么补新来源，要么重新审视这条道是否还成立`);
+				const partial = unknownRefs ? `（已确认下界，另有 ${unknownRefs} 条来源状态未知）` : '';
+				add('WARN', 'R24', `dao/${slug}.md 的来源法有 ${gone.length} 条已不存在或已被取代${partial}（${gone.join('、')}）：道的依据缺了，要么补新来源，要么重新审视这条道是否还成立`);
 			}
 		}
 
 		// (c) 数量上限
 		if (liveDao.length > MAX_DAO_ENTRIES) {
-			add('WARN', 'R24', `dao/ 已 ${liveDao.length} 条 > 上限 ${MAX_DAO_ENTRIES}：道多了就不是道，是清单——合并或取代`);
+			add('WARN', 'R24', `dao/ 已 ${liveDao.length} 条${daoLowerBound} > 上限 ${MAX_DAO_ENTRIES}：道多了就不是道，是清单——合并或取代`);
 		}
 
 		// (d) 可萃取提示：法已够 5 条、且**还没被任何道认领**的主题簇
@@ -1154,13 +1316,22 @@ async function runHealthCheck(root, opts) {
 		let insightFiles = [];
 		try {
 			insightFiles = (await readdir(path.join(root, 'insights'))).filter((f) => f.endsWith('.md'));
-		} catch {
-			/* insights/ 不存在 */
+		} catch (err) {
+			if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') throw err;
 		}
+		let unknownInsights = 0;
 		for (const f of insightFiles) {
 			const slug = f.replace(/\.md$/, '');
 			if (claimed.has(slug)) continue; // 已被某条道认领，不再提示
-			const body = (await readIfExists(path.join(root, 'insights', f))) ?? '';
+			let body;
+			try {
+				body = await readIfExists(path.join(root, 'insights', f));
+				if (body === undefined) throw Object.assign(new Error('扫描后文件消失'), { code: 'ENOENT' });
+			} catch (err) {
+				unknownInsights++;
+				add('WARN', 'R24', `insights/${f} 读取失败，状态未知（${err?.code ?? 'UNKNOWN'}）；未计入未认领法`, { subtype: 'insight-read-unknown', subject: `insights/${f}` });
+				continue;
+			}
 			if (/^>\s*⚠️\s*已被取代/m.test(body)) continue;
 			const srcLine = body.split('\n').find((l) => /来源[:：]/.test(l)) ?? '';
 			for (const m of srcLine.matchAll(/functions\/([^)\].]+?)\.md/g)) {
@@ -1170,8 +1341,10 @@ async function runHealthCheck(root, opts) {
 			}
 		}
 		const extractable = [...byArea.entries()].filter(([, laws]) => new Set(laws).size >= MIN_DAO_SOURCES);
-		if (extractable.length) {
-			const desc = extractable.map(([area, laws]) => `${area}（${new Set(laws).size} 条未认领）`).join('、');
+		if (unknownDaoCount) {
+			add('WARN', 'R24', `有 ${unknownDaoCount} 条道状态未知，来源法认领检查不完整；本轮不判断可萃取主题`, { subtype: 'claims-unknown', subject: 'dao' });
+		} else if (extractable.length) {
+			const desc = extractable.map(([area, laws]) => `${area}（${new Set(laws).size} 条未认领${unknownInsights ? '，已确认下界' : ''}）`).join('、');
 			// level 只能是 WARN / FAIL（宿主 schema 校验）——"建议"用 WARN 表达，
 			// 文案里说清它是机会而非缺陷，避免读数的人误判成故障。
 			add(
@@ -1180,8 +1353,8 @@ async function runHealthCheck(root, opts) {
 				`以下功能域有 ≥${MIN_DAO_SOURCES} 条法尚未被任何道认领，可考虑萃取上层命题：${desc}——读这些法的「核心原则」，找它们共同指向的一个关于「世界是怎样的」的命题（不是更广的规则，是它们成立的前提）`,
 			);
 		}
-	} catch {
-		/* R24 是增强检查，绝不因它失败而中断体检 */
+	} catch (err) {
+		add('WARN', 'R24', `道层完整性检查不完整，状态未知（${err?.code ?? 'UNKNOWN'}）`, { subtype: 'check-incomplete', subject: 'R24' });
 	}
 
 	// R26：递归核对受管层，未读到的路径为未知，不能推断写入者。
@@ -1290,15 +1463,20 @@ async function runHealthCheck(root, opts) {
 		let names = [];
 		try {
 			names = (await readdir(dir)).filter((f) => f.endsWith('.md'));
-		} catch {
-			names = [];
+		} catch (err) {
+			if (err?.code !== 'ENOENT') add('WARN', 'R27', `折叠冗余检查不完整：functions/ 枚举失败（${err?.code ?? 'unknown'}），状态未知`, { subtype: 'check-incomplete', subject: 'functions/' });
 		}
 		const dup = [];
 		const long = [];
 		const sameDay = [];
 		const preview = (list) => `${list.slice(0, 4).join('、')}${list.length > 4 ? ` 等 ${list.length} 处` : ''}`;
 		for (const f of names) {
-			const text = await readIfExists(path.join(dir, f));
+			let text;
+			try { text = await readIfExists(path.join(dir, f)); }
+			catch (err) {
+				if (err?.code !== 'ENOENT') add('WARN', 'R27', `折叠冗余检查不完整：functions/${f} 读取失败（${err?.code ?? 'unknown'}），状态未知`, { subtype: 'check-incomplete', subject: `functions/${f}` });
+				continue;
+			}
 			if (text === undefined) continue;
 			const lines = text.split('\n');
 			const heads = lines.filter((l) => /^##\s*早期演化/.test(l));
@@ -1484,10 +1662,16 @@ function memoryReadTool(opts) {
 			}
 			// daily
 			if (typeof args.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.date.trim())) {
-				const p = path.join(root, `${args.date.trim()}.md`);
+				const day = args.date.trim();
+				const p = path.join(root, `${day}.md`);
 				const text = await readIfExists(p);
-				if (text !== undefined) await appendUsage(root, { href: `${args.date.trim()}.md`, kind: 'read' });
-				return { found: text !== undefined, path: p, content: text ?? '', listing: [] };
+				if (text !== undefined) await appendUsage(root, { href: day, kind: 'read' });
+				if (text !== undefined) return { found: true, path: p, content: text, listing: [] };
+				// 月/周折叠方案（2026-11）：顶层没有这份日记时回落到按月归档的
+				// 日节（只读，不补造文件）。回落命中如实标注来源路径是归档文件。
+				const archived = await readArchivedDay(root, day);
+				if (archived) return { found: true, path: archived.file, content: archived.text, listing: [] };
+				return { found: false, path: p, content: '', listing: [] };
 			}
 			let latest;
 			try {
@@ -1497,9 +1681,17 @@ function memoryReadTool(opts) {
 			} catch {
 				/* root missing */
 			}
-			const p = latest ? path.join(root, latest) : path.join(root, `${localDateStr()}.md`);
-			const text = latest ? await readIfExists(p) : undefined;
-			return { found: text !== undefined, path: p, content: text ?? '', listing: [] };
+			if (latest) {
+				const p = path.join(root, latest);
+				const text = await readIfExists(p);
+				return { found: text !== undefined, path: p, content: text ?? '', listing: [] };
+			}
+			// 月/周折叠方案（2026-11）：顶层无任何日文件（可能全部已归档）时，
+			// 回落到最新归档文件的最新日节；再没有就保持旧行为（指向今天路径）。
+			const latestArch = await latestArchivedDay(root);
+			if (latestArch) return { found: true, path: latestArch.file, content: latestArch.text, listing: [] };
+			const p = path.join(root, `${localDateStr()}.md`);
+			return { found: false, path: p, content: '', listing: [] };
 		},
 	});
 }
@@ -1644,7 +1836,7 @@ function memoryUsageTool(opts) {
 			'Record and read USAGE signals, the data that lets the memory sort itself. action=record logs one event against a memory file (kind: correction = the user corrected / rejected what was recalled or written; positive = explicit confirmation like "对了/就是这个"; recall/read are logged automatically). action=report aggregates the last N days per file and suggests a layer: 实验 (<3 uses), 专项 (>=3 uses + >=1 confirmation), 通用 (>=10 uses + >=2 confirmations + correction rate <20%). Uses count ENGAGEMENT only (read + verdicts): a recall injection is EXPOSURE, not use — counting it would let the plugin\'s own output inflate the popularity that decides what gets recalled next. Layers are suggestions for the model to act on — this tool never moves files.',
 		parameters: {
 			action: { type: 'string', required: true, enum: ['record', 'report'], description: 'record=记一次信号；report=按天聚合出分层建议。' },
-			href: { type: 'string', description: 'record 必填：目标记忆文件，如 `functions/批印坊工程加固.md`、`insights/逐帧渲染取帧三闸.md`、`2026-10-18.md`。' },
+			href: { type: 'string', description: 'record 必填：目标记忆文件，如 `functions/批印坊工程加固.md`、`insights/逐帧渲染取帧三闸.md`、`2026-10-18.md`、`daily/2026-10.md`（月归档）。' },
 			kind: { type: 'string', enum: ['correction', 'positive', 'recall', 'read'], description: 'record 必填：correction=用户纠正/否定，positive=用户明确认可，recall/read 一般由插件自动记录。' },
 			note: { type: 'string', description: 'record 强烈建议填写：一句话说明这次判定针对的是**哪件事**（例如用户原话）。它不只是备注——翻转计数靠它区分「同一结论被推翻」与「同一个文件被纠正了不同的事」；不写就只能按相邻判定猜，容易把无关纠正误报成结论不稳定。' },
 			days: { type: 'integer', description: 'report 的统计窗口（天，默认 30）。' },
@@ -1708,8 +1900,12 @@ function memoryUsageTool(opts) {
 				// evidence gate reads positives on `skills/<name>/SKILL.md`, and until
 				// now the contract REJECTED exactly that href (hit twice in practice).
 				const skillM = /^skills\/([^/]+)\/SKILL\.md$/.exec(href);
-				if (!ZONE_RE_FILE_EXACT.test(href) && !/^\d{4}-\d{2}-\d{2}\.md$/.test(href) && !skillM) {
-					throw new Error('href 必须是 functions/<名>.md、insights/<名>.md、dao/<名>.md、capabilities/<名>.md、skills/<技能>/SKILL.md 或 YYYY-MM-DD.md');
+				// 月/周折叠方案（2026-11）：daily/YYYY-MM.md 月归档也是可记录
+				// 信号的数据文件（读它/纠正它都要能记账），与 isTracked 的
+				// daily/ 前缀口径一致；严格月号校验，其他 daily/ 路径仍拒。
+				const dailyArchiveM = /^daily\/\d{4}-(?:0[1-9]|1[0-2])\.md$/.exec(href);
+				if (!ZONE_RE_FILE_EXACT.test(href) && !/^\d{4}-\d{2}-\d{2}\.md$/.test(href) && !skillM && !dailyArchiveM) {
+					throw new Error('href 必须是 functions/<名>.md、insights/<名>.md、dao/<名>.md、capabilities/<名>.md、skills/<技能>/SKILL.md、YYYY-MM-DD.md 或 daily/YYYY-MM.md');
 				}
 				if (skillM && !isSkillName(skillM[1])) throw new Error(`技能名必须是 kebab-case，收到：${skillM[1]}`);
 				const kind = ['correction', 'positive', 'recall', 'read'].includes(args.kind) ? args.kind : null;
@@ -1769,6 +1965,9 @@ function memoryFederationTool(opts) {
 							properties: {
 								key: { type: 'string', required: true },
 								copied: { type: 'boolean', required: true },
+								copyStatus: { type: 'string', required: true, enum: ['present', 'missing', 'unknown'] },
+								sourceStatus: { type: 'string', required: true, enum: ['present', 'missing', 'unknown'] },
+								countStatus: { type: 'string', required: true, enum: ['known', 'unknown'] },
 								bytes: { type: 'integer', required: true },
 								functions: { type: 'integer', required: true },
 								insights: { type: 'integer', required: true },
@@ -1796,7 +1995,7 @@ function memoryFederationTool(opts) {
 			render: (_args, v) => {
 				const lines = [
 					`联邦层：${v.federationRoot}（${v.action}）`,
-					...v.projects.map((p) => `- ${p.key}: ${p.copied ? '已同步' : '未同步'} · ${p.bytes}B · ${p.functions} 功能 / ${p.insights} 思想 / ${p.daily} 日线索`),
+					...v.projects.map((p) => `- ${p.key}: ${p.copyStatus === 'unknown' ? '副本状态未知' : p.copied ? (v.action === 'check' ? '副本存在（未比较内容）' : '已写入副本') : '副本不存在'} · ${p.sourceStatus === 'unknown' ? '源大小未知' : p.sourceStatus === 'missing' ? '源不存在' : `${p.bytes}B`} · ${p.countStatus === 'unknown' ? '分区数量未知' : `${p.functions} 功能 / ${p.insights} 思想 / ${p.daily} 日线索`}`),
 				];
 				if (!v.findings.length) lines.push('体检：全部通过（F1–F5）');
 				else {
@@ -1813,32 +2012,63 @@ function memoryFederationTool(opts) {
 			const findings = [];
 			const add = (level, rule, message) => findings.push({ level, rule, message });
 			const sourcesDir = path.join(fed.root, 'sources');
-			await mkdir(sourcesDir, { recursive: true });
+			if (args.action === 'sync') await mkdir(sourcesDir, { recursive: true });
+			const isMissing = (err) => err?.code === 'ENOENT' || err?.code === 'ENOTDIR';
+			const readState = async (file) => {
+				try { return { status: 'present', text: await readFile(file, 'utf8') }; }
+				catch (error) { return isMissing(error) ? { status: 'missing' } : { status: 'unknown', error }; }
+			};
 			const projects = [];
 			for (const p of fed.projects) {
 				const memPath = path.join(p.root, 'MEMORY.md');
-				const text = await readIfExists(memPath);
-				const counts = await zoneCounts(p.root);
-				if (text === undefined) {
+				const source = await readState(memPath);
+				if (source.status === 'unknown') {
+					if (args.action === 'sync') throw source.error;
+					add('WARN', 'F3', `项目 ${p.key} 的 MEMORY.md 无法读取（${source.error?.code ?? 'unknown'}），来源状态未知：${memPath}`);
+				} else if (source.status === 'missing') {
 					add('FAIL', 'F3', `项目 ${p.key} 的记忆根里没有 MEMORY.md：${p.root}`);
-					projects.push({ key: p.key, copied: false, bytes: 0, ...counts });
-					continue;
 				}
-				const bytes = byteLen(text);
-				let copied = false;
+				let countStatus = 'known';
+				const count = async (dir, predicate) => {
+					try { return (await readdir(dir)).filter(predicate).length; }
+					catch (err) {
+						if (isMissing(err)) return 0;
+						if (args.action === 'sync') throw err;
+						countStatus = 'unknown';
+						add('WARN', 'F3', `项目 ${p.key} 分区无法枚举：${dir}（${err?.code ?? 'unknown'}），该分区数量未知`);
+						return 0;
+					}
+				};
+				const counts = {
+					functions: await count(path.join(p.root, 'functions'), (n) => n.endsWith('.md')),
+					insights: await count(path.join(p.root, 'insights'), (n) => n.endsWith('.md')),
+					// 月/周折叠方案（2026-11）：日线索计数含顶层日文件与 daily/ 下的
+					// 月归档（与面板 zoneCounts 同口径）。
+					daily: await count(p.root, (n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)) + await count(path.join(p.root, 'daily'), (n) => /^\d{4}-\d{2}\.md$/.test(n)),
+				};
+				const bytes = source.status === 'present' ? byteLen(source.text) : 0;
+				let copyStatus = 'unknown';
 				if (args.action === 'sync') {
-					await writeText(path.join(sourcesDir, `${p.key}.MEMORY.md`), text);
-					copied = true;
+					if (source.status === 'present') {
+						await writeText(path.join(sourcesDir, `${p.key}.MEMORY.md`), source.text);
+						copyStatus = 'present';
+					} else copyStatus = 'unknown';
 				} else {
-					copied = await statExists(path.join(sourcesDir, `${p.key}.MEMORY.md`));
-					if (!copied) add('FAIL', 'F3', `缺少来源副本 sources/${p.key}.MEMORY.md（先 action=sync）`);
+					try {
+						copyStatus = await statExists(path.join(sourcesDir, `${p.key}.MEMORY.md`)) ? 'present' : 'missing';
+						if (copyStatus === 'missing') add('FAIL', 'F3', `缺少来源副本 sources/${p.key}.MEMORY.md（先 action=sync）`);
+					} catch (err) {
+						add('WARN', 'F3', `项目 ${p.key} 的来源副本无法检查（${err?.code ?? 'unknown'}），副本存在状态未知：sources/${p.key}.MEMORY.md`);
+					}
 				}
-				projects.push({ key: p.key, copied, bytes, ...counts });
+				projects.push({ key: p.key, copied: copyStatus === 'present', copyStatus, sourceStatus: source.status, countStatus, bytes, ...counts });
 			}
 			const indexPath = path.join(fed.root, 'MEMORY.md');
 			if (args.action === 'sync') {
 				const rows = projects.map((p) => `| ${p.key} | ${p.functions} 功能 · ${p.insights} 思想 · ${p.daily} 日线索 · ${p.bytes}B | [sources/${p.key}.MEMORY.md](sources/${p.key}.MEMORY.md) |`);
-				const existing = await readIfExists(indexPath);
+				const indexState = await readState(indexPath);
+				if (indexState.status === 'unknown') throw indexState.error;
+				const existing = indexState.text;
 				let next = federationIndexText(rows);
 				if (existing !== undefined) {
 					// Keep everything the model distilled (consensus + notes) and only
@@ -1849,34 +2079,39 @@ function memoryFederationTool(opts) {
 				await writeText(indexPath, next);
 				opts.dropRecallCaches?.();
 			} else {
-				// F1: federation index exists
-				const idxText = await readIfExists(indexPath);
-				if (idxText === undefined) {
-					add('FAIL', 'F1', `联邦层没有 MEMORY.md：${indexPath}（先 action=sync）`);
+				const indexState = await readState(indexPath);
+				if (indexState.status !== 'present') {
+					if (indexState.status === 'missing') add('FAIL', 'F1', `联邦层没有 MEMORY.md：${indexPath}（先 action=sync）`);
+					else add('WARN', 'F1', `联邦层索引无法读取（${indexState.error?.code ?? 'unknown'}），状态未知：${indexPath}`);
+					add('WARN', 'F2', '联邦索引不可读取，链接未检查，状态未知');
+					add('WARN', 'F3', '联邦索引不可读取，项目索引行未检查，状态未知');
+					add('WARN', 'F4', '联邦索引不可读取，绝对路径未检查，状态未知');
 				} else {
-					// F2: in-tree links resolve (the shared link scanner reports R10/R10e;
-					// remap it to the federation rule names so findings read coherently).
-					await checkLinks(idxText, indexPath, fed.root, (level, rule, message) => add(level, rule.startsWith('R10') ? 'F2' : rule, message));
+					const idxText = indexState.text;
+					try {
+						await checkLinks(idxText, indexPath, fed.root, (level, rule, message) => add(level, rule.startsWith('R10') ? 'F2' : rule, message));
+					} catch (err) {
+						add('WARN', 'F2', `联邦索引链接检查中断（${err?.code ?? 'unknown'}），其余链接未检查，状态未知`);
+					}
 					for (const m of idxText.matchAll(/`([^`\n|]+)`/g)) {
 						const p0 = m[1].trim().replace(/[/\\]+$/, '');
 						if (!/^[A-Za-z]:[\\/]/.test(p0) && !p0.startsWith('/')) continue;
-						if (!(await statExists(p0))) add('WARN', 'F4', `联邦层引用的绝对路径已不存在 -> ${p0}`);
-					}
-					// F5: orphan copies
-					let copies = [];
-					try {
-						copies = (await readdir(sourcesDir)).filter((n) => n.endsWith('.MEMORY.md'));
-					} catch {
-						/* none */
-					}
-					for (const c of copies) {
-						if (!fed.projects.some((p) => `${p.key}.MEMORY.md` === c)) {
-							add('WARN', 'F5', `孤儿副本 sources/${c} 不对应任何已配置项目（移走或补配置）`);
+						try {
+							if (!(await statExists(p0))) add('WARN', 'F4', `联邦层引用的绝对路径已不存在 -> ${p0}`);
+						} catch (err) {
+							add('WARN', 'F4', `联邦层绝对路径检查失败（${err?.code ?? 'unknown'}），存在状态未知 -> ${p0}`);
 						}
 					}
 					for (const p of fed.projects) {
 						if (!idxText.includes(`sources/${p.key}.MEMORY.md`)) add('FAIL', 'F3', `项目索引表缺少 ${p.key} 一行（重新 sync）`);
 					}
+				}
+				try {
+					for (const c of (await readdir(sourcesDir)).filter((n) => n.endsWith('.MEMORY.md'))) {
+						if (!fed.projects.some((p) => `${p.key}.MEMORY.md` === c)) add('WARN', 'F5', `孤儿副本 sources/${c} 不对应任何已配置项目（移走或补配置）`);
+					}
+				} catch (err) {
+					if (!isMissing(err)) add('WARN', 'F5', `来源副本目录无法枚举（${err?.code ?? 'unknown'}），孤儿副本未检查，状态未知：${sourcesDir}`);
 				}
 			}
 			const failCount = findings.filter((f) => f.level === 'FAIL').length;
@@ -2534,15 +2769,26 @@ warnings: { type: 'array', required: true, items: { type: 'string' } },
 				// kept by git" while <dshHome>/skills is not a repository on this
 				// machine — an overwrite that claimed a safety net which did not
 				// exist. Keep the superseded body ourselves, append-only, before
-				// replacing it. One slot per day: same-day re-crystallizes keep the
-				// FIRST snapshot (the oldest full body is the useful baseline; the
-				// latest is already live on disk).
+				// replacing it. Only one slot exists per day; if occupied, its
+				// provenance cannot be established here, so preserve it and stop.
 				if (existing !== undefined) {
 					const histDir = path.join(dir, '.history');
-					await mkdir(histDir, { recursive: true });
 					const histFile = path.join(histDir, `${name}-${date}.md`);
-					if (await statExists(histFile)) warnings.push(`.history/${name}-${date}.md 已存在：保留首份快照，本次覆盖不再重复存档`);
-					else await writeFile(histFile, existing, 'utf8');
+					try {
+						await mkdir(histDir, { recursive: true });
+						// The name may already denote a dangling symlink or another file.
+						// Exclusivity checks the directory entry without following it.
+						await writeFile(histFile, existing, { encoding: 'utf8', flag: 'wx' });
+					} catch (cause) {
+						const occupied = cause?.code === 'EEXIST';
+						const error = new Error(occupied
+							? `历史快照创建结果不明：路径已被占用（${histFile}）；无法确认既有快照的安全性和来源，SKILL.md 未修改。请核查现场，不可盲目重试或删除快照。`
+							: `历史快照创建结果不明（${histFile}，${cause?.code ?? 'unknown'}）；SKILL.md 未修改。请核查现场，不可盲目重试或删除快照。`, { cause });
+						error.code = occupied ? 'MEMORY_SKILL_HISTORY_EXISTS' : 'MEMORY_SKILL_HISTORY_UNKNOWN';
+						error.skillWritten = false;
+						error.snapshotWritten = null;
+						throw error;
+					}
 				}
 				await writeText(p, body);
 				await appendUsage(root, { href: `skills/${name}/SKILL.md`, kind: 'lifecycle', note: created ? `结晶（${priorStatus}）` : `重结晶（保留 ${priorStatus}）` });
@@ -2643,7 +2889,7 @@ function memoryWriteTool(opts) {
 	return defineTool({
 		name: 'memory_write',
 		description:
-			'Append ONE iteration block to functions/<feature>.md (distilled conclusion, not a process log; dates are tags, blocks are append-only) and refresh the file-head stable-state summary via `currentState`. The daily log (YYYY-MM-DD.md) is the RAW layer — the model/harness records whatever it wants there with any means; this tool never touches it. **Cadence rule (user, 2026-11-09): a block synthesizes >=3 TOPIC-RELEVANT days of daily-log material, not a single day and not a sliding 3-day window** — pick the days yourself: define the theme, search ALL daily logs (memory_search), select the dates genuinely related to it (may be non-contiguous, weeks apart), and note in the block why those days were chosen. Evidence relevance, not calendar adjacency. Write what HOLDS across those days (evolution, recurrence, reversal). Under 3 relevant days: keep accumulating, distill at the weekly review. Exceptions (note the reason in the block): explicit user request, or same-day pitfall-causality/safety constraints. The MEMORY.md index row is written separately (memory_index) once a feature area stabilizes, so distillation flows daily → functions → index, one direction per step. Hard limits enforced on write: block body ≤900 chars, 概括 ≤110 chars (over-length is rejected as a process log, not a distilled conclusion). A block is a DISTILLED conclusion (动因 / 改动 / 判据 / 待观察, one line each): per-step changelists, code-level enumerations and debugging process stay in the session, the daily log and the code — writing them into the block is the failure R14 flags.',
+			'Append ONE iteration block to functions/<feature>.md (distilled conclusion, not a process log; dates are tags, blocks are append-only) and refresh the file-head stable-state summary via `currentState`. The daily log (YYYY-MM-DD.md) is the RAW evidence layer and is never rewritten by this tool; agent editing is permitted, but direct edits are not authenticated plugin collection and their provenance may be unknown. **Cadence rule (user, 2026-11-09): a block synthesizes >=3 TOPIC-RELEVANT days of daily-log material, not a single day and not a sliding 3-day window** — pick the days yourself: define the theme, search ALL daily logs (memory_search), select the dates genuinely related to it (may be non-contiguous, weeks apart), and note in the block why those days were chosen. Evidence relevance, not calendar adjacency. Write what HOLDS across those days (evolution, recurrence, reversal). Under 3 relevant days: keep accumulating, distill at the weekly review. Exceptions (note the reason in the block): explicit user request, or same-day pitfall-causality/safety constraints. The MEMORY.md index row is written separately (memory_index) once a feature area stabilizes, so distillation flows daily → functions → index, one direction per step. Hard limits enforced on write: block body ≤900 chars, 概括 ≤110 chars (over-length is rejected as a process log, not a distilled conclusion). A block is a DISTILLED conclusion (动因 / 改动 / 判据 / 待观察, one line each): per-step changelists, code-level enumerations and debugging process stay in the session, the daily log and the code — writing them into the block is the failure R14 flags.',
 		parameters: {
 			// Declaration order is display order: the host's generic tool card shows
 			// `name · first string argument`, so the FIRST parameter must be the
@@ -2668,7 +2914,7 @@ function memoryWriteTool(opts) {
 			},
 			resolve: {
 				type: 'string',
-				description: '可选：功能域 slug，声明本迭代解决了该功能遗留的待观察项。自动把各每日日志“今日待观察”里指向该功能的条目标记 ✅ 已解决（勾掉语义，不重抄）。',
+				description: '兼容保留：功能域 slug，声明本迭代解决了该功能的待观察项；为保护原始证据不会改写或勾选历史每日记录，回执会给出提示。',
 			},
 		},
 		output: {
@@ -2691,7 +2937,7 @@ function memoryWriteTool(opts) {
 					`功能文件：${v.featureFile}（${v.functionBytes}B${v.createdFunctionFile ? '，新建' : ''}）`,
 				];
 				if (v.resolvedDailyLogs.length) lines.push(`✅ 已勾掉待观察项：${v.resolvedDailyLogs.join('、')}`);
-				lines.push('ℹ 索引行未自动写入——功能域稳定后用 memory_index 收进索引；每日记录属于原始层，只能通过插件采集写入。');
+				lines.push('ℹ 索引行未自动写入——功能域稳定后用 memory_index 收进索引；本工具不改写每日原始记录，直接编辑的来源可能未知。');
 				// 自检结果必须显示：合格给一句确认，不合格逐项点名。
 				if (v.selfCheck) {
 					lines.push(v.selfCheck.ok ? `✓ ${v.selfCheck.layer}层自检通过` : `⛔ ${v.selfCheck.layer}层自检未过：`);
@@ -2832,20 +3078,11 @@ function memoryWriteTool(opts) {
 			// integration layer (memory_index), written once a feature area
 			// stabilizes — distillation flows daily → functions → index.
 
-			// 3) the daily log is the RAW layer: the model/harness records there
-			// freely with any means; this tool never touches it.
-
-			// 4) resolve open items (R2 勾掉): mark still-open daily entries for
-			// the resolved feature across logs from the day it was first raised.
-			let resolvedIn = [];
-			if (resolveTarget) {
-				try {
-					resolvedIn = await resolveOpenItems(root, resolveTarget, '0000-01-01', date);
-					if (!resolvedIn.length) warnings.push(`resolve: ${resolveTarget} 在每日日志的待观察区没有未解决条目（可能已勾掉或不存在）`);
-				} catch (err) {
-					warnings.push(`功能文件已写入，但更新每日待观察项未全部完成：${String(err?.message ?? err)}；请先核对已处理文件，不要盲目重试写入`);
-				}
-			}
+			// This tool preserves historical daily evidence, regardless of its source.
+			// Keep resolve and resolvedDailyLogs for existing callers, but do not
+			// rewrite the historical evidence or imply that entries were resolved.
+			const resolvedIn = [];
+			if (resolveTarget) warnings.push(`resolve: ${resolveTarget} 的功能迭代已记录；为保留原始证据，未修改或勾选任何历史每日记录，也未确认其中的待观察项已解决。`);
 
 			// —— 写入后：从磁盘回读，按「术层定义」自检（用户 2026-11-02 要求）——
 			//
@@ -3552,7 +3789,7 @@ function memoryRenameTool(opts) {
 	return defineTool({
 		name: 'memory_rename',
 		description:
-			'Rename or merge a function area (R10): moves functions/<from>.md to functions/<to>.md (merge = fold the old file\'s blocks under the target\'s head, when <to> already exists), rewrites EVERY in-memory-root reference (index row, related links in other function files, insight backlinks, daily logs), and verifies zero dangling links afterwards. The target file is canonical; a merged file is deleted after its content moves.',
+			'Rename or merge a function area (R10): move functions/<from>.md to functions/<to>.md, preserving source content when merging into an existing target, and update index, function and insight references. Historical daily logs are never rewritten, so their links may retain the old name. Report remaining dangling links; zero is not guaranteed.',
 		parameters: {
 			from: { type: 'string', required: true, description: '现有功能域 slug。' },
 			to: { type: 'string', required: true, description: '目标 slug：不存在 = 重命名；已存在 = 合并（旧块追加到目标文件末尾）。' },
@@ -3571,10 +3808,11 @@ function memoryRenameTool(opts) {
 				},
 			},
 			render: (_args, v) => {
+				const incomplete = v.warnings.some((w) => w.startsWith('R10 死链检查不完整'));
 				const lines = [
 					v.mode === 'renamed' ? `已重命名：${v.fromFile} → ${v.toFile}` : `已合并：${v.fromFile} 并入 ${v.toFile}`,
 					`改写引用的文件：${v.rewrittenFiles.length ? v.rewrittenFiles.join('、') : '（无）'}`,
-					`改写后死链数：${v.danglingAfter}`,
+					incomplete ? `改写后已发现死链数（检查不完整，仅为下界）：${v.danglingAfter}` : `改写后死链数：${v.danglingAfter}`,
 				];
 				for (const w of v.warnings) lines.push(`⚠ ${w}`);
 				return [{ type: 'text', text: lines.join('\n') }];
@@ -3620,7 +3858,7 @@ function memoryRenameTool(opts) {
 				throw error;
 			}
 
-			// 2) rewrite every reference across the memory root. Four spellings
+			// 2) rewrite derived index, function and insight references. Four spellings
 			// exist: index link `functions/<from>.md`, bare sibling links
 			// `](<from>.md)` inside functions/, `functions/<from>.md` prose, and
 			// the index row — BOTH name spellings: a bare cell `| from |` (legacy)
@@ -3682,18 +3920,25 @@ function memoryRenameTool(opts) {
 				}
 				for (const n of names) await rewriteIn(path.join(root, zone, n));
 			}
-			try {
-				for (const n of await readdir(root)) {
-					if (/^\d{4}-\d{2}-\d{2}\.md$/.test(n)) await rewriteIn(path.join(root, n));
-				}
-			} catch {
-				/* root absent */
-			}
+			// Daily logs are raw evidence, not a derived link index. Never rewrite
+			// historical records during a rename or merge.
+			warnings.push(`为保留原始证据，已跳过全部历史每日记录的链接改写；历史链接可能仍指向旧名 functions/${from}.md。`);
 
 			// 3) verify: run the real checker and count dangling links
-			const health = await runHealthCheck(root, opts);
+			let health;
+			try {
+				health = await runHealthCheck(root, opts);
+			} catch (err) {
+				// The move and rewrites have already completed; report verification
+				// failure separately instead of presenting the rename as a failure.
+				health = { results: [] };
+				warnings.push(`R10 死链检查不完整：体检未完成（${err?.code ?? 'unknown'}）；已发现数 0 仅为下界。`);
+			}
 			const danglingAfter = health.results.filter((r) => r.rule === 'R10' && r.level === 'FAIL').length;
-			if (danglingAfter > 0) warnings.push(`改写后仍有 ${danglingAfter} 条死链（见 memory_check 输出，可再用 replace 修正残余字面量）`);
+			const r10Unknown = health.results.filter((r) => r.rule === 'R10' && r.level === 'WARN');
+			const noIndex = health.results.filter((r) => r.rule === 'R0' && r.level === 'FAIL');
+			if (r10Unknown.length || noIndex.length) warnings.push(`R10 死链检查不完整：${[...r10Unknown, ...noIndex].map((r) => r.message).join('；')}；已发现数 ${danglingAfter} 仅为下界。`);
+			if (danglingAfter > 0) warnings.push(`改写后仍有 ${danglingAfter} 条死链（见 memory_check 输出；历史每日记录应保留原样）`);
 			if (merging) warnings.push(`合并完成：${from} 的块已追加到 ${to} 末尾，来源文件已删除；请确认 target 的状态摘要仍准确`);
 
 			return {
@@ -3786,6 +4031,17 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = 
 			/* root absent */
 		}
 		for (const n of names) files.push({ zone: 'daily', name: n, file: path.join(root, n) });
+		// 月/周折叠方案（2026-11）：归档月文件同样计入检索范围（全文检索）。
+		// 日期归属用日节标题（### [YYYY-MM-DD]）：归档件文件名只有月份，无法
+		// 单独给命中行定日，解析不到就按"未知日期"放行（与文件级 mtime 兜底
+		// 同口径——不确定就如实标注，不冒充已确认）。
+		let archNames = [];
+		try {
+			archNames = (await readdir(path.join(root, 'daily'))).filter((n) => /^\d{4}-\d{2}\.md$/.test(n)).sort().reverse();
+		} catch {
+			/* daily/ absent: no archives */
+		}
+		for (const n of archNames) files.push({ zone: 'daily', name: n, file: path.join(root, 'daily', n), archive: true });
 	}
 	const hits = [];
 	for (const f of files) {
@@ -3816,6 +4072,9 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = 
 		let heading = '';
 		let blockDate = '';
 		const fileHits = [];
+		// 月归档（2026-11）：日节标题 ### [YYYY-MM-DD] 给其后各行归属日期，
+		// 尽力而为——解析不到的行日期为空串（未知），不冒充已确认。
+		let archDayDate = '';
 		for (let i = 0; i < lines.length; i++) {
 			const line = lines[i];
 			const lower = line.toLowerCase();
@@ -3823,6 +4082,12 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = 
 			if (hm) heading = hm[1].trim();
 			const dm = /^##\s*\[(\d{4}-\d{2}-\d{2})/.exec(line.trim());
 			if (dm) blockDate = dm[1];
+			if (f.archive) {
+				const daym = /^###\s*\[(\d{4}-\d{2}-\d{2})\]/.exec(line.trim());
+				if (daym) archDayDate = daym[1];
+				// 周节（## 周…）开新分组：重置日归属，避免上一周的日期漏给下一周。
+				else if (/^##\s/.test(line.trim())) archDayDate = '';
+			}
 			let score = 0;
 			if (lower.includes(q)) score += 3;
 			if (heading && heading.toLowerCase().includes(q)) score += 2;
@@ -3830,7 +4095,7 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = 
 			for (const tk of tokens) if (lower.includes(tk)) tokenHits++;
 			score += tokenHits;
 			if (score === 0) continue;
-			const hitDate = await dateOf(blockDate);
+			const hitDate = f.archive ? (archDayDate || await dateOf('')) : await dateOf(blockDate);
 			// A line whose date cannot be resolved at all passes both bounds —
 			// never hide a hit whose age is unknown; the date field shows why.
 			if (after && hitDate && hitDate < after) continue;
@@ -4293,7 +4558,7 @@ const DISCIPLINE_TEXT = [
 	'',
 	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十四个工具：memory_read / memory_search / memory_capability / memory_write / memory_index / memory_insight / memory_dao / memory_fold / memory_rename / memory_check / memory_usage / memory_federation / memory_skill / memory_inbox；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向五层，每层只吃上一层的产出**：',
 	'',
-	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 是任务与对话过程的第一手数据，内容可保留决策、对话和踩坑，但按用户要求只能通过插件采集写入，不可直接用编辑工具、shell 或脚本修改；未启用采集时如实报告缺口。它是一切蒸馏的原料；同一事实只在这里是"过程"，其余层只见结论。只有一条轻过滤：**执行式日志（命令输出、PID、退出码、耗时流水）不要抄**——会话转录与日志文件里本来就有，抄进每日记录只会稀释蒸馏原料；值得记的是日志里没有的：判断与取舍、用户原话、踩坑的因果、待验证的下一步。',
+	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 可由 agent 使用编辑工具记录；每天留意有价值的判断、取舍、经验、踩坑因果和待验证事项，没有值得记录的内容时不强制当天有条目。粗粒度筛选：**执行式日志（常规命令输出、PID、退出码、耗时流水）不要抄**，理解关键因果必需的细节可少量保留；不补造历史，不记录凭据。直接编辑不等于插件采集或来源认证，也不自动脱敏；来源不明时如实标记未知，可能触发 R26 对账或采集基线不匹配，不得补造账本。插件用户消息采集默认关闭，开启后只采集符合条件的用户原话并脱敏、截断，不自动记录助手判断，也不保证来源认证或完整性；未启用时如实说明采集缺口。其他记忆层仍按各自插件工具与保护机制写入。',
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一个 functions/<功能域>.md 迭代块 = **≥3 个主题相关素材日的综合结论**（蒸馏结论：动因/改动/判据/待观察 各一句；2026-11-09 用户要求：不以单日为单位蒸馏，单日事件多是过程片段，多天的演化/反复/被推翻才值得归档）。**素材日由 agent 围绕主题检索推理挑选**（memory_search 全库找相关日，可不连续、可跨周月），不是机械取最近 3 天——选证据关联不选日历相邻，块内说明为何选这些日。相关素材不足 3 天先积累不蒸馏（周检是天然时机）；用户显式要求或踩坑因果/安全约束可豁免，块内注明素材日期与理由。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
 	'- **第 2 层 · 创新思想（memory_insight）**：从功能划分中**再提取**可迁移原则（会重套的、不绑定单一功能机制的），回链来源功能域；取代旧思想传 `supersedes`。',
 	'- **第 3 层 · 索引与总览（memory_index）**：**整合层**——功能域稳定后（有 ≥2 个迭代块，或用户可感知为独立主题时）用 memory_index 把它收进 MEMORY.md 索引；索引行摘要 = 从各迭代块的概括中提炼的"这个功能是什么"。索引是展示与检索的派生物，不与单次写入强绑。',
@@ -4308,7 +4573,7 @@ const DISCIPLINE_TEXT = [
 	'- **使用信号让记忆自己排序**：召回命中与 memory_read 会自动记信号；用户纠正/明确认可时用 `memory_usage(action=record, kind=correction|positive)` 记一笔（这是分层判断里唯一不能自动获得的信号）。`memory_usage(action=report)` 给出 实验/专项/通用 建议；某域近 7 天纠正率 >40% 时体检 R18 报熔断——先重构再追加。',
 	'- **守护型**：低频但高价值的记忆（安全审计、关键踩坑、兜底规则）用 `memory_write(guard=true)` 标记，体检的冷记忆规则会跳过它——不要因为"很久没写"就删掉兜底经验。',
 	'- **项目归属**：涉及特定项目的记忆，在功能域 slug 或正文里注明项目名（如 `toolbox-login`）。功能域多到单根过大时，可启用**联邦模式**（`federation: { root, projects }`）：项目真相源留在各项目记忆根，`memory_federation` 负责刷副本与跨项目索引，项目细节不上升。',
-	'- **收缩机制**：功能文件超 30KB 用 `memory_fold` 折叠最旧块；MEMORY.md 超线按 ### 子分区拆分；重命名/合并用 `memory_rename`（自动改写引用并验证死链清零）。',
+	'- **收缩机制**：功能文件超 30KB 用 `memory_fold` 折叠最旧块；MEMORY.md 超线按 ### 子分区拆分；重命名/合并用 `memory_rename`（改写派生层引用并报告剩余死链；历史每日记录保留原样，可能仍指向旧名）。',
 	'- **密钥防线**：凭据（API key / token / 私钥 / JWT）绝不进记忆——插件写入口在落盘前把凭据形态替换成 `[REDACTED:kind]` 并在回执点名；每日采集也须经过插件脱敏；体检 R21 是补充检测，身份证/手机号只告警不改写。留「调用形态 + 前提从哪里领」，不留密钥本体。',
 	'- 批量改动记忆后跑 `memory_check` 体检。',
 	'- 归属口诀：会**重跑**的操作（术·functions/）、会**重套**的原则（法·insights/）、**反复跑通且验证**的程序（技能·宿主目录包 `<dshHome>/skills/`，靠 frontmatter `agent_created` 与外来安装包区分）、**≥5 条法萃出的上位命题**（道·dao/，由 `memory_dao` 写、R24 守）、违反即出事故的约束（共识区·MEMORY.md，R19 守）、指向内容的指针（器·索引与面板）；原始过程永远只留在每日记录。',
@@ -4396,7 +4661,10 @@ async function zoneCounts(root, skillRoot = '') {
 		// 5.24.0: skills are host bundles — the badge counts directories that
 		// actually carry a SKILL.md.
 		skills: await countBundles(skillRoot || path.join(dshHome(), 'skills')),
-		daily: await count(root, (n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)),
+		// 月/周折叠方案（2026-11）：口径变更 —— counts.daily 含归档月文件
+		// （daily/YYYY-MM.md）在内；归档本身的数量另立 archived 计数，汇报时注明。
+		archived: await count(path.join(root, 'daily'), (n) => /^\d{4}-\d{2}\.md$/.test(n)),
+		daily: await count(root, (n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n)) + await count(path.join(root, 'daily'), (n) => /^\d{4}-\d{2}\.md$/.test(n)),
 	};
 }
 
@@ -4476,7 +4744,8 @@ function memoryPanelApi(opts, connection, inbox) {
 					// panel can tell success from a swallowed rollback.
 					lastReload: globalThis[Symbol.for('dsh-memory-manager.last-reload')] ?? null,
 				};
-				return json(res, 200, [{ ...health, title: '全局记忆', path: joinDshHome(), counts: await zoneCounts(root, opts.skillRoot), usage: { signalCount, layers: layerCounts, hotspots: hotspots.slice(0, 5) }, env }]);
+				const capture = opts.captureStatus?.();
+				return json(res, 200, [{ ...health, title: '全局记忆', path: joinDshHome(), counts: await zoneCounts(root, opts.skillRoot), usage: { signalCount, layers: layerCounts, hotspots: hotspots.slice(0, 5) }, capture: capture ? { ...capture, intentWitness: await inspectCaptureIntent(root) } : null, env }]);
 			}
 			if (seg === 'file') {
 				const name = url.searchParams.get('name');
@@ -4487,15 +4756,45 @@ function memoryPanelApi(opts, connection, inbox) {
 				if (!['', ...SEARCH_ZONES].includes(zone)) {
 					return json(res, 400, { error: 'invalid zone' });
 				}
-				if (zone === 'daily' && !/^\d{4}-\d{2}-\d{2}\.md$/.test(name)) {
-					return json(res, 400, { error: 'daily zone accepts only YYYY-MM-DD.md' });
+				if (zone === 'daily' && !/^\d{4}-\d{2}(-\d{2})?\.md$/.test(name)) {
+					// 月/周折叠方案（2026-11）：每日分区同时放行日线程（YYYY-MM-DD.md）
+					// 与月归档（YYYY-MM.md）。两种形态都是严格的日期形名字 —— join 只能
+					// 落在记忆根下，MEMORY.md 等杂文件天然被这条正则拒绝。
+					return json(res, 400, { error: 'daily zone accepts only YYYY-MM-DD.md or YYYY-MM.md' });
 				}
-				// zone is whitelisted and name rejects separators, so the join can
-				// only land inside the memory root.
-				const full = zone === 'daily' ? path.join(root, name) : path.join(root, zone, name);
+				if (zone === 'daily' && /^\d{4}-\d{2}\.md$/.test(name)) {
+					// 月形名做真实月份校验：13 月这类不可能日期拒绝在 400，而不是
+					// 落到 404 让调用方误以为格式合法但文件不存在。
+					const monthNum = Number(name.slice(5, 7));
+					if (!(monthNum >= 1 && monthNum <= 12)) {
+						return json(res, 400, { error: 'daily zone accepts months 01-12' });
+					}
+				}
+				// 归档文件固定落在 root/daily/ 下；根层仍只放日线程。先验月形名，
+				// 再决定目录——穿越与杂文件在上一条已拒。
+				const isMonthArchive = zone === 'daily' && /^\d{4}-\d{2}\.md$/.test(name);
+				const full = zone === 'daily'
+					? path.join(isMonthArchive ? path.join(root, 'daily') : root, name)
+					: path.join(root, zone, name);
 				const text = await readIfExists(full);
 				if (text === undefined) return json(res, 404, { error: 'file not found' });
 				return json(res, 200, { name, text });
+			}
+			// 月归档的日线索（月/周折叠方案 2026-11）：只解析 `### [YYYY-MM-DD]`
+			// 标题行，不读全文。展开归档时前端先拿这份索引，点开某一天再走
+			// /file?zone=daily 按需取正文 —— 归档月可能有几十天，一次性全文会拖慢列表。
+			if (seg === 'daily-days') {
+				const name = url.searchParams.get('name');
+				if (!name || !/^\d{4}-\d{2}\.md$/.test(name) || !/^\d{4}-(0[1-9]|1[0-2])\.md$/.test(name)) {
+					return json(res, 400, { error: 'daily-days accepts only YYYY-MM.md' });
+				}
+				// 严格月形名 + 无分隔符（上面已拒 .. 与 /）→ join 只能落在 root/daily/。
+				const text = await readIfExists(path.join(root, 'daily', name));
+				if (text === undefined) return json(res, 404, { error: 'archive not found' });
+				// 标题行解析必须**不跨行**：`\s*` 会吃掉 \n 把下一天的正文第一行当成
+				// 标题尾（实测踩过）。行内空白用 [ \t]*，标题只可能是同一行的尾巴。
+				const days = [...text.matchAll(/^###[ \t]*\[(\d{4}-\d{2}-\d{2})\][ \t]*([^\n]*)$/gm)].map((m) => ({ date: m[1], title: m[2].trim() }));
+				return json(res, 200, { name, days });
 			}
 			// Recall preview (MemOS borrow ②): run the REAL pre-step pipeline
 			// against an arbitrary query and return what would be injected, with
@@ -4955,8 +5254,7 @@ function memoryPanelApi(opts, connection, inbox) {
 			}
 			if (seg === 'list') {
 				const zone = url.searchParams.get('zone');
-				if (!SEARCH_ZONES.includes(zone)) return json(res, 400, { error: 'invalid zone' });
-				// 5.24.0: skills are host bundles, not memory-root files. The panel
+				if (!SEARCH_ZONES.includes(zone)) return json(res, 400, { error: 'invalid zone' });				// 5.24.0: skills are host bundles, not memory-root files. The panel
 				// skill zone IS the library endpoint (/skills); /list?zone=skills
 				// keeps answering with bundle SKILL.md rows so an older caller
 				// reading the list zone still gets real rows.
@@ -4990,18 +5288,37 @@ function memoryPanelApi(opts, connection, inbox) {
 				// Daily zone lists ONLY decision threads (YYYY-MM-DD.md). The index
 				// (MEMORY.md) has its own zone and must never appear under 每日,
 				// and neither may stray non-dated files at the root. Newest first.
-				if (zone === 'daily') names = names.filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n));
+				// 月/周折叠方案（2026-11）：月归档（YYYY-MM.md）不再混进 files，
+				// 单独作为 archive 数组返回 —— 前端按周子折叠展示，旧的直线列表
+				// 消费者拿到的 files 形状不变（两布局兼容）。
+				let archive = [];
+				const archiveDir = path.join(root, 'daily');
+				if (zone === 'daily') {
+					const dated = names.filter((n) => /^\d{4}-\d{2}-\d{2}\.md$/.test(n));
+					names = dated;
+					try {
+						archive = (await readdir(archiveDir)).filter((n) => /^\d{4}-\d{2}\.md$/.test(n));
+					} catch {
+						/* daily/ absent: no archives yet */
+					}
+				}
 				names.sort(zone === 'daily' ? (a, b) => b.localeCompare(a) : undefined);
+				const toRow = async (dir2, n) => {
+					const st = await stat(path.join(dir2, n));
+					return { name: n, bytes: st.size, mtime: st.mtime.toISOString() };
+				};
 				const files = [];
-				for (const n of names) {
-					const st = await stat(path.join(dir, n));
-					files.push({ name: n, bytes: st.size, mtime: st.mtime.toISOString() });
+				for (const n of names) files.push(await toRow(dir, n));
+				const archiveRows = [];
+				if (zone === 'daily') {
+					for (const n of archive.sort((a, b) => b.localeCompare(a))) archiveRows.push(await toRow(archiveDir, n));
 				}
 				// Newest-first for every zone (the panel and any other consumer
 				// display the top row first). Names were pre-sorted per zone, so
 				// this single mtime pass makes the order uniform.
 				files.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
-				return json(res, 200, { files });
+				archiveRows.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
+				return json(res, 200, zone === 'daily' ? { files, archive: archiveRows } : { files });
 			}
 			if (seg === 'check') {
 				return json(res, 200, panelizeHealth(await runHealthCheck(root, opts)));
@@ -5078,8 +5395,9 @@ function memoryPanelApi(opts, connection, inbox) {
 				'<p>该插件的可视面板在 Harness Web UI 的侧栏（记忆图标）。此只读 API 供面板取数；记忆根由服务端解析，请求不能指定路径：</p>' +
 					'<ul><li><code>GET /api/memory-org/overview</code> — 全局记忆体检 + 各分区计数</li>' +
 					'<li><code>GET /api/memory-org/check</code> — 体检</li>' +
-					'<li><code>GET /api/memory-org/list?zone=functions|insights|daily</code> — 分区文件列表</li>' +
-					'<li><code>GET /api/memory-org/file?zone=functions&amp;name=&lt;file&gt;.md</code> — 读记忆文件（省略 zone 即索引）</li>' +
+					'<li><code>GET /api/memory-org/list?zone=functions|insights|daily</code> — 分区文件列表（daily 额外返回 archive 月归档数组）</li>' +
+					'<li><code>GET /api/memory-org/file?zone=functions&amp;name=&lt;file&gt;.md</code> — 读记忆文件（省略 zone 即索引；zone=daily 放行日线程与 daily/ 下的月归档）</li>' +
+					'<li><code>GET /api/memory-org/daily-days?name=YYYY-MM.md</code> — 月归档的日线索（只解析 ### [YYYY-MM-DD] 标题行，不读全文）</li>' +
 					'<li><code>GET /api/memory-org/skills</code> — 技能库（宿主目录包单一存储；agent_created 分「结晶/系统」两栏，各带文件树）</li>' +
 					'<li><code>GET /api/memory-org/skill?name=&lt;bundle&gt;</code> — 技能包正文 + 文件清单（服务端解析根，请求只给名字）</li>' +
 					'<li><code>GET /api/memory-org/skillfile?name=&lt;bundle&gt;&amp;file=&lt;rel&gt;</code> — 包内资源文件原文（scripts/references；相对路径禁穿越）</li>' +
@@ -5143,6 +5461,13 @@ export function apply(ctx, config) {
 			? Math.min(65536, Math.floor(config.recallOptionalBudgetBytes)) : 8192,
 		// Passive capture into the raw daily layer (off unless opted in).
 		captureUserTurns: config?.captureUserTurns === true,
+		// Daily month archive (2026-11-13, user-enabled): 0 disables. Config may
+		// delay or slow it; it never extends past one day (protects the current
+		// month from being archived away by a stale clock).
+		dailyArchiveFirstDelayMs: Number.isFinite(config?.dailyArchiveFirstDelayMs) && config.dailyArchiveFirstDelayMs >= 0
+			? Math.min(config.dailyArchiveFirstDelayMs, 86_400_000) : DEFAULTS.dailyArchiveFirstDelayMs,
+		dailyArchiveIntervalMs: Number.isFinite(config?.dailyArchiveIntervalMs) && config.dailyArchiveIntervalMs >= 0
+			? Math.min(config.dailyArchiveIntervalMs, 86_400_000) : DEFAULTS.dailyArchiveIntervalMs,
 		// Opt-in three-tier federation: { root, projects: [{ key, root }] }.
 		federation: config?.federation && typeof config.federation === 'object' ? config.federation : undefined,
 		// Hot reload (5.25.0): the panel's /reload endpoint calls this. selfReload
@@ -5163,6 +5488,42 @@ export function apply(ctx, config) {
 		})(),
 		reload: () => selfReload(ctx, { logger: ctx.logger ?? console }),
 	};
+
+	// Instance-local observations only; no event, inbox post or durable data.
+	const captureStatus = createCaptureStatus({ enabled: opts.captureUserTurns });
+	opts.captureStatus = () => captureStatus.snapshot();
+
+	// —— 每日按月归档定时器（2026-11-13 用户启用）——
+	//
+	// 启动 60s 后首跑、每 6h 一次（0 关闭）。归档只处理**非当月**的顶层日文件，
+	// 当月文件永不触碰；写入走 writeText 记账、删除走 delete_intent/delete 配对，
+	// 失败保留源文件。withMemoryRootTransaction 与其他写入共享同进程根队列；
+	// 失败只记本实例状态，不投递收件箱（体检 R10/R21/R26 会对归档结果对账）。
+	// disposers 数组在下方才初始化，定时器清理器先暂存、注册时再并入。
+	const archiveDisposers = [];
+	if (opts.dailyArchiveFirstDelayMs > 0 && opts.dailyArchiveIntervalMs > 0) {
+		let archiveBusy = false;
+		// 进程内 1h 节流：热重载/多实例会重复 apply()，每个新实例都有自己的
+		// 60s 定时器；Symbol.for 级时间戳让同进程内的所有实例共享一个节流窗，
+		// 避免同一记忆根在一小时内被归档通道反复触碰。
+		const ARCHIVE_LAST_RUN = Symbol.for('dsh-memory-manager.archive-last-run');
+		const ARCHIVE_THROTTLE_MS = 60 * 60 * 1000;
+		const runArchive = () => {
+			if (archiveBusy) return;
+			const last = globalThis[ARCHIVE_LAST_RUN] ?? 0;
+			if (Date.now() - last < ARCHIVE_THROTTLE_MS) return;
+			archiveBusy = true;
+			globalThis[ARCHIVE_LAST_RUN] = Date.now();
+			void withMemoryRootTransaction(resolveRoot(opts), () => archiveDailyMonths(resolveRoot(opts)))
+				.catch(() => {})
+				.finally(() => { archiveBusy = false; });
+		};
+		const archiveTimer = setTimeout(runArchive, opts.dailyArchiveFirstDelayMs);
+		archiveTimer.unref?.();
+		const archiveInterval = setInterval(runArchive, opts.dailyArchiveIntervalMs);
+		archiveInterval.unref?.();
+		archiveDisposers.push(() => { clearTimeout(archiveTimer); clearInterval(archiveInterval); });
+	}
 
 	// 收件箱先建：memory_check 的自动投递要用它（发现→跟踪零配合）。
 	const inbox = new MemoryInbox(dshHome);
@@ -5203,6 +5564,7 @@ export function apply(ctx, config) {
 	disposers.push(
 		ctx.tools.register(memoryInboxTool(opts, inbox)),
 	);
+	disposers.push(...archiveDisposers);
 
 	// 订阅其他插件的健康通报 —— 这是"问题投递"的自动通道。
 	// 用 ctx.on 注册，随插件卸载自动取消（Cordis 保证）。
@@ -5354,13 +5716,13 @@ export function apply(ctx, config) {
 	};
 	disposers.push(
 		ctx.on('agent/pre-step', async (payload, next) => {
+			const batch = Array.isArray(payload.messages) ? payload.messages : [];
 			// Build the recall candidate first; a recall failure must never break a
 			// step, so ONLY this block is guarded. `next()` runs exactly once,
 			// outside the guard, so a downstream error propagates (instead of the
 			// waterfall being re-entered by a catch that calls next() again).
 			let recall = null;
 			try {
-				const batch = payload.messages ?? [];
 				const userText = batch
 					.flatMap((m) => (m?.role === 'user' ? m.content : []))
 					.filter((b) => b?.type === 'text')
@@ -5470,34 +5832,33 @@ export function apply(ctx, config) {
 				} finally {
 					if (timeout !== undefined) clearTimeout(timeout);
 				}
-				// Passive capture (⑥): append the user's own words to today's RAW layer.
-				// Opt-in, best-effort and SIDE-STEPPED: it never blocks, never breaks
-				// the step, and never changes what was injected above.
-				if (opts.captureUserTurns && userText.trim()) {
-					void (async () => {
-						try {
-							const root = resolveRoot(opts);
-							await withMemoryRootTransaction(root, async () => {
-								const today = localDateStr();
-								const p = path.join(root, `${today}.md`);
-								let info;
-								try { info = await lstat(p); } catch (err) { if (err?.code !== 'ENOENT') throw err; }
-								// Do not interpret unreadable or aliased existing files as a new day.
-								if (info && (!info.isFile() || info.nlink > 1)) throw new Error('每日记录不是独立普通文件');
-								const before = info ? await readFile(p, 'utf8') : dailyTemplate(today);
-								const safeText = redactSecrets(userText).text;
-								const line = captureLineFor(safeText, before, { enabled: true, maxChars: opts.captureMaxChars });
-								if (line) await writeText(p, `${before}${before.endsWith('\n') || before === '' ? '' : '\n'}${line}\n`, { memoryRoot: root });
-							});
-						} catch {
-							/* capture is a best-effort breadcrumb, never a failure */
-						}
-					})();
-				}
 			} catch {
 				recall = null; // degrade to plain admission
 			}
 			const decision = await next();
+			// Only admitted batches are eligible. Source and message IDs are host
+			// declarations, not proof of a human sender or durable delivery.
+			if (decision.kind === 'enter' && opts.captureUserTurns) {
+				for (const _ of batch) captureStatus.observed();
+				const chosen = selectCaptureEvents(batch, { maxChars: DEFAULTS.captureMaxChars });
+				for (let i = 0; i < chosen.skipped.nonUser + chosen.skipped.nonUserSource; i++) captureStatus.skippedSource();
+				for (let i = 0; i < chosen.skipped.missingId; i++) captureStatus.skippedMissingId();
+				for (const _ of chosen.conflicts) captureStatus.schedule()?.finish('conflict', { code: 'OTHER', stage: 'select' });
+				if (chosen.events.length) {
+					const tickets = chosen.events.map(() => { captureStatus.selected(); return captureStatus.schedule(); });
+					void Promise.resolve().then(() => {
+						const root = resolveRoot(opts);
+						return withMemoryRootTransaction(root, () => captureSelectedEvents(root, chosen.events));
+					}).then(
+						(outcomes) => { for (let i = 0; i < tickets.length; i++) tickets[i]?.finish(outcomes[i]); },
+						(error) => {
+							const code = typeof error?.code === 'string' ? error.code : 'OTHER';
+							const stage = code.startsWith('CAPTURE_MUTEX_') ? 'lock' : code === 'CAPTURE_BASELINE_UNVERIFIED' || code.startsWith('CAPTURE_HISTORY_') || code === 'CAPTURE_UNSAFE_DAILY' ? 'read' : code === 'CAPTURE_FINALIZE_UNKNOWN' ? 'cleanup' : code === 'MEMORY_LEDGER_APPEND_FAILED' ? 'ledger' : code === 'MEMORY_WRITE_COMMIT_UNKNOWN' ? 'commit' : 'stage';
+							for (const ticket of tickets) ticket?.finish('failed', { code, stage });
+						},
+					);
+				}
+			}
 			if (!recall || decision.kind !== 'enter') return decision;
 			// Commit only the candidate that actually won the deadline and is being
 			// inserted into an entered step. Late builds and rejected steps leave no

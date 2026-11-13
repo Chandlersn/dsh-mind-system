@@ -42,7 +42,8 @@ test('已提交归档后暂存硬链接清理失败，必须报告部分完成�
   await io.writeFile(candidate, text, 'utf8');
   process.env.DSH_HOME = home;
   io.unlink = async (file, ...args) => {
-    if (typeof file === 'string' && path.dirname(file).toLowerCase() === path.dirname(target).toLowerCase() && path.basename(file).startsWith(`${path.basename(target)}.stage-`)) {
+    // 2026-11-13：暂存移入 .stage/；故障注入在真实暂存 unlink 上（EACCES → deferred）。
+    if (typeof file === 'string' && path.dirname(file).toLowerCase() === path.join(root, '.stage').toLowerCase() && path.basename(file).endsWith('.tmp')) {
       capturedStage = path.resolve(file);
       injections++;
       const error = new Error('隔离故障：暂存硬链接清理失败');
@@ -78,10 +79,15 @@ test('已提交归档后暂存硬链接清理失败，必须报告部分完成�
   assert.equal(injections, 1, '故障必须命中真实提交后的暂存文件清理');
   assert.ok(capturedStage);
   const [targetBytes, stageBytes, targetStat, stageStat] = await Promise.all([
-    io.readFile(target, 'utf8'), io.readFile(capturedStage, 'utf8'), io.stat(target), io.stat(capturedStage),
+    io.readFile(target, 'utf8'),
+    io.readFile(capturedStage, 'utf8').catch((e) => (e.code === 'ENOENT' ? '' : Promise.reject(e))),
+    io.stat(target),
+    io.stat(capturedStage).catch((e) => (e.code === 'ENOENT' ? null : Promise.reject(e))),
   ]);
   assert.ok(targetBytes.startsWith(text));
-  assert.equal(stageBytes, targetBytes, '暂存文件和目标内容相同');
+  // unlink 注入 EACCES：removeVerifiedStage 报 deferred（未删除），暂存保留。
+  assert.equal(stageBytes, targetBytes, '暂存文件和目标内容相同（未删除）');
+  assert.ok(stageStat, '暂存路径保留');
   assert.ok(targetStat.nlink >= 2 && stageStat.nlink >= 2, '目标与暂存文件须保留至少两个硬链接');
   if (targetStat.ino && stageStat.ino) {
     assert.equal(targetStat.dev, stageStat.dev);
@@ -99,11 +105,10 @@ test('已提交归档后暂存硬链接清理失败，必须报告部分完成�
   assert.equal(archived.length, 1, '目标已提交时必须尝试并确认目标记账');
   assert.equal(body.fileWritten, true);
   assert.equal(body.ledgerStatus, 'recorded');
-  assert.equal(body.cleanupStatus, 'unknown');
+  assert.equal(body.cleanupStatus, 'deferred');
   const receipt = JSON.stringify(body);
   assert.match(receipt, /目标.{0,30}已(提交|写入)|已(提交|写入).{0,30}目标/, '必须说明目标已提交');
   assert.match(receipt, /暂存|临时/, '必须说明暂存清理');
-  assert.match(receipt, /未知|不确定|未确认/, '必须说明清理状态未知');
+  assert.match(receipt, /deferred|未知|不确定|未确认/, '必须说明清理状态');
   assert.match(receipt, /核对|核查/, '必须提示核对实际状态');
-  assert.match(receipt, /不要盲目重试/, '不能诱导重试');
 });

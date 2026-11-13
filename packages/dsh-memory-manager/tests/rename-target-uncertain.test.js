@@ -31,7 +31,8 @@ test('目标已替换但 rename 确认丢失：状态未知且不重试、不删
   let attempts = 0;
   let actualReplacement = false;
   fs.promises.rename = async (from, to) => {
-    if (path.resolve(String(to)) === target && String(from).startsWith(`${target}.rename-`)) {
+    // 2026-11-13：writeRenameTarget 暂存移入 <root>/.stage/（`.stage-<uuid>.tmp`）。
+    if (path.resolve(String(to)) === target && String(from).includes('.stage-')) {
       attempts++;
       if (attempts === 1) {
         await originalRename(from, to);
