@@ -173,7 +173,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "802b0d9702f59925958f1aab43e0fffe4b49cd53f70deafaf10e4a7c02f79815"
+      "sha256": "84c15f7a91ea55902cea27ac1ee39725a08ac4a8b4063456d98399586a9bfce8"
     },
     "memory/src/axiom-candidate.js": {
       "source": "dsh-memory-manager/src/axiom-candidate.js",
@@ -269,7 +269,7 @@
     },
     "memory/src/valves-bridge.js": {
       "source": "dsh-memory-manager/src/valves-bridge.js",
-      "sha256": "2b4715ddc1ffcf490ecacd55d24efb97c83bebefbd3e8420789b506967321c63"
+      "sha256": "dc1cae82ae393ae00d3e96fcb90405d1e9fc625f1a047ce460792d83437a27cb"
     },
     "memory/src/write-guard.js": {
       "source": "dsh-memory-manager/src/write-guard.js",
@@ -390,6 +390,10 @@
     "memory/tests/delete-uncertain.test.js": {
       "source": "dsh-memory-manager/tests/delete-uncertain.test.js",
       "sha256": "cce2e159a6415b43130e02fe3b250e8fdbcd1a448622963a232b23f347587207"
+    },
+    "memory/tests/downward-write-trace.test.js": {
+      "source": "dsh-memory-manager/tests/downward-write-trace.test.js",
+      "sha256": "a803208aa6dcad38c19bde325d8bc7b9dfe4079c71217d227767d03a6cb5be55"
     },
     "memory/tests/federation-check-readonly.test.js": {
       "source": "dsh-memory-manager/tests/federation-check-readonly.test.js",
@@ -569,7 +573,7 @@
     },
     "memory/tests/run-all.mjs": {
       "source": "dsh-memory-manager/tests/run-all.mjs",
-      "sha256": "ba8c9aaf59ceb7e19b45f93c8099017102fea33de86eca8202da2247d9e66c95"
+      "sha256": "f34a69ced7855bc55278a2043610422d124d964a5b0337ea8dc13bb45b565f0f"
     },
     "memory/tests/schema-contract.test.js": {
       "source": "dsh-memory-manager/tests/schema-contract.test.js",

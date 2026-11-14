@@ -68,7 +68,7 @@ import { checkDaoBody, philosophicalShape } from './src/dao-shape.js';
 import { AXIOM_CANDIDATE_STATES, confirmAxiomCandidate, rejectAxiomCandidate, describeCandidate } from './src/axiom-candidate.js';
 // 阀门桥（2026-11-09）：对 dsh-valves 的可选依赖——负向规则召回注入 + 上行评估留痕。
 // 缺 valves 时全部返回 undefined，既有行为一分不变（N4 降级）。
-import { relevantNegativeRules, recordUpwardWrite, upwardEntryFromWrite } from './src/valves-bridge.js';
+import { relevantNegativeRules, recordUpwardWrite, recordDownwardWrite, upwardEntryFromWrite } from './src/valves-bridge.js';
 
 // 归档通道（daily-archive.js）默认自带删除配对实现；这里把本文件的真身
 // deleteTrackedFile 注入进去，使归档删除与 memory_rename 同一语义（intent/
@@ -5552,9 +5552,25 @@ export function apply(ctx, config) {
 	// One cooperative queue covers the entire read/modify/write operation, not
 	// just its final rename. It is shared across plugin reloads in this process.
 	// External processes and uncooperative writers remain outside this boundary.
+	//
+	// P0-3 (2026-11-14): managed WRITES also record one downward admission, so
+	// ordinary work produces the daily samples thresholds may be calibrated from.
+	// Only writes count — a read is not an admission — and the recording is
+	// strictly observational: it never changes the write result. Blocking
+	// authority stays with the explicit valve_check tool, because these
+	// predicates are not validated well enough to veto real work.
+	// `layer` is the memory layer the write lands on: 术 functions=L2,
+	// 法 insights=L1, 道 dao=L0. Others are recorded as L2 (default layer).
+	const WRITE_LAYERS = { memory_write: 'L2', memory_insight: 'L1', memory_dao: 'L0', memory_capability: 'L2', memory_index: 'L2' };
 	const transactionTool = (tool) => ({
 		...tool,
-		execute: (args, exec) => withMemoryRootTransaction(resolveRoot(opts), () => tool.execute(args, exec)),
+		execute: async (args, exec) => {
+			if (WRITE_LAYERS[tool.name] !== undefined) {
+				try { recordDownwardWrite(ctx, { tool: tool.name, layer: WRITE_LAYERS[tool.name], target: String(args?.feature ?? args?.theme ?? args?.name ?? tool.name) }); }
+				catch { /* bookkeeping never blocks the write */ }
+			}
+			return withMemoryRootTransaction(resolveRoot(opts), () => tool.execute(args, exec));
+		},
 	});
 	const disposers = [
 		ctx.tools.register(transactionTool(memoryReadTool(opts))),

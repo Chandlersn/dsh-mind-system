@@ -84,6 +84,56 @@ export function recordUpwardWrite(ctx, entry) {
 }
 
 /**
+ * Downward admission trace for a managed write (P0-3, 2026-11-14).
+ *
+ * WHY: thresholds may only be calibrated from DAILY samples, but nothing in the
+ * ordinary write path ever produced one. Measured on the real ledger: after
+ * 2026-11-10 the last row was still that day, because only the nominator and
+ * verification runs wrote to it. `dailyCount` could not grow no matter how much
+ * real work happened.
+ *
+ * WHAT COUNTS AS DAILY HERE: a real tool call made by an agent while doing real
+ * work. It is NOT a self-assessment of quality — the entry carries only the
+ * layer transition and the write target class, so the ledger records "a
+ * downward admission was evaluated", not "this content was correct".
+ *
+ * NON-BLOCKING BY CONSTRUCTION: the return value is never used to refuse the
+ * write. A gate that can block writes would turn a bookkeeping feature into a
+ * availability risk, and the downward predicates here are not validated well
+ * enough to veto real work. Blocking authority stays with the explicit
+ * `valve_check` tool. If the service is absent or throws, this returns
+ * undefined and the write proceeds untouched.
+ *
+ * @param ctx Cordis context.
+ * @param {{tool: string, layer?: string, target?: string}} input
+ * @returns the valve decision, or undefined when unavailable.
+ */
+export function recordDownwardWrite(ctx, input = {}) {
+	try {
+		const valves = probeValves(ctx);
+		if (!valves || typeof valves.downward !== 'function') return undefined;
+		// Adjacent-only descent: the predicate denies anything but exactly one
+		// layer (L0->L2 counts as bypassing L1). Map the memory layer onto the
+		// valve ladder and step exactly one rank — a real run caught the first
+		// version sending L2->L0 for 道 writes, which landed as
+		// `non_adjacent_descent` on every one of them.
+		const layer = typeof input.layer === 'string' && input.layer ? input.layer : 'L2';
+		const rank = /^L\d+$/.test(layer) ? Number(layer.slice(1)) : 2;
+		const next = `L${rank + 1}`;
+		return valves.downward(layer, next, {
+			constraints: [String(input.target ?? input.tool ?? 'memory_write')],
+			// Explicitly daily: this is ordinary work, not verification. Without
+			// this the row would default to daily anyway, but stating it keeps the
+			// intent visible to anyone reading the ledger.
+			origin: 'daily',
+		});
+	} catch {
+		// Bookkeeping must never break a real write.
+		return undefined;
+	}
+}
+
+/**
  * 从 memory_insight / memory_dao 的写入参数构造留痕 entry。
  * 显式 valve_evidence（对象）里只透传白名单字段，防止任意键混进账本。
  */
