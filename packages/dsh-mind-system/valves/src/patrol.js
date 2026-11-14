@@ -117,6 +117,57 @@ export function weeklyPrinciplePatrol(input, options = {}) {
 }
 
 /**
+ * Enumerate per-layer entry counts from disk (2026-11-14, same shape as the
+ * weekly fix in readPrinciplesFromDisk).
+ *
+ * WHY: the quarterly patrol needs `counts` and used to skip entirely when the
+ * host config supplied no `layerCounts` callback — the real metrics read
+ * `quarterly: "never"`, so the layer-structure check had never run once. The
+ * counts are ordinary directories: the memory root's per-layer folders.
+ *
+ * The mapping is the memory ladder the plugin already uses elsewhere:
+ *   术 functions  -> L2   (distilled domain iterations)
+ *   法 insights   -> L1   (transferable principles)
+ *   道 dao        -> L0   (axiological propositions)
+ * capabilities is a ledger of external tools, NOT a layer — counting it as one
+ * would report a phantom layer that never grows. It is deliberately excluded.
+ *
+ * An absent directory counts as 0 entries for that layer (a layer that has not
+ * started is a real state the report should show, not an error). A directory
+ * that exists but cannot be read is an error, never a silent zero.
+ *
+ * @param {string} memoryRoot memory root path.
+ * @returns {Promise<{ok: boolean, layers?: string[], counts?: Record<string, number>, error?: string}>}
+ */
+export async function readLayerCountsFromDisk(memoryRoot) {
+	const root = String(memoryRoot ?? '');
+	const mapping = [
+		['L2', join(root, 'functions')],
+		['L1', join(root, 'insights')],
+		['L0', join(root, 'dao')],
+	];
+	const counts = {};
+	const layers = [];
+	for (const [layer, dir] of mapping) {
+		layers.push(layer);
+		let names;
+		try {
+			names = await readdir(dir);
+		} catch (err) {
+			if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') {
+				counts[layer] = 0;
+				continue;
+			}
+			return { ok: false, error: `${layer}:${err?.code ?? String(err)}` };
+		}
+		// Count markdown files only: draft files, notes and directories are not
+		// layer entries, and counting them would inflate a layer's growth.
+		counts[layer] = names.filter((n) => n.endsWith('.md')).length;
+	}
+	return { ok: true, layers, counts };
+}
+
+/**
  * 季度层结构巡检：每层条目数、空层、失衡。
  *
  * @param {object} input

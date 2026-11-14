@@ -789,7 +789,7 @@
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
-      "sha256": "d01d7b7bd46f2944292458233ae5233d3511c132caa6431b43c4cfc277878195"
+      "sha256": "aa71010a2d2b9f57f65e3dee032be5fdad7fc5afac55ea3dab486335a0f4b289"
     },
     "valves/package.json": {
       "source": "dsh-valves/package.json",
@@ -821,7 +821,7 @@
     },
     "valves/src/patrol.js": {
       "source": "dsh-valves/src/patrol.js",
-      "sha256": "a65771377dbab0633a960b1047b7d012a021ff50a1dff17c9726f8dfef3d56a0"
+      "sha256": "881cb69fa5be72717a571d1f1d3c858cd3342f7228df27d60ea968f94dec3505"
     },
     "valves/src/predicates.js": {
       "source": "dsh-valves/src/predicates.js",
@@ -830,6 +830,10 @@
     "valves/src/ratelimit.js": {
       "source": "dsh-valves/src/ratelimit.js",
       "sha256": "975bf3740bfdd0126e950087a926eac4af2cc539171b4808f2b08970b22b4375"
+    },
+    "valves/src/reload.js": {
+      "source": "dsh-valves/src/reload.js",
+      "sha256": "fc5d17e8a2867d86b4223907844a6cdc85adb7f0ff4dff6244b2d60b19a4518d"
     },
     "valves/src/semantic.js": {
       "source": "dsh-valves/src/semantic.js",
@@ -871,6 +875,10 @@
       "source": "dsh-valves/test/guard.test.js",
       "sha256": "d4affb0880981b121c07ba071196b264ba40a352f82c28aae40df3e07db58f66"
     },
+    "valves/test/layer-counts-disk.test.js": {
+      "source": "dsh-valves/test/layer-counts-disk.test.js",
+      "sha256": "151fc888681acf4c777041c93da92e1d98f3ea822b3443e20a850d2a7d8706d9"
+    },
     "valves/test/layerchange.test.js": {
       "source": "dsh-valves/test/layerchange.test.js",
       "sha256": "b60a29b7996cc09092a50f921f4697cec27a16682d240d529fecf62b02c3bc04"
@@ -902,6 +910,10 @@
     "valves/test/receipt-json.test.js": {
       "source": "dsh-valves/test/receipt-json.test.js",
       "sha256": "994b9e0684f839aaa4e05495e8e2c373471dc03889cd9189aee5f2d7705c0672"
+    },
+    "valves/test/reload.test.js": {
+      "source": "dsh-valves/test/reload.test.js",
+      "sha256": "611e96293e53d838dc9346b578da7d101914161be054cccf59f20f3dc79cb6a7"
     },
     "valves/test/semantic.test.js": {
       "source": "dsh-valves/test/semantic.test.js",
