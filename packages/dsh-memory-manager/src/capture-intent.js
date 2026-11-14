@@ -26,9 +26,10 @@ export async function assertNoCaptureIntent(root) {
  * Create a durable-in-file witness before touching a daily file. Caller must
  * already hold the cooperative capture mutex. Any failure leaves the witness
  * untouched because the create/write/close acknowledgement may be uncertain.
- * An unresolved witness is not automatically repaired or interpreted as proof of outcome.
- * The legacy finish helper removes a path after success and is unsafe against
- * non-cooperating path replacement; its red regression must block deployment.
+ *
+ * The handle's (dev, ino) is recorded here and verified by finishCaptureIntent:
+ * a pathname is not proof of ownership, so deletion must be gated on the
+ * identity we created rather than on the name we wrote.
  */
 export async function beginCaptureIntent(root, day) {
 	if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}(?![\s\S])/.test(day)) throw new TypeError('invalid capture date');
@@ -42,23 +43,47 @@ export async function beginCaptureIntent(root, day) {
 		throw Object.assign(new Error('每日采集意图创建结果不明；需核查，不能自动重试或删除', { cause: error }), { code: 'CAPTURE_INTENT_UNKNOWN' });
 	}
 	let closeAttempted = false;
+	let identity;
 	try {
 		await handle.writeFile(`${JSON.stringify({ version: 1, id, day })}\n`, 'utf8');
 		await handle.sync();
+		identity = await handle.stat({ bigint: true });
 		closeAttempted = true;
 		await handle.close();
 	} catch (error) {
 		if (!closeAttempted) try { await handle.close(); } catch { /* close outcome is unknown */ }
 		throw Object.assign(new Error('每日采集意图记录结果不明；需核查，不能自动重试或删除', { cause: error }), { code: 'CAPTURE_INTENT_UNKNOWN' });
 	}
-	return { file, id };
+	return { file, id, dev: identity.dev, ino: identity.ino };
 }
 
 /**
- * Only after writeText and its ledger append both return success, remove the
- * witness. Do not retry an uncertain unlink: the path may have changed hands.
+ * Remove the witness only if the path still points at the inode we created.
+ *
+ * Inode identity is the strongest gate available through the public Node API
+ * (same discipline as src/stage.js for panel staging). It closes the
+ * "delete someone else's file" outcome. It does NOT close a check-then-act
+ * window between this lstat and the unlink: a non-cooperating process can
+ * still swap the path in between, and no portable primitive prevents that.
+ * Unknown ownership is reported, never deleted — an unresolved witness blocks
+ * the next capture, which is the safe, loud, human-recoverable failure.
  */
 export async function finishCaptureIntent(intent) {
+	let st;
+	try {
+		// bigint lstat: Windows inodes exceed Number.MAX_SAFE_INTEGER, and a
+		// lossy Number read makes a genuine match compare unequal.
+		st = await lstat(intent.file, { bigint: true });
+	} catch (error) {
+		throw Object.assign(new Error('意图路径无法核验，未删除；需核查'), { code: 'CAPTURE_FINALIZE_UNKNOWN', fileWritten: true, ledgerStatus: 'recorded', cause: error });
+	}
+	const ours = intent.ino !== undefined && intent.ino !== 0n &&
+		!st.isSymbolicLink() && st.ino === intent.ino && st.dev === intent.dev;
+	if (!ours) {
+		throw Object.assign(new Error('意图路径已被替换（非本次创建的 inode），未删除；需核查'), {
+			code: 'CAPTURE_INTENT_REPLACED', fileWritten: true, ledgerStatus: 'recorded',
+		});
+	}
 	try { await unlink(intent.file); }
 	catch (error) {
 		throw Object.assign(new Error('每日记录和账本已确认，意图清理结果不明；需核查，不要盲目重试'), { code: 'CAPTURE_FINALIZE_UNKNOWN', fileWritten: true, ledgerStatus: 'recorded', cause: error });

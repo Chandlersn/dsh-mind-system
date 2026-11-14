@@ -76,6 +76,31 @@ test('运行时：确认生效 → 下行黑名单命中（闭环：向上产物
 	}
 });
 
+test('IV-3 运行时闭环：确认→命中→沉底→放行，且沉底规则仍可查回', async () => {
+	const { dir, cleanup } = tempDir();
+	try {
+		const rt = createRuntime({ storageDir: dir });
+		await rt.confirm({
+			id: 'stale-guard', negative_type: 'forbidden_skill',
+			statement: '过期的禁令', keywords: ['过期令牌'],
+		});
+		assert.deepEqual(await rt.matchNegative('计划：使用过期令牌'), ['stale-guard']);
+		// 命中应写入触发流水（沉底判据的原料）
+		const triggers = await rt.sinkCandidates({ windowDays: 90 });
+		assert.equal(triggers.triggers_unreadable, false);
+		assert.deepEqual(triggers.candidates, [], '刚命中的规则不该出现在沉底候选里');
+		// 人工沉底（运行时走票据通道）
+		const sunk = await rt.sink(['stale-guard'], { reason: '90 天未触发' });
+		assert.equal(sunk.ok, true);
+		assert.deepEqual(await rt.matchNegative('计划：使用过期令牌'), [], '沉底后不再拦截');
+		const assets = await rt.sunkNegativeRules();
+		assert.equal(assets.length, 1, '仍可检索为反例资产');
+		assert.equal(assets[0].statement, '过期的禁令');
+	} finally {
+		cleanup();
+	}
+});
+
 test('运行时：阈值覆盖传导到判定', () => {
 	const { dir, cleanup } = tempDir();
 	try {

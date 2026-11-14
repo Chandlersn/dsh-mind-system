@@ -125,6 +125,7 @@ const suites = [
 	'tests/capture-baseline.test.js',
 	'tests/capture-intent.test.js',
 	'tests/capture-intent-replacement.test.js',
+	'tests/capture-intent-window-boundary.test.js',
 	'tests/capture-journal.test.js',
 	'tests/capture-mutex.test.js',
 	'tests/capture-events.test.js',

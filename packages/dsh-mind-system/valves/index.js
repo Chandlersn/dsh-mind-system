@@ -1,4 +1,4 @@
-﻿/**
+/**
  * dsh-valves —— 心智系统的两类阀门（《心智系统开发说明书》§4.2 的最小落地）。
  *
  * ## 定位：判据的裁决所，不是又一个判断器
@@ -42,6 +42,12 @@ import {
 	// III-4 回滚：退到上一版快照，上限按规则计。
 	rollbackNegativeRule,
 	matchNegativeRules,
+	// IV-3 沉底：命中流水 + 过期候选 + 人工沉底（保留资产不删除）。
+	appendRuleTrigger,
+	readRuleTriggers,
+	findSinkCandidates,
+	sinkRules,
+	sunkRules,
 } from './src/store.js';
 // III-5 越权拦截：只有人工通道能签票，规则库写入必须持票。
 import { issuePermit } from './src/guard.js';
@@ -284,9 +290,34 @@ export function createRuntime(options = {}) {
 			const at = now.toISOString();
 			let body;
 			try {
-				body = kind === 'quarterly'
-					? quarterlyLayerPatrol({ layers: input.layers, counts: input.counts })
-					: weeklyPrinciplePatrol({ principles: input.principles }, input.options);
+				if (kind === 'quarterly') {
+					body = quarterlyLayerPatrol({ layers: input.layers, counts: input.counts });
+				} else {
+					body = weeklyPrinciplePatrol({ principles: input.principles }, input.options);
+					// IV-3：周检顺带报"这些负向规则该退休了"。只报不改——
+					// 规则的去留是人的判断，定时器只负责把候选摆到台面上。
+					const rules = await readNegativeRules(storageDir);
+					const triggers = await readRuleTriggers(storageDir);
+					if (rules !== undefined) {
+						const sink = findSinkCandidates(rules, triggers, {
+							windowDays: thresholds.negativeRuleSinkDays,
+							now: now.getTime(),
+						});
+						body.findings = [...(body.findings ?? []), ...sink.candidates.map((c) => ({
+							kind: 'negative_rule_sink_candidate',
+							rule_id: c.id,
+							last_activity_at: c.lastActivityAt,
+							note: `超过 ${thresholds.negativeRuleSinkDays} 天未触发：可经 valve_confirm action=sink 沉底（移出拦截、保留资产）`,
+						}))];
+						body.summary = {
+							...(body.summary ?? {}),
+							sink_candidates: sink.candidates.length,
+							...(sink.unknown ? { sink_unknown: 'rule_triggers_unreadable' } : {}),
+						};
+					} else {
+						body.summary = { ...(body.summary ?? {}), sink_candidates: null, sink_unknown: 'rules_unreadable' };
+					}
+				}
 			} catch (err) {
 				const failed = { kind, at, ok: false, error: err instanceof Error ? err.message : String(err) };
 				await writePatrolReport(storageDir, failed);
@@ -341,7 +372,61 @@ export function createRuntime(options = {}) {
 		},
 		async matchNegative(text) {
 			const rules = await readNegativeRules(storageDir);
-			return matchNegativeRules(rules, text);
+			const hits = matchNegativeRules(rules, text);
+			// IV-3：命中即记一笔"这条规则还在生效"。写失败不影响拦截本身
+			// （记账是附加能力），但沉底判据会因缺流水而保守不沉底。
+			if (Array.isArray(hits) && hits.length) void appendRuleTrigger(storageDir, { ruleIds: hits });
+			return hits;
+		},
+		/** IV-3 检索沉底规则（反例资产）：不参与拦截，但可查。 */
+		async sunkNegativeRules() {
+			const rules = await readNegativeRules(storageDir);
+			if (rules === undefined) return undefined;
+			return sunkRules(rules);
+		},
+		/**
+		 * IV-3 沉底候选（只报不改）。定时巡检用它产出"这些规则该退休了"，
+		 * 实际沉底仍要人工通道——定时器不许替人决定规则的去留。
+		 */
+		async sinkCandidates(options = {}) {
+			const rules = await readNegativeRules(storageDir);
+			if (rules === undefined) {
+				reportFinding(PROBE_CODES.storeUnreadable, 'warn', '负向规则库读取失败，沉底候选不可判定。');
+				return { candidates: [], unknown: true, rules_unreadable: true };
+			}
+			const triggers = await readRuleTriggers(storageDir);
+			const found = findSinkCandidates(rules, triggers, {
+				windowDays: options.windowDays ?? thresholds.negativeRuleSinkDays,
+				...(Number.isFinite(options.now) ? { now: options.now } : {}),
+			});
+			return { ...found, triggers_unreadable: found.unknown, windowDays: options.windowDays ?? thresholds.negativeRuleSinkDays };
+		},
+		/**
+		 * IV-3 沉底（人工通道）。与 confirm/rollback 同一入口纪律：
+		 * 移出拦截但保留内容，写前快照，因此可回退（回退=重新激活）。
+		 */
+		async sink(ruleIds, options = {}) {
+			const ids = Array.isArray(ruleIds) ? ruleIds : [ruleIds];
+			// 票只能由人工通道签：这里就是 valve_confirm 本身。
+			const permits = [];
+			for (const id of ids) {
+				const permit = issuePermit({ via: 'sink', ruleId: String(id ?? '') });
+				if (!permit.ok) return permit;
+				permits.push(permit.token);
+			}
+			const result = await sinkRules(storageDir, ids, {
+				permits,
+				reason: typeof options.reason === 'string' ? options.reason : undefined,
+			});
+			void appendDecision(storageDir, {
+				gate: 'sink',
+				direction: 'human',
+				outcome: result.ok ? 'admitted' : 'skipped',
+				action: result.ok ? 'sank' : 'sink_refused',
+				reason: result.ok ? 'human_sink_stale_rule' : String(result.error ?? 'sink_failed'),
+				candidate_id: ids.join(','),
+			});
+			return result;
 		},
 		async confirm(rule) {
 			// III-5：签票只能走人工通道。这里就是人工通道本身（valve_confirm），
@@ -829,10 +914,15 @@ export function apply(ctx, config = {}, overrides = {}) {
 			'未经用户确认不得调用——这是人工闸门的语义，不是自动流程的一步。' +
 			'生效后下行准入与 memory 召回自动使用它（零配合：不需要其它插件改代码）。' +
 			'**回退**：传 action=rollback 与 rollback_rule_id，把该规则退到上一版快照（写入前已自动快照）。' +
-			'同一规则回退满 3 次后拒绝自动回退并转人工——反复回退说明判据本身不稳，该由人重新想一遍。',
+			'同一规则回退满 3 次后拒绝自动回退并转人工——反复回退说明判据本身不稳，该由人重新想一遍。' +
+			'**沉底（IV-3）**：传 action=sink 与 sink_rule_id/sink_rule_ids，把长期未触发的规则移出拦截但**保留内容**（不删除，仍可检索为反例资产）；' +
+			'沉底同样写前快照，回退即重新激活。定时巡检只报沉底候选，不代替人做这个决定。',
 		parameters: {
-			action: { type: 'string', enum: ['confirm', 'rollback'], description: '缺省 confirm（写入/修订规则）；rollback 退到上一版。' },
+			action: { type: 'string', enum: ['confirm', 'rollback', 'sink'], description: '缺省 confirm（写入/修订规则）；rollback 退到上一版；sink 沉底过期规则（移出拦截、保留资产）。' },
 			rollback_rule_id: { type: 'string', description: 'action=rollback 时必填：要回退的规则 id。' },
+			sink_rule_id: { type: 'string', description: 'action=sink 时必填（单条）：要沉底的规则 id。' },
+			sink_rule_ids: { type: 'array', items: { type: 'string' }, description: 'action=sink 时可批量：要沉底的规则 id 列表（巡检报出的候选）。' },
+			sink_reason: { type: 'string', description: 'action=sink 可选：沉底理由（进规则内容与账本，便于日后回查为什么退休）。' },
 			id: { type: 'string', description: '规则稳定 id（kebab-case，如 forbidden-retry-without-read）。同 id 覆盖为修订。action=confirm 时必填。' },
 			negative_type: { type: 'string', enum: ['forbidden_skill', 'invalidated_criterion', 'out_of_scope_scenario', 'weakened_axiom'], description: '负向规则类型。action=confirm 时必填。' },
 			statement: { type: 'string', description: '一句话禁令/证伪陈述（会注入到后续召回里，写给未来的 agent 看）。action=confirm 时必填。' },
@@ -846,6 +936,15 @@ export function apply(ctx, config = {}, overrides = {}) {
 				const ruleId = String(args?.rollback_rule_id ?? '').trim();
 				if (!ruleId) return { error: 'action=rollback 需要 rollback_rule_id' };
 				return runtime.rollback(ruleId);
+			}
+			if (args?.action === 'sink') {
+				// IV-3 沉底：移出拦截、保留为反例资产。同样是人工通道（本人调用），
+				// 定时巡检只报候选，不代劳。
+				const ids = (Array.isArray(args.sink_rule_ids) ? args.sink_rule_ids : [args.sink_rule_id])
+					.map((v) => String(v ?? '').trim())
+					.filter(Boolean);
+				if (!ids.length) return { error: 'action=sink 需要 sink_rule_id 或 sink_rule_ids' };
+				return runtime.sink(ids, { reason: args.sink_reason });
 			}
 			return runtime.confirm(args);
 		},

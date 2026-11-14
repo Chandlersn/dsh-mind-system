@@ -226,6 +226,88 @@ export async function readPendingAxiomCandidates(memoryRoot) {
 }
 
 /**
+ * Enumerate the principle layer from disk (2026-11-13, P0-1).
+ *
+ * Why this exists: the weekly patrol requires a `principles` list and used to
+ * record `no_input` forever when nobody passed one — the timer fired every 7
+ * days and inspected nothing. The sources are already on disk:
+ *   - ids:        <memoryRoot>/insights/*.md stems (superseded files excluded
+ *                 the same way memory_check R24 does — a replaced law must not
+ *                 be reported as failing again);
+ *   - refs:       count of ledger rows whose principle_refs include the stem
+ *                 (explicit refs only, never guessed — same rule as III-2);
+ *   - antiExamples: evidence list in the file's `## 阀门证据` section
+ *                 (persisted by memory_insight valve_evidence).
+ *
+ * Unreadable insights/ is reported as an error, never as "no principles":
+ * a broken root must not look like a clean bill of health.
+ *
+ * @param {string} memoryRoot memory root path.
+ * @param {object[]} ledgerEntries decision ledger rows (already read).
+ * @returns {Promise<{ok: boolean, principles: object[], error?: string}>}
+ */
+export async function readPrinciplesFromDisk(memoryRoot, ledgerEntries) {
+	const dir = join(String(memoryRoot ?? ''), 'insights');
+	let names;
+	try {
+		names = (await readdir(dir)).filter((f) => f.endsWith('.md')).sort();
+	} catch (err) {
+		if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') {
+			// Distinguish three states (same discipline as readPendingAxiomCandidates):
+			//   a) insights/ genuinely absent -> normal uninitialized state (absent)
+			//   b) insights/ exists as a FILE -> broken root (error, not absent)
+			//   c) root itself unreadable -> error
+			// Collapsing b/c into a would let a broken root report a clean patrol.
+			let entry = null;
+			try {
+				const { stat } = await import('node:fs/promises');
+				entry = await stat(dir);
+			} catch (statErr) {
+				if (statErr?.code === 'ENOENT') return { ok: true, principles: [], absent: true };
+				return { ok: false, principles: [], error: statErr?.code ?? String(statErr) };
+			}
+			if (entry.isDirectory()) {
+				// ENOENT/ENOTDIR raced away or a deeper component broke; re-check once.
+				try {
+					const names2 = (await readdir(dir)).filter((f) => f.endsWith('.md'));
+					return { ok: true, principles: [], absent: names2.length === 0 ? true : undefined };
+				} catch (err2) {
+					return { ok: false, principles: [], error: err2?.code ?? String(err2) };
+				}
+			}
+			return { ok: false, principles: [], error: 'insights/ is not a directory' };
+		}
+		return { ok: false, principles: [], error: err?.code ?? String(err) };
+	}
+	const { readFile } = await import('node:fs/promises');
+	const rows = Array.isArray(ledgerEntries) ? ledgerEntries : [];
+	const principles = [];
+	for (const f of names) {
+		const stem = f.replace(/\.md$/, '');
+		let text;
+		try {
+			text = await readFile(join(dir, f), 'utf8');
+		} catch {
+			// Unreadable file: report zero refs and flag it, do not drop it —
+			// a file that cannot be read is exactly what a patrol should surface.
+			principles.push({ id: stem, refs: 0, antiExamples: 0, unreadable: true });
+			continue;
+		}
+		if (/^>\s*⚠️\s*已被取代/m.test(text)) continue;
+		const refs = rows.reduce((n, e) => n + (Array.isArray(e?.principle_refs) && e.principle_refs.includes(stem) ? 1 : 0), 0);
+		// Evidence lines under `## 阀门证据` (memory_insight persisted form):
+		// plain bullets like `- 证据：functions/xxx.md 2026-11-02：…`. The
+		// quantified line (`- 量化：{json}`) carries anti_example_count, but it
+		// is self-declared; count the concrete `- 证据：` lines instead (each has
+		// a traceable source location).
+		const section = /##\s*阀门证据\s*\n([\s\S]*?)(?=\n##|$)/.exec(text)?.[1] ?? '';
+		const antiExamples = (section.match(/^- 证据：/gm) ?? []).length;
+		principles.push({ id: stem, refs, antiExamples });
+	}
+	return { ok: true, principles };
+}
+
+/**
  * 写一份巡检报告。
  *
  * ## 报告里有"没跑成"的一席

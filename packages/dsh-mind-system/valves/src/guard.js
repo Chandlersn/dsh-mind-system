@@ -39,8 +39,14 @@ import { randomUUID } from 'node:crypto';
 /** 票的有效期（毫秒）。够一次工具调用往返，又短到过期票不会被复用。 */
 export const PERMIT_TTL_MS = 5 * 60 * 1000;
 
-/** 允许签发票的渠道 —— 只有人工通道。自动提名/判定**不在**此列。 */
-export const HUMAN_CHANNELS = Object.freeze(['confirm', 'rollback']);
+/**
+ * 允许签发票的渠道 —— 只有人工通道。自动提名/判定**不在**此列。
+ *
+ * IV-3 补 `sink`：沉底是 valve_confirm 的第三个 action，与 confirm/rollback
+ * 同属人工入口（定时巡检只报候选，不代劳）。它同样是改规则库的动作，
+ * 必须有票；放进白名单不是放宽，是承认"这也是人在点"。
+ */
+export const HUMAN_CHANNELS = Object.freeze(['confirm', 'rollback', 'sink']);
 
 /** 进程内票据表（票只活一次调用，不需要持久化）。 */
 const permits = new Map();

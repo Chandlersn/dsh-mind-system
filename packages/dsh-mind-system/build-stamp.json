@@ -781,7 +781,7 @@
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
-      "sha256": "f74a4229b62a1c4af6166feee6d038aee7367d79e42eec95db7a73b48c1d6635"
+      "sha256": "c986b004df625ffcf8cfd9b9793945edcd5068dbe17f07fdb664de00cf0cf451"
     },
     "valves/package.json": {
       "source": "dsh-valves/package.json",
@@ -801,7 +801,7 @@
     },
     "valves/src/guard.js": {
       "source": "dsh-valves/src/guard.js",
-      "sha256": "d9f088129bb7b9845e797f3e18855c01488beb6406d2e7aa37a342c778c5895b"
+      "sha256": "9e2c8661fb6f10c90f1fde31bff81ba36eea62abdd57f6088c4e8499cad4a79c"
     },
     "valves/src/layerchange.js": {
       "source": "dsh-valves/src/layerchange.js",
@@ -833,11 +833,11 @@
     },
     "valves/src/store.js": {
       "source": "dsh-valves/src/store.js",
-      "sha256": "853900f83724fb7a6b5db7dff8323af6329481788cdf51a12ceed41e517b55d6"
+      "sha256": "da9c26102dc356137da65868f86058e4ef9c25bc33c3a407483ef9f2d93e9460"
     },
     "valves/src/thresholds.js": {
       "source": "dsh-valves/src/thresholds.js",
-      "sha256": "d9fe54fe9ac8be513dfcc9de6f5767fad4629fffd4c06970de6e8b2131ad06c8"
+      "sha256": "f6567c86503d32afc60c5403aeb07d9f8e748efc6ab244fa54bf3e137b3de167"
     },
     "valves/test/budget.test.js": {
       "source": "dsh-valves/test/budget.test.js",
@@ -849,7 +849,7 @@
     },
     "valves/test/entry.test.js": {
       "source": "dsh-valves/test/entry.test.js",
-      "sha256": "ebf3d68d3c43a8d0d131ecf7fd03510dac0b56c7bbdf178c4fa17a2ae9543fde"
+      "sha256": "41ad39fbe6cd29d342728f16bd4a88b877b135c3d154d70e6c5ee90d32bd8b13"
     },
     "valves/test/governance.test.js": {
       "source": "dsh-valves/test/governance.test.js",
@@ -890,6 +890,10 @@
     "valves/test/semantic.test.js": {
       "source": "dsh-valves/test/semantic.test.js",
       "sha256": "d17f60de8f26d593f220504d5dafb49382645756883d583d2eb349cc9e44358a"
+    },
+    "valves/test/sink.test.js": {
+      "source": "dsh-valves/test/sink.test.js",
+      "sha256": "72d6419c6819228378ffaf7f6e82e79e873c2d5d4f6ec5c2ec4935be6360fa90"
     },
     "valves/test/snapshot.test.js": {
       "source": "dsh-valves/test/snapshot.test.js",
