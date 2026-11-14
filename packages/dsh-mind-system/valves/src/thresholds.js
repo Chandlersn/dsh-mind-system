@@ -79,3 +79,38 @@ export function mergeThresholds(overrides) {
 	}
 	return out;
 }
+
+/**
+ * Minimum number of DAILY decisions before any threshold may be changed.
+ *
+ * 30 comes from the plan (I-1), not from a measured distribution — it is a
+ * floor that prevents calibrating on noise, not a claim that 30 is enough.
+ */
+export const MIN_CALIBRATION_SAMPLES = 30;
+
+/**
+ * Decide whether the calibration sample justifies changing a threshold.
+ *
+ * Why this is a function instead of a prose rule: the project rule says every
+ * threshold change must cite a distribution, but the only denominator that used
+ * to exist was the whole ledger — which our own nomination runs dominate
+ * (measured 2026-11-14: 82 nomination rows vs 1 daily row). A guard written in
+ * prose gets skipped; the same guard as a callable gets used by whoever edits
+ * thresholds.
+ *
+ * @param {{evaluated?: number}} calibration the `calibration` block from
+ *   summarizeDecisions (daily-only by construction).
+ * @param {number} [minSamples] override for the floor.
+ * @returns {{allowed: boolean, reason: string, evaluated: number, needed: number}}
+ */
+export function canCalibrate(calibration, minSamples = MIN_CALIBRATION_SAMPLES) {
+	const evaluated = Number.isFinite(calibration?.evaluated) ? calibration.evaluated : 0;
+	const needed = Number.isFinite(minSamples) && minSamples >= 0 ? minSamples : MIN_CALIBRATION_SAMPLES;
+	if (evaluated >= needed) return { allowed: true, reason: 'sample_sufficient', evaluated, needed };
+	return {
+		allowed: false,
+		reason: evaluated === 0 ? 'no_daily_samples' : 'sample_below_floor',
+		evaluated,
+		needed,
+	};
+}

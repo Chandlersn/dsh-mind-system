@@ -214,7 +214,9 @@ export function summarizeDecisions(entries) {
 			byReason: dailyByReason,
 			byGate: dailyByGate,
 			sampleSufficient: dailyEvaluated >= 30,
-			note: dailyEvaluated ? undefined : '尚无日常样本：提名/验证/演练不计入校准分母，阈值仍不可调',
+			// null, never undefined: the host rejects receipts that are not
+			// lossless JSON, and a real run caught exactly that on this field.
+			note: dailyEvaluated ? null : '尚无日常样本：提名/验证/演练不计入校准分母，阈值仍不可调',
 		},
 	};
 }

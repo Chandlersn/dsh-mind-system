@@ -785,7 +785,7 @@
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
-      "sha256": "bbe0d83c5e8a931a1395e134887745dbf5d8d83410d7938040500c934228f573"
+      "sha256": "d01d7b7bd46f2944292458233ae5233d3511c132caa6431b43c4cfc277878195"
     },
     "valves/package.json": {
       "source": "dsh-valves/package.json",
@@ -837,15 +837,19 @@
     },
     "valves/src/store.js": {
       "source": "dsh-valves/src/store.js",
-      "sha256": "da9c26102dc356137da65868f86058e4ef9c25bc33c3a407483ef9f2d93e9460"
+      "sha256": "22de7ff49f8a9e9480211cba128764e48a59be470e011692f3752ede2a713246"
     },
     "valves/src/thresholds.js": {
       "source": "dsh-valves/src/thresholds.js",
-      "sha256": "f6567c86503d32afc60c5403aeb07d9f8e748efc6ab244fa54bf3e137b3de167"
+      "sha256": "de89d8875195d351a26fd9170d9868e28f9705608a39af7344c5c99acc645a5b"
     },
     "valves/test/budget.test.js": {
       "source": "dsh-valves/test/budget.test.js",
       "sha256": "899d5cb0254fe73b7d6a90df5fa9cf793b8f388ad8ae4457e40dbf6bdf64cc41"
+    },
+    "valves/test/calibration-split.test.js": {
+      "source": "dsh-valves/test/calibration-split.test.js",
+      "sha256": "f11fb3253566c50272c3e1357e756db4b1573e9bcc6bd6c37c7903673d7135a5"
     },
     "valves/test/clis-bridge.test.js": {
       "source": "dsh-valves/test/clis-bridge.test.js",
@@ -890,6 +894,10 @@
     "valves/test/ratelimit.test.js": {
       "source": "dsh-valves/test/ratelimit.test.js",
       "sha256": "cc1c50460783c794b53feb41f05611a9bb4f6e5f49666f048f26b21228d61e02"
+    },
+    "valves/test/receipt-json.test.js": {
+      "source": "dsh-valves/test/receipt-json.test.js",
+      "sha256": "994b9e0684f839aaa4e05495e8e2c373471dc03889cd9189aee5f2d7705c0672"
     },
     "valves/test/semantic.test.js": {
       "source": "dsh-valves/test/semantic.test.js",

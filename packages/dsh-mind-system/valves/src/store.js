@@ -139,22 +139,43 @@ export async function readDecisions(storageDir) {
 }
 
 /**
- * 双侧汇总：admitted/skipped/评估总数 + 按 reason 分布。
- * missRate 语义与 clis_metrics 一致：skipped / evaluated。
- * 它接近 1 = 阀门几乎全拒（可能在误杀），接近 0 = 几乎全放（可能没在管）。
+ * Origins that may feed threshold calibration (P0-2, 2026-11-14).
  *
- * origin 口径（2026-11-09）：验证/演练/提名样本**计入总分布**（它们也是
- * 真实判定），但单独报 byOrigin 与 dailyCount——阈值校准与 I-1 计数
- * 只认日常样本，验证样本不得给校准分布灌水。历史行无 origin 字段，
- * 如实归入 untagged（不猜它是日常还是验证）。
+ * ONLY 'daily' counts. Nomination, verification and drill samples are real
+ * decisions, but they are produced by our own tooling on purpose — letting them
+ * into the calibration denominator lets the nominator inflate its own sample
+ * pool. Measured on the real ledger before this change: 82 nomination rows vs 1
+ * daily row, so any missRate read from the full ledger described the nominator,
+ * not ordinary use.
+ *
+ * 'untagged' is reported separately and never counted: historical rows predate
+ * the origin field, and guessing what they were is exactly the kind of silent
+ * assumption this plugin keeps getting bitten by.
+ */
+export const CALIBRATION_ORIGINS = Object.freeze(['daily']);
+
+/**
+ * Two-sided summary: admitted/skipped/evaluated + per-reason distribution.
+ * missRate follows clis_metrics: skipped / evaluated.
+ * Near 1 = the gate rejects almost everything (possible over-blocking);
+ * near 0 = it waves almost everything through (possibly not gating at all).
+ *
+ * Two denominators (P0-2):
+ *   - `missRate`        — over EVERY decision (what the system did overall)
+ *   - `calibration.*`   — over daily-only decisions (what may tune thresholds)
+ * Reporting only one is how "the nominator ran a lot" reads as "usage grew".
  */
 export function summarizeDecisions(entries) {
 	const byReason = {};
 	const byGate = {};
 	const byOrigin = {};
+	const dailyByReason = {};
+	const dailyByGate = {};
 	let admitted = 0;
 	let skipped = 0;
 	let dailyCount = 0;
+	let dailyAdmitted = 0;
+	let dailySkipped = 0;
 	for (const e of entries) {
 		if (e?.outcome === 'admitted') admitted++;
 		else if (e?.outcome === 'skipped') skipped++;
@@ -165,9 +186,16 @@ export function summarizeDecisions(entries) {
 		byGate[gate] = (byGate[gate] ?? 0) + 1;
 		const origin = typeof e.origin === 'string' && e.origin ? e.origin : 'untagged';
 		byOrigin[origin] = (byOrigin[origin] ?? 0) + 1;
-		if (origin === 'daily') dailyCount++;
+		if (CALIBRATION_ORIGINS.includes(origin)) {
+			dailyCount++;
+			if (e?.outcome === 'admitted') dailyAdmitted++;
+			else dailySkipped++;
+			dailyByReason[reason] = (dailyByReason[reason] ?? 0) + 1;
+			dailyByGate[gate] = (dailyByGate[gate] ?? 0) + 1;
+		}
 	}
 	const evaluated = admitted + skipped;
+	const dailyEvaluated = dailyAdmitted + dailySkipped;
 	return {
 		evaluated,
 		admitted,
@@ -177,6 +205,19 @@ export function summarizeDecisions(entries) {
 		byGate,
 		byOrigin,
 		dailyCount,
+		// Daily-only view: the ONLY denominator thresholds may be calibrated from.
+		calibration: {
+			evaluated: dailyEvaluated,
+			admitted: dailyAdmitted,
+			skipped: dailySkipped,
+			missRate: dailyEvaluated ? Number((dailySkipped / dailyEvaluated).toFixed(3)) : null,
+			byReason: dailyByReason,
+			byGate: dailyByGate,
+			sampleSufficient: dailyEvaluated >= 30,
+			// null, never undefined: the host rejects receipts that are not
+			// lossless JSON, and a real run caught exactly that on this field.
+			note: dailyEvaluated ? null : '尚无日常样本：提名/验证/演练不计入校准分母，阈值仍不可调',
+		},
 	};
 }
 
