@@ -280,8 +280,9 @@ test('apply 的巡检在没拿到原则清单时落盘 no_input，绝不落 clea
 			provide() {}, set() {}, on() {},
 			tools: { register: () => () => {} },
 		};
-		// 不配 principles → 巡检拿不到输入
-		apply(ctx, { storageDir: dir, patrol: { enabled: true } }, { loadDefineTool: () => (s) => s });
+		// P0-1：磁盘枚举接入后，no_input 只在「沙箱里确实没有 insights/」时触发。
+		// 显式传空数组（人工指定受检面为空）保持原语义。
+		apply(ctx, { storageDir: dir, patrol: { enabled: true, principles: [], memoryRoot: join(dir, 'memory') } }, { loadDefineTool: () => (s) => s });
 		await new Promise((r) => setTimeout(r, 250));
 
 		const onDisk = await readLatestPatrolReport(dir, 'weekly');
@@ -289,6 +290,94 @@ test('apply 的巡检在没拿到原则清单时落盘 no_input，绝不落 clea
 		assert.equal(onDisk.ok, false, '没查任何原则不能报 ok:true');
 		assert.equal(onDisk.error, 'no_input', '要明确说"没有输入"，而不是 clean');
 		assert.ok(String(onDisk.note ?? '').includes('不是 clean'), '要写清这不是 clean');
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('P0-1：配置没给原则清单时从磁盘枚举 insights/，周检真的查了东西', async () => {
+	// 真机路径：定时器每 7 天跑一次，但没人传 principles → 过去永远 no_input
+	// 空转。原则的来源本来就在盘上：文件名=ID，账本 principle_refs=引用数。
+	const { apply } = await import('../index.js');
+	const { mkdirSync, writeFileSync } = await import('node:fs');
+	const dir = sandbox();
+	const memory = join(dir, 'memory');
+	const insights = join(memory, 'insights');
+	try {
+		mkdirSync(insights, { recursive: true });
+		mkdirSync(join(dir, 'storages'), { recursive: true });
+		writeFileSync(join(insights, '判据甲.md'), '# 判据甲\n\n原则正文。\n', 'utf8');
+		writeFileSync(join(insights, '判据乙.md'), '> ⚠️ 已被取代：并入判据甲\n\n旧文。\n', 'utf8');
+		// Ledger rows: one explicit ref to 判据甲.
+		writeFileSync(join(dir, 'mind-valves.jsonl'),
+			`${JSON.stringify({ t: new Date().toISOString(), gate: 'x', outcome: 'admitted', principle_refs: ['判据甲'] })}\n`, 'utf8');
+		const ctx = {
+			logger: () => ({ info() {}, warn() {}, error() {} }),
+			provide() {}, set() {}, on() {},
+			tools: { register: () => () => {} },
+		};
+		// No patrol.principles at all — the disk enumeration must kick in.
+		apply(ctx, { storageDir: dir, patrol: { enabled: true, memoryRoot: memory } }, { loadDefineTool: () => (s) => s });
+		await new Promise((r) => setTimeout(r, 250));
+
+		const onDisk = await readLatestPatrolReport(dir, 'weekly');
+		assert.ok(onDisk !== null, '必须落报告');
+		assert.equal(onDisk.error, undefined, '磁盘有原则时不得再报 no_input');
+		assert.equal(onDisk.ok, true);
+		assert.equal(onDisk.summary.principles, 1, '只数存活的：已取代的判据乙不进受检面');
+		assert.equal(onDisk.summary.zero_reference, 0, '账本引用了判据甲，零引用应为 0');
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('P0-1：insights/ 不存在是正常初始态(absent)；存在但是文件=根坏了，报错不称没有', async () => {
+	const { readPrinciplesFromDisk } = await import('../src/patrol.js');
+	const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+	const base = await mkdtemp(join(tmpdir(), 'dsh-patrol-disk-'));
+	try {
+		// a) genuinely absent -> absent, ok (uninitialized root is a real state)
+		const r1 = await readPrinciplesFromDisk(join(base, 'nope'), []);
+		assert.equal(r1.ok, true);
+		assert.equal(r1.absent, true);
+		// b) insights exists as a FILE -> broken root, must be an error
+		const brokenDir = join(base, 'broken');
+		await mkdir(brokenDir, { recursive: true });
+		await writeFile(join(brokenDir, 'insights'), 'not a directory');
+		const r2 = await readPrinciplesFromDisk(brokenDir, []);
+		assert.equal(r2.ok, false, '读坏了不能说成没有');
+		assert.equal(r2.absent, undefined);
+	} finally {
+		await rm(base, { recursive: true, force: true });
+	}
+});
+
+test('P0-1：阀门证据节的「- 证据：」行计为反例，量化行不算', async () => {
+	const { readPrinciplesFromDisk } = await import('../src/patrol.js');
+	const { mkdirSync, writeFileSync } = await import('node:fs');
+	const dir = sandbox();
+	try {
+		const insights = join(dir, 'insights');
+		mkdirSync(insights, { recursive: true });
+		writeFileSync(join(insights, '成对报.md'), [
+			'# 成对报',
+			'',
+			'## 阀门证据',
+			'',
+			'- 可检验路径：对照实验。',
+			'- 量化：{"anti_example_count":99}',
+			'- 证据：functions/甲.md 2026-11-02：弱化闸门读数更优',
+			'- 证据：functions/乙.md：指标落地',
+			'',
+			'## 边界',
+			'',
+			'- 不适用场景。',
+		].join('\n'), 'utf8');
+		const r = await readPrinciplesFromDisk(dir, []);
+		assert.equal(r.principles.length, 1);
+		// Counted from concrete evidence lines, not the self-declared number.
+		assert.equal(r.principles[0].antiExamples, 2);
+		assert.equal(r.principles[0].refs, 0);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

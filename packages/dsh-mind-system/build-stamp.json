@@ -137,7 +137,7 @@
     },
     "memory/README.md": {
       "source": "dsh-memory-manager/README.md",
-      "sha256": "4b05c036fd338a9f1dfc89263a45dee28a76c6b550dabe6be020879ee5c34e16"
+      "sha256": "595db2803871c81b4c029ff3818e7556e31ad4cff8be871f6accba182a554b8d"
     },
     "memory/api-test.mjs": {
       "source": "dsh-memory-manager/api-test.mjs",
@@ -189,7 +189,7 @@
     },
     "memory/src/capture-intent.js": {
       "source": "dsh-memory-manager/src/capture-intent.js",
-      "sha256": "6be8fee5e271b3108341d05f7f8c63ec7d40bd6a4639d5f55112c96d6920fb7d"
+      "sha256": "ddaec03bd902cd5864c101ecabb50162346806d4671a8fdfcf4d0030443b1047"
     },
     "memory/src/capture-journal.js": {
       "source": "dsh-memory-manager/src/capture-journal.js",
@@ -302,6 +302,10 @@
     "memory/tests/capture-intent-replacement.test.js": {
       "source": "dsh-memory-manager/tests/capture-intent-replacement.test.js",
       "sha256": "ba606ad9aedc99e934a19db11d895aca4b5279dd67f55283eda1ecef0afb1264"
+    },
+    "memory/tests/capture-intent-window-boundary.test.js": {
+      "source": "dsh-memory-manager/tests/capture-intent-window-boundary.test.js",
+      "sha256": "a5607146e221983d1a4b0b1d1cdc3517bbb6acefc326d598e333b32b4ecb5ddc"
     },
     "memory/tests/capture-intent.test.js": {
       "source": "dsh-memory-manager/tests/capture-intent.test.js",
@@ -565,7 +569,7 @@
     },
     "memory/tests/run-all.mjs": {
       "source": "dsh-memory-manager/tests/run-all.mjs",
-      "sha256": "de8fe20e8fb93987b0f103fa0ff62e4f9014a503d5e38fffeb2f88783e2968a7"
+      "sha256": "ba8c9aaf59ceb7e19b45f93c8099017102fea33de86eca8202da2247d9e66c95"
     },
     "memory/tests/schema-contract.test.js": {
       "source": "dsh-memory-manager/tests/schema-contract.test.js",
@@ -781,7 +785,7 @@
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
-      "sha256": "c986b004df625ffcf8cfd9b9793945edcd5068dbe17f07fdb664de00cf0cf451"
+      "sha256": "bbe0d83c5e8a931a1395e134887745dbf5d8d83410d7938040500c934228f573"
     },
     "valves/package.json": {
       "source": "dsh-valves/package.json",
@@ -813,7 +817,7 @@
     },
     "valves/src/patrol.js": {
       "source": "dsh-valves/src/patrol.js",
-      "sha256": "196be5355ec01e93cdaa23c0892725c4efccc08426896ffabc67a135eefdf33d"
+      "sha256": "a65771377dbab0633a960b1047b7d012a021ff50a1dff17c9726f8dfef3d56a0"
     },
     "valves/src/predicates.js": {
       "source": "dsh-valves/src/predicates.js",
@@ -877,7 +881,7 @@
     },
     "valves/test/patrol.test.js": {
       "source": "dsh-valves/test/patrol.test.js",
-      "sha256": "27929b20ddc067f8dd79e6fbad7646ea835e8df89e0eff8bfb10994035be35e9"
+      "sha256": "bafa9291447f8e2799347bbd5c4d208db4b04eef759f315fa7f056c3b3f800dd"
     },
     "valves/test/predicates.test.js": {
       "source": "dsh-valves/test/predicates.test.js",

@@ -57,7 +57,7 @@ import { detectSemanticBypass } from './src/semantic.js';
 import {
 	weeklyPrinciplePatrol, quarterlyLayerPatrol,
 	writePatrolReport, readLatestPatrolReport, isPatrolDue, PATROL_PERIODS, clampTimerDelay,
-	readPendingAxiomCandidates,
+	readPendingAxiomCandidates, readPrinciplesFromDisk,
 } from './src/patrol.js';
 // IV-5 公理闸门限速：每月最多生效一次 + 显式测试通道（不消耗额度）。
 import { checkAxiomRate, applyAxiomLimit } from './src/ratelimit.js';
@@ -89,6 +89,17 @@ export function defaultStorageDir() {
 	const env = process.env.DSH_HOME;
 	const home = typeof env === 'string' && env.trim() ? resolve(env.trim()) : join(homedir(), '.dsh');
 	return join(home, 'storages');
+}
+
+/**
+ * Memory root for patrol enumeration (P0-1, 2026-11-13).
+ *
+ * Derived from the actual storageDir (`<home>/storages` -> `<home>/memory`),
+ * NOT from homedir(): a test that passes a sandbox storageDir must never read
+ * the real global memory root. Config `patrol.memoryRoot` overrides.
+ */
+export function memoryRootForStorage(storageDir) {
+	return join(dirname(resolve(String(storageDir ?? ''))), 'memory');
 }
 
 /**
@@ -690,19 +701,45 @@ export function apply(ctx, config = {}, overrides = {}) {
 			// 周检没拿到原则清单时**不能报 clean**：那等于"什么都没查"却给出
 			// "查过没问题"的绿灯（真机第一份报告就是 principles:0 + clean，
 			// 这正是"绿灯不携带信息"）。如实记 no_input，让读数说出真相。
-			const principles = Array.isArray(patrolConfig.principles) ? patrolConfig.principles : [];
+			//
+			// P0-1（2026-11-13）：no_input 曾经**永远**触发——配置没人传原则清单，
+			// 定时器每 7 天空转一次。原则的来源本来就在盘上（insights/ + 账本
+			// principle_refs + 阀门证据节），这里直接从磁盘枚举，配置显式给的
+			// principles 仍优先（测试注入/人工指定受检面）。
+			const configPrinciples = Array.isArray(patrolConfig.principles) ? patrolConfig.principles : null;
+			let principles = configPrinciples ?? [];
+			let principlesBasis = configPrinciples ? 'config' : 'none';
+			if (principles.length === 0 && configPrinciples === null) {
+				const rootForPrinciples = typeof patrolConfig.memoryRoot === 'string' && patrolConfig.memoryRoot.trim()
+					? patrolConfig.memoryRoot.trim()
+					: memoryRootForStorage(runtime.storageDir);
+				const ledgerForRefs = await readDecisions(runtime.storageDir);
+				const got = await readPrinciplesFromDisk(rootForPrinciples, ledgerForRefs ?? []);
+				if (got.ok) {
+					principles = got.principles;
+					principlesBasis = got.absent ? 'disk_absent' : 'disk';
+					if (ledgerForRefs === undefined) facts.patrolRefsBasis = 'ledger_unreadable_refs_zero';
+				} else {
+					facts.patrolPrinciples = `error:${got.error}`;
+				}
+			}
 			// 待决策的候选公理（2026-11-10）：默认从**磁盘**读 `dao/_candidates/`，
 			// 不反向 import memory（依赖方向纪律）；配置给了回调就用回调覆盖。
 			//
 			// 为什么放进周检：候选写进去如果没人提醒，就等于"存在但没人知道"，
 			// 和没写一样。周检是天然提醒时机——每周一看报告就能决定。
 			let pendingCandidates = null;
+			// Same root resolution as principles (P0-1): config override, else
+			// derived from storageDir — never homedir, so sandbox tests stay clean.
+			const rootForCandidates = typeof patrolConfig.memoryRoot === 'string' && patrolConfig.memoryRoot.trim()
+				? patrolConfig.memoryRoot.trim()
+				: memoryRootForStorage(storageDir);
 			try {
 				if (typeof patrolConfig.pendingAxiomCandidates === 'function') {
 					const got = await patrolConfig.pendingAxiomCandidates();
 					pendingCandidates = Array.isArray(got) ? got : null;
-				} else if (typeof patrolConfig.memoryRoot === 'string' && patrolConfig.memoryRoot.trim()) {
-					const got = await readPendingAxiomCandidates(patrolConfig.memoryRoot.trim());
+				} else {
+					const got = await readPendingAxiomCandidates(rootForCandidates);
 					// 读失败不静默当零候选：那会让人以为"没有待决策项"。
 					if (!got.ok) facts.patrolCandidates = `error:${got.error}`;
 					else pendingCandidates = got.candidates;
