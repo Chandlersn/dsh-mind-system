@@ -85,7 +85,7 @@
 | I-5 负向规则衰减设计确认 | 与用户确认"长期未触发→沉底"的窗口（暂定 90 天）与沉底语义（不删除，移出拦截） | 设计一段话进 DECISIONS；实现放阶段 IV | F14 | ✅ D3 定案：90 天、移出拦截保留资产（§5，用户授权按推荐执行） |
 
 **阶段 I 验收**：F7 自循环在**真实任务**上成立一次（负向规则改变下一次行为，会话转录可查）；账本有双侧真实分布。
-**当前**：2026-11-10 `valve_metrics` 实测 evaluated=101，其中 dailyCount=1、nomination=82、untagged=16、verification=2；日常样本未达 30，阈值校准继续等分布，不把提名或历史未标注样本冒充日常。
+**当前（2026-11-14 更新）**：真实账本 evaluated=101（nomination 82 / untagged 16 / verification 2 / daily 1）。**P0-2 已落地分池**：`summarizeDecisions` 现在同时给全账本 `missRate`（0.119）与日常专属 `calibration` 块（evaluated=1、missRate=0、`sampleSufficient=false`），`canCalibrate` 只认日常分母并给出拒绝理由（`sample_below_floor` 1/30）；`valve_metrics` 的 `thresholds_status` 由固定文案改为可判读的「暂定（sample_below_floor：日常样本 1/30，提名与验证不计入）」。此前用全账本 0.119 调阈值，实质是在校准提名器自己的产出。**这也纠正了旧结论**：dailyCount=1 不是"用户积累不足待观察"，而是自 11-10 起没有任何真实日常判定进入账本——触发面接线（P0-3）仍是待解问题，本章不再把它写成"等用户"。校准判据有变异守卫：去掉分池过滤或去掉样本门，`calibration-split.test.js` 均变红。
 
 ### 阶段 II · 蒸馏自动化
 

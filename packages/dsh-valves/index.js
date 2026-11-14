@@ -32,7 +32,7 @@ import {
 	checkPrinciple,
 	isExternallyVerifiable,
 } from './src/predicates.js';
-import { mergeThresholds, DEFAULT_LAYERS, DEFAULT_THRESHOLDS } from './src/thresholds.js';
+import { mergeThresholds, canCalibrate, MIN_CALIBRATION_SAMPLES, DEFAULT_LAYERS, DEFAULT_THRESHOLDS } from './src/thresholds.js';
 import {
 	appendDecision,
 	readDecisions,
@@ -495,8 +495,13 @@ export function createRuntime(options = {}) {
 			// "没有报告"与"巡检了没问题"是两件事，指标上必须分得开。
 			const weeklyPatrol = await readLatestPatrolReport(storageDir, 'weekly');
 			const quarterlyPatrol = await readLatestPatrolReport(storageDir, 'quarterly');
+			const summary = summarizeDecisions(entries);
+			// P0-2: thresholds may only be tuned from the DAILY denominator. The
+			// verdict is reported so "still provisional" has a testable reason,
+			// instead of a permanent label nobody can act on.
+			const calib = canCalibrate(summary.calibration);
 			return {
-				...summarizeDecisions(entries),
+				...summary,
 				negative_rules: rules === undefined ? null : rules.length,
 				negative_store: rules === undefined ? 'unreadable' : 'ok',
 				last_patrol: {
@@ -504,7 +509,8 @@ export function createRuntime(options = {}) {
 					quarterly: quarterlyPatrol ? { at: quarterlyPatrol.at, ok: quarterlyPatrol.ok, findings: quarterlyPatrol.findings?.length ?? 0 } : 'never',
 				},
 				thresholds,
-				thresholds_status: '暂定（待实测分布校准）',
+				thresholds_status: calib.allowed ? '可校准（日常样本已达标）' : `暂定（${calib.reason}：日常样本 ${calib.evaluated}/${calib.needed}，提名与验证不计入）`,
+				calibration_writable: calib.allowed,
 			};
 		},
 		/**
