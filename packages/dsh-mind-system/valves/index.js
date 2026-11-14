@@ -62,9 +62,6 @@ import {
 // IV-5 公理闸门限速：每月最多生效一次 + 显式测试通道（不消耗额度）。
 import { checkAxiomRate, applyAxiomLimit } from './src/ratelimit.js';
 import { nominateFromDisk } from './src/nominate.js';
-// Runtime hot reload (2026-11-14): trimmed port of memory's 5.25.0 mechanism,
-// kept local so valves does not depend on dsh-memory-manager (direction rule).
-import { selfReload } from './src/reload.js';
 // III-3 预算缰绳：批量执行面（提名/治理/确认）的数量上限。
 import { check as checkBudget, DEFAULT_BUDGET } from './src/budget.js';
 import { readClisHistory, consumeClisHistory, criterionEvidenceFromInsights } from './src/clis-bridge.js';
@@ -149,9 +146,6 @@ const facts = {
 	storageDir: undefined,
 	thresholdsOverridden: false,
 	loadError: undefined,
-	/** Runtime hot-reload capability and outcome (2026-11-14). */
-	canReload: false,
-	lastReload: undefined,
 	/** 运行时观测到的故障（读库失败等）。probe() 只读它，不做 I/O。 */
 	runtimeFindings: new Map(),
 };
@@ -1139,39 +1133,12 @@ export function apply(ctx, config = {}, overrides = {}) {
 		ctx.tools.register(tool);
 		facts.registeredTools.push(tool.name ?? '(unnamed)');
 	}
-
-	// Runtime hot reload (2026-11-14). memory-manager has had this since 5.25.0;
-	// valves did not, so every one-line change here cost a host restart (which
-	// also invalidates the user's panel token). Probing exactly the way
-	// selfReload does: without loader/registry the swap can never complete, so
-	// report unsupported up front instead of accepting an impossible request.
-	facts.canReload = ctx.loader !== undefined && ctx.registry !== undefined;
-	reloadImpl = facts.canReload ? () => selfReload(ctx, { logger: ctx.logger ?? console }) : null;
-}
-
-/**
- * Reload the valves plugin's server half in place (no process restart).
- *
- * Exported so a host-side route or a maintainer script can call it directly;
- * returns the same receipt shape as memory's reload
- * (`{ok,version,fibers}` or `{ok:false,error,restored}`).
- *
- * @returns {Promise<object>} the swap result.
- */
-export function reload() {
-	if (typeof reloadImpl !== 'function') {
-		return Promise.resolve({ ok: false, error: '当前实例没有可用的重载能力（apply 未执行或宿主缺少 loader/registry）', restored: false });
-	}
-	return reloadImpl();
 }
 
 /** 运行时句柄（memory 等消费方经 ctx.get 拿；测试可直接取）。 */
 export function getRuntime() {
 	return runtime;
 }
-
-/** Hot-reload capability captured by apply(); null when unsupported. */
-let reloadImpl = null;
 
 /**
  * 健康探针：只报事实——装载没有、工具注册没有、账本读得动吗。
