@@ -25,7 +25,7 @@ MUTATIONS.push(
 	{ file: 'src/nominate.js', find: 'if (agg.count < t.forbiddenMinFailures) continue;', replace: '', label: '负向提名阈值失效（1 次失败也提名）' },
 	{ file: 'src/nominate.js', find: "if (!href.startsWith('functions/')) continue;", replace: '', label: '正向提名越层（insights 也被提名）' },
 	{ file: 'src/nominate.js', find: "success_evidence: 'self_report',", replace: "success_evidence: 'external',", label: '提名器伪造外部证据级别' },
-	{ file: 'src/store.js', find: "if (origin === 'daily') dailyCount++;", replace: 'dailyCount++;', label: 'origin 口径失效（验证样本灌进日常计数）' },
+	{ file: 'src/store.js', find: 'if (CALIBRATION_ORIGINS.includes(origin)) {', replace: 'if (origin !== undefined) {', label: 'origin 口径失效（验证样本灌进日常计数）' },
 	{ file: 'index.js', find: 'if (seen.has(key)) continue;', replace: '', label: 'clisTrace 幂等失效（重复消费重复落账）' },
 	{ file: 'src/clis-bridge.js', find: "const inContract = CAUSAL_TYPES.includes(type);", replace: 'const inContract = true;', label: '离契约类型被当合规提名放行' },
 	{ file: 'src/clis-bridge.js', find: "if (text.includes('⚠️ 已被取代')) continue;", replace: '', label: '已取代原则重新进入候选' },
@@ -94,6 +94,9 @@ MUTATIONS.push(
 	{ file: 'src/layerchange.js', find: "if (!active) continue;", replace: '', label: '未激活的修改也做映射（提议即生效）' },
 	{ file: 'src/layerchange.js', find: "if (c?.state !== LAYER_CHANGE_STATES.active) continue;", replace: '', label: '层表被未激活的修改改变' },
 	{ file: 'src/layerchange.js', find: 'const expired = Number.isFinite(until) && now > until;', replace: 'const expired = false;', label: '退役状态不标（过期仍报 active）' },
+	// statement must travel with each principle (2026-11-16): a patrol report
+	// listing only ids makes the reader open every file to learn what was flagged.
+	{ file: 'src/patrol.js', find: 'principles.push({ id: stem, statement, refs, antiExamples });', replace: 'principles.push({ id: stem, refs, antiExamples });', label: 'principles 丢掉 statement（报告只剩 id）' },
 );
 let red = 0;
 for (const m of MUTATIONS) {

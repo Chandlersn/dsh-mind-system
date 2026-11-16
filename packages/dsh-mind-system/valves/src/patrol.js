@@ -341,7 +341,7 @@ export async function readPrinciplesFromDisk(memoryRoot, ledgerEntries) {
 		} catch {
 			// Unreadable file: report zero refs and flag it, do not drop it —
 			// a file that cannot be read is exactly what a patrol should surface.
-			principles.push({ id: stem, refs: 0, antiExamples: 0, unreadable: true });
+			principles.push({ id: stem, statement: '', refs: 0, antiExamples: 0, unreadable: true });
 			continue;
 		}
 		if (/^>\s*⚠️\s*已被取代/m.test(text)) continue;
@@ -353,7 +353,16 @@ export async function readPrinciplesFromDisk(memoryRoot, ledgerEntries) {
 		// a traceable source location).
 		const section = /##\s*阀门证据\s*\n([\s\S]*?)(?=\n##|$)/.exec(text)?.[1] ?? '';
 		const antiExamples = (section.match(/^- 证据：/gm) ?? []).length;
-		principles.push({ id: stem, refs, antiExamples });
+				// Statement is part of the patrol contract ({id, statement, refs, antiExamples}).
+		// A report listing only ids forces the reader to open every file to learn
+		// what was flagged. Laws carry "## 核心原则" (bullet), axioms "## 命题"
+		// (paragraph); absent both, leave it empty rather than inventing text.
+		const statement = (
+			/##\s*核心原则\s*\n+-\s*([^\n]+)/.exec(text)?.[1]
+			?? /##\s*命题\s*\n+([^\n]+)/.exec(text)?.[1]
+			?? ''
+		).trim().slice(0, 120);
+		principles.push({ id: stem, statement, refs, antiExamples });
 	}
 	return { ok: true, principles };
 }

@@ -461,3 +461,41 @@ test('readPendingAxiomCandidates：目录存在但读失败 → 如实报错，�
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
+
+// ——————————————————————————————————————————————
+// 巡检输入必须带 statement（2026-11-16）
+// ——————————————————————————————————————————————
+
+test('readPrinciplesFromDisk：每条原则带 statement（只报 id 等于让人去开每个文件）', async () => {
+	const { readPrinciplesFromDisk } = await import("../src/patrol.js");
+	const { mkdirSync, writeFileSync } = await import("node:fs");
+	const dir = sandbox();
+	try {
+		mkdirSync(join(dir, "insights"), { recursive: true });
+		writeFileSync(join(dir, "insights", "某法.md"), [
+			"# 创新优化思想：某法",
+			"",
+			"## 核心原则",
+			"",
+			"- 判据要落在被测者控制不了的那一面。",
+			"",
+		].join("\n"), "utf8");
+		writeFileSync(join(dir, "insights", "某道.md"), [
+			"# 道 · 某道",
+			"",
+			"## 命题",
+			"",
+			"生成与判断同源时，自证只是重复自己。",
+			"",
+		].join("\n"), "utf8");
+		const r = await readPrinciplesFromDisk(dir, []);
+		assert.equal(r.ok, true);
+		const fa = r.principles.find((p) => p.id === "某法");
+		assert.ok(fa.statement && fa.statement.includes("被测者控制不了"), "法要取下核心原则那句");
+		// Axioms live in dao/, which this reader does not scan - only assert that
+		// whatever it does return never lacks the field.
+		for (const p of r.principles) assert.equal(typeof p.statement, "string", `${p.id} 必须有 statement 字段`);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
