@@ -325,17 +325,31 @@ Node ≥ 22.12），返回的正是 Host 已加载的同一份命名空间。
 
 | 路由 | 说明 |
 |---|---|
-| `GET /api/memory-org/overview` | 体检结果 + 各分区文件计数 + 使用口径 + 运行环境（面板总览、架构图与侧栏徽标共用） |
+| `GET /api/memory-org/overview` | 体检结果 + 各分区文件计数 + 使用口径 + SAG 通道状态 + 运行环境（面板总览、架构图与侧栏徽标共用） |
+| `GET /api/memory-org/stream` | **SSE 推送**（见下）：连上先发一份完整 `overview`，之后只在数据变化时再发 |
 | `GET /api/memory-org/check` | 仅体检 |
 | `GET /api/memory-org/list?zone=functions\|insights\|dao\|daily` | 分区文件列表（每日区只列 `YYYY-MM-DD.md`，最新在前） |
 | `GET /api/memory-org/file?zone=functions&name=x.md` | 读记忆文件（省略 `zone` 读索引） |
 | `GET /api/memory-org/search?q=关键词` | 全库搜索 |
 
+### SSE 推送（`/stream`，2026-11-16）
+
+事件名 `overview`，`data` 是一份与 `/overview` **同构**的单对象（注意 `/overview` 返回单元素数组，`/stream` 发扁平对象）。另发 `error` 事件（检索失败时，绝不静默）与纯注释心跳（`: keep-alive`，每 20 秒）。
+
+三条设计约束：
+
+- **只在变化时推送**：整份 payload 序列化后比对，相同就不发。每秒无脑推是在搬同样的字节，且并不会比"变化那一刻"更新。
+- **服务端内部每 2 秒检查磁盘**：记忆根是 agent 与编辑器直接写的普通文件，跨网络驱动器与各平台都没有可靠的事件总线，2 秒轮询是诚实的兜底（几毫秒服务端开销，不是浏览器往返）。
+- **轮询保留为下限**：客户端同时保留 30 秒轮询。流断开时面板继续更新，只是慢一些——静默停止的监控比落后 30 秒的更危险。徽章上的"实时"是**新鲜度**承诺，事件超过 90 秒未到即显示为轮询降级。
+
+HTTP 路由与 SSE **共用同一个 `overviewPayload()`**，避免两处装配漂移；`signalCount` / `indexRows` / `distinctHrefs` 的口径说明只写在这一处。
+
 **两家半边约定好的字段名**（客户端只认这些；改名会让面板静默变空白，`api-test.mjs` 有专门的契约断言钉住）：
 
 | 响应 | 字段 |
 |---|---|
-| `overview`（数组，单元素） | `root`、`initialized`、`failCount`、`warnCount`、**`results`**（体检条目：`level`/`rule`/`message`；不是 `problems`）、`counts{functions,insights,dao,capabilities,skills,daily,archived}`（`daily` **含归档月**在内，`archived` 只数 `daily/YYYY-MM.md`；2026-11 口径变更）、`usage{signalCount,recallEvents,readEvents,verdictEvents,distinctHrefs,indexRows,layers,hotspots}`、`capture`、`env{version,canReload,hotReloadRunning,memoryRoot,skillRoot,indexBytes,indexComfortBytes,indexHardBytes,lastReload}`（`skillRoot` 为**已解析**的存储路径：无覆盖时 = `<dshHome>/skills`，与 config 项同名同义） |
+| `overview`（数组，单元素） | `root`、`initialized`、`failCount`、`warnCount`、**`results`**（体检条目：`level`/`rule`/`message`；不是 `problems`）、`counts{functions,insights,dao,capabilities,skills,daily,archived}`（`daily` **含归档月**在内，`archived` 只数 `daily/YYYY-MM.md`；2026-11 口径变更）、`usage{signalCount,recallEvents,readEvents,verdictEvents,distinctHrefs,indexRows,layers,hotspots}`、**`sag{configured,online,authorized,endpoint,tool}`**（三个布尔分开报，因为失败原因不同、修法不同：无 key / 服务没起 / key 被拒——合成一个"不可用"会藏住是哪一个坏了）、`capture`、`env{version,canReload,hotReloadRunning,memoryRoot,skillRoot,indexBytes,indexComfortBytes,indexHardBytes,lastReload}`（`skillRoot` 为**已解析**的存储路径：无覆盖时 = `<dshHome>/skills`，与 config 项同名同义） |
+| `stream` | SSE。事件 `overview` 的 data 是 `overview` 单元素数组里的那个对象（**扁平，不包数组**）；事件 `error` 带 `{message}`；心跳是 `: keep-alive` 注释行 |
 | `list` | `files[]{name,bytes,mtime}` |
 | `file` | `{name,text}` |
 | `search` | `hits[]{zone,name,line,heading,snippet}`（片段是 `snippet`，不是 `text`） |

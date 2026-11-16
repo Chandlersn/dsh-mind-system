@@ -45,10 +45,42 @@
 
 ## 数据
 
-- `<dshHome>/storages/mind-valves.jsonl` — 追加式判定账本（allow/deny 双侧都记）
+- `<dshHome>/storages/mind-valves.jsonl` — 追加式判定账本（allow/deny 双侧都记；`kind: 'trace'` 的行是 LayerTrace）
 - `<dshHome>/storages/mind-negative-rules.json` — 已确认负向规则（同 id 覆盖为修订）
+- `<dshHome>/storages/mind-rule-triggers.jsonl` — 负向规则命中流水（供沉底与灰度转正判据）
 
 读失败 ≠ 空：ENOENT 是 `[]`，其它失败是 `undefined`——"没查成"不得当"没命中"放行（下行遇 undefined 转 human_gate）。
+
+## LayerTrace（执行面留痕，2026-11-16）
+
+[`src/trace.js`](src/trace.js)。决策账本记的是"判了什么"，答不了三个复盘问题：经过了哪些层（没有 `layer_path`，单层校验和全链通过长得一样）、当时哪版规则在生效（事后改规则会让旧决策看起来像按现文本做的）、哪些闸门真跑了（跳过的闸门绝不能读成通过的闸门）。
+
+四个契约字段写进**同一条** `mind-valves.jsonl`，不建第二存储——读者不可能只看到决策看不到 trace：
+
+| 字段 | 内容 |
+|---|---|
+| `layer_path` | 有序层名数组，如 `["L2","L1"]` |
+| `rule_versions` | 按层记版本；**只有真实声明过版本的层才入表** |
+| `budget_usage` | 实际规模 + 上限（"44 of 120"是证据，"ok"不是） |
+| `gate_decisions` | `[{gate, result, reason?}]`，`result ∈ passed / failed / skipped / human_gate` |
+
+两条不可让步的规则：
+
+1. **观测不到的字段恒为 `null`，不用 `0` / `{}` / `[]` 冒充。** `[]` 会读成"没有层"，`{}` 会读成"没有规则"。
+2. **跳过的闸门记 `skipped`，不记 `passed`。** 语义层没有 embedder 是常态，没查过不能算通过；`verifyTraceFields` 把它单独列在 `skipped_gates` 里——既不冒充通过，也不因此判整条 trace 不完整。
+
+`appendTrace` 是尽力而为的写入（存储坏了返回 `false`，不抛错）。旧账本没有 trace 行仍可读，历史不追溯补写。
+
+## 灰度放量（IV-1，2026-11-16）
+
+新确认的规则以 `rollout: 'staged'` 生效，**拦截力与 `full` 完全相同**（两条通道都拦，差别只在"这条规则被多少真实语料验证过"）。累积 `negativeRuleStagedHits`（默认 3）次真实命中后由 `promoteStagedRules` 转 `full` 并记 `promoted_at`。
+
+约束：
+
+- **转正只发生在真实命中路径**（`matchNegative`）。定时器或人工批量转正等于绕开证据。
+- **沉底优先**：`status === 'sunk'` 的规则不会被转正复活。
+- **读不到触发流水则一律不转正**——"读不到"不等于"没命中"，更不能当命中。
+- **放量进度是正交字段，不写进 `status`。** `status` 是生命周期（active/sunk），被沉底、回滚与探针共同依赖；把它挪作灰度语义会连带改掉那些判断（实测直接打红两条沉底用例）。
 
 ## 探针
 

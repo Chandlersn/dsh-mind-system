@@ -137,7 +137,7 @@
     },
     "memory/README.md": {
       "source": "dsh-memory-manager/README.md",
-      "sha256": "6af2cc0e67cfaa7e4d42558d525afed78d476adebffc2e58ca252d3532b8b9c5"
+      "sha256": "340a7d9c094c21b2e9b3883884093af14d36bb5bc89009faec774ab8fdd8feb2"
     },
     "memory/api-test.mjs": {
       "source": "dsh-memory-manager/api-test.mjs",
@@ -805,7 +805,7 @@
     },
     "valves/README.md": {
       "source": "dsh-valves/README.md",
-      "sha256": "03e3a224342d516b03b39fe63d2565fe34425a9eb62d63511f49ccfce323a465"
+      "sha256": "032311a7be5867a1819b4f0c0df8197340df6b902e8c3aec5efbb82a900b1653"
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
