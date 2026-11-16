@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { lstat, open, stat, unlink } from 'node:fs/promises';
+import { lstat, open, rename, stat, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 
 const INTENT_NAME = '.daily-capture.pending';
@@ -69,22 +69,42 @@ export async function beginCaptureIntent(root, day) {
  * the next capture, which is the safe, loud, human-recoverable failure.
  */
 export async function finishCaptureIntent(intent) {
+	// Detach the pathname FIRST, atomically, then verify what we detached.
+	//
+	// Checking the inode and then calling unlink(path) leaves a window: another
+	// process can rename its own file into place between the check and the
+	// delete, and the delete then destroys a file we never created. There is no
+	// "unlink by inode" in Node, so the check-then-delete order cannot be made
+	// safe on the original path.
+	//
+	// rename moves the directory entry itself: whatever sits at the quarantine
+	// name afterwards is exactly what occupied the original path at the instant
+	// of the rename. Verification therefore happens on a name nobody else
+	// knows, and the delete only ever touches that name.
+	const quarantine = `${intent.file}.finish-${randomUUID()}`;
 	let st;
 	try {
+		await rename(intent.file, quarantine);
 		// bigint lstat: Windows inodes exceed Number.MAX_SAFE_INTEGER, and a
 		// lossy Number read makes a genuine match compare unequal.
-		st = await lstat(intent.file, { bigint: true });
+		st = await lstat(quarantine, { bigint: true });
 	} catch (error) {
 		throw Object.assign(new Error('意图路径无法核验，未删除；需核查'), { code: 'CAPTURE_FINALIZE_UNKNOWN', fileWritten: true, ledgerStatus: 'recorded', cause: error });
 	}
 	const ours = intent.ino !== undefined && intent.ino !== 0n &&
 		!st.isSymbolicLink() && st.ino === intent.ino && st.dev === intent.dev;
 	if (!ours) {
-		throw Object.assign(new Error('意图路径已被替换（非本次创建的 inode），未删除；需核查'), {
-			code: 'CAPTURE_INTENT_REPLACED', fileWritten: true, ledgerStatus: 'recorded',
-		});
+		// Not ours: put it back where the other process expects it, then fail
+		// loudly. Restoring is part of not deleting - a foreign file that
+		// silently disappears is the same damage whether we meant it or not.
+		let restored = false;
+		try { await rename(quarantine, intent.file); restored = true; } catch { /* reported below */ }
+		throw Object.assign(
+			new Error(restored ? '意图路径已被替换（非本次创建的 inode），外来文件已还原，未删除；需核查' : '意图路径已被替换，且外来文件还原失败；需人工核查 quarantine 文件'),
+			{ code: 'CAPTURE_INTENT_REPLACED', fileWritten: true, ledgerStatus: 'recorded', restored, quarantine },
+		);
 	}
-	try { await unlink(intent.file); }
+	try { await unlink(quarantine); }
 	catch (error) {
 		throw Object.assign(new Error('每日记录和账本已确认，意图清理结果不明；需核查，不要盲目重试'), { code: 'CAPTURE_FINALIZE_UNKNOWN', fileWritten: true, ledgerStatus: 'recorded', cause: error });
 	}

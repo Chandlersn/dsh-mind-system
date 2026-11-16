@@ -168,8 +168,11 @@ test('unlink 已成功但回执丢失：报告结果未知且不得重复 unlink
   const f = await fixture(t);
   const intent = await beginCaptureIntent(f.root, day);
   let calls = 0;
+  // The implementation detaches the witness to a quarantine name before
+  // deleting it (a check-then-delete on the original path is racy), so the
+  // delete under test is that quarantined entry, not the original pathname.
   await patchBuiltin('unlink', (original) => async (file, ...args) => {
-    if (path.resolve(String(file)) !== path.resolve(f.pending)) return original(file, ...args);
+    if (!String(file).includes('.daily-capture.pending')) return original(file, ...args);
     calls++;
     await original(file, ...args);
     throw ioError();

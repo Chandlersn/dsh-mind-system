@@ -88,25 +88,30 @@ test('finish 调用前被另一进程替换时，不能删除外来哨兵', asyn
   await verifyReplacementPreserved(f, originalBytes, error);
 });
 
-test('finish 发起 unlink 瞬间被另一进程替换时，不能删除外来哨兵', async (t) => {
+test('finish 发起原子改名的瞬间被另一进程替换时，不能删除外来哨兵', async (t) => {
   const f = await fixture(t);
   const intent = await beginCaptureIntent(f.root, day);
   const originalBytes = await readFile(f.pending);
-  const originalUnlink = fs.promises.unlink;
+  // Race the real detach step. The implementation renames the pathname into a
+  // quarantine name before verifying the inode; another process replacing the
+  // file at that instant is the case a check-then-delete order could never
+  // survive. Patching rename (not unlink) keeps the race on the step that
+  // actually decides which file we are about to destroy.
+  const originalRename = fs.promises.rename;
   let calls = 0;
-  fs.promises.unlink = async (file, ...args) => {
-    if (path.resolve(String(file)) !== path.resolve(f.pending)) return originalUnlink(file, ...args);
+  fs.promises.rename = async (from, to, ...args) => {
+    if (path.resolve(String(from)) !== path.resolve(f.pending)) return originalRename(from, to, ...args);
     calls++;
-    assert.equal(calls, 1, '不得盲目重复删除');
+    assert.equal(calls, 1, 'detach must happen exactly once');
     await replaceInOtherProcess(f);
-    assert.deepEqual(await readFile(f.saved), originalBytes, 'unlink 前已保存真实原意图');
-    assert.deepEqual(await readFile(f.pending), foreignBytes, 'unlink 前已放入真实外来哨兵');
-    return originalUnlink(file, ...args);
+    assert.deepEqual(await readFile(f.saved), originalBytes, 'the real original intent is preserved before the race');
+    assert.deepEqual(await readFile(f.pending), foreignBytes, 'the foreign witness really is in place at detach time');
+    return originalRename(from, to, ...args);
   };
   syncBuiltinESMExports();
   let error;
   try { error = await runFinish(intent); }
-  finally { fs.promises.unlink = originalUnlink; syncBuiltinESMExports(); }
-  assert.equal(calls, 1, '故障必须发生在真实 finish 发起删除时');
+  finally { fs.promises.rename = originalRename; syncBuiltinESMExports(); }
+  assert.equal(calls, 1, 'the race must happen on the real detach step');
   await verifyReplacementPreserved(f, originalBytes, error);
 });
