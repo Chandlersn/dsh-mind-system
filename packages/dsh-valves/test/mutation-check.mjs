@@ -109,6 +109,8 @@ MUTATIONS.push(
 	// The refs-gate WIRING in index.js (2026-11-16): both real defects of the day
 	// lived at this handoff while every judge-layer test stayed green.
 	{ file: 'index.js', find: 'refsRowsForPatrol = Array.isArray(ledgerForRefs)', replace: 'refsRowsForPatrol = false && Array.isArray(ledgerForRefs)', label: 'refs 闸接线恒 insufficient（计数不落位，证据够也说不够）' },
+	// A skip must be observable, else "not due" looks like "never ran" (2026-11-16).
+	{ file: 'index.js', find: "facts.patrolWeekly = 'skipped_not_due';", replace: '', label: '未到期跳过不留痕（与从没跑过无法区分）' },
 );
 let red = 0;
 for (const m of MUTATIONS) {

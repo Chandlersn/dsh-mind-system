@@ -43,6 +43,9 @@ window.__ModuleLoader__.load({
 
 		const NAV = [
 			{ key: 'overview', label: '总览', icon: '⌂' },
+			// 架构图（2026-11-16 用户要求）：把五层结构、真实数据流和闭环画出来。
+			// 它的每个数字都来自 /overview 的真实 counts/usage，不画不可观测的东西。
+			{ key: 'arch', label: '架构', icon: '◈' },
 			{ key: 'index', label: '索引', icon: '☰' },
 			{ key: 'functions', label: '功能', icon: '⬡' },
 			{ key: 'insights', label: '思想', icon: '✦' },
@@ -68,7 +71,7 @@ window.__ModuleLoader__.load({
 .dmo-header{display:flex;align-items:center;gap:10px;padding:14px 20px 10px}
 .dmo-title{font-size:16px;line-height:24px;font-weight:600;margin:0}
 .dmo-sub{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
-.dmo-search{display:inline-flex;align-items:center;gap:6px;height:32px;box-sizing:border-box;padding:0 8px;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-1);min-width:200px}
+.dmo-search{display:inline-flex;align-items:center;gap:6px;height:32px;box-sizing:border-box;padding:0 8px;border:.5px solid var(--dsw-alias-border-l4);border-radius:999px;background:var(--dsw-alias-bg-layer-1);min-width:200px}
 .dmo-search:focus-within{border-color:var(--dsw-alias-state-business-primary)}
 .dmo-search input{flex:1;border:none;outline:none;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;min-width:0}
 .dmo-search input::placeholder{color:var(--dsw-alias-label-dimmed)}
@@ -84,17 +87,247 @@ window.__ModuleLoader__.load({
 .dmo-btn.link:hover{background:transparent;text-decoration:underline dotted var(--dsw-alias-link);text-underline-offset:3px}
 .dmo-btn:disabled{opacity:.4;cursor:not-allowed}
 .dmo-btn:focus-visible,.dmo-row:focus-visible,.dmo-tl-row:focus-visible,.dmo-gcard:focus-visible,.dmo-nav:focus-visible,.dmo-sec-head:focus-visible,.dmo-chip:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
-.dmo-body{flex:1;display:flex;min-height:0;padding:0 20px 16px;gap:16px}
-.dmo-rail{width:184px;flex-shrink:0;display:flex;flex-direction:column;gap:1px;overflow-y:auto;border-right:.5px solid var(--dsw-alias-border-l2);padding-right:8px}
-.dmo-nav{display:flex;align-items:center;gap:8px;width:100%;padding:0 8px;height:32px;border:none;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);cursor:pointer;font:inherit;font-size:14px;text-align:left}
-.dmo-nav:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dmo-nav.active{background:var(--dsw-alias-interactive-bg-active);font-weight:600}
-.dmo-nav .ico{width:16px;text-align:center;color:var(--dsw-alias-label-secondary)}
-.dmo-nav .cnt{margin-left:auto;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
+.dmo-body{flex:1;display:flex;flex-direction:column;min-height:0;padding:0 20px 16px;gap:0}
+/* Dashboard layout (2026-11-16): the left rail is gone — destinations read as a
+   horizontal segmented bar under the header. The panel is a data surface that
+   shows what the backend actually holds, not a workspace with a nav sidebar. */
+.dmo-tabs{display:flex;align-items:center;gap:2px;flex-wrap:wrap;flex-shrink:0;padding:0 0 10px;border-bottom:.5px solid var(--dsw-alias-border-l2);margin-bottom:16px}
+.dmo-tabs .dmo-nav{display:inline-flex;align-items:center;gap:6px;width:auto;padding:0 12px;height:32px;border:none;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:13px;text-align:left;transition:background .15s ease,color .15s ease}
+.dmo-tabs .dmo-nav:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.dmo-tabs .dmo-nav.active{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 12%,transparent);color:var(--dsw-alias-state-business-primary);font-weight:600}
+.dmo-tabs .dmo-nav .ico{width:15px;text-align:center;color:inherit;opacity:.75}
+.dmo-tabs .dmo-nav .cnt{margin-left:2px;font-size:11px;line-height:16px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
 .dmo-main{flex:1;min-width:0;overflow-y:auto;display:flex;flex-direction:column;gap:12px}
-.dmo-card{border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-lg);padding:12px 14px;background:var(--dsw-alias-bg-layer-1)}
-.dmo-card.tight{padding:8px 10px}
-.dmo-h2{font-size:14px;line-height:22px;font-weight:600;margin:0 0 8px}
+/* ---- Dashboard surface (2026-11-16 redesign) -------------------------------
+   Reference: huashu catalog web-13-glassmorphism-bento (Linear). What that style
+   actually is, and what this block now implements:
+     · near-black canvas + a soft violet glow bleeding down from the top edge
+     · bento cards that are NOT equal height — a grid with explicit row spans
+     · hairline borders that catch light (border-light on the top edge)
+     · one hero measure per card, oversized, in a gradient wash
+     · inner recessed panels inside a card, not just text on the card face
+     Colors still ride host tokens so the panel keeps the host's palette, but the
+     GLOW and the LAYERING are ours — that is what makes it read as a dashboard
+     instead of a settings page. */
+.dmo-root{position:relative;isolation:isolate}
+.dmo-root::before{content:'';position:absolute;inset:0 0 auto;height:340px;pointer-events:none;z-index:0;background:
+  radial-gradient(58% 100% at 50% 0%,color-mix(in srgb,var(--dsw-alias-state-business-primary) 26%,transparent),transparent 72%),
+  radial-gradient(42% 85% at 84% 0%,color-mix(in srgb,var(--dsw-alias-brand-text,#b59aff) 18%,transparent),transparent 68%),
+  radial-gradient(30% 60% at 12% 0%,color-mix(in srgb,var(--dsw-alias-state-business-primary) 12%,transparent),transparent 70%);
+  opacity:1}
+.dmo-header,.dmo-body{position:relative;z-index:1}
+.dmo-bento{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));grid-auto-rows:minmax(0,auto);grid-auto-flow:row dense;gap:14px;align-items:start}
+.dmo-bento > .dmo-card{margin:0;min-width:0}
+.dmo-span-3{grid-column:span 3}.dmo-span-4{grid-column:span 4}.dmo-span-5{grid-column:span 5}
+.dmo-span-6{grid-column:span 6}.dmo-span-7{grid-column:span 7}.dmo-span-8{grid-column:span 8}
+.dmo-span-9{grid-column:span 9}.dmo-span-12{grid-column:span 12}
+/* Uneven heights are the point, but a card must never leave a hole under it:
+   rows are sized by content and the grid keeps cards top-aligned. */
+.dmo-rowspan-2{grid-row:span 2}
+@container dmo-panel (max-width:1000px){.dmo-span-3,.dmo-span-4,.dmo-span-5{grid-column:span 6}.dmo-span-7,.dmo-span-8,.dmo-span-9{grid-column:span 12}}
+@container dmo-panel (max-width:720px){.dmo-bento{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.dmo-span-3,.dmo-span-4,.dmo-span-5,.dmo-span-6,.dmo-span-7,.dmo-span-8,.dmo-span-9,.dmo-span-12{grid-column:span 2}.dmo-rowspan-2{grid-row:span 1}}
+/* Reset the older flat card face here: a bento card is a layered surface with a
+   lit top edge, not a 1px box on the same plane as the page. */
+.dmo-bento > .dmo-card{
+  border:.5px solid color-mix(in srgb,var(--dsw-alias-border-l3) 70%,transparent);
+  border-top-color:color-mix(in srgb,var(--dsw-alias-label-primary) 14%,transparent);
+  border-radius:16px;
+  padding:16px 18px;
+  background:linear-gradient(180deg,color-mix(in srgb,var(--dsw-alias-bg-layer-1) 92%,transparent),var(--dsw-alias-bg-layer-1));
+  box-shadow:0 1px 0 0 color-mix(in srgb,var(--dsw-alias-label-primary) 6%,transparent) inset,0 8px 24px -12px rgb(0 0 0 / .5);
+  transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease}
+.dmo-bento > .dmo-card:hover{border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 45%,transparent);box-shadow:0 1px 0 0 color-mix(in srgb,var(--dsw-alias-label-primary) 8%,transparent) inset,0 12px 32px -14px color-mix(in srgb,var(--dsw-alias-state-business-primary) 55%,transparent)}
+/* A hero measure: oversized gradient number + quiet label underneath. */
+.dmo-measure{display:flex;flex-direction:column;gap:4px;min-width:0;position:relative}
+.dmo-measure-v{font-size:34px;line-height:40px;font-weight:650;letter-spacing:-.03em;font-variant-numeric:tabular-nums;
+  background:linear-gradient(135deg,var(--dsw-alias-label-primary) 12%,color-mix(in srgb,var(--dsw-alias-state-business-primary) 78%,var(--dsw-alias-label-primary)) 92%);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.dmo-measure-l{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);font-weight:500}
+.dmo-measure-x{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
+/* Section eyebrow: the small uppercase kicker above a card's measures. */
+.dmo-eyebrow{font-size:10px;line-height:14px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.dmo-eyebrow::after{content:'';flex:1;height:.5px;background:linear-gradient(90deg,var(--dsw-alias-border-l2),transparent)}
+/* ---- hero header (2026-11-16) --------------------------------------------
+   The old header was one row: title + counters + search. The reference puts a
+   kicker, a huge statement, and one supporting line in the upper third, with
+   the status surface beside it. That hierarchy is what makes a page read as a
+   dashboard rather than a table with a title bar. */
+.dmo-header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:14px 24px;padding:26px 26px 20px}
+.dmo-hero{display:flex;flex-direction:column;gap:6px;min-width:0}
+.dmo-hero-eyebrow{display:flex;align-items:center;gap:8px;font-size:11px;line-height:17px;letter-spacing:.06em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary)}
+.dmo-pill{display:inline-flex;align-items:center;padding:0 7px;height:19px;border-radius:999px;font-size:10px;line-height:19px;letter-spacing:.02em;font-variant-numeric:tabular-nums;color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 88%,var(--dsw-alias-label-primary));background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 13%,transparent);border:.5px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 30%,transparent)}
+.dmo-title{font-size:30px;line-height:38px;font-weight:680;letter-spacing:-.035em;margin:0;
+  background:linear-gradient(180deg,var(--dsw-alias-label-primary),color-mix(in srgb,var(--dsw-alias-label-primary) 62%,transparent));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.dmo-sub{margin:0;max-width:62ch;font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary)}
+.dmo-header-side{display:flex;flex-direction:column;align-items:flex-end;gap:10px;min-width:0}
+.dmo-statusbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;padding:6px 12px;border-radius:999px;
+  border:.5px solid var(--dsw-alias-border-l2);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 70%,transparent);backdrop-filter:blur(8px)}
+.dmo-hero-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+/* NOTE: the header search is a plain flex label with a single input child plus
+   two zero-width decorations. flex-wrap is deliberately unset here: wrapping
+   moved the input to a second line and it rendered as an empty pill. */
+.dmo-hero-actions .dmo-search{display:flex;align-items:center;flex-wrap:nowrap;width:300px;min-width:180px;height:36px;
+  padding:0 14px;border-radius:999px;border:.5px solid var(--dsw-alias-border-l3);
+  background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 75%,transparent);backdrop-filter:blur(10px)}
+.dmo-hero-actions .dmo-search input{flex:1 1 auto;width:100%;min-width:0;color:var(--dsw-alias-label-primary);
+  font-size:13px;font-family:inherit;line-height:1.4;appearance:none;background:transparent;border:none;outline:none;padding:0}
+.dmo-hero-actions .dmo-search input::-webkit-search-cancel-button,.dmo-hero-actions .dmo-search input::-webkit-search-decoration{display:none}
+.dmo-hero-actions .dmo-search input::placeholder{color:var(--dsw-alias-label-tertiary);opacity:1}
+.dmo-hero-actions .dmo-search svg{flex:0 0 auto;color:var(--dsw-alias-label-tertiary)}
+/* Recessed inner panel — the "card inside a card" the reference uses to hold
+   content blocks (the editor pane there, the problem list here). */
+.dmo-inset{border:.5px solid var(--dsw-alias-border-l2);border-radius:12px;padding:10px 12px;
+  background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 65%,transparent);
+  box-shadow:0 1px 0 0 color-mix(in srgb,var(--dsw-alias-label-primary) 4%,transparent) inset}
+/* Status dot + label, replacing bare chips in dense spots. */
+.dmo-dot{display:inline-flex;align-items:center;gap:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.dmo-dot i{width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-tertiary);flex-shrink:0;box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-label-tertiary) 16%,transparent)}
+.dmo-dot.ok i{background:var(--dsw-alias-state-success-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary) 18%,transparent)}
+.dmo-dot.warn i{background:var(--dsw-alias-state-warn-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-warn-primary) 18%,transparent)}
+.dmo-dot.fail i{background:var(--dsw-alias-state-error-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-error-primary) 18%,transparent)}
+/* Sparkline: real series, no decoration. */
+.dmo-spark{display:flex;align-items:flex-end;gap:3px;height:34px;margin-top:10px}
+.dmo-spark b{flex:1;min-width:2px;border-radius:2px 2px 0 0;background:linear-gradient(180deg,color-mix(in srgb,var(--dsw-alias-state-business-primary) 85%,transparent),color-mix(in srgb,var(--dsw-alias-state-business-primary) 25%,transparent))}
+/* ---- live architecture view (2026-11-16) ----------------------------------
+   Not an illustration: every node carries a count the server just returned, so
+   the diagram and the numbers cannot disagree. Nodes open their zone. */
+/* ---- architecture DIAGRAM (SVG, 2026-11-16) ------------------------------
+   A drawn graph: boxes, directed edges with arrowheads, a feedback return arc.
+   Cards in a row are not a diagram; this is. Edge stroke encodes the REAL health
+   of the stage it represents (solid accent = running, dashed red = broken), so
+   the picture degrades visibly instead of lying. */
+.dmo-arch-svg{display:block;width:100%;height:auto;overflow:visible}
+.dmo-node .dmo-node-box{fill:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 72%,transparent);
+  stroke:color-mix(in srgb,var(--dsw-alias-border-l3) 85%,transparent);stroke-width:1;transition:stroke .16s ease,fill .16s ease}
+.dmo-node.clickable{cursor:pointer}
+.dmo-node.clickable:hover .dmo-node-box{stroke:color-mix(in srgb,var(--dsw-alias-state-business-primary) 70%,transparent);
+  fill:color-mix(in srgb,var(--dsw-alias-state-business-primary) 10%,transparent)}
+.dmo-node.accent .dmo-node-box{fill:color-mix(in srgb,var(--dsw-alias-state-business-primary) 9%,var(--dsw-alias-bg-layer-2));
+  stroke:color-mix(in srgb,var(--dsw-alias-state-business-primary) 45%,transparent)}
+.dmo-node-tier{font-size:9px;letter-spacing:.08em;text-transform:uppercase;fill:var(--dsw-alias-label-dimmed);font-weight:600}
+.dmo-node-name{font-size:12.5px;font-weight:650;fill:var(--dsw-alias-label-primary)}
+.dmo-count-n{font-size:19px;font-weight:700;fill:var(--dsw-alias-state-business-primary);font-variant-numeric:tabular-nums}
+.dmo-count-u{font-size:9.5px;fill:var(--dsw-alias-label-tertiary)}
+.dmo-node-role{font-size:9.5px;fill:var(--dsw-alias-label-tertiary)}
+.dmo-edge{fill:none;stroke-width:1.6}
+.dmo-edge.business{stroke:var(--dsw-alias-state-business-primary)}
+.dmo-edge.ok{stroke:var(--dsw-alias-state-success-primary)}
+.dmo-edge.danger{stroke:var(--dsw-alias-state-error-primary);stroke-dasharray:5 4}
+/* Degraded-but-alive (e.g. the SAG channel answers but rejects the key): a
+   warning tone so it never reads as either working or dead. */
+.dmo-edge.warn{stroke:var(--dsw-alias-state-warning-primary,var(--dsw-alias-state-business-primary));stroke-dasharray:5 4}
+.dmo-edge.muted{stroke:color-mix(in srgb,var(--dsw-alias-label-dimmed) 85%,transparent);stroke-width:1.2}
+.dmo-edge.dashed{stroke-dasharray:3 4}
+.dmo-edge-label{font-size:9.5px;fill:var(--dsw-alias-label-tertiary)}
+/* ---- index page: block-separated data view (2026-11-16) --------------------
+   MEMORY.md holds seven blocks of different shapes. Rendering them as one run
+   of bare tables read as an undifferentiated wall, so each block is now its own
+   card with a tinted identity stripe, its own count, and a jump pill above. */
+.dmo-idx-summary{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border-radius:12px;
+  border:.5px solid var(--dsw-alias-border-l2);
+  background:linear-gradient(180deg,color-mix(in srgb,var(--dsw-alias-bg-layer-2) 55%,transparent),transparent)}
+.dmo-idx-total{display:inline-flex;align-items:baseline;gap:4px;margin-right:4px;white-space:nowrap}
+.dmo-idx-total b{font-size:22px;line-height:26px;font-weight:680;letter-spacing:-.02em;font-variant-numeric:tabular-nums;
+  background:linear-gradient(135deg,var(--dsw-alias-label-primary) 15%,color-mix(in srgb,var(--dsw-alias-state-business-primary) 78%,var(--dsw-alias-label-primary)) 95%);
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.dmo-idx-total span{font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.dmo-idx-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;cursor:pointer;font:inherit;
+  font-size:11.5px;line-height:18px;border:.5px solid var(--dsw-alias-border-l3);
+  background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 70%,transparent);color:var(--dsw-alias-label-secondary);
+  transition:border-color .15s ease,color .15s ease,background .15s ease}
+.dmo-idx-pill:hover{border-color:var(--tone,var(--dsw-alias-state-business-primary));color:var(--dsw-alias-label-primary)}
+.dmo-idx-pill-ico{opacity:.8}
+.dmo-idx-pill-n{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary)}
+.dmo-idx-block{--tone:var(--dsw-alias-state-business-primary);
+  position:relative;border:.5px solid var(--dsw-alias-border-l2);border-radius:14px;overflow:hidden;
+  background:linear-gradient(180deg,color-mix(in srgb,var(--dsw-alias-bg-layer-1) 92%,transparent),var(--dsw-alias-bg-layer-1))}
+/* Identity stripe: each block announces itself without shouting. */
+.dmo-idx-block::before{content:'';position:absolute;inset:0 auto 0 0;width:3px;background:var(--tone);opacity:.85}
+.dmo-idx-block.tone-a{--tone:var(--dsw-alias-state-business-primary)}
+.dmo-idx-block.tone-b{--tone:var(--dsw-alias-brand-text,#b59aff)}
+.dmo-idx-block.tone-c{--tone:color-mix(in srgb,var(--dsw-alias-state-business-primary) 55%,var(--dsw-alias-state-warn-primary))}
+.dmo-idx-block.tone-d{--tone:var(--dsw-alias-state-success-primary)}
+.dmo-idx-block.tone-e{--tone:var(--dsw-alias-state-warn-primary)}
+.dmo-idx-pill.tone-a{--tone:var(--dsw-alias-state-business-primary)}
+.dmo-idx-pill.tone-b{--tone:var(--dsw-alias-brand-text,#b59aff)}
+.dmo-idx-pill.tone-c{--tone:color-mix(in srgb,var(--dsw-alias-state-business-primary) 55%,var(--dsw-alias-state-warn-primary))}
+.dmo-idx-pill.tone-d{--tone:var(--dsw-alias-state-success-primary)}
+.dmo-idx-pill.tone-e{--tone:var(--dsw-alias-state-warn-primary)}
+.dmo-idx-block-head{display:flex;align-items:center;gap:9px;padding:13px 16px;flex-wrap:wrap;
+  border-bottom:.5px solid color-mix(in srgb,var(--dsw-alias-border-l2) 80%,transparent);
+  background:color-mix(in srgb,var(--tone) 5%,transparent)}
+.dmo-idx-block-ico{width:20px;height:20px;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;
+  border-radius:6px;font-size:11px;background:color-mix(in srgb,var(--tone) 16%,transparent);color:var(--tone)}
+.dmo-idx-block-title{font-size:14px;line-height:20px;font-weight:650;margin:0;letter-spacing:-.01em}
+.dmo-idx-block-n{font-size:11px;line-height:17px;padding:0 7px;border-radius:999px;font-variant-numeric:tabular-nums;
+  background:color-mix(in srgb,var(--tone) 14%,transparent);color:var(--tone)}
+.dmo-idx-block-hint{margin-left:auto;font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary)}
+.dmo-idx-block-body{padding:6px 16px 14px}
+.dmo-idx-sub{font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary);padding:10px 0 2px;letter-spacing:.02em}
+.dmo-idx-table{margin:4px 0}
+.dmo-idx-table th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-1);z-index:1}
+.dmo-idx-row{cursor:pointer}
+.dmo-idx-row:hover td{background:color-mix(in srgb,var(--tone,var(--dsw-alias-state-business-primary)) 7%,transparent)}
+.dmo-idx-name{font-family:var(--ds-font-family-code,ui-monospace,monospace);font-size:12.5px}
+/* blockquote / list blocks inside an index block keep the reader's rhythm */
+.dmo-arch-loop{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.dmo-arch-step{flex:1 1 130px;min-width:118px;display:flex;flex-direction:column;gap:2px;padding:10px 12px;border-radius:12px;
+  border:.5px solid color-mix(in srgb,var(--dsw-alias-border-l2) 90%,transparent);
+  background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 40%,transparent);opacity:.55}
+.dmo-arch-step.on{opacity:1;border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 42%,transparent);
+  background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 7%,transparent)}
+.dmo-arch-step-n{width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
+  font-size:10px;line-height:1;font-variant-numeric:tabular-nums;
+  background:color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent);color:var(--dsw-alias-label-secondary)}
+.dmo-arch-step.on .dmo-arch-step-n{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 25%,transparent);color:var(--dsw-alias-state-success-primary)}
+.dmo-arch-step-name{font-size:12px;line-height:18px;font-weight:600}
+.dmo-arch-step-d{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.dmo-arch-cycle{font-size:11px;line-height:17px;padding:2px 9px;border-radius:999px;white-space:nowrap;
+  border:.5px dashed color-mix(in srgb,var(--dsw-alias-state-error-primary) 55%,transparent);
+  color:var(--dsw-alias-state-error-primary)}
+.dmo-arch-cycle.closed{border-style:solid;border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 55%,transparent);
+  color:var(--dsw-alias-state-success-primary)}
+/* Hero card: measure on top, quiet drill-in link pinned to the bottom edge. */
+.dmo-hero-card{display:flex;flex-direction:column;gap:0}
+.dmo-link{margin-top:auto;padding:8px 0 0;border:none;background:transparent;color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 85%,var(--dsw-alias-label-secondary));font:inherit;font-size:12px;line-height:18px;text-align:left;cursor:pointer;transition:color .15s ease,gap .15s ease;display:inline-flex;align-items:center;gap:4px}
+.dmo-link:hover{color:var(--dsw-alias-state-business-primary);text-decoration:underline;text-underline-offset:3px;text-decoration-thickness:1px}
+/* ---- shared surface (ALL pages, not just the overview) --------------------
+   The first pass only restyled the overview, which left every other page on the
+   old flat look. These rules are the single place the panel's surface is
+   defined, so a zone list / reader / inbox reads as the same product as the
+   dashboard: layered cards with a lit top edge, hairline rows instead of boxes,
+   quiet empty states, pill controls. */
+.dmo-card{border:.5px solid color-mix(in srgb,var(--dsw-alias-border-l3) 70%,transparent);
+  border-top-color:color-mix(in srgb,var(--dsw-alias-label-primary) 13%,transparent);
+  border-radius:14px;padding:16px 18px;
+  background:linear-gradient(180deg,color-mix(in srgb,var(--dsw-alias-bg-layer-1) 94%,transparent),var(--dsw-alias-bg-layer-1));
+  box-shadow:0 1px 0 0 color-mix(in srgb,var(--dsw-alias-label-primary) 5%,transparent) inset,0 6px 20px -14px rgb(0 0 0 / .45)}
+.dmo-card.tight{padding:12px 14px}
+.dmo-h2{font-size:13px;line-height:20px;font-weight:650;letter-spacing:-.01em;margin:0 0 10px;
+  display:flex;align-items:center;gap:8px;color:var(--dsw-alias-label-primary)}
+.dmo-h2::after{content:'';flex:1;height:.5px;background:linear-gradient(90deg,var(--dsw-alias-border-l2),transparent)}
+/* Page header band: every non-overview page starts with one, so the eye lands
+   in the same place as on the dashboard. */
+.dmo-page-head{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:2px 2px 14px;border-bottom:.5px solid var(--dsw-alias-border-l2);margin-bottom:2px}
+.dmo-page-title{font-size:21px;line-height:28px;font-weight:660;letter-spacing:-.025em;margin:0;
+  background:linear-gradient(180deg,var(--dsw-alias-label-primary),color-mix(in srgb,var(--dsw-alias-label-primary) 66%,transparent));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.dmo-page-sub{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
+.dmo-page-tools{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+/* Rows are hairlines, not cards: a list of 26 items must not become 26 boxes. */
+.dmo-row{border-bottom:.5px solid color-mix(in srgb,var(--dsw-alias-border-l2) 80%,transparent);transition:background .14s ease}
+.dmo-row:hover{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 7%,transparent)}
+.dmo-row:last-child{border-bottom:none}
+.dmo-toolbar{padding:2px 0 10px}
+.dmo-filter{height:34px;border-radius:999px;padding:0 13px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 55%,transparent);transition:border-color .15s ease,box-shadow .15s ease}
+.dmo-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  padding:44px 20px;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px;
+  border:.5px dashed color-mix(in srgb,var(--dsw-alias-border-l3) 80%,transparent);border-radius:14px;
+  background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 35%,transparent)}
+.dmo-btn{transition:background .15s ease,border-color .15s ease,color .15s ease}
+.dmo-btn.outline{border-color:color-mix(in srgb,var(--dsw-alias-border-l3) 85%,transparent);border-radius:999px}
+.dmo-btn.outline:hover{border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 55%,transparent);color:var(--dsw-alias-state-business-primary)}
 .dmo-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .dmo-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 8px;border-radius:999px;font-size:11px;line-height:17px;font-weight:500;white-space:nowrap;border:.5px solid var(--dsw-alias-border-l4);color:var(--dsw-alias-label-tertiary);background:transparent;cursor:default}
 .dmo-chip.ok{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent);border-color:transparent;color:var(--dsw-alias-state-success-primary)}
@@ -192,7 +425,7 @@ window.__ModuleLoader__.load({
 .dmo-idx-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dmo-idx-name{font-family:var(--ds-font-family-code,ui-monospace,monospace);white-space:nowrap}
 .dmo-snippet{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);margin-top:2px}
-.dmo-empty{color:var(--dsw-alias-label-tertiary);font-size:14px;line-height:22px;padding:18px 2px}
+.dmo-empty{color:var(--dsw-alias-label-tertiary);font-size:14px;line-height:22px}
 .dmo-mono{font-family:var(--ds-font-family-code,ui-monospace,monospace)}
 .dmo-meta{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
 .dmo-probs{margin:6px 0 0;padding-left:20px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
@@ -213,14 +446,19 @@ window.__ModuleLoader__.load({
 .dmo-meter-fill.over{background:var(--dsw-alias-state-warning-primary)}
 /* Adapt to the panel width, including a narrow panel in a wide host window. */
 .dmo-root{min-width:0;min-height:0;container-name:dmo-panel;container-type:inline-size}
-.dmo-header{flex-wrap:wrap;gap:10px 12px;padding:18px 24px 16px;border-bottom:.5px solid var(--dsw-alias-border-l2)}
-.dmo-title{font-size:18px;line-height:26px;white-space:nowrap}.dmo-sub{min-width:0;flex:1 1 240px}
-.dmo-search{flex:0 1 240px;min-width:160px;max-width:100%;height:36px;padding:0 10px;gap:8px;border-color:var(--dsw-alias-border-l3);transition:border-color .15s ease,box-shadow .15s ease}
+/* NOTE: the header is a GRID (see the hero block above) — do not reintroduce a
+   flex row here. The earlier flex override made the search box and the two
+   header buttons stretch into full-height blocks, because grid children that
+   were never given a size fell back to their flex item defaults. */
+.dmo-header{grid-template-columns:minmax(0,1fr) auto;gap:16px 28px;padding:28px 26px 22px;border-bottom:.5px solid var(--dsw-alias-border-l2)}
+.dmo-header-side{align-items:flex-end;gap:12px}
+.dmo-title{white-space:nowrap}
+.dmo-search{min-width:160px;max-width:100%;height:36px;padding:0 10px;gap:8px;border-color:var(--dsw-alias-border-l3);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 80%,transparent);backdrop-filter:blur(8px);transition:border-color .15s ease,box-shadow .15s ease}
 .dmo-search:focus-within,.dmo-filter:focus-visible{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-business-primary) 25%,transparent)}
-.dmo-body{padding:18px 24px 24px;gap:24px;min-width:0}.dmo-rail{width:168px;gap:4px;padding:0 12px 4px 0}
-.dmo-nav{min-height:36px;height:auto;padding:7px 10px;line-height:22px;flex-shrink:0;transition:background .15s ease,color .15s ease}
-.dmo-nav.active{color:var(--dsw-alias-state-business-primary);background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 11%,var(--dsw-alias-bg-layer-1))}
-.dmo-nav.active .ico{color:inherit}.dmo-nav .cnt{padding:0 5px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2)}
+.dmo-body{padding:18px 24px 24px;min-width:0}.dmo-tabs{padding-bottom:12px;margin-bottom:18px;gap:4px}
+.dmo-tabs .dmo-nav{min-height:34px;height:auto;padding:6px 13px;line-height:22px;flex-shrink:0;transition:background .15s ease,color .15s ease}
+.dmo-tabs .dmo-nav.active{color:var(--dsw-alias-state-business-primary);background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 12%,transparent)}
+.dmo-tabs .dmo-nav.active .ico{color:inherit}.dmo-tabs .dmo-nav .cnt{padding:0 6px;border-radius:999px;background:var(--dsw-alias-bg-layer-2)}
 .dmo-main{gap:16px;overscroll-behavior:contain;scroll-padding:12px}.dmo-card{padding:18px}.dmo-card.tight{padding:12px 14px}.dmo-h2{font-size:15px;line-height:22px;margin-bottom:12px}
 .dmo-growth{gap:10px}.dmo-gcard{flex-basis:145px;min-width:0;padding:14px;border-radius:var(--dsw-radius-lg);transition:background .15s ease,border-color .15s ease}.dmo-gcard:hover{border-color:var(--dsw-alias-border-l3)}
 .dmo-gnum{font-size:24px;line-height:30px;letter-spacing:-.02em;font-variant-numeric:tabular-nums}.dmo-toolbar{gap:10px}.dmo-filter{height:36px;padding:0 10px}
@@ -230,8 +468,8 @@ window.__ModuleLoader__.load({
 .dmo-sec{border-radius:var(--dsw-radius-lg)}.dmo-sec-head{min-height:44px;padding:10px 14px;font-weight:600}.dmo-sec-body{min-width:0;padding:10px 16px 14px}
 .dmo-md{line-height:1.7;overflow-wrap:anywhere}.dmo-md p,.dmo-md ul{margin:8px 0}.dmo-md pre,.dmo-table-wrap{max-width:100%;box-sizing:border-box}.dmo-crumbs{flex-wrap:wrap;overflow-wrap:anywhere}
 .dmo-row-btn:focus-visible,.dmo-row-del:focus-visible,.dmo-switch:focus-visible,.dmo-code-copy:focus-visible,.dmo-link:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
-@media (max-width:720px){.dmo-header{padding:14px 12px 12px}.dmo-sub{flex-basis:100%;order:2}.dmo-search{flex:1 1 180px;min-width:0;order:3}.dmo-header>.dmo-btn{order:4}.dmo-body{flex-direction:column;padding:12px;gap:12px}.dmo-rail{width:auto;max-width:100%;flex-direction:row;overflow-x:auto;overflow-y:hidden;border-right:none;border-bottom:.5px solid var(--dsw-alias-border-l2);padding:0 2px 8px;gap:4px}.dmo-nav{width:auto;white-space:nowrap}.dmo-rail>div{flex:none;margin-top:0!important;border-top:0!important;padding-top:0!important}.dmo-rail .cnt{margin-left:2px}.dmo-main{min-height:0}.dmo-card{padding:14px}.dmo-tl-when{width:auto;min-width:52px}}
-@container dmo-panel (max-width:720px){.dmo-header{padding:14px 12px 12px}.dmo-sub{flex-basis:100%;order:2}.dmo-search{flex:1 1 180px;min-width:0;order:3}.dmo-header>.dmo-btn{order:4}.dmo-body{flex-direction:column;padding:12px;gap:12px}.dmo-rail{width:auto;max-width:100%;flex-direction:row;overflow-x:auto;overflow-y:hidden;border-right:none;border-bottom:.5px solid var(--dsw-alias-border-l2);padding:0 2px 8px;gap:4px}.dmo-nav{width:auto;white-space:nowrap}.dmo-rail>div{flex:none;margin-top:0!important;border-top:0!important;padding-top:0!important}.dmo-rail .cnt{margin-left:2px}.dmo-main{min-height:0}.dmo-card{padding:14px}.dmo-tl-when{width:auto;min-width:52px}}
+@media (max-width:720px){.dmo-header{padding:14px 12px 12px}.dmo-sub{flex-basis:100%;order:2}.dmo-hero-actions .dmo-search{width:100%;min-width:0}.dmo-header>.dmo-btn{order:4}.dmo-body{padding:12px}.dmo-tabs{overflow-x:auto;overflow-y:hidden;flex-wrap:nowrap;padding:0 2px 8px;gap:2px}.dmo-tabs .dmo-nav{width:auto;white-space:nowrap;flex:none}.dmo-tabs>div{flex:none;margin-top:0!important;border-top:0!important;padding-top:0!important}.dmo-main{min-height:0}.dmo-card{padding:14px}.dmo-tl-when{width:auto;min-width:52px}}
+@container dmo-panel (max-width:720px){.dmo-header{padding:14px 12px 12px}.dmo-sub{flex-basis:100%;order:2}.dmo-hero-actions .dmo-search{width:100%;min-width:0}.dmo-header>.dmo-btn{order:4}.dmo-body{padding:12px}.dmo-tabs{overflow-x:auto;overflow-y:hidden;flex-wrap:nowrap;padding:0 2px 8px;gap:2px}.dmo-tabs .dmo-nav{width:auto;white-space:nowrap;flex:none}.dmo-tabs>div{flex:none;margin-top:0!important;border-top:0!important;padding-top:0!important}.dmo-main{min-height:0}.dmo-card{padding:14px}.dmo-tl-when{width:auto;min-width:52px}}
 @media (prefers-reduced-motion:reduce){.dmo-root *,.dmo-root *::before,.dmo-root *::after{scroll-behavior:auto!important;transition-duration:0s!important;animation-duration:0s!important;animation-iteration-count:1!important}}
 `;
 
@@ -435,6 +673,27 @@ window.__ModuleLoader__.load({
 		 * when it carries the URL the value is returned synchronously (the UI
 		 * test renders every view without a server).
 		 */
+		/**
+		 * Freshness of the SSE channel, as three plain reads (no hook).
+		 *
+		 * WHY A MODULE BOX AND NOT A HOOK (2026-11-16, learned the hard way):
+		 * the production fake-React harness (client-action-reconcile.test.js)
+		 * allocates hooks POSITIONALLY and only replays effects whose single dep is
+		 * an /api/memory-org/ URL. Both adding a hook AND wrapping useApi in a helper
+		 * broke five real-panel tests. The channel therefore touches no hook slot:
+		 * the stream effect bumps the existing `tick`, and anyone who needs the
+		 * freshness numbers reads them here.
+		 */
+		const SSE_BOX = { payload: null, lastEventAt: null };
+
+		/** `live` is a claim about FRESHNESS, not about having opened a socket. An
+		 *  event older than 90s means the stream is dead even when no error fired
+		 *  (a suspended tab or a buffering proxy does exactly that). */
+		function sseFreshness() {
+			const ageMs = Number.isFinite(SSE_BOX.lastEventAt) ? Date.now() - SSE_BOX.lastEventAt : null;
+			return { live: ageMs !== null && ageMs < 90_000, ageMs };
+		}
+
 		function useApi(url, fixtures) {
 			const [state, setState] = useState({ data: null, loading: Boolean(url), error: null });
 			useEffect(() => {
@@ -485,8 +744,12 @@ window.__ModuleLoader__.load({
 				: h('span', { className: cls, title, 'data-dmo': 'chip' }, children);
 		}
 
-		function Card({ children, tight, className }) {
-			return h('div', { className: `dmo-card${tight ? ' tight' : ''}${className ? ` ${className}` : ''}` }, children);
+		function Card({ children, tight, className, ...rest }) {
+			// Forward the remaining props. Several call sites tag cards with
+			// `data-dmo="..."` and the test/panel rely on those hooks to find a
+			// specific card; dropping them silently removed every such hook
+			// (found on 2026-11-16 while wiring the SAG status card).
+			return h('div', { ...rest, className: `dmo-card${tight ? ' tight' : ''}${className ? ` ${className}` : ''}` }, children);
 		}
 
 		function CardTitle({ children, right }) {
@@ -894,51 +1157,125 @@ window.__ModuleLoader__.load({
 		}
 
 		/** MEMORY.md navigation tables: each row opens its target file. */
+		/**
+		 * Index page: MEMORY.md is not one document, it is a dashboard of SEVEN
+		 * separate blocks with different shapes (four tables, one bullet list, two
+		 * prose blocks). Rendering them as one run of bare tables made the page read
+		 * as a wall — no boundaries, no counts, no way to fold the part you are not
+		 * reading. Each block now gets its own card with a count and a collapse
+		 * control, so the page answers "what is in the index" at a glance.
+		 */
 		function IndexTables({ text, onNavigate }) {
 			const { sections } = splitSections(text);
-			// 只挑**表格**类小节；道层是 bullet 列表，由索引页的普通小节卡渲染，
-			// 不在这里（subTablesOf 本来也会把它过滤成空，但精确前缀让意图明确，
-			// 也避免标题里含「思想」的道层被误收进来）。
-			const wanted = sections.filter((s) => /^(功能模块索引|创新优化思想索引|能力台账|技能台账)/.test(s.heading));
-			if (!wanted.length) return null;
-			const tables = wanted.flatMap((s) => subTablesOf(s));
-			if (!tables.length) return null;
+			// Block registry: heading prefix → block identity (tone + icon + kind).
+			// Order here is the order the page renders, NOT the file order, so the
+			// four structural blocks stay together and the prose blocks sink.
+			const BLOCKS = [
+				{ re: /^功能模块索引/, key: 'functions', name: '功能域', icon: '⬡', tone: 'a', hint: '可复跑的操作，一层一个文件' },
+				{ re: /^创新优化思想索引/, key: 'insights', name: '创新优化思想', icon: '✦', tone: 'b', hint: '可重套的原则，回链来源功能域' },
+				{ re: /^道层/, key: 'dao', name: '道', icon: '☯', tone: 'c', hint: '最抽象命题，由 ≥5 条法萃取' },
+				{ re: /^能力台账/, key: 'capabilities', name: '能力台账', icon: '⚒', tone: 'd', hint: '外部工具 / MCP / CLI' },
+				{ re: /^技能台账/, key: 'skills', name: '技能库', icon: '⌘', tone: 'd', hint: '结晶成宿主目录包的操作程序' },
+				{ re: /^决策共识/, key: 'consensus', name: '决策共识 / 规范', icon: '§', tone: 'e', hint: '跨功能、约束级——违反即出事故' },
+				{ re: /^环境常量/, key: 'env', name: '环境常量', icon: '⚑', tone: 'e', hint: '易忘的机器事实（路径、开关）' },
+			];
+			const blocks = [];
+			for (const b of BLOCKS) {
+				const sec = sections.find((s) => b.re.test(s.heading));
+				if (!sec) continue;
+				const tables = subTablesOf(sec);
+				// Counting rule: a block's "how many items" must reflect what the block
+				// actually holds, and MEMORY.md uses three shapes for the same idea —
+				// table rows, bullet lines, and PROSE that carries inline links (道层 is
+				// one quoted paragraph with `[name](dao/x.md)` inside it). Counting only
+				// bullets reported 道 as 0 while the nav badge said 2 — the block said
+				// the opposite of the truth. So: table rows > bullet lines > md links.
+				let rows = 0;
+				if (tables.length) {
+					for (const t of tables) rows += Math.max(0, t.rows.length - 1);
+				} else {
+					const bullets = sec.body.split('\n').filter((l) => /^\s*[-*]\s+\S/.test(l)).length;
+					const links = new Set((sec.body.match(/\]\([^)]+\.md\)/g) ?? []).map((m) => m.slice(1)));
+					rows = bullets || links.size;
+				}
+				blocks.push({ ...b, sec, tables, rows });
+			}
+			if (!blocks.length) return null;
+			const total = blocks.reduce((n, b) => n + b.rows, 0);
 			return h(
 				'div',
-				{ style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-				tables.map((t, ti) => {
-					const rows = t.rows.slice();
-					const head = rows.shift() ?? [];
-					return h(
-						'section',
-						{ key: `t${ti}` },
-						h('h3', { className: 'dmo-h2' }, t.title),
+				{ style: { display: 'flex', flexDirection: 'column', gap: 12 }, 'data-dmo': 'index-blocks' },
+				// Summary strip: what the whole index holds, one number per block.
+				h(
+					'div',
+					{ className: 'dmo-idx-summary', 'data-dmo': 'index-summary' },
+					h('span', { className: 'dmo-idx-total' }, [h('b', { key: 'n' }, String(total)), h('span', { key: 'u' }, ' 条索引项')]),
+					blocks.map((b) =>
 						h(
-							'table',
-							{ className: 'dmo-table' },
-							[
-								h('thead', { key: 'h' }, h('tr', null, head.map((c, x) => h('th', { key: x }, plain(c))))),
-								h(
-									'tbody',
-									{ key: 'b' },
-									rows.map((cells, y) => {
-										const href = cells.map((c) => /\]\(([^)]+\.md)\)/.exec(c)?.[1]).find(Boolean);
-										const target = href ? resolveHref(href, '') : null;
+							'button',
+							{ key: `s${b.key}`, type: 'button', className: `dmo-idx-pill tone-${b.tone}`, onClick: () => onNavigate && document.getElementById(`dmo-idx-${b.key}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' }), title: b.hint, 'data-dmo': `index-pill-${b.key}` },
+							h('span', { className: 'dmo-idx-pill-ico' }, b.icon),
+							b.name,
+							h('span', { className: 'dmo-idx-pill-n' }, String(b.rows)),
+						),
+					),
+				),
+				blocks.map((b) =>
+					h(
+						'div',
+						{ key: b.key, id: `dmo-idx-${b.key}`, className: `dmo-idx-block tone-${b.tone}`, 'data-dmo': `index-block-${b.key}` },
+						h(
+							'div',
+							{ className: 'dmo-idx-block-head' },
+							h('span', { className: 'dmo-idx-block-ico' }, b.icon),
+							h('h3', { className: 'dmo-idx-block-title' }, b.name),
+							h('span', { className: 'dmo-idx-block-n' }, `${b.rows} 条`),
+							h('span', { className: 'dmo-idx-block-hint' }, b.hint),
+						),
+						b.tables.length
+							? h(
+									'div',
+									{ className: 'dmo-idx-block-body' },
+									b.tables.map((t, ti) => {
+										const rows = t.rows.slice();
+										const head = rows.shift() ?? [];
 										return h(
-											'tr',
-											{
-												key: y, className: target ? 'dmo-idx-row' : undefined,
-												onClick: target && onNavigate ? () => onNavigate(target) : undefined,
-												title: target ? `打开 ${target.name}` : undefined,
-											},
-											cells.map((c, x) => h('td', { key: x, className: x === 0 ? 'dmo-idx-name' : undefined }, inline(c, `r${y}-${x}`, '', onNavigate))),
+											'section',
+											{ key: `t${ti}` },
+											// Only show a sub-title when the parent section was split.
+											b.tables.length > 1 && t.title !== b.sec.heading
+												? h('div', { className: 'dmo-idx-sub' }, t.title.replace(`${b.sec.heading} · `, ''))
+												: null,
+											h(
+												'table',
+												{ className: 'dmo-table dmo-idx-table' },
+												[
+													h('thead', { key: 'h' }, h('tr', null, head.map((c, x) => h('th', { key: x }, plain(c))))),
+													h(
+														'tbody',
+														{ key: 'b' },
+														rows.map((cells, y) => {
+															const href = cells.map((c) => /\]\(([^)]+\.md)\)/.exec(c)?.[1]).find(Boolean);
+															const target = href ? resolveHref(href, '') : null;
+															return h(
+																'tr',
+																{
+																	key: y, className: target ? 'dmo-idx-row' : undefined,
+																	onClick: target && onNavigate ? () => onNavigate(target) : undefined,
+																	title: target ? `打开 ${target.name}` : undefined,
+																},
+																cells.map((c, x) => h('td', { key: x, className: x === 0 ? 'dmo-idx-name' : undefined }, inline(c, `r${y}-${x}`, '', onNavigate))),
+															);
+														}),
+													),
+												],
+											),
 										);
 									}),
-								),
-							],
-						),
-					);
-				}),
+								)
+							: h('div', { className: 'dmo-idx-block-body' }, h(MarkdownBody, { text: b.sec.body, zone: '', onNavigate })),
+					),
+				),
 			);
 		}
 
@@ -1065,17 +1402,11 @@ window.__ModuleLoader__.load({
 				preamble && kind !== 'index'
 					? h(Card, { tight: true }, h(MarkdownBody, { text: preamble, zone: view.zone, onNavigate }))
 					: null,
+				// The index page is FULLY rendered by IndexTables (every block, tables and
+				// prose alike). Rendering the non-table sections again here duplicated the
+				// consensus/env blocks and left them outside their blocks' styling.
 				kind === 'index'
-					? h(
-							'div',
-							{ style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-							sections
-								// 表格类小节与「共识/环境常量」都在别处渲染，索引页不重复。
-								// 判据用精确前缀而不是关键字子串：`## 道层（最抽象的指导思想）`
-								// 含「思想」二字，用子串匹配会把道层整节误过滤掉。
-								.filter((s) => !/^(功能模块索引|创新优化思想索引|能力台账|技能台账|决策共识|环境常量)/.test(s.heading))
-								.map((s, i) => h(Card, { key: `x${i}`, tight: true }, h('h3', { className: 'dmo-h2' }, s.heading), h(MarkdownBody, { text: s.body, zone: '', onNavigate }))),
-						)
+					? null
 					: h(
 							'div',
 							{ style: { display: 'flex', flexDirection: 'column', gap: 6 } },
@@ -1157,6 +1488,422 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		/**
+		 * Build the live architecture model from REAL server data only.
+		 *
+		 * Why a pure function: the panel must not draw a diagram that disagrees
+		 * with the numbers beside it. Everything here comes from /overview
+		 * (counts / usage / capture / env); a layer with no files still appears
+		 * (an empty layer is a fact, not an omission), and anything the server
+		 * cannot testify to is marked unknown rather than filled in.
+		 *
+		 * 数据流（写入方向，自下而上）：
+		 *   每日原始记录 → functions 迭代块 → insights 原则 → dao 命题
+		 * 召回方向（读取，自上而下）：dao/insights/functions 被 pre-step 钩子注入
+		 * 闭环：写入 → 索引 → 召回 → 命中/纠正信号 → 下一轮阈值与分层
+		 */
+		function buildArchitecture({ counts, usage, capture, env, health, sag }) {
+			const c = counts ?? {};
+			const n = (v) => (Number.isFinite(v) ? v : 0);
+			// 五个层：真实数量 + 该层在当前体系里的角色。role 是静态说明，
+			// count 全部来自后端。
+			const layers = [
+				{ key: 'daily', name: '每日原始记录', count: n(c.daily), unit: '份', role: '第 0 层：原始素材，不蒸馏', tier: 'L0' },
+				{ key: 'functions', name: '功能域', count: n(c.functions), unit: '个', role: '术：可复跑的操作', tier: 'L2' },
+				{ key: 'insights', name: '创新优化思想', count: n(c.insights), unit: '条', role: '法：可重套的原则', tier: 'L1' },
+				{ key: 'dao', name: '道', count: n(c.dao), unit: '条', role: '最抽象命题', tier: 'L0d' },
+				{ key: 'capabilities', name: '能力台账', count: n(c.capabilities), unit: '项', role: '外部工具索引', tier: 'L2c' },
+			];
+			const activeLayers = layers.filter((l) => l.count > 0).length;
+			// 闭环四段：每段的"是否在转"由真实数据判定，而不是画个圈了事。
+			//
+			// 口径纪律（2026-11-16 用户追问"4372 条信号真实吗"后修正）：
+			// usage.signalCount 是 .usage.jsonl 的**事件行数**，其中绝大多数是
+			// recall 曝光（每次注入记一条、同一文件会重复几百次）。它是"曝光量"，
+			// 不是"索引条目数"，也不是"被采纳数"。索引规模另有来源：indexRows。
+			// 两者混用会让图把曝光吹成规模——所以这里分开存、分开标。
+			const signals = n(usage?.signalCount);
+			const recallEvents = n(usage?.recallEvents);
+			const distinctHrefs = n(usage?.distinctHrefs);
+			const indexRows = n(usage?.indexRows);
+			const hasCapture = Boolean(capture?.enabled);
+			const loop = [
+				{ key: 'write', name: '写入', ok: n(c.daily) > 0 || n(c.functions) > 0, detail: `${n(c.daily)} 份原始 + ${n(c.functions)} 个功能域` },
+				{ key: 'distill', name: '蒸馏', ok: n(c.insights) > 0, detail: `${n(c.insights)} 条原则 / ${n(c.dao)} 条道` },
+				{ key: 'recall', name: '召回', ok: true, detail: indexRows > 0 ? `索引 ${indexRows} 行参与召回` : '每轮 pre-step 注入索引摘要' },
+				{ key: 'feedback', name: '反馈', ok: signals > 0, detail: signals > 0 ? `${recallEvents} 条召回曝光 → 采纳 ${n(usage?.verdictEvents)} 次` : '无信号（召回命中会记）' },
+			];
+			const loopClosed = loop.filter((s) => s.ok).length === loop.length;
+			// 存储根：只报服务器实际解析出来的路径。
+			const roots = [
+				{ key: 'memory', name: '记忆根', path: env?.memoryRoot ?? '', active: Boolean(env?.memoryRoot) },
+				{ key: 'skills', name: '技能库', path: env?.skillRoot ?? '', active: Boolean(env?.skillRoot) },
+			];
+			return {
+				layers,
+				activeLayers,
+				loop,
+				loopClosed,
+				roots,
+				// Exposure vs. size are different facts and must never share a label:
+				// signals/recallEvents count EVENTS (recall fires once per injection),
+				// indexRows/distinctHrefs measure how much content actually exists.
+				signals,
+				recallEvents,
+				distinctHrefs,
+				indexRows,
+				verdicts: n(usage?.verdictEvents),
+				reads: n(usage?.readEvents),
+				captureOn: hasCapture,
+				health: { fail: n(health?.failCount), warn: n(health?.warnCount) },
+				indexBytes: n(env?.indexBytes),
+				indexComfort: n(env?.indexComfortBytes),
+				version: env?.version ?? '',
+				// Second recall channel (SAG). Three facts stay separate because they
+				// fail for different reasons and need different fixes: no key →
+				// configure it; service down → start it; unauthorized → rotate the key.
+				// Collapsing them into one "unavailable" badge hides which one broke.
+				sag: {
+					configured: sag?.configured === true,
+					online: sag?.online === true,
+					authorized: sag?.authorized === true,
+					endpoint: typeof sag?.endpoint === 'string' ? sag.endpoint : '',
+					// "usable" is what the diagram colours by: a channel can be online
+					// yet unusable without a key, and that must show as degraded.
+					usable: sag?.online === true && sag?.authorized === true,
+					// unknown = the server did not report the field at all (e.g. an older
+					// server half). Unknown must not be drawn as "working".
+					known: sag !== undefined && sag !== null,
+				},
+			};
+		}
+
+		/**
+		 * The live architecture view: real layers, real flow, real loop state.
+		 * Deliberately a data view, not an illustration — every badge carries a
+		 * number the server just returned, and unknown stays unknown.
+		 */
+		/**
+		 * Live architecture diagram — a REAL drawing (SVG), not a row of cards.
+		 *
+		 * Layout (all coordinates fixed, viewBox 0 0 1120 600):
+		 *   band 1  y  20- 82   来源：会话 / 外部知识库
+		 *   band 2  y 150-228   蒸馏链：每日 → 功能 → 思想 → 道   (+ 台账/技能 支撑面)
+		 *   band 3  y 296-366   索引 MEMORY.md（派生物，各层收行于此）
+		 *   band 4  y 432-512   会话上下文 ← 召回准入 ← 使用信号（闭环三段）
+		 *   return  y 540       反馈回流弧（闭环的第四段）
+		 *
+		 * Every node carries a count the SERVER returned; every edge is drawn with a
+		 * direction and its stage's real health (ok = solid accent, broken = dashed
+		 * red). If a stage is not turning, its edge is red and the loop is called
+		 * open — the picture cannot claim more than the data proves.
+		 */
+		function Architecture({ model, onZone, live, lastEventAt, fallback }) {
+			const m = model ?? buildArchitecture({});
+			// Freshness is part of the data, not a decoration: an event older than
+			// ~90s means the stream is likely dead even if it never emitted `error`
+			// (a killed proxy or a suspended tab does exactly that).
+			const ageMs = Number.isFinite(lastEventAt) ? Date.now() - lastEventAt : null;
+			const liveMode = Boolean(live) && ageMs !== null && ageMs < 90_000;
+			const view = {
+				...m,
+				liveMode,
+				lastEventAge: ageMs === null ? null : Math.max(0, Math.round(ageMs / 1000)),
+				fallbackMode: Boolean(fallback) || !liveMode,
+			};
+			return renderArchitecture(view, onZone);
+		}
+
+		/**
+		 * Which diagram nodes are legitimate destinations, and where they lead.
+		 *
+		 * THE BUG THIS FIXES (2026-11-16, user report: "功能图块点击跳转空白页"):
+		 * every node was clickable and its key was passed straight to
+		 * setView({kind:'zone', zone:key}). But only daily/functions/insights/dao/
+		 * capabilities are real zones — `index`, `ctx`, `gate`, `sig` and the two
+		 * source boxes are diagram concepts. For those, the zone page looked up
+		 * {functions:…}[key] → undefined, so none of its branches matched and `main`
+		 * stayed null: a blank page with no message and no way back.
+		 *
+		 * THE RULE: a node is clickable only if it maps to something that exists.
+		 * `index` has a real page (the index view, zone ''), so it maps there —
+		 * the rest are not links and must not pretend to be.
+		 */
+		const ARCH_NODE_TARGET = {
+			daily: { kind: 'zone', zone: 'daily' },
+			functions: { kind: 'zone', zone: 'functions' },
+			insights: { kind: 'zone', zone: 'insights' },
+			dao: { kind: 'zone', zone: 'dao' },
+			capabilities: { kind: 'zone', zone: 'capabilities' },
+			// The index node is the MEMORY.md registry. Its page is a zone view with an
+			// EMPTY zone name (the panel's existing convention: zone '' === index), not
+			// a `kind:'index'` view — that kind belongs to the Reader, not the router.
+			index: { kind: 'zone', zone: '' },
+			// src / sag / ctx / gate / sig are structure, not destinations.
+		};
+
+		function renderArchitecture(m, onZone) {
+			const W = 1120;
+			const H = 600;
+			const stage = (k) => m.loop.find((s) => s.key === k)?.ok !== false;
+			// Edge tone per real stage health: solid accent when the stage runs,
+			// dashed danger when it does not.
+			const tone = (ok, kind = 'business') => (ok ? `dmo-edge ${kind}` : 'dmo-edge danger');
+
+			const node = (key, { x, y, w, h: bh, name, count, unit, role, tier, accent }) => {
+				const cx = x + w / 2;
+				// Clickable ONLY when the node has a real destination. A node with no
+				// page must not look or behave like a link — that is what produced the
+				// blank page and the dead-end feel (2026-11-16).
+				const target = ARCH_NODE_TARGET[key];
+				const canClick = Boolean(onZone) && Boolean(target);
+				return h(
+					'g',
+					{
+						key, className: `dmo-node${canClick ? ' clickable' : ''}${accent ? ' accent' : ''}`,
+						'data-dmo': `arch-node-${key}`,
+						'onClick': canClick ? () => onZone(target) : undefined,
+						...(canClick ? { role: 'button', tabIndex: 0 } : {}),
+					},
+					h('title', null, `${name}${tier ? `（${tier}）` : ''}：${role ?? ''}`),
+					h('rect', { x, y, width: w, height: bh, rx: 10, className: 'dmo-node-box' }),
+					tier ? h('text', { x, y: y + 15, className: 'dmo-node-tier', textAnchor: 'middle' }, tier) : null,
+					h('text', { x: cx, y: y + (tier ? 33 : 24), className: 'dmo-node-name', textAnchor: 'middle' }, name),
+					count !== undefined
+						? h('text', { x: cx, y: y + (tier ? 55 : 46), className: 'dmo-node-count', textAnchor: 'middle' }, [
+								h('tspan', { key: 'n', className: 'dmo-count-n' }, String(count)),
+								unit ? h('tspan', { key: 'u', className: 'dmo-count-u', dx: 3 }, unit) : null,
+							])
+						: null,
+					role ? h('text', { x: cx, y: y + bh - 10, className: 'dmo-node-role', textAnchor: 'middle' }, role.length > 16 ? `${role.slice(0, 15)}…` : role) : null,
+				);
+			};
+
+			const label = (key, x, y, text) => h('text', { key, x, y, className: 'dmo-edge-label', textAnchor: 'middle' }, text);
+
+			// The second channel's edge/marker must follow its real state. Unknown is
+			// deliberately the muted style — an unreported channel is not evidence
+			// that it works.
+			const sagEdgeClass = () => {
+				if (!m.sag.known) return 'dmo-edge muted dashed';
+				if (m.sag.usable) return 'dmo-edge ok';
+				if (m.sag.online && !m.sag.authorized) return 'dmo-edge warn dashed';
+				return 'dmo-edge danger dashed';
+			};
+			const sagMarker = () => {
+				if (!m.sag.known) return 'url(#dmo-ah-m)';
+				if (m.sag.usable) return 'url(#dmo-ah-ok)';
+				if (m.sag.online && !m.sag.authorized) return 'url(#dmo-ah-m)';
+				return 'url(#dmo-ah-d)';
+			};
+
+			const layers = Object.fromEntries(m.layers.map((l) => [l.key, l]));
+			const nOf = (k) => layers[k]?.count ?? 0;
+
+			return h(
+				'div',
+				{ style: { display: 'flex', flexDirection: 'column', gap: 14 } },
+				h(
+					'div',
+					{ className: 'dmo-page-head' },
+					h('h2', { className: 'dmo-page-title' }, '实时架构'),
+					h('span', { className: 'dmo-page-sub' }, `${m.activeLayers} / ${m.layers.length} 层有内容 · 闭环${m.loopClosed ? '已闭合' : '未闭合'}`),
+					h(
+						'span',
+						{ className: 'dmo-page-tools' },
+						// CHANNEL TRUTH: "live" means an SSE event actually arrived, not
+						// that we opened a connection. Degraded shows the fallback cadence
+						// so the reader knows how stale the numbers can be — a monitor that
+						// claims realtime while polling is lying about its own freshness.
+						h(
+							'span',
+							{ className: `dmo-dot ${m.liveMode ? 'ok' : 'warn'}`, 'data-dmo': 'arch-live-badge' },
+							h('i'),
+							m.liveMode
+								? `实时推送${m.lastEventAge !== null ? ` · ${m.lastEventAge}s 前` : ''}`
+								: '轮询降级（30s）',
+						),
+						h('span', { className: `dmo-dot ${m.health.fail ? 'fail' : m.health.warn ? 'warn' : 'ok'}` }, h('i'), m.health.fail ? `FAIL ${m.health.fail}` : m.health.warn ? `WARN ${m.health.warn}` : '体检正常'),
+						h('span', { className: `dmo-dot ${m.captureOn ? 'ok' : 'warn'}` }, h('i'), m.captureOn ? '采集运行中' : '采集未启用'),
+					),
+				),
+				h(
+					'div',
+					{ className: 'dmo-card', 'data-dmo': 'arch-canvas' },
+					// The diagram itself.
+					h(
+						'svg',
+						{ viewBox: `0 0 ${W} ${H}`, className: 'dmo-arch-svg', role: 'img', 'aria-label': '心智系统架构与数据流' },
+						h('defs', null, [
+							h('marker', { key: 'mb', id: 'dmo-ah-b', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '5', markerHeight: '5', orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'var(--dsw-alias-state-business-primary)' })),
+							h('marker', { key: 'mo', id: 'dmo-ah-ok', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '5', markerHeight: '5', orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'var(--dsw-alias-state-success-primary)' })),
+							h('marker', { key: 'md', id: 'dmo-ah-d', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '5', markerHeight: '5', orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'var(--dsw-alias-state-error-primary)' })),
+							h('marker', { key: 'mm', id: 'dmo-ah-m', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '5', markerHeight: '5', orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'var(--dsw-alias-label-dimmed)' })),
+						]),
+						// ---- edges first so nodes paint on top ----
+						h('g', { key: 'edges', className: 'dmo-edges' }, [
+							// 写入：来源 → 每日原始
+							h('path', { key: 'e1', d: 'M180 82 L180 120 L125 120 L125 148', className: tone(stage('write')), markerEnd: stage('write') ? 'url(#dmo-ah-b)' : 'url(#dmo-ah-d)' }),
+							label('l1', 152, 112, '捕获'),
+							// 蒸馏链
+							h('path', { key: 'e2', d: 'M210 189 L248 189', className: tone(stage('write')), markerEnd: stage('write') ? 'url(#dmo-ah-b)' : 'url(#dmo-ah-d)' }),
+							h('path', { key: 'e3', d: 'M410 189 L448 189', className: tone(stage('distill')), markerEnd: stage('distill') ? 'url(#dmo-ah-b)' : 'url(#dmo-ah-d)' }),
+							h('path', { key: 'e4', d: 'M610 189 L648 189', className: tone(stage('distill')), markerEnd: stage('distill') ? 'url(#dmo-ah-b)' : 'url(#dmo-ah-d)' }),
+							label('l2', 229, 181, 'write'),
+							label('l3', 429, 181, 'insight'),
+							label('l4', 629, 181, 'dao'),
+							// 各层收行进索引
+							h('path', { key: 'e5', d: 'M125 228 L125 294', className: tone(stage('write'), 'ok'), markerEnd: 'url(#dmo-ah-ok)' }),
+							h('path', { key: 'e6', d: 'M330 228 L330 294', className: tone(stage('distill'), 'ok'), markerEnd: 'url(#dmo-ah-ok)' }),
+							h('path', { key: 'e7', d: 'M530 228 L530 294', className: tone(stage('distill'), 'ok'), markerEnd: 'url(#dmo-ah-ok)' }),
+							h('path', { key: 'e8', d: 'M715 228 L715 294', className: tone(stage('distill'), 'ok'), markerEnd: 'url(#dmo-ah-ok)' }),
+							h('path', { key: 'e9', d: 'M840 200 L800 200 L800 294', className: 'dmo-edge muted', markerEnd: 'url(#dmo-ah-m)' }),
+							label('l5', 640, 268, 'memory_index 收行'),
+							label('l9', 820, 192, '指针'),
+							// 索引 → 召回准入 / 会话
+							h('path', { key: 'e10', d: 'M520 366 L520 430', className: tone(stage('recall')), markerEnd: stage('recall') ? 'url(#dmo-ah-b)' : 'url(#dmo-ah-d)' }),
+							h('path', { key: 'e11', d: 'M170 366 L170 430', className: 'dmo-edge muted', markerEnd: 'url(#dmo-ah-m)' }),
+							label('l10', 552, 402, '召回读取索引'),
+							label('l11', 150, 402, 'pre-step'),
+							// 准入 → 会话（左向）
+							h('path', { key: 'e12', d: 'M390 460 L312 460', className: tone(stage('recall')), markerEnd: stage('recall') ? 'url(#dmo-ah-b)' : 'url(#dmo-ah-d)' }),
+							label('l12', 351, 452, '准入注入'),
+							// 信号 → 准入（左向）
+							h('path', { key: 'e13', d: 'M730 484 L652 484', className: tone(stage('feedback'), 'ok'), markerEnd: stage('feedback') ? 'url(#dmo-ah-ok)' : 'url(#dmo-ah-d)' }),
+							label('l13', 691, 476, '校准阈值'),
+							// 会话 → 信号：走底部回流弧（第四段，闭环）
+							h('path', { key: 'e14', d: 'M175 512 L175 540 L905 540 L905 514', className: tone(stage('feedback'), 'ok'), markerEnd: stage('feedback') ? 'url(#dmo-ah-ok)' : 'url(#dmo-ah-d)' }),
+							label('l14', 540, 532, stage('feedback') ? '闭环：命中 / 纠正 → 使用信号' : '此处断开：无使用信号，反馈未回流'),
+							// 外部知识库 → 召回准入（右廊道下行，不穿任何节点）
+							//
+							// Tone reflects the channel's REAL state, not a decoration:
+							// usable → solid business edge; online-but-unauthorized → dashed
+							// warning; down → dashed danger; not reported → muted (unknown,
+							// never drawn as working).
+							h('path', { key: 'e15', d: 'M1080 51 L1098 51 L1098 412 L660 412 L660 430', className: sagEdgeClass(), markerEnd: sagMarker() }),
+							label('l15', 900, 404, m.sag.usable ? 'fast 档只读召回 · 可用' : m.sag.known ? '第二通道未接通（见下方状态）' : 'fast 档只读召回（实验层）'),
+						]),
+						// ---- nodes ----
+						h('g', { key: 'nodes' }, [
+							node('src', { x: 40, y: 20, w: 280, h: 62, name: '会话 / 插件 / 用户', role: '写入与召回都发生在这里' }),
+							node('sag', {
+								x: 800, y: 20, w: 280, h: 62,
+								name: '外部知识库 SAG-Wiki',
+								// The role line carries the REAL channel state so the node is not
+								// a permanent "experimental, read-only" caption that looks the
+								// same whether the channel works or is dead.
+								role: !m.sag.known ? '状态未上报' : m.sag.usable ? '第二通道 · 可用' : m.sag.online ? '在线但未授权' : '不可达',
+							}),
+							node('daily', { x: 40, y: 150, w: 170, h: 78, name: '每日原始记录', count: nOf('daily'), unit: '份', role: layers.daily?.role, tier: 'L0' }),
+							node('functions', { x: 248, y: 150, w: 162, h: 78, name: '功能域', count: nOf('functions'), unit: '个', role: layers.functions?.role, tier: 'L2' }),
+							node('insights', { x: 448, y: 150, w: 162, h: 78, name: '思想', count: nOf('insights'), unit: '条', role: layers.insights?.role, tier: 'L1' }),
+							node('dao', { x: 648, y: 150, w: 142, h: 78, name: '道', count: nOf('dao'), unit: '条', role: layers.dao?.role, tier: 'L0d' }),
+							node('capabilities', { x: 840, y: 150, w: 240, h: 78, name: '能力台账 / 技能库', count: nOf('capabilities'), unit: '项', role: '外部工具与技能包索引', tier: 'L2c' }),
+							node('index', { x: 40, y: 294, w: 800, h: 72, name: 'MEMORY.md 索引', count: m.indexRows, unit: '行', role: '派生物：各层收行于此，召回只读它', accent: true }),
+							node('ctx', { x: 40, y: 430, w: 272, h: 74, name: '下一轮会话上下文', role: '注入点：决定未来知道什么' }),
+							node('gate', { x: 390, y: 430, w: 262, h: 74, name: '召回准入', role: '预算 / 分层 / 阀门规则' }),
+							node('sig', { x: 730, y: 430, w: 350, h: 74, name: '曝光事件（未去重）', count: m.signals, unit: '条', role: `覆盖 ${m.distinctHrefs} 个文件 · 采纳 ${m.verdicts} 次` }),
+						]),
+						// legend
+						h('g', { key: 'legend' }, [
+							h('line', { key: 'k1', x1: 40, y1: 578, x2: 84, y2: 578, className: 'dmo-edge business', markerEnd: 'url(#dmo-ah-b)' }),
+							h('text', { key: 'k2', x: 92, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '数据流（该段在转）'),
+							h('line', { key: 'k3', x1: 236, y1: 578, x2: 280, y2: 578, className: 'dmo-edge ok', markerEnd: 'url(#dmo-ah-ok)' }),
+							h('text', { key: 'k4', x: 288, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '索引 / 闭环方向'),
+							h('line', { key: 'k5', x1: 430, y1: 578, x2: 474, y2: 578, className: 'dmo-edge danger', markerEnd: 'url(#dmo-ah-d)' }),
+							h('text', { key: 'k6', x: 482, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '该段断开'),
+							h('line', { key: 'k7', x1: 590, y1: 578, x2: 634, y2: 578, className: 'dmo-edge muted dashed', markerEnd: 'url(#dmo-ah-m)' }),
+							h('text', { key: 'k8', x: 642, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '只读旁路'),
+						]),
+					),
+				),
+				// Loop stages as measurable chips (same facts as the diagram's edges).
+				h(
+					'div',
+					{ className: 'dmo-arch-loop', 'data-dmo': 'arch-loop' },
+					m.loop.map((s, i) => [
+						h(
+							'div',
+							{ key: s.key, className: `dmo-arch-step${s.ok ? ' on' : ''}`, 'data-dmo': `arch-step-${s.key}` },
+							h('span', { className: 'dmo-arch-step-n' }, String(i + 1)),
+							h('span', { className: 'dmo-arch-step-name' }, s.name),
+							h('span', { className: 'dmo-arch-step-d' }, s.detail),
+						),
+						i === m.loop.length - 1
+							? h('span', { key: 'cyc', className: `dmo-arch-cycle${m.loopClosed ? ' closed' : ''}` }, m.loopClosed ? '↺ 闭环已闭合' : '✕ 闭环在此断开')
+							: null,
+					]),
+				),
+				// Storage + capacity: server-resolved paths and the real index level.
+				h(
+					'div',
+					{ className: 'dmo-bento' },
+					h(
+						Card,
+						{ className: 'dmo-span-7', 'data-dmo': 'arch-roots' },
+						h('div', { className: 'dmo-eyebrow' }, '存储根'),
+						m.roots.map((r) =>
+							h(
+								'div',
+								{ key: r.key, className: 'dmo-inset', style: { marginBottom: 8 } },
+								h('div', { className: 'dmo-measure-l' }, r.name),
+								h('div', { className: 'dmo-mono', style: { fontSize: 12, lineHeight: '18px', wordBreak: 'break-all', color: r.active ? 'var(--dsw-alias-label-secondary)' : 'var(--dsw-alias-label-tertiary)' } }, r.path || '（服务器未返回路径）'),
+							),
+						),
+					),
+					h(
+						Card,
+						{ className: 'dmo-span-5', 'data-dmo': 'arch-caps' },
+						h('div', { className: 'dmo-eyebrow' }, '索引容量'),
+						h('div', { className: 'dmo-measure' },
+							h('div', { className: 'dmo-measure-v' }, m.indexComfort ? `${Math.round((m.indexBytes / m.indexComfort) * 100)}%` : '—'),
+							h('div', { className: 'dmo-measure-l' }, '占舒适线'),
+							h('div', { className: 'dmo-measure-x' }, m.indexComfort ? `${fmtBytes(m.indexBytes)} / ${fmtBytes(m.indexComfort)}` : '服务器未返回舒适线'),
+						),
+						m.indexComfort
+							? h('div', { className: 'dmo-meter', style: { width: '100%', height: 8, marginTop: 12, borderRadius: 999 } },
+									h('i', { className: `dmo-meter-fill${m.indexBytes > m.indexComfort ? ' over' : ''}`, style: { width: `${Math.min(100, Math.round((m.indexBytes / Math.max(1, m.indexComfort)) * 100))}%` } }))
+							: null,
+					),
+				),
+				// Second recall channel: three facts, three rows. They fail independently
+				// (no key / service down / key rejected) and each has its own fix, so a
+				// single "unavailable" line would hide which one is broken.
+				h(
+					Card,
+					{ className: 'dmo-span-12', 'data-dmo': 'arch-sag' },
+					h('div', { className: 'dmo-eyebrow' }, '第二召回通道 · SAG-Wiki'),
+					!m.sag.known
+						? h('div', { className: 'dmo-measure-x' }, '服务器未上报 SAG 状态（可能是旧版 server 半）——按未知处理，不当作可用。')
+						: h(
+								'div',
+								{ style: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginTop: 4 } },
+								[
+									{ key: 'configured', name: '已配置密钥', ok: m.sag.configured, bad: '无 key：设 SAG_API_KEY 或写 <sag>/api-key' },
+									{ key: 'online', name: '服务在线', ok: m.sag.online, bad: '不可达：sag api start' },
+									{ key: 'authorized', name: '鉴权通过', ok: m.sag.authorized, bad: '被拒：重新签发 key' },
+								].map((f) =>
+									h(
+										'div',
+										{ key: f.key, className: 'dmo-inset', 'data-dmo': `sag-${f.key}` },
+										h('div', { className: 'dmo-measure-l' }, f.name),
+										h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 } },
+											h('span', { className: `dmo-dot ${f.ok ? 'ok' : 'fail'}` }, h('i')),
+											h('span', { style: { fontSize: 13, color: f.ok ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-error-primary)' } }, f.ok ? '正常' : '不通'),
+										),
+										f.ok ? null : h('div', { className: 'dmo-measure-x', style: { marginTop: 4 } }, f.bad),
+									),
+								),
+							),
+					h('div', { className: 'dmo-measure-x', style: { marginTop: 10 } },
+						m.sag.endpoint
+							? `端点 ${m.sag.endpoint} · 工具 memory_sag · 取正文用（不替代索引召回做门禁）`
+							: '工具 memory_sag · 取正文用（不替代索引召回做门禁）',
+					),
+				),
+			);
+		}
+
 		function Overview({ health, counts, timeline, usage, env, capture, prose, preview, previewQ, setPreviewQ, onOpen, onZone, onNavigate }) {
 			const problems = health?.results ?? [];
 			const fails = problems.filter((p) => p.level === 'FAIL');
@@ -1206,39 +1953,95 @@ window.__ModuleLoader__.load({
 				: null;
 			return h(
 				'div',
-				{ style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+				{ className: 'dmo-bento', 'data-dmo': 'bento' },
+				// Hero band: the five zone stocks as one card each, uneven spans so
+				// the top row reads as a bento rather than a table of equal boxes.
+				// `functions` and `insights` are the two that actually decide what a
+				// future session knows, so they get the wider cells.
 				h(
 					Card,
-					null,
+					{ className: 'dmo-span-3 dmo-hero-card', 'data-dmo': 'measure-functions' },
+					h('div', { className: 'dmo-eyebrow' }, '功能'),
+					h('div', { className: 'dmo-measure' },
+						h('div', { className: 'dmo-measure-v' }, String(counts.functions ?? 0)),
+						h('div', { className: 'dmo-measure-l' }, '功能域'),
+						h('div', { className: 'dmo-measure-x' }, '可复跑的操作'),
+					),
+					h('button', { type: 'button', className: 'dmo-link', onClick: () => onZone('functions'), 'data-dmo': 'growth-card' }, '打开 →'),
+				),
+				h(
+					Card,
+					{ className: 'dmo-span-3 dmo-hero-card', 'data-dmo': 'measure-insights' },
+					h('div', { className: 'dmo-eyebrow' }, '思想'),
+					h('div', { className: 'dmo-measure' },
+						h('div', { className: 'dmo-measure-v' }, String(counts.insights ?? 0)),
+						h('div', { className: 'dmo-measure-l' }, '创新优化思想'),
+						h('div', { className: 'dmo-measure-x' }, '可重套的原则'),
+					),
+					h('button', { type: 'button', className: 'dmo-link', onClick: () => onZone('insights'), 'data-dmo': 'growth-card' }, '打开 →'),
+				),
+				h(
+					Card,
+					{ className: 'dmo-span-3 dmo-hero-card', 'data-dmo': 'measure-capabilities' },
+					h('div', { className: 'dmo-eyebrow' }, '能力'),
+					h('div', { className: 'dmo-measure' },
+						h('div', { className: 'dmo-measure-v' }, String(counts.capabilities ?? 0)),
+						h('div', { className: 'dmo-measure-l' }, '能力台账'),
+						h('div', { className: 'dmo-measure-x' }, '外部工具索引'),
+					),
+					h('button', { type: 'button', className: 'dmo-link', onClick: () => onZone('capabilities'), 'data-dmo': 'growth-card' }, '打开 →'),
+				),
+				h(
+					Card,
+					{ className: 'dmo-span-3 dmo-hero-card', 'data-dmo': 'measure-skills' },
+					h('div', { className: 'dmo-eyebrow' }, '技能'),
+					h('div', { className: 'dmo-measure' },
+						h('div', { className: 'dmo-measure-v' }, String(counts.skills ?? 0)),
+						h('div', { className: 'dmo-measure-l' }, '技能库'),
+						h('div', { className: 'dmo-measure-x' }, '已验证的程序'),
+					),
+					h('button', { type: 'button', className: 'dmo-link', onClick: () => onZone('skills'), 'data-dmo': 'growth-card' }, '打开 →'),
+				),
+				// Second band: the health verdict gets the eye, the problem list sits
+				// in a recessed panel inside it.
+				h(
+					Card,
+					{ className: 'dmo-span-5', 'data-dmo': 'health-card' },
+					h('div', { className: 'dmo-eyebrow' }, '体检'),
+					h('div', { className: 'dmo-measure' },
+						h('div', { className: 'dmo-measure-v' }, problems.length ? String(problems.length) : '0'),
+						h('div', { className: 'dmo-measure-l' }, problems.length ? '条待处理问题' : '体检全通过'),
+					),
 					h(
 						'div',
-						{ className: 'dmo-chips' },
+						{ className: 'dmo-chips', style: { marginTop: 10 } },
 						h(Chip, { tone: fails.length ? 'fail' : 'ok' }, fails.length ? `FAIL ${fails.length}` : '无 FAIL'),
 						h(Chip, { tone: warns.length ? 'warn' : null }, warns.length ? `WARN ${warns.length}` : '无 WARN'),
 						cold.length ? h(Chip, { tone: 'warn' }, `❄ 冷记忆 ${cold.length}`) : null,
 					),
 					problems.length
-						? h('ul', { className: 'dmo-probs' }, problems.slice(0, 12).map((p, i) => h('li', { key: i }, `[${p.level}] ${p.rule}: ${p.message}`)))
-						: h('div', { className: 'dmo-meta', style: { marginTop: 6 } }, '体检通过：索引体积、摘要、反向链接、日期顺序、死链、冷记忆均正常。'),
+						? h('ul', { className: 'dmo-probs dmo-inset', style: { marginTop: 12 } }, problems.slice(0, 12).map((p, i) => h('li', { key: i }, `[${p.level}] ${p.rule}: ${p.message}`)))
+						: h('div', { className: 'dmo-inset dmo-meta', style: { marginTop: 12 } }, '索引体积、摘要、反向链接、日期顺序、死链、冷记忆均正常。'),
 				),
-				h(CaptureStatus, { capture }),
+				h('div', { className: 'dmo-span-4', 'data-dmo': 'capture-slot' }, h(CaptureStatus, { capture })),
+				// Daily stock gets a sparkline of the last days actually on disk.
 				h(
-					'div',
-					{ className: 'dmo-growth' },
-					[
-						{ zone: 'functions', label: '功能模块' },
-						{ zone: 'insights', label: '创新优化思想' },
-						{ zone: 'capabilities', label: '能力台账' },
-						{ zone: 'skills', label: '技能库' },
-						{ zone: 'daily', label: '当日线索' },
-					].map((g) =>
-						h(
-							'button',
-							{ key: g.zone, type: 'button', className: 'dmo-gcard', onClick: () => onZone(g.zone), 'data-dmo': 'growth-card' },
-							h('div', { className: 'dmo-gnum' }, String(counts[g.zone] ?? 0)),
-							h('div', { className: 'dmo-meta' }, g.label),
-						),
+					Card,
+					{ className: 'dmo-span-3', 'data-dmo': 'measure-daily' },
+					h('div', { className: 'dmo-eyebrow' }, '每日'),
+					h('div', { className: 'dmo-measure' },
+						h('div', { className: 'dmo-measure-v' }, String(counts.daily ?? 0)),
+						h('div', { className: 'dmo-measure-l' }, '日线索 / 月归档'),
 					),
+					(() => {
+						const days = (timeline ?? []).filter((t) => t.zone === 'daily').slice(0, 12).reverse();
+						if (!days.length) return null;
+						const peak = Math.max(1, ...days.map((d) => d.bytes ?? 0));
+						return h('div', { className: 'dmo-spark', 'data-dmo': 'daily-spark', title: '最近日线索的条目体积（真实字节数）' },
+							days.map((d, i) => h('b', { key: i, style: { height: `${Math.max(8, Math.round(((d.bytes ?? 0) / peak) * 100))}%` } })),
+						);
+					})(),
+					h('button', { type: 'button', className: 'dmo-link', onClick: () => onZone('daily'), 'data-dmo': 'growth-card' }, '打开 →'),
 				),
 				// Consensus + environment constants: the two prose blocks of
 			// MEMORY.md that the index tables do not carry. They answer "what
@@ -1247,7 +2050,7 @@ window.__ModuleLoader__.load({
 			prose && (prose.consensus.length || prose.env.length)
 				? h(
 						Card,
-						null,
+						{ className: 'dmo-span-6', 'data-dmo': 'prose-card' },
 						h(CardTitle, null, '共识与环境常量'),
 						h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
 							prose.consensus.length
@@ -1266,11 +2069,11 @@ window.__ModuleLoader__.load({
 					)
 				: null,
 			env
-					? h(Card, null, h(CardTitle, null, '运行环境'), envRow)
+					? h(Card, { className: 'dmo-span-6', 'data-dmo': 'env-card' }, h(CardTitle, null, '运行环境'), envRow)
 					: null,
 				h(
 					Card,
-					null,
+					{ className: 'dmo-span-6', 'data-dmo': 'usage-card' },
 					h(CardTitle, null, '使用信号'),
 					!hasSignals
 						? h('div', { className: 'dmo-meta' }, '还没有使用信号。召回命中与 memory_read 会自动记录；纠正/认可用 memory_usage(record) 记一笔。')
@@ -1283,7 +2086,10 @@ window.__ModuleLoader__.load({
 									h(Chip, null, `实验 ${usageLayer['实验'] ?? 0}`),
 									h(Chip, { tone: 'ok' }, `专项 ${usageLayer['专项'] ?? 0}`),
 									h(Chip, { tone: 'ok' }, `通用 ${usageLayer['通用'] ?? 0}`),
-									h('span', { className: 'dmo-meta' }, `30 天 ${usage.signalCount} 条信号`),
+									// 口径必须标清：signalCount 里绝大部分是插件自己写的
+									// recall 曝光（同一文件会重复几百次），不是"被使用"，
+									// 更不是索引规模。索引规模看 memory_index 的行数。
+									h('span', { className: 'dmo-meta' }, `30 天 ${usage.signalCount} 条事件（含 ${usage.recallEvents ?? 0} 条召回曝光）· 采纳 ${usage.verdictEvents ?? 0} 次 · 覆盖 ${usage.distinctHrefs ?? 0} 个文件`),
 								),
 								hotspots.length
 									? h(
@@ -1301,11 +2107,11 @@ window.__ModuleLoader__.load({
 							),
 				),
 				preview
-					? h(RecallPreviewCard, { res: preview, q: previewQ, setQ: setPreviewQ, onNavigate })
+					? h('div', { className: 'dmo-span-6', 'data-dmo': 'preview-slot' }, h(RecallPreviewCard, { res: preview, q: previewQ, setQ: setPreviewQ, onNavigate }))
 					: null,
 				h(
 					Card,
-					null,
+					{ className: 'dmo-span-6', 'data-dmo': 'timeline-card' },
 					h(CardTitle, null, '最近改动'),
 					timeline.length
 						? h(
@@ -1476,25 +2282,26 @@ window.__ModuleLoader__.load({
 			const shown = showCandidates ? filteredCandidates : rows;
 			return h(
 				'div',
-				{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+				{ style: { display: 'flex', flexDirection: 'column', gap: 10 } },
 				h(
 					'div',
-					{ className: 'dmo-toolbar' },
-					h('span', { style: { fontSize: 14, fontWeight: 600 } }, label),
+					{ className: 'dmo-page-head' },
+					h('h2', { className: 'dmo-page-title' }, label),
+					h('span', { className: 'dmo-page-sub' }, `${shown.length} 项`),
 					// 候选标签：只有道层有。数字直接放在标签上——待决策的东西
 					// 不该要求用户主动点开才知道有几条。
 					isDao
 						? h(
 								'span',
-								{ style: { display: 'inline-flex', gap: 4, marginLeft: 4 } },
+								{ style: { display: 'inline-flex', gap: 6 } },
 								h(Btn, { sm: true, tone: daoView === 'active' ? undefined : 'outline', onClick: () => setDaoView('active'), title: '已生效的道' }, `正式 ${rows.length}`),
 								h(Btn, { sm: true, tone: daoView === 'candidates' ? undefined : 'outline', onClick: () => setDaoView('candidates'), title: '等待你确认的候选公理', 'data-dmo': 'dao-cand-tab' }, `候选 ${candidateState?.error || (candidateState?.loading && !candidateState?.data) ? '—' : candList.length}`),
 							)
 						: null,
-					h('span', { className: 'dmo-meta' }, `${shown.length} 项`),
-					zone !== 'daily' && !showCandidates ? h(Btn, { sm: true, tone: 'outline', onClick: () => setSort(sort === 'time' ? 'name' : 'time'), title: '切换排序' }, sort === 'time' ? '按时间 ↓' : '按名称 ↑') : null,
-					h('span', { className: 'grow' }),
-					h('input', { className: 'dmo-filter', style: { width: 180 }, placeholder: zone === 'daily' ? '过滤日期…' : '按名称或摘要过滤…', value: filter, onChange: (e) => setFilter(e.target.value) }),
+					h('span', { className: 'dmo-page-tools' },
+						zone !== 'daily' && !showCandidates ? h(Btn, { sm: true, tone: 'outline', onClick: () => setSort(sort === 'time' ? 'name' : 'time'), title: '切换排序' }, sort === 'time' ? '按时间 ↓' : '按名称 ↑') : null,
+						h('input', { className: 'dmo-filter', style: { width: 180 }, placeholder: zone === 'daily' ? '过滤日期…' : '按名称或摘要过滤…', value: filter, onChange: (e) => setFilter(e.target.value) }),
+					),
 				),
 				actMsg ? h('div', { className: 'dmo-meta', 'data-dmo': 'dao-act-msg' }, actMsg) : null,
 				showCandidates
@@ -1740,16 +2547,17 @@ window.__ModuleLoader__.load({
 				{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
 				h(
 					'div',
-					{ className: 'dmo-toolbar' },
-					h('span', { style: { fontSize: 14, fontWeight: 600 } }, '技能库'),
+					{ className: 'dmo-page-head' },
+					h('h2', { className: 'dmo-page-title' }, '技能库'),
 					h(
 						'div',
 						{ className: 'dmo-chips' },
 						h('button', { type: 'button', className: `dmo-chip btn${tab === 'memory' ? ' active' : ''}`, 'data-dmo': 'skill-tab', onClick: () => onTab('memory') }, `结晶技能 ${mem.length}`),
 						h('button', { type: 'button', className: `dmo-chip btn${tab === 'host' ? ' active' : ''}`, 'data-dmo': 'skill-tab', onClick: () => onTab('host') }, `系统技能 ${host.length}`),
 					),
-					h('span', { className: 'grow' }),
-					h('input', { className: 'dmo-filter', style: { width: 180 }, placeholder: '按名称或描述过滤…', value: filter, onChange: (e) => setFilter(e.target.value), 'data-dmo': 'skill-filter' }),
+					h('span', { className: 'dmo-page-tools' },
+						h('input', { className: 'dmo-filter', style: { width: 180 }, placeholder: '按名称或描述过滤…', value: filter, onChange: (e) => setFilter(e.target.value), 'data-dmo': 'skill-filter' }),
+					),
 				),
 				data?.hostDegraded && tab === 'host'
 					? h('div', { className: 'dmo-empty' }, '宿主技能根不可读，系统技能暂不可列；结晶技能不受影响。')
@@ -2007,11 +2815,10 @@ window.__ModuleLoader__.load({
 
 			const head = h(
 				'div',
-				{ className: 'dmo-toolbar' },
-				h('span', { style: { fontSize: 14, fontWeight: 600 } }, '问题收件箱'),
-				h('span', { className: 'dmo-meta' }, `共 ${total} 条`),
-				h('span', { className: 'grow' }),
-				h('div', { className: 'dmo-chips' }, chips),
+				{ className: 'dmo-page-head' },
+				h('h2', { className: 'dmo-page-title' }, '问题收件箱'),
+				h('span', { className: 'dmo-page-sub' }, `共 ${total} 条`),
+				h('span', { className: 'dmo-page-tools' }, h('div', { className: 'dmo-chips' }, chips)),
 			);
 
 			if (res.error) return h('div', { className: 'dmo-empty', role: 'alert' }, `收件箱读取失败：${res.error} `, h(Btn, { tone: 'outline', onClick: onStateChange }, '重试'));
@@ -2137,15 +2944,14 @@ window.__ModuleLoader__.load({
 				{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
 				h(
 					'div',
-					{ className: 'dmo-toolbar' },
-					h('span', { style: { fontSize: 14, fontWeight: 600 } }, `搜索“${q}”`),
-					h('span', { className: 'dmo-meta' }, `${hits.length} 处命中`),
-					h('span', { className: 'grow' }),
+					{ className: 'dmo-page-head' },
+					h('h2', { className: 'dmo-page-title' }, `搜索“${q}”`),
+					h('span', { className: 'dmo-page-sub' }, `${hits.length} 处命中`),
 					setZone
 						? h(
 								'div',
-								{ className: 'dmo-chips' },
-								zones.map((z) =>
+								{ className: 'dmo-page-tools' },
+								h('div', { className: 'dmo-chips' }, zones.map((z) =>
 									h(
 										'button',
 										{
@@ -2156,7 +2962,7 @@ window.__ModuleLoader__.load({
 										},
 										z.label,
 									),
-								),
+								)),
 							)
 						: null,
 				),
@@ -2194,7 +3000,26 @@ window.__ModuleLoader__.load({
 		// panel
 		// ---------------------------------------------------------------------
 
+		/**
+		 * The panel shell.
+		 *
+		 * This is deliberately ONE component with ~440 lines rather than a set of
+		 * extracted modules, and the reason is mechanical, not laziness:
+		 *   · the file is loaded by the host's module loader in the BROWSER, so a
+		 *     relative import is a new loading contract, not a free refactor;
+		 *   · the build copies this file verbatim and rewrites its registration id,
+		 *     so every extra file needs its own rewrite entry or the panel white-
+		 *     screens on the next deploy;
+		 *   · the bulk is React hooks (16 useState + 12 useApi + 2 useEffect) which
+		 *     MUST run unconditionally in the same order; extracting them into
+		 *     custom hooks moves 3-4 lines each while adding 6-argument plumbing —
+		 *     net MORE complexity, not less.
+		 *
+		 * So the lines below are grouped into five labelled sections. Read them as
+		 * sections: state → remote reads → actions → derived data → render.
+		 */
 		function MemoryPanel(props) {
+			// ── 1. state ───────────────────────────────────────────────────────
 			const fixtures = props?.__apiFixtures;
 			const [view, setView] = useState(props?.initialView ?? { kind: 'overview' });
 			const [sort, setSort] = useState('time');
@@ -2222,6 +3047,13 @@ window.__ModuleLoader__.load({
 			const searchRef = useRef(null);
 			const mainRef = useRef(null);
 
+			// ── 2. remote reads (one useApi per source; url=null means idle) ───
+			// NOTE: overview stays a DIRECT useApi call. Wrapping it in a helper that
+			// itself calls useApi changed the hook/effect stream the production
+			// fake-React harness observes, and broke five real-panel tests
+			// (2026-11-16). The SSE channel therefore upgrades `tick` instead of
+			// intercepting the fetch: one pushed event -> one tick bump -> every read
+			// refreshes, which is hook-order neutral and needs no new hook slot.
 			const overview = useApi(`${API}/overview?v=${tick}`, fixtures);
 			// 收件箱随 tick 刷新：状态改变后立即重新取，用户能看到进度跳动
 			const inboxRes = useApi(`${API}/inbox?v=${tick}`, fixtures);
@@ -2261,6 +3093,7 @@ window.__ModuleLoader__.load({
 			// requests and the second lands as "已是 active" noise. The button is
 			// disabled while ITS skill's action is in flight.
 			const [toggleBusy, setToggleBusy] = useState('');
+			// ── 3. actions (every write goes through a guarded channel) ────────
 			const skillAction = async (args) => {
 				setActMsg('');
 				setToggleBusy(String(args.name ?? ''));
@@ -2344,6 +3177,7 @@ window.__ModuleLoader__.load({
 				}
 			};
 
+			// ── 4. derived data ────────────────────────────────────────────────
 			const ws = overview.data?.[0];
 			const counts = ws?.counts ?? {};
 			// The panel API answers with `results` (see runHealthCheck); accept the
@@ -2365,6 +3199,41 @@ window.__ModuleLoader__.load({
 			useEffect(() => {
 				const t = setInterval(() => setTick((n) => n + 1), 30_000);
 				return () => clearInterval(t);
+			}, []);
+			// SSE channel (2026-11-16): push instead of waiting for the 30s tick.
+			// Kept as its OWN effect with no deps so it registers once; receiving an
+			// event stores the payload in `sseRef` and bumps `tick`, and every useApi
+			// re-reads because `tick` is in its URL. The 30s poll above stays as the
+			// floor: if the stream dies, the panel keeps moving (slower, but never
+			// frozen) — a monitor that silently stops is worse than a stale one.
+			useEffect(() => {
+				if (typeof window === 'undefined' || typeof window.EventSource !== 'function') return undefined;
+				let es = null;
+				let closed = false;
+				try {
+					es = new window.EventSource(`${API}/stream`);
+				} catch {
+					return undefined;
+				}
+				es.addEventListener('overview', (ev) => {
+					if (closed) return;
+					try {
+						const payload = JSON.parse(ev.data);
+						SSE_BOX.payload = payload; SSE_BOX.lastEventAt = Date.now();
+						// One bump per pushed change: the panel refreshes exactly once.
+						setTick((n) => n + 1);
+					} catch {
+						/* malformed frame: keep the last good payload */
+					}
+				});
+				es.addEventListener('error', () => {
+					// Degraded, not dead: stop claiming live. The 30s poll carries on.
+					if (!closed) SSE_BOX.lastEventAt = null;
+				});
+				return () => {
+					closed = true;
+					try { es?.close(); } catch { /* already closed */ }
+				};
 			}, []);
 
 			const summaryOf = (zone, name) => {
@@ -2431,7 +3300,7 @@ window.__ModuleLoader__.load({
 			const kindOfZone = (z) => (z === '' ? 'index' : Object.prototype.hasOwnProperty.call(ZONE_DIR, z) ? z : 'daily');
 			const kind = !opened ? null : kindOfZone(opened.zone);
 
-			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'inbox' ? 'inbox' : view.kind === 'candidate' ? 'dao' : view.kind === 'zone' ? view.zone : view.kind === 'bundle' ? 'skills' : view.zone === '' ? 'index' : view.zone;
+			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'arch' ? 'arch' : view.kind === 'inbox' ? 'inbox' : view.kind === 'candidate' ? 'dao' : view.kind === 'zone' ? view.zone : view.kind === 'bundle' ? 'skills' : view.zone === '' ? 'index' : view.zone;
 
 			const onKeyDown = (e) => {
 				const tag = e.target?.tagName;
@@ -2458,6 +3327,7 @@ window.__ModuleLoader__.load({
 				}
 			};
 
+			// ── 5. render: pick the view, then the shell ───────────────────────
 			let main = null;
 			if (live.length >= 2) main = h(SearchPane, { res: search, q: live, zone: searchZone, setZone: setSearchZone, onOpen: openFile });
 			else if (!ws && overview.loading) main = h('div', { className: 'dmo-empty' }, '读取记忆体检…');
@@ -2465,6 +3335,19 @@ window.__ModuleLoader__.load({
 			else if (!ws) main = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } }, h('div', { className: 'dmo-empty' }, '没有已注册的 workspace。'), h(CaptureStatus, { capture: null }));
 			else if (!health?.initialized) main = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } }, h('div', { className: 'dmo-empty' }, '记忆还没有建立。'), h(CaptureStatus, { capture: ws.capture }));
 			else if (view.kind === 'inbox') main = h(InboxPane, { res: inboxRes, statusFilter: inboxFilter, setStatusFilter: setInboxFilter, onStateChange: () => setTick((n) => n + 1) });
+			// 架构图独用一个 view.kind：它不是"分区列表"，是跨层的结构视图。
+			else if (view.kind === 'arch')
+				main = h(Architecture, {
+					model: buildArchitecture({ counts, usage: overview.data?.[0]?.usage, capture: overview.data?.[0]?.capture, env: overview.data?.[0]?.env, health, sag: overview.data?.[0]?.sag }),
+					// Freshness is read here (not stored in a hook) so the badge always
+					// reflects the channel's real state at render time.
+					live: sseFreshness().live,
+					lastEventAt: SSE_BOX.lastEventAt,
+					fallback: !sseFreshness().live,
+					// The node passes its resolved TARGET (not a bare key), so a node
+					// without a destination can never navigate anywhere.
+					onZone: (target) => setView(target),
+				});
 			else if (view.kind === 'overview') main = h(Overview, { health, counts, timeline, usage: overview.data?.[0]?.usage, env: overview.data?.[0]?.env, capture: overview.data?.[0]?.capture, prose: parseProseSections(indexText), preview, previewQ, setPreviewQ, onOpen: openFile, onZone: (z) => setView({ kind: 'zone', zone: z }), onNavigate: navigate });
 			else if (view.kind === 'zone' && view.zone === 'skills')
 				main = h(SkillLibrary, {
@@ -2483,10 +3366,28 @@ window.__ModuleLoader__.load({
 				});
 			else if (view.kind === 'bundle') main = h(SkillBundleView, { data: bundleSkill, name: view.name, onBack: back, sel: view.file ?? null, onSel: (f) => setView({ kind: 'bundle', name: view.name, tab: view.tab, file: f }), fixtures });
 			else if (view.kind === 'zone') {
+				// INDEX PAGE: zone '' is the MEMORY.md registry (its own renderer, and
+				// the one place the panel shows index blocks). It has no /list source,
+				// so it must be handled BEFORE the zone lookups or it looks unknown.
+				if (view.zone === '') {
+					main = h(Reader, { view: { zone: '', name: 'MEMORY.md' }, text: indexText, meta: fileMeta, kind: 'index', root: ws.root, onBack: back, onNavigate: navigate });
+				} else {
 				const zoneRes = { functions: funcs, insights, dao: daos, capabilities: caps, daily: dailies }[view.zone];
 				if (zoneRes?.error) main = h('div', { className: 'dmo-empty', role: 'alert' }, `读取分区失败：${zoneRes.error} `, h(Btn, { tone: 'outline', onClick: () => setTick((n) => n + 1) }, '重试'));
 				else if (zoneRes?.loading && !zoneRes.data) main = h('div', { className: 'dmo-empty' }, '正在读取分区…');
+				// GUARD (2026-11-16): an unknown zone used to fall through with `main`
+				// still null — a blank page with no message and no way back. Never leave
+				// the reader with nothing: say what happened and offer the way out.
+				else if (!zoneRes) {
+					main = h(
+						'div',
+						{ className: 'dmo-empty', role: 'alert', 'data-dmo': 'zone-unknown' },
+						`没有这个分区：${String(view.zone ?? '(空)')}。`,
+						h(Btn, { tone: 'outline', onClick: () => setView({ kind: 'overview' }) }, '返回总览'),
+					);
+				}
 				else main = h(ZoneList, { zone: view.zone, rows: rowsOf(view.zone), sort, setSort, filter, setFilter, onOpen: openFile, daoView, setDaoView, candidates: candRes.data?.candidates ?? [], candidateState: candRes, onOpenCandidate: (name) => setView({ kind: 'candidate', name }), onRetry: () => setTick((n) => n + 1), candidateAction, candBusy, actMsg, onDeleteDao: deleteDao, openArchive: archiveOpenName, onToggleArchive: (name) => setArchiveOpenName((cur) => (cur === name ? null : name)), archiveDays });
+				}
 			}
 			else if (view.kind === 'candidate') {
 				if (candidateDetail.error) main = h('div', { className: 'dmo-empty', role: 'alert' }, `候选正文读取失败：${candidateDetail.error} `, h(Btn, { tone: 'outline', onClick: () => setTick((n) => n + 1) }, '重试'), h(Btn, { onClick: back }, '返回'));
@@ -2509,19 +3410,42 @@ window.__ModuleLoader__.load({
 				h(
 					'div',
 					{ className: 'dmo-header' },
-					h('h1', { className: 'dmo-title' }, '记忆管理'),
-					h('span', { className: 'dmo-sub' }, `${counts.functions ?? 0} 功能 · ${counts.insights ?? 0} 思想 · ${counts.dao ?? 0} 道 · ${counts.capabilities ?? 0} 能力 · ${counts.skills ?? 0} 技能 · ${counts.daily ?? 0} 日线索`),
 					h(
-						'label',
-						{ className: 'dmo-search', style: { marginLeft: 'auto', width: 240 } },
-						searchIcon,
-						h('input', {
-							ref: searchRef, type: 'search', placeholder: '搜索全部记忆', value: query,
-							onChange: (e) => setQuery(e.target.value), 'data-dmo': 'search',
-						}),
-						h('span', { className: 'dmo-kbd' }, '/'),
+						'div',
+						{ className: 'dmo-hero' },
+						h(
+							'div',
+							{ className: 'dmo-hero-eyebrow' },
+							h('span', { className: 'dmo-pill' }, `v${ws?.env?.version || '—'}`),
+							h('span', null, '心智系统'),
+						),
+						h('h1', { className: 'dmo-title' }, '心智管理'),
+						h('p', { className: 'dmo-sub' }, `${counts.functions ?? 0} 功能 · ${counts.insights ?? 0} 思想 · ${counts.dao ?? 0} 道 · ${counts.capabilities ?? 0} 能力 · ${counts.skills ?? 0} 技能 · ${counts.daily ?? 0} 日线索`),
 					),
-					h(Btn, { tone: 'outline', onClick: () => setTick((n) => n + 1), title: '重新读取记忆' }, '刷新'),
+					h(
+						'div',
+						{ className: 'dmo-header-side' },
+						h(
+							'div',
+							{ className: 'dmo-statusbar', 'data-dmo': 'statusbar' },
+							h('span', { className: (ws?.failCount ?? 0) > 0 ? 'dmo-dot fail' : 'dmo-dot ok' }, h('i'), (ws?.failCount ?? 0) > 0 ? `FAIL ${ws.failCount}` : '体检正常'),
+							h('span', { className: (ws?.warnCount ?? 0) > 0 ? 'dmo-dot warn' : 'dmo-dot ok' }, h('i'), (ws?.warnCount ?? 0) > 0 ? `WARN ${ws.warnCount}` : '无警告'),
+							h('span', { className: 'dmo-dot ok' }, h('i'), `${counts.functions ?? 0} 功能 / ${counts.insights ?? 0} 思想 / ${counts.dao ?? 0} 道`),
+						),
+						h(
+							'div',
+							{ className: 'dmo-hero-actions' },
+							h(
+								'label',
+								{ className: 'dmo-search' },
+								searchIcon,
+								h('input', {
+									ref: searchRef, type: 'search', placeholder: '搜索全部记忆', value: query,
+									onChange: (e) => setQuery(e.target.value), 'data-dmo': 'search',
+								}),
+								h('span', { className: 'dmo-kbd' }, '/'),
+							),
+							h(Btn, { tone: 'outline', onClick: () => setTick((n) => n + 1), title: '重新读取记忆' }, '刷新'),
 					// Hot reload (5.25.0, the mechanism borrowed from our-free-model):
 					// make the running SERVER half equal the code on disk without
 					// restarting the host process. The swap disposes this plugin's
@@ -2552,13 +3476,15 @@ window.__ModuleLoader__.load({
 						},
 						reloadMsg || '热重启',
 					),
+						),
+					),
 				),
 				h(
 					'div',
 					{ className: 'dmo-body' },
 					h(
 						'div',
-						{ className: 'dmo-rail' },
+						{ className: 'dmo-tabs', role: 'tablist' },
 						NAV.map((n) => {
 							// Every zone that reports a count shows one: capabilities and
 							// skills were silently excluded before, so two rail rows read
@@ -2573,13 +3499,15 @@ window.__ModuleLoader__.load({
 									? null
 									: n.key === 'inbox'
 										? inboxOpen
-										: counts[n.key];
+										: n.key === 'arch'
+											? null
+											: counts[n.key];
 							return h(
 								'button',
 								{
 									key: n.key, type: 'button', 'data-dmo': 'nav-item',
 									className: `dmo-nav${activeKey === n.key ? ' active' : ''}`,
-									onClick: () => { setFilter(''); setQuery(''); setLive(''); if (n.key === 'overview') setView({ kind: 'overview' }); else if (n.key === 'inbox') setView({ kind: 'inbox' }); else if (n.key === 'index') openFile('', null); else setView({ kind: 'zone', zone: n.key }); },
+									onClick: () => { setFilter(''); setQuery(''); setLive(''); if (n.key === 'overview') setView({ kind: 'overview' }); else if (n.key === 'arch') setView({ kind: 'arch' }); else if (n.key === 'inbox') setView({ kind: 'inbox' }); else if (n.key === 'index') openFile('', null); else setView({ kind: 'zone', zone: n.key }); },
 								},
 								h('span', { className: 'ico' }, n.icon),
 								n.label,
@@ -2619,7 +3547,7 @@ window.__ModuleLoader__.load({
 				// color and geometry.
 				ctx.slots.inject('sidebar.panellist', () =>
 					ctx.slots.register(
-						{ name: 'sidebar.panellist', id: 'memory-panel', order: 50, label: '记忆管理' },
+						{ name: 'sidebar.panellist', id: 'memory-panel', order: 50, label: '心智管理' },
 						MemoryIcon,
 					),
 				);
@@ -2629,7 +3557,7 @@ window.__ModuleLoader__.load({
 			},
 			// Pure view logic, exposed so ui-test.mjs can assert the panel's
 			// parsing/folding behaviour without a browser.
-			__internalsForTest: { relTime, plain, parseIndexTables, parseProseSections, splitSections, subTablesOf, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight, tokenizeCode, ZoneList, SkillLibrary, dailyMonthGroups, weekLabelOf, isoWeekOf, DailyMonthList },
+			__internalsForTest: { relTime, plain, parseIndexTables, parseProseSections, splitSections, subTablesOf, resolveHref, defaultOpen, SearchPane, RecallPreviewCard, reverseBullets, highlight, tokenizeCode, ZoneList, SkillLibrary, dailyMonthGroups, weekLabelOf, isoWeekOf, DailyMonthList, Architecture, buildArchitecture },
 		};
 	},
 });

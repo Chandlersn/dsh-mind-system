@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { buildRecallMessage } from '../src/recall.js';
 import { withMemoryRootTransaction } from '../src/root-transaction.js';
+import { readUsageLedgerText } from './usage-ledger-helper.mjs';
 
 // The 8192-byte limit applies to the *complete rendered optional block*, not
 // to characters, estimated tokens, individual fields, or the mandatory rules.
@@ -140,14 +141,14 @@ test('真实 pre-step 控制完整可选区，同时保留超预算的全部负�
   if (visible.length) {
     let recorded = [];
     for (let i = 0; i < 1000; i++) {
-      const raw = await readFile(path.join(f.root, '.usage.jsonl'), 'utf8');
-      recorded = raw.trim().split('\n').map(JSON.parse).filter((event) => event.kind === 'recall').map((event) => event.href);
+      const raw = await readUsageLedgerText(f.root);
+      recorded = raw.trim().split('\n').filter(Boolean).map(JSON.parse).filter((event) => event.kind === 'recall').map((event) => event.href);
       if (recorded.length >= visible.length) break;
       await new Promise((resolve) => setImmediate(resolve));
     }
     assert.deepEqual(recorded.sort(), visible.sort(), '曝光账本只能记录实际入选的项');
   } else {
-    const raw = await readFile(path.join(f.root, '.usage.jsonl'), 'utf8');
+    const raw = await readUsageLedgerText(f.root);
     assert.equal(raw.split('\n').filter(Boolean).map(JSON.parse).filter((event) => event.kind === 'recall').length, 0);
   }
   assert.ok(bytes(optional) <= BUDGET, `真实 hook 可选区 ${bytes(optional)} 字节 > ${BUDGET}`);

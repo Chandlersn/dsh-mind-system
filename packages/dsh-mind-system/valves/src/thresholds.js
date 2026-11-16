@@ -56,6 +56,13 @@ export const DEFAULT_THRESHOLDS = {
 	 * 校准依据是 mind-rule-triggers.jsonl 里"多久算久不触发"的实际间隔。
 	 */
 	negativeRuleSinkDays: 90,
+	/**
+	 * IV-1 灰度放量：新规则先以 `staged` 生效，命中满 N 次且零误报才转 `full`。
+	 * 单用户系统不做流量比例（比例在 N=1 时无意义），改用**干净命中数**——
+	 * 与灰度的实质目的（先小范围验证、再全量信任）一致。
+	 * 0 = 关闭灰度，确认即全量（旧行为，保持向后兼容）。
+	 */
+	negativeRuleStagedHits: 3,
 };
 
 /**

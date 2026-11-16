@@ -10,7 +10,7 @@
 把**反复跑通且被验证的操作**结晶成可直接调用的 `skills/`，
 索引只留一行摘要，并让每个会话开局就被注入这套纪律。
 
-- 十四个记忆工具、系统提示纪律、`agent/pre-step` 主动回忆钩子与 Web 记忆面板；部分面板操作经插件写入通道执行。
+- 十五个记忆工具、系统提示纪律、`agent/pre-step` 主动回忆钩子与 Web 记忆面板；部分面板操作经插件写入通道执行。
 - 写入即建档：`summary` 与 `currentState` 是必填参数，索引行不会漂移
 - 带机械体检（R0–R27 + 温度分析，规则号会增长故不写死条数），坏了能被检查出来，而不是靠记性
 - **能力台账**：用过的外部 CLI / MCP / 本地工具（不含 harness 自带能力与本项目自己的脚本/API）登记在 `capabilities/`，下次同类任务先查台账，不重复摸索
@@ -137,6 +137,7 @@ memory/
 |---|---|
 | `memory_read` | 读索引 / 功能文件 / 思想文件 / 能力台账 / 技能 / 每日记录（`kind=index` 先读索引判断相关性） |
 | `memory_search` | **全库排序检索**：索引一行摘要之外还能搜正文，返回命中的分区/文件/行号/小节/片段/归属日期。只记得片段、说不清在哪个域或哪天时用它；`after`/`before` 按日期区间过滤（迭代块标签→文件头→文件名→mtime 逐级归属） |
+| `memory_sag` | **第二召回通道**（SAG-Wiki）：两个 action。`search`（默认）返回命中的**正文片段**而不只是指针（文件+小节+行号+内容）；`status` 报索引状态——哪些目录在被索引、各有多少文件，给了 `file`+`phrase` 时还能回答**「这条记忆到底收没收录」**。**它与 `memory_search` 分工不同**：索引召回 2.4ms 只给"哪条可能相关"（决定要不要读），SAG ~24ms 给"这条说了什么"（已决定要读、又不想逐个打开文件时用）。实测 SAG 会把日记排到首位（6 条查询中 3 条），所以它**不能替代**索引召回做门禁。命中属**实验层线索**，引用前用 `memory_read` 核对。**`status` 存在的理由**：写完之后盲搜无法区分"没收录/索引滞后/收录正常"三种状态，而 fast 档**永远返回近邻**（造一个不存在的短语也能拿到 3 条），所以「有命中」证明不了任何事——只有**路径匹配**才是可验证的信号。服务不可用时如实报 `no_key`/`network`/`timeout`/`http_xxx`，**绝不返回空列表冒充"没有相关内容"**。宿主启动时自动拉起 `sag api start`（不阻塞装载） |
 | `memory_capability` | **能力台账**：`record` 登记一个用过的**外部** CLI/MCP/本地工具（调用方式、前提、解决过什么，就地更新一工具一文件；harness 自带工具与项目自己的脚本/API 不算）；`list` 开工前看一眼有什么可用；`read` 读某工具的完整台账 |
 | `memory_write` | **追加一个迭代块**（从每日原始记录蒸馏的结论），刷新头部稳定态摘要；`summary` 是本块的一句话概括。**不写索引、不碰每日记录** |
 | `memory_index` | **整合层**：功能域/思想稳定后把一行收进 MEMORY.md 索引（行摘要从迭代块概括中提炼）；表大时可传 `group` 落到 `### 索引·<域>` 子分区 |
@@ -180,6 +181,13 @@ memory/
 
 记忆"写进去"和"被用起来"是两个不同信号——前者靠模型落地，后者只能靠记录。插件把使用信号落在
 `<memory-root>/.usage.jsonl`（点文件，分区列表、搜索、体检都不扫它），每条一行：
+
+> **存储布局（2026-11-16）**：单文件在真实使用中一个月涨到 4.4k 行 / 420KB 且**从不轮转**，
+> 现已改为**按月分片** `.usage/YYYY-MM.jsonl`；旧的单文件**仍然可读**（无需迁移，两者一起读）。
+> 超过 90 天的整月会被**降采样归档**到 `.usage/archive/YYYY-MM.jsonl`：`recall` 折成
+> `{href, 日, n}` 计数行（**曝光总数一个不少**，判据照旧），`read`/`correction`/`positive`
+> 原样保留（它们各自有独立权重）。实测一个 300 条 recall 的月份：磁盘 **22345B → 1245B（6%）**，
+> 读取返回的 recall 计数仍是 300。归档先写后校验行数，校验失败保留原文件——崩溃只会多数据，不会少。
 
 | 信号 | 来源 | 含义 |
 |---|---|---|
@@ -276,7 +284,7 @@ Node ≥ 22.12），返回的正是 Host 已加载的同一份命名空间。
 
 ## Web 面板
 
-侧栏“记忆管理”图标打开，提供阅读、检索和部分经插件通道执行的操作。面板 exclusive 提交阻断已于 2026-11-13 修复并部署（`.stage/` 受核验暂存 + inode 核验删除），候选确认/否决/删除真机验证恢复；每日记录按月组→周子折叠→日线索展示。源码改动需按宿主构建/热重载机制生效，不能仅凭源码推断运行中页面行为：
+侧栏“心智管理”图标打开，提供阅读、检索和部分经插件通道执行的操作。**面板是数据看板**（2026-11-16 改版）：顶部横向分区标签 + bento 网格总览，所有数字直接取自后端接口，没有侧边栏工作台。面板 exclusive 提交阻断已于 2026-11-13 修复并部署（`.stage/` 受核验暂存 + inode 核验删除），候选确认/否决/删除真机验证恢复；每日记录按月组→周子折叠→日线索展示。源码改动需按宿主构建/热重载机制生效，不能仅凭源码推断运行中页面行为：
 
 - **总览**：体检徽标（FAIL/WARN/冷记忆）+ 六个分区计数卡（功能/思想/道/能力/技能/当日）+ **运行环境卡**（正在运行的
   插件版本、宿主是否支持热重启、记忆根与技能库两个存储的位置、索引体积对舒适线/硬上限的填充条）+ **召回自检卡**
@@ -317,7 +325,7 @@ Node ≥ 22.12），返回的正是 Host 已加载的同一份命名空间。
 
 | 路由 | 说明 |
 |---|---|
-| `GET /api/memory-org/overview` | 体检结果 + 各分区文件计数（侧栏徽标用） |
+| `GET /api/memory-org/overview` | 体检结果 + 各分区文件计数 + 使用口径 + 运行环境（面板总览、架构图与侧栏徽标共用） |
 | `GET /api/memory-org/check` | 仅体检 |
 | `GET /api/memory-org/list?zone=functions\|insights\|dao\|daily` | 分区文件列表（每日区只列 `YYYY-MM-DD.md`，最新在前） |
 | `GET /api/memory-org/file?zone=functions&name=x.md` | 读记忆文件（省略 `zone` 读索引） |
@@ -327,7 +335,7 @@ Node ≥ 22.12），返回的正是 Host 已加载的同一份命名空间。
 
 | 响应 | 字段 |
 |---|---|
-| `overview`（数组，单元素） | `root`、`initialized`、`failCount`、`warnCount`、**`results`**（体检条目：`level`/`rule`/`message`；不是 `problems`）、`counts{functions,insights,capabilities,skills,daily,archived}`（`daily` **含归档月**在内，`archived` 只数 `daily/YYYY-MM.md`；2026-11 口径变更）、`usage{signalCount,layers,hotspots}`、`env{version,canReload,hotReloadRunning,memoryRoot,skillRoot,indexBytes,indexComfortBytes,indexHardBytes}`（`skillRoot` 为**已解析**的存储路径：无覆盖时 = `<dshHome>/skills`，与 config 项同名同义） |
+| `overview`（数组，单元素） | `root`、`initialized`、`failCount`、`warnCount`、**`results`**（体检条目：`level`/`rule`/`message`；不是 `problems`）、`counts{functions,insights,dao,capabilities,skills,daily,archived}`（`daily` **含归档月**在内，`archived` 只数 `daily/YYYY-MM.md`；2026-11 口径变更）、`usage{signalCount,recallEvents,readEvents,verdictEvents,distinctHrefs,indexRows,layers,hotspots}`、`capture`、`env{version,canReload,hotReloadRunning,memoryRoot,skillRoot,indexBytes,indexComfortBytes,indexHardBytes,lastReload}`（`skillRoot` 为**已解析**的存储路径：无覆盖时 = `<dshHome>/skills`，与 config 项同名同义） |
 | `list` | `files[]{name,bytes,mtime}` |
 | `file` | `{name,text}` |
 | `search` | `hits[]{zone,name,line,heading,snippet}`（片段是 `snippet`，不是 `text`） |

@@ -12,7 +12,7 @@ will **re-apply** is distilled into `insights/`, whatever is **re-run and verifi
 callable procedure in `skills/`, the index keeps a single line per row, and every session starts with that
 discipline injected into its system prompt.
 
-- fourteen memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a read-only Web panel
+- fifteen memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a read-only Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
 - Mechanical lint rules (R0–R27 plus temperature analysis; rule numbers grow, so no fixed count is claimed), so rot gets detected instead of remembered
 - **Capability ledger**: every EXTERNAL CLI / MCP / local tool you used is filed in `capabilities/` — look before

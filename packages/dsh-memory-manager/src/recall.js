@@ -417,6 +417,38 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage, options 
 		// 不再 break——否则被截断的行会漏出账本、破坏三档守恒。
 	}
 	// 双侧账本挂在返回数组上（老调用方忽略即行为不变）。
+	//
+	// MISS SIGNAL (2026-11-16, after measuring 5/8 on a real query set):
+	// `matched` counts every scored row, so "matched=45" reads like everything
+	// matched even when the index really found nothing for the user's words. That
+	// is the difference between "the index looked and chose" and "the index had
+	// nothing to look at", and only the second one means the wording is missing
+	// from every summary.
+	//
+	// WHY NOT `bestScore <= 0`: measured — a query of pure nonsense
+	// ("完全无关的量子化纤维护理流程") still scored 4.8, because the tokenizer emits
+	// generic fragments ("流程", "完全") that appear in some row. A zero-score test
+	// would therefore almost never fire. The honest signal is the SHARE of the
+	// user's tokens that landed: if fewer than half matched anything, the index
+	// did not understand the question, whatever the score says.
+	//
+	//   bestScore      the top lexical score (kept: a magnitude, not a verdict)
+	//   hitTokens      the user's tokens that matched at least one row
+	//   missTokens     the ones that matched nothing — literally the words to add
+	//                  to a summary (this is what turned 5/8 into 8/8)
+	//   miss           true when under half the tokens landed
+	const qTokens = userTokens.has ? [...userTokens] : [...userTokens];
+	const hitTokens = [];
+	const missTokens = [];
+	for (const tk of qTokens) {
+		let hit = false;
+		for (const c of candidates) {
+			if (c.nameTokens.has(tk) || c.bodyTokens.has(tk)) { hit = true; break; }
+		}
+		if (hit) hitTokens.push(tk);
+		else missTokens.push(tk);
+	}
+	const miss = qTokens.length > 0 && hitTokens.length / qTokens.length < 0.5;
 	out.stats = {
 		matched,
 		injected: out.length,
@@ -425,6 +457,10 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage, options 
 		budget,
 		usedTokens,
 		tiers: { strongBar, holdBar },
+		bestScore: best,
+		miss,
+		hitTokens,
+		missTokens: miss ? missTokens : [],
 	};
 	out.heldRows = heldRows;
 	return out;
@@ -466,6 +502,15 @@ export function buildRecallMessage(lines, heldRows = [], stats = null, archives 
 		// 双侧账本一行：带进/暂缓/丢弃/预算用量同处可见（指标须成对报）。
 		stats
 			? `（索引分档 ${stats.matched} 条：强档 ${stats.injected} · 暂缓 ${stats.held} · 丢弃 ${stats.dropped}；最终带入 ${lines.length} 条索引/修复项。强档摘要估算 ${stats.usedTokens}/${stats.budget} token；不含档案、规则与格式，首条可能超额）`
+			: '',
+		// MISS MARKER (2026-11-16). Without this line a lexical miss is invisible:
+		// the entry simply contains no memory rows, which reads exactly like
+		// "nothing was recorded about this". Measured 5/8 on a real query set — the
+		// misses were all WORDING gaps, and two of three recalled the wrong entry
+		// rather than nothing, which is even easier to trust by mistake.
+		// Naming the missed words makes the gap actionable (add them to a summary).
+		stats?.miss
+			? `⚠ 召回未命中：这次问法的用词没有落到任何索引行（未命中：${(stats.missTokens ?? []).slice(0, 6).join('、')}${(stats.missTokens ?? []).length > 6 ? '…' : ''}）。**这不等于记忆里没有相关经验**——先用 memory_search 全库找正文，必要时 memory_sag 取正文，确认没有之后才按新话题处理。`
 			: '',
 		hasSkill ? 'ℹ 命中 active 技能：过去反复验证过的操作程序；结果与预期不符时回到来源功能域重新推导。' : '',
 		hasRepair ? '⚠️ 决策修复：标 ⚠️ 的记忆近期被反复纠正，引用它时先复核（当前这一步未被打断）。' : '',

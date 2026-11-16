@@ -48,7 +48,13 @@ import {
 	findSinkCandidates,
 	sinkRules,
 	sunkRules,
+	// IV-1 灰度：staged → full 的转正（依据是真实命中数），写回规则库。
+	promoteStagedRules,
+	writeNegativeRules,
 } from './src/store.js';
+// V-1 LayerTrace: the four-field execution record (layer_path / rule_versions /
+// budget_usage / gate_decisions) that rides the same decision ledger.
+import { appendTrace } from './src/trace.js';
 // III-5 越权拦截：只有人工通道能签票，规则库写入必须持票。
 import { issuePermit } from './src/guard.js';
 // III-6 语义越权：标记不阻断；embedder 可选，缺了标 degraded（N4）。
@@ -380,6 +386,33 @@ export function createRuntime(options = {}) {
 					origin: typeof input?.origin === 'string' && input.origin ? input.origin : 'daily',
 				});
 			}
+			// V-1 LayerTrace: this path has real answers for all four contract
+			// fields, so it must not write a decision without them. The semantic
+			// layer degrades to the lexical layer when no embedder is supplied —
+			// that is a SKIPPED gate, recorded as such, never as a pass.
+			const depth = Array.isArray(input?.layer_path) && input.layer_path.length ? input.layer_path : ['L2', 'L1'];
+			// rule_versions must name the rules this check actually consulted. An
+			// empty map is "unknown", and verifyTraceFields will reject it — which is
+			// correct: a trace that does not say which rule text was in force cannot
+			// support any later audit.
+			const consulted = Array.isArray(rules) ? rules.filter((r) => r && r.id) : [];
+			const versions = {};
+			for (const r of consulted) versions[String(r.id)] = String(r.version ?? r.confirmed_at ?? 'declared');
+			void appendTrace(storageDir, {
+				source: 'semantic_check',
+				candidate_id: input.candidate_id,
+				layerPath: depth,
+				ruleVersions: versions,
+				budgetUsage: { items: consulted.length || null, rows: null, maxItems: null, maxRows: null, over: null },
+				gateDecisions: [
+					{ gate: 'lexical', result: 'passed' },
+					// `degraded` is the normal "no embedder" state; recording it as a
+					// PASS would claim the semantic layer inspected something it never saw.
+					verdict?.status === 'degraded' || verdict?.status === undefined
+						? { gate: 'semantic', result: 'skipped', reason: 'no_embedder' }
+						: { gate: 'semantic', result: 'passed' },
+				],
+			});
 			return verdict;
 		},
 		async matchNegative(text) {
@@ -388,6 +421,31 @@ export function createRuntime(options = {}) {
 			// IV-3：命中即记一笔"这条规则还在生效"。写失败不影响拦截本身
 			// （记账是附加能力），但沉底判据会因缺流水而保守不沉底。
 			if (Array.isArray(hits) && hits.length) void appendRuleTrigger(storageDir, { ruleIds: hits });
+			// IV-1 灰度转正：命中攒够阈值 → staged 转 full。只在这里做，因为
+			// 「被真实语料命中过」是转正唯一正当依据；定时器或人工批量转正
+			// 都会绕开这条证据。失败静默：转正不成功只是继续 staged，不影响拦截。
+			if (Array.isArray(rules) && hits?.length) {
+				void (async () => {
+					try {
+						const triggers = await readRuleTriggers(storageDir);
+						const { rules: promoted, promoted: ids } = promoteStagedRules(rules, triggers, { stagedHits: thresholds.negativeRuleStagedHits });
+						if (ids.length) {
+							await writeNegativeRules(storageDir, promoted);
+							void appendDecision(storageDir, {
+								gate: 'gradual_rollout',
+								direction: 'internal',
+								outcome: 'admitted',
+								action: 'promote',
+								reason: 'staged_hits_reached',
+								rules: ids,
+								origin: 'daily',
+							});
+						}
+					} catch {
+						/* 转正失败不影响拦截 */
+					}
+				})();
+			}
 			return hits;
 		},
 		/** IV-3 检索沉底规则（反例资产）：不参与拦截，但可查。 */
@@ -510,6 +568,20 @@ export function createRuntime(options = {}) {
 					quarterly: quarterlyPatrol ? { at: quarterlyPatrol.at, ok: quarterlyPatrol.ok, findings: quarterlyPatrol.findings?.length ?? 0 } : 'never',
 				},
 				thresholds,
+				// Why the patrol did not run was previously unobservable: last_patrol
+				// says 'never', which covers "timer not due", "memory root unreadable",
+				// "no principles" and "the run threw" identically. These facts are what
+				// the apply path already records; surfacing them turns "never" into a
+				// reason the reader can act on.
+				patrol_facts: {
+					weekly: facts.patrolWeekly ?? null,
+					quarterly: facts.patrolQuarterly ?? null,
+					principles: facts.patrolPrinciples ?? null,
+					candidates: facts.patrolCandidates ?? null,
+					refs_basis: facts.patrolRefsBasis ?? null,
+					boundary: facts.patrolBoundary ?? null,
+					error: facts.patrolError ?? null,
+				},
 				thresholds_status: calib.allowed ? '可校准（日常样本已达标）' : `暂定（${calib.reason}：日常样本 ${calib.evaluated}/${calib.needed}，提名与验证不计入）`,
 				calibration_writable: calib.allowed,
 			};
@@ -691,7 +763,15 @@ export function apply(ctx, config = {}, overrides = {}) {
 		try {
 			const last = await readLatestPatrolReport(runtime.storageDir, kind);
 			const period = kind === 'quarterly' ? PATROL_PERIODS.quarterlyMs : PATROL_PERIODS.weeklyMs;
-			if (!isPatrolDue(last, period)) return null;
+			if (!isPatrolDue(last, period)) {
+				// "Not due" is a legitimate skip, but it used to leave no trace at all:
+				// last_patrol then reads the previous report and patrol_facts stays null,
+				// which is indistinguishable from "the run never happened". Recording the
+				// skip makes that distinction observable.
+				if (kind === 'weekly') facts.patrolWeekly = 'skipped_not_due';
+				else facts.patrolQuarterly = 'skipped_not_due';
+				return null;
+			}
 			// 巡检自己也要读数据：原则清单从账本与规则聚合，层次统计从 memory 拿。
 			// 拿不到就只跑周级（原则巡检不依赖外部），季度级如实记 skipped。
 			if (kind === 'quarterly') {

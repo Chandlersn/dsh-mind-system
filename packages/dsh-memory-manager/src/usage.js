@@ -7,13 +7,37 @@
  * so no zone listing, search or lint sees it), and memory_check / memory_usage
  * turn those lines into layer suggestions.
  */
-import { appendFile, mkdir } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { readIfExists } from './util.js';
 import { redactSecrets } from './secrets.js';
 
 export function usagePath(root) {
 	return path.join(root, '.usage.jsonl');
+}
+
+/**
+ * Monthly shard directory (2026-11-16). The ledger is an append-only EVENT log:
+ * every recall injection writes a line, so a real root reached 4.3k lines / 420KB
+ * in a month of use and there was no rotation of any kind. Two consequences:
+ * every `readUsage` parsed the whole file (cost grows forever), and the file
+ * itself would eventually become the largest thing in the memory root.
+ *
+ * Sharding by month bounds the cost of a 30-day window to ~2 files. It is NOT
+ * deduplication: recall rows must stay as events, because "how often was this
+ * put in front of the model" is what weights recall. We only change WHERE the
+ * rows live, never how many there are.
+ */
+export function usageShardDir(root) {
+	return path.join(root, '.usage');
+}
+
+/** `.usage/YYYY-MM.jsonl` for the entry's own timestamp (UTC month). */
+export function usageShardPath(root, date = new Date()) {
+	const d = date instanceof Date && Number.isFinite(date.getTime()) ? date : new Date();
+	const yyyy = d.getUTCFullYear();
+	const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+	return path.join(usageShardDir(root), `${yyyy}-${mm}.jsonl`);
 }
 
 /**
@@ -37,32 +61,210 @@ export async function appendUsage(root, entry) {
 		// R21 never scans the dot-file. Same tier-1 rule as every other writer.
 		const folded = { ...entry, href: canonicalHref(entry.href) };
 		if (typeof folded.note === 'string') folded.note = redactSecrets(folded.note).text;
-		await appendFile(usagePath(root), `${JSON.stringify({ t: new Date().toISOString(), ...folded })}\n`, 'utf8');
+		const now = new Date();
+		const line = `${JSON.stringify({ t: now.toISOString(), ...folded })}\n`;
+		// Write into the month shard. The legacy single file is NOT appended to any
+		// more, but it stays readable forever (see readUsage) — rotation without a
+		// migration step, so an existing root loses nothing.
+		await mkdir(usageShardDir(root), { recursive: true });
+		await appendFile(usageShardPath(root, now), line, 'utf8');
 	} catch {
 		/* usage logging must never break a step or a tool call */
 	}
 }
 
-/** Usage entries newer than `days`, newest last. Bad lines are skipped. */
-export async function readUsage(root, days = 30) {
-	const text = await readIfExists(usagePath(root));
-	if (text === undefined) return [];
-	const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-	const out = [];
-	for (const line of text.split('\n')) {
-		const s = line.trim();
-		if (!s) continue;
-		try {
-			const e = JSON.parse(s);
-			const t = Date.parse(e.t);
-			if (!Number.isFinite(t) || t < cutoff) continue;
-			// Fold on READ as well as write: pre-fold lines in an existing ledger
-			// (and recall lines written with the absolute bundle href) aggregate
-			// under one identity, so evidence is never split across two hrefs.
-			out.push({ ...e, href: canonicalHref(e.href), ms: t });
-		} catch {
-			/* skip corrupt line */
+/**
+ * Archive directory for compacted shards. Old months are downsampled here: the
+ * raw `recall` rows in a closed month are folded into per-(href, day) counts,
+ * while read/correction/positive rows are kept verbatim (they are rare, and each
+ * one carries a judgement).
+ */
+export function usageArchiveDir(root) {
+	return path.join(usageShardDir(root), 'archive');
+}
+
+export function usageArchivePath(root, month) {
+	return path.join(usageArchiveDir(root), `${month}.jsonl`);
+}
+
+/**
+ * Downsample closed months (2026-11-16).
+ *
+ * The ledger grew ~4.7k lines/month and NOTHING ever removed a line. Sharding
+ * bounded the read cost of a 30-day window, but the disk still grows forever.
+ *
+ * What compaction may and may not do:
+ *   · `recall` is a poll: "how often was this put in front of the model". Folding
+ *     it into `{href, day, n}` keeps that number exactly — recall counts stay
+ *     recoverable, which is what weights recall. Nothing is lost that any
+ *     judgement depends on.
+ *   · read / correction / positive are NOT folded: each is a distinct event with
+ *     its own weight in badRate and layer decisions, and folding them would
+ *     erase "how many corrections" — the one signal the user produces directly.
+ *
+ * Safety: the compacted file is written and re-read (row count verified) BEFORE
+ * the source shard is removed. A failed verification keeps the original, so a
+ * crash can only ever leave MORE data, never less.
+ */
+export async function compactUsage(root, { olderThanDays = 90, now = Date.now() } = {}) {
+	const cutoff = now - olderThanDays * 86400_000;
+	const cutoffMonth = (() => {
+		const d = new Date(cutoff);
+		return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+	})();
+	const stats = { compacted: [], skipped: [], rawRows: 0, keptRows: 0 };
+	let shards = [];
+	try {
+		shards = (await readdir(usageShardDir(root))).filter((n) => /^\d{4}-\d{2}\.jsonl$/.test(n)).sort();
+	} catch {
+		return stats;
+	}
+	for (const name of shards) {
+		const month = name.slice(0, 7);
+		// Only whole months that are entirely older than the threshold.
+		if (!(month < cutoffMonth)) {
+			stats.skipped.push(month);
+			continue;
 		}
+		const src = path.join(usageShardDir(root), name);
+		const text = (await readIfExists(src)) ?? '';
+		const raw = text.split('\n').filter((l) => l.trim());
+		if (!raw.length) continue;
+		// Fold: recall → {href, day, n}; everything else survives verbatim.
+		const folded = new Map();
+		const kept = [];
+		for (const line of raw) {
+			let e;
+			try {
+				e = JSON.parse(line);
+			} catch {
+				continue; // corrupt line: drop it (it carried no readable fact)
+			}
+			const t = Date.parse(e.t);
+			if (!Number.isFinite(t)) continue;
+			if (e.kind === 'recall' && e.href) {
+				const day = new Date(t).toISOString().slice(0, 10);
+				const key = `${canonicalHref(e.href)}\u0000${day}`;
+				const hit = folded.get(key);
+				if (hit) hit.n++;
+				else folded.set(key, { t: `${day}T00:00:00.000Z`, href: canonicalHref(e.href), kind: 'recall', n: 1 });
+			} else {
+				kept.push(JSON.stringify(e));
+			}
+		}
+		const compactedLines = [...folded.values()].map((r) => JSON.stringify(r));
+		const all = [...compactedLines, ...kept];
+		if (all.length >= raw.length) {
+			// Nothing gained (a month with no recall rows): leave it alone rather
+			// than rewrite an identical file.
+			stats.skipped.push(month);
+			continue;
+		}
+		await mkdir(usageArchiveDir(root), { recursive: true });
+		const dest = usageArchivePath(root, month);
+		await writeFile(dest, `${all.join('\n')}\n`, 'utf8');
+		// VERIFY BEFORE DELETE: the archive must be readable and carry exactly the
+		// rows we intended. A partial write must leave the original in place.
+		const check = (await readIfExists(dest)) ?? '';
+		const checkRows = check.split('\n').filter((l) => l.trim()).length;
+		if (checkRows !== all.length) {
+			stats.skipped.push(month);
+			continue;
+		}
+		await unlink(src);
+		stats.compacted.push(month);
+		stats.rawRows += raw.length;
+		stats.keptRows += all.length;
+	}
+	return stats;
+}
+
+/**
+ * Every ledger file to read, oldest first: the legacy `.usage.jsonl` plus the
+ * monthly shards. Reading BOTH is what makes the format change safe — an old
+ * root has only the legacy file, a new one may have both, and no window ever
+ * sees a gap.
+ */
+export async function usageFiles(root) {
+	const files = [];
+	const legacy = usagePath(root);
+	if ((await readIfExists(legacy)) !== undefined) files.push({ file: legacy, month: '' });
+	let shards = [];
+	try {
+		shards = (await readdir(usageShardDir(root))).filter((n) => /^\d{4}-\d{2}\.jsonl$/.test(n)).sort();
+	} catch {
+		/* no shard dir yet */
+	}
+	for (const name of shards) files.push({ file: path.join(usageShardDir(root), name), month: name.slice(0, 7) });
+	return files;
+}
+
+/**
+ * Usage entries newer than `days`, newest last. Bad lines are skipped.
+ *
+ * Reads the legacy single file AND every monthly shard, so a root written before
+ * the split keeps all of its history. Shards outside the window are skipped by
+ * NAME before being read — the whole point of sharding is that a 30-day query
+ * does not parse years of log.
+ */
+export async function readUsage(root, days = 30) {
+	const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+	// Month shards strictly older than the window can be skipped unread: their
+	// newest possible line is the last instant of that month.
+	const cutoffMonth = (() => {
+		const d = new Date(cutoff);
+		return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+	})();
+	const out = [];
+	for (const { file, month } of await usageFiles(root)) {
+		if (month && month < cutoffMonth) continue;
+		const text = (await readIfExists(file)) ?? '';
+		for (const line of text.split('\n')) {
+			const s = line.trim();
+			if (!s) continue;
+			try {
+				const e = JSON.parse(s);
+				const t = Date.parse(e.t);
+				if (!Number.isFinite(t) || t < cutoff) continue;
+				// Fold on READ as well as write: pre-fold lines in an existing ledger
+				// (and recall lines written with the absolute bundle href) aggregate
+				// under one identity, so evidence is never split across two hrefs.
+				//
+				// Compacted recall rows carry `n` (how many injections that href saw
+				// that day). Expand into n equivalent events so every consumer keeps
+				// seeing the true exposure count — compaction changes the storage
+				// shape, never the numbers a judgement reads.
+				const n = Number.isSafeInteger(e.n) && e.n > 1 ? e.n : 1;
+				for (let i = 0; i < n; i++) out.push({ ...e, href: canonicalHref(e.href), ms: t });
+			} catch {
+				/* skip corrupt line */
+			}
+		}
+	}
+	// Also read compacted months: they hold history that predates the window's
+	// shard, and dropping them would make old exposure vanish from the totals.
+	try {
+		const archived = (await readdir(usageArchiveDir(root))).filter((n) => /^\d{4}-\d{2}\.jsonl$/.test(n)).sort();
+		for (const name of archived) {
+			const month = name.slice(0, 7);
+			if (month < cutoffMonth) continue;
+			const text = (await readIfExists(usageArchivePath(root, month))) ?? '';
+			for (const line of text.split('\n')) {
+				const s = line.trim();
+				if (!s) continue;
+				try {
+					const e = JSON.parse(s);
+					const t = Date.parse(e.t);
+					if (!Number.isFinite(t) || t < cutoff) continue;
+					const n = Number.isSafeInteger(e.n) && e.n > 1 ? e.n : 1;
+					for (let i = 0; i < n; i++) out.push({ ...e, href: canonicalHref(e.href), ms: t });
+				} catch {
+					/* skip */
+				}
+			}
+		}
+	} catch {
+		/* no archive dir */
 	}
 	return out;
 }

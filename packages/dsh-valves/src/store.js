@@ -222,6 +222,25 @@ export function summarizeDecisions(entries) {
 }
 
 /**
+ * 写回负向规则库（IV-1 灰度转正用）。
+ *
+ * 调用方必须是已经读过库并做过合并的路径 —— 本函数只负责落盘，不做任何
+ * 权限或快照检查，所以它**不是**给外部写入用的入口（那条是 confirmNegativeRule，
+ * 它带票检查与写前快照）。转正只改 `status` 字段，不改规则内容，因此不需要
+ * 新快照：回退到上一版时 status 会随之恢复。
+ */
+export async function writeNegativeRules(storageDir, rules) {
+	if (!Array.isArray(rules)) return { ok: false, error: 'rules 必须是数组' };
+	try {
+		await mkdir(storageDir, { recursive: true });
+		await writeFile(rulesPath(storageDir), `${JSON.stringify({ rules }, null, 2)}\n`, 'utf8');
+		return { ok: true, count: rules.length };
+	} catch (err) {
+		return { ok: false, error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
+/**
  * 读负向规则库。ENOENT → []（还没生效过规则是正常态）；
  * 其它读失败/解析失败 → undefined（故障，调用方必须如实降级，不得当空库放行）。
  */
@@ -296,6 +315,11 @@ export async function confirmNegativeRule(storageDir, rule, options = {}) {
 		keywords: Array.isArray(rule.keywords) ? rule.keywords.filter((k) => typeof k === 'string' && k.trim()) : [],
 		confirmed_at: new Date().toISOString(),
 		source: typeof rule.source === 'string' ? rule.source : 'human_confirm',
+		// IV-1 灰度：**不改 `status`**——status 是生命周期（active/sunk），沉底、
+		// 回滚、探针都按它判定，改动它会连带改掉那些语义（实测直接打红 2 条沉底用例）。
+		// 放量进度另立一个正交字段 `rollout`：staged → full。
+		// 拦截力两态完全一致，差别只在"这条规则被多少真实语料验证过"。
+		rollout: options?.skipStaging === true ? 'full' : (rule.rollout === 'full' ? 'full' : 'staged'),
 		// 记录它被写过几次：回退计数要能回答"这条到底改了几版"。
 		revisions: (Number(prev?.revisions ?? 0) || 0) + 1,
 	});
@@ -414,6 +438,42 @@ export function matchNegativeRules(rules, text, options = {}) {
 
 /** 日 → 毫秒（沉底窗口用）。 */
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * IV-1 灰度放量：把规则命中计数，够数就从 `staged` 转 `full`。
+ *
+ * 为什么单用户系统也需要灰度：一条新规则**刚确认时最容易误伤**——它的关键词
+ * 还没被真实语料打磨过。先让它以 `staged` 拦截（拦截力不打折，两条通道都拦），
+ * 攒够 N 次干净命中再标 `full`，等于用真实使用为它背书。
+ *
+ * 与沉底的区别：沉底是"老了退休"，灰度是"新了转正"，方向相反、互不干扰
+ * （sunk 优先，灰度不复活沉底规则）。
+ *
+ * @returns {{rules: any[], promoted: string[]}} promoted 是本次转正的规则 id。
+ */
+export function promoteStagedRules(rules, triggers, options = {}) {
+	if (!Array.isArray(rules)) return { rules, promoted: [] };
+	const need = Number(options.stagedHits);
+	if (!Number.isFinite(need) || need <= 0) return { rules, promoted: [] };
+	if (!Array.isArray(triggers)) return { rules, promoted: [] }; // 读不到流水 → 不转正
+	// 每条规则的命中次数（按 id 聚合）
+	const counts = new Map();
+	for (const t of triggers) {
+		const id = String(t?.ruleId ?? '').trim();
+		if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+	}
+	const promoted = [];
+	const next = rules.map((r) => {
+		// Only rules newly confirmed under gradual rollout move; older rules have no
+		// `rollout` field at all and are already fully trusted (do not touch them).
+		if (!r || r.rollout !== 'staged') return r;
+		if (r.status === 'sunk') return r; // sunk wins: never resurrect by promotion
+		if ((counts.get(String(r.id)) ?? 0) < need) return r;
+		promoted.push(String(r.id));
+		return { ...r, rollout: 'full', promoted_at: new Date().toISOString() };
+	});
+	return { rules: next, promoted };
+}
 
 /**
  * IV-3 沉底候选：活跃规则里，最近一次"活动"已超过窗口的那些。

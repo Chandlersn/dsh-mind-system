@@ -21,6 +21,7 @@
     "./predicates": "./src/predicates.js",
     "./store": "./src/store.js",
     "./thresholds": "./src/thresholds.js",
+    "./trace": "./src/trace.js",
     "./package.json": "./package.json"
   },
   "files": [

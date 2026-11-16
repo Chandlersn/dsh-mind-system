@@ -764,3 +764,45 @@ test('apply 真机路径：refs 闸接线随周检落盘——10 行引用账目
 	assert.equal(rich.summary.zero_reference, 1);
 	assert.ok(rich.findings.some((f) => f.kind === 'zero_reference'), '证据够时零引用要被点名');
 });
+
+// ——————————————————————————————————————————————
+// 巡检"没跑"必须能说出为什么（2026-11-16 真机抓到的不可观测）
+// ——————————————————————————————————————————————
+
+test('metrics.patrol_facts：last_patrol 说 never 时，facts 给出原因', async () => {
+	const { createRuntime } = await import('../index.js');
+	const dir = sandbox();
+	try {
+		const rt = createRuntime({ storageDir: dir });
+		const m = await rt.metrics();
+		assert.ok(m.patrol_facts, '必须暴露 patrol_facts');
+		// 没有跑过时，weekly 是 never，但字段本身必须在场——缺字段等于"无从判断"。
+		assert.equal(m.last_patrol.weekly, 'never');
+		for (const k of ['weekly', 'quarterly', 'principles', 'candidates', 'refs_basis', 'error']) {
+			assert.ok(k in m.patrol_facts, `patrol_facts.${k} 必须在场（可为 null）`);
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('apply：当天已有报告 → 未到期跳过，但 facts 记 skipped_not_due（不是静默）', async () => {
+	const { apply } = await import('../index.js');
+	const { writePatrolReport } = await import('../src/patrol.js');
+	const dir = sandbox();
+	try {
+		// Same-day report already exists → the timer must skip.
+		await writePatrolReport(dir, { kind: 'weekly', at: new Date().toISOString(), ok: true, findings: [] });
+		const ctx = {
+			logger: () => ({ info() {}, warn() {}, error() {} }),
+			provide() {}, set() {}, on() {},
+			tools: { register: () => () => {} },
+		};
+		apply(ctx, { storageDir: dir, patrol: { enabled: true, memoryRoot: join(dir, 'memory') } }, { loadDefineTool: () => (s) => s });
+		await new Promise((r) => setTimeout(r, 300));
+		const m = await (await import('../index.js')).createRuntime({ storageDir: dir }).metrics();
+		assert.equal(m.patrol_facts.weekly, 'skipped_not_due', '跳过必须留下原因，否则与"从没跑过"无法区分');
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});

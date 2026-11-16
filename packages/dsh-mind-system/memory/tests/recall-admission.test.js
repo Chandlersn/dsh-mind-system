@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+// Ledger read helper: the usage log may be the legacy file or a monthly shard.
+import { readUsageLedgerText } from './usage-ledger-helper.mjs';
 
 function deferred() {
   let resolve;
@@ -77,11 +79,11 @@ async function fixture(t) {
 async function waitForUsage(root) {
   // The production logger is fire-and-forget; do not remove its sandbox until
   // its asynchronous write has actually completed.
+  // The ledger may be the legacy single file OR a monthly shard (2026-11-16),
+  // so poll BOTH through the shared helper instead of one hardcoded path.
   for (let i = 0; i < 1000; i++) {
-    try {
-      const text = await readFile(path.join(root, '.usage.jsonl'), 'utf8');
-      if (text.includes('functions/召回测试功能.md')) return;
-    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    const text = await readUsageLedgerText(root);
+    if (text.includes('functions/召回测试功能.md')) return;
     await new Promise((resolve) => setImmediate(resolve));
   }
   throw new Error('admitted recall usage did not complete in the isolated fixture');

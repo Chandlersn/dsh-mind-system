@@ -7,6 +7,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
+import { readUsageLedgerText } from './usage-ledger-helper.mjs';
 
 const budgetMs = 100;
 const blockMs = 210;
@@ -81,7 +82,7 @@ test('an event-loop stall past the recall deadline cannot admit or consume a can
   const report = await services.get('memory.healthProbe').probe();
   const exposure = report.findings.some((finding) => finding.code === 'memory.recall-dual-side');
   let usage = '';
-  try { usage = await readFile(path.join(root, '.usage.jsonl'), 'utf8'); }
+  try { usage = await readUsageLedgerText(root); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   const retry = await preStep(payload, next);
   if (retry.messages.length) {
@@ -91,7 +92,7 @@ test('an event-loop stall past the recall deadline cannot admit or consume a can
     let observed = false;
     while (performance.now() < until) {
       try {
-        const text = await readFile(path.join(root, '.usage.jsonl'), 'utf8');
+        const text = await readUsageLedgerText(root);
         if (text.includes('functions/召回超时测试.md')) { observed = true; break; }
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
       await new Promise((resolve) => setImmediate(resolve));

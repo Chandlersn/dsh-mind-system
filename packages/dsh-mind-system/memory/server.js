@@ -43,7 +43,10 @@ import {
 	localDateStr, normDate, oneLine, charLen, readIfExists, writeText, statExists, safeSlug,
 	splitIterationBlocks, dshHome, joinDshHome, resolveRoot, appendBlock, countHeadingDate, withPathLock, withWriteCommitLock, MemoryWriteCommitUnknown, MemoryLedgerAppendError, MemoryStageOutcomeUnknown,
 } from './src/util.js';
-import { usagePath, appendUsage, readUsage, summarizeUsage, insightTrust, trustLineFor, refreshTrustLine, canonicalHref } from './src/usage.js';
+import { usagePath, usageFiles, appendUsage, readUsage, summarizeUsage, insightTrust, trustLineFor, refreshTrustLine, canonicalHref, compactUsage } from './src/usage.js';
+// SAG bridge (second recall channel): startSagService is fire-and-forget at
+// apply() time — `sag api start` measured 512ms and must never block the host.
+import { sagSearch, sagPing, sagStatus, sagIsIndexed, startSagService, readSagEndpoint, resolveSagApiKey } from './src/sag.js';
 import {
 	memoryIndexTemplate, functionFileTemplate, dailyTemplate, insightTemplate, sepOf,
 	upsertIndexRow, appendUnderHeading, refreshSummarySection, replaceSection,
@@ -1106,7 +1109,10 @@ async function runHealthCheck(root, opts) {
 		}
 		// (c) ledger integrity. Reads the WHOLE ledger, not the 30-day window:
 		// evidence from a renamed file is lost exactly when it is oldest.
-		const raw = await readIfExists(usagePath(root));
+		// Reads every shard too — reading only the legacy file would silently drop
+		// all references written after the monthly split and report them as gone.
+		let raw = '';
+		for (const uf of await usageFiles(root)) raw += `${(await readIfExists(uf.file)) ?? ''}\n`;
 		if (raw) {
 			const hrefs = new Set();
 			for (const line of raw.split('\n')) {
@@ -1158,7 +1164,10 @@ async function runHealthCheck(root, opts) {
 	// 已存在的 24 个删除样本里，有证据的占绝大多数；剩下一两个从未被碰过的文件
 	// 漏报可以接受——噪声下限比误报阈值更重要。
 	try {
-		const rawAll = await readIfExists(usagePath(root));
+		// Same reason as (c): the deletion-evidence check must see every shard, or
+		// a file touched only after the split looks like it was never referenced.
+		let rawAll = '';
+		for (const uf of await usageFiles(root)) rawAll += `${(await readIfExists(uf.file)) ?? ''}\n`;
 		if (rawAll) {
 			const seen = new Set();
 			for (const line of rawAll.split('\n')) {
@@ -2300,6 +2309,170 @@ function capabilityTemplate(name, kind, date) {
 		'- ',
 		'',
 	].join('\n');
+}
+
+/**
+ * memory_sag — the second recall channel (SAG-Wiki fast search).
+ *
+ * WHY THIS IS NOT A REPLACEMENT FOR INDEX RECALL (measured 2026-11-16):
+ * index recall returns in 2.38ms but only says WHICH entry might matter (~30
+ * chars of summary); SAG returns in ~24ms with up to 3 FULL bodies (~1.5KB).
+ * They sit at different stages: pre-step needs the cheap pointer to decide
+ * whether to read at all; once the model decides to read, SAG can hand over
+ * several bodies in ONE call instead of N memory_read round-trips.
+ *
+ * WHY EVERY FAILURE IS REPORTED, NEVER AN EMPTY LIST:
+ * an unavailable service that answers `[]` reads as "there is nothing recorded
+ * about this" — a false negative that sends the model straight back to
+ * re-deriving a conclusion this system already holds. Missing, unauthorized,
+ * timed out and empty are four different facts and are reported as four.
+ *
+ * WHY `experimental: true` IS IN THE OUTPUT:
+ * SAG hits are the experimental layer (§5 D6 / stage VI). They are leads to be
+ * verified with memory_read, not canonical evidence to be quoted directly.
+ */
+function memorySagTool(opts) {
+	return defineTool({
+		name: 'memory_sag',
+		description:
+			'Second recall channel over the SAG-Wiki knowledge base (experimental layer) with two actions. action=search (default) returns matching BODIES, not just pointers — use it when you already decided you need content and would otherwise open several files. action=status reports the index state: which roots SAG watches, how many files each holds, and (when `file` is given) whether THAT memory is actually indexed right now. Use status after writing a memory when you need to know the write reached the index — a search cannot answer that by itself, because fast mode ALWAYS returns unrelated neighbours, so "hits > 0" proves nothing. Do NOT use this tool to decide whether a topic exists — pre-step index recall already does that for free, and SAG ranks daily logs highly (measured: 3 of 6 queries put a diary or an unrelated file first). Every passage is a LEAD from the experimental layer: verify with memory_read before quoting it as an established conclusion. When the service is unavailable this reports the concrete reason (no_key / network / timeout / http_xxx) instead of returning an empty list, so "cannot search" is never mistaken for "nothing recorded".',
+		parameters: {
+			action: { type: 'string', enum: ['search', 'status'], description: 'search (default) = fetch passages; status = index state, and whether `file` is indexed.' },
+			query: { type: 'string', description: 'action=search: natural-language or keyword query. Chinese works (SAG segments with jieba).' },
+			limit: { type: 'integer', description: 'action=search: how many passages (default 3, max 10). 3 is usually ~1.5KB total.' },
+			file: { type: 'string', description: 'action=status: check whether THIS memory file is indexed. Give a path relative to the memory root (e.g. insights/失败被伪装成成功.md) or a phrase that only that file contains via `phrase`.' },
+			phrase: { type: 'string', description: 'action=status: a distinctive phrase from `file`, used to locate it. Required together with file for an exact per-file check.' },
+		},
+		output: {
+			schema: {
+				type: 'object',
+				additionalProperties: false,
+				properties: {
+					ok: { type: 'boolean', required: true },
+					action: { type: 'string' },
+					reason: { type: 'string', description: 'Set when ok=false: no_key | network | timeout | empty_query | bad_arguments | http_xxx' },
+					count: { type: 'integer' },
+					elapsedMs: { type: 'integer', description: 'Server-side search time reported by SAG (not including HTTP).' },
+					// --- status fields ---
+					version: { type: 'string', description: 'SAG build version.' },
+					apiRunning: { type: 'boolean' },
+					roots: {
+						type: 'array',
+						description: 'Every indexed root: path, readiness, and how many files SAG holds for it.',
+						items: {
+							type: 'object',
+							additionalProperties: false,
+							properties: {
+								path: { type: 'string', required: true },
+								status: { type: 'string', required: true },
+								indexedFiles: { type: 'integer' },
+							},
+						},
+					},
+					indexed: { type: 'boolean', description: 'Only when `file` was given: is that file present in the index right now.' },
+					hits: {
+						type: 'array',
+						items: {
+							type: 'object',
+							additionalProperties: false,
+							properties: {
+								file: { type: 'string', required: true },
+								heading: { type: 'string' },
+								line: { type: 'integer' },
+								content: { type: 'string', required: true },
+							},
+						},
+					},
+				},
+			},
+			render: (_args, v) => {
+				if (!v.ok) {
+					// Name the failure AND the fallback. "unavailable" alone leaves the
+					// model with no next move except guessing.
+					const why = {
+						no_key: 'SAG_API_KEY 未设置（sag api key create 产出后写入环境变量，或写 <sag>/api-key）',
+						network: 'SAG 服务不可达（先跑 sag api start，或检查端口）',
+						timeout: 'SAG 请求超时',
+						empty_query: '查询为空',
+						bad_arguments: 'status 检查单文件时 file 与 phrase 都要给',
+					}[v.reason] ?? `SAG 返回 ${v.reason}`;
+					return [{ type: 'text', text: `SAG 不可用：${why}。\n改用 memory_search（词法全文检索）或 memory_read 直接打开文件——**不要因此认为记忆里没有相关内容**。` }];
+				}
+				if (v.action === 'status') {
+					const lines = [`SAG 索引状态${v.version ? `（v${v.version}）` : ''}${v.apiRunning ? ' · 服务在跑' : ' · 服务未运行'}：`];
+					for (const r of v.roots ?? []) {
+						lines.push(`- ${r.path} · ${r.status} · ${r.indexedFiles === null ? '文件数未知' : `${r.indexedFiles} 个文件`}`);
+					}
+					if (v.indexed !== undefined) {
+						lines.push(
+							v.indexed
+								? '\n**该文件已被收录**，可以放心用 memory_sag 检索到它。'
+								: '\n**该文件目前查不到**——可能索引还在同步（实测约 1s），也可能它不在被索引的根下。稍后重试，或用 memory_read 直接读。',
+						);
+					}
+					return [{ type: 'text', text: lines.join('\n') }];
+				}
+				if (!v.count) {
+					return [{ type: 'text', text: 'SAG 检索正常，但这次查询没有命中任何片段（这是"查过了、确实没有"，与"没查成"不同）。' }];
+				}
+				const lines = [`SAG 命中 ${v.count} 段（实验层线索，引用前请用 memory_read 核对）：`];
+				for (const h of v.hits) {
+					lines.push(`\n--- ${h.file}${h.line ? `:${h.line}` : ''}${h.heading ? ` · ${h.heading}` : ''}`);
+					lines.push(h.content);
+				}
+				return [{ type: 'text', text: lines.join('\n') }];
+			},
+		},
+		presentCall: (args) => ({ card: 'generic', title: args.action === 'status' ? 'SAG index status' : `SAG search: ${args.query ?? ''}`, kind: 'other', rawInput: args }),
+		async execute(args) {
+			// --- status: index state, and (optionally) whether one file is indexed ---
+			if (args.action === 'status') {
+				const st = await sagStatus();
+				if (!st.ok) return { ok: false, action: 'status', reason: st.reason ?? 'unknown' };
+				const out = {
+					ok: true,
+					action: 'status',
+					...(st.version ? { version: st.version } : {}),
+					apiRunning: st.apiRunning === true,
+					roots: st.roots.map((r) => ({
+						path: r.path,
+						status: r.status,
+						...(r.indexedFiles === null ? {} : { indexedFiles: r.indexedFiles }),
+					})),
+				};
+				// Per-file check needs the file AND a phrase to look for: a bare path
+				// cannot be searched, and a hit count alone would be meaningless
+				// (fast mode always returns neighbours).
+				const file = oneLine(args.file);
+				const phrase = oneLine(args.phrase);
+				if (file) {
+					if (!phrase) return { ...out, ok: false, reason: 'bad_arguments' };
+					const chk = await sagIsIndexed(file, phrase);
+					if (!chk.ok) return { ...out, ok: false, reason: chk.reason ?? 'unknown' };
+					out.indexed = chk.indexed === true;
+				}
+				return out;
+			}
+			const q = oneLine(args.query);
+			const limit = Math.min(Math.max(1, Number(args.limit) || 3), 10);
+			const r = await sagSearch(q, { limit });
+			if (!r.ok) return { ok: false, action: 'search', reason: r.reason ?? 'unknown' };
+			return {
+				ok: true,
+				action: 'search',
+				count: r.results.length,
+				...(Number.isFinite(r.elapsedMs) ? { elapsedMs: Math.round(r.elapsedMs) } : {}),
+				hits: r.results.map((h) => ({
+					// Strip the \\?\ long-path prefix Windows APIs return — it leaks
+					// into the transcript and makes paths unclickable.
+					file: h.path.replace(/^\\\\\?\\/, ''),
+					...(h.heading ? { heading: h.heading } : {}),
+					...(h.startLine ? { line: h.startLine } : {}),
+					content: h.content,
+				})),
+			};
+		},
+	});
 }
 
 function memoryCapabilityTool(opts) {
@@ -4143,7 +4316,7 @@ async function searchMemory(root, rawQuery, { zone = 'all', limit = 20, after = 
  * 为什么需要它：
  * 体检能发现问题，但"发现了之后谁在跟、修了没"没有落处。收件箱把
  * 三方投递（插件事件 / agent 报告 / 用户要求）汇成一份可分诊的清单，
- * 存在记忆管理这边 —— 它本来就是长期状态的持有者。
+ * 存在心智管理这边 —— 它本来就是长期状态的持有者。
  *
  * 刻意不做：自动修复。收件箱只记录与追踪，动手由 agent 或用户决定。
  * @param {object} opts 插件选项。
@@ -4577,7 +4750,7 @@ function memoryIndexTool(opts) {
 const DISCIPLINE_TEXT = [
 	'## 持久记忆纪律（memory-manager）',
 	'',
-	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十四个工具：memory_read / memory_search / memory_capability / memory_write / memory_index / memory_insight / memory_dao / memory_fold / memory_rename / memory_check / memory_usage / memory_federation / memory_skill / memory_inbox；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向五层，每层只吃上一层的产出**：',
+	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十五个工具：memory_read / memory_search / memory_sag / memory_capability / memory_write / memory_index / memory_insight / memory_dao / memory_fold / memory_rename / memory_check / memory_usage / memory_federation / memory_skill / memory_inbox；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向五层，每层只吃上一层的产出**：',
 	'',
 	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 可由 agent 使用编辑工具记录；每天留意有价值的判断、取舍、经验、踩坑因果和待验证事项，没有值得记录的内容时不强制当天有条目。粗粒度筛选：**执行式日志（常规命令输出、PID、退出码、耗时流水）不要抄**，理解关键因果必需的细节可少量保留；不补造历史，不记录凭据。直接编辑不等于插件采集或来源认证，也不自动脱敏；来源不明时如实标记未知，可能触发 R26 对账或采集基线不匹配，不得补造账本。插件用户消息采集默认关闭，开启后只采集符合条件的用户原话并脱敏、截断，不自动记录助手判断，也不保证来源认证或完整性；未启用时如实说明采集缺口。其他记忆层仍按各自插件工具与保护机制写入。',
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一个 functions/<功能域>.md 迭代块 = **≥3 个主题相关素材日的综合结论**（蒸馏结论：动因/改动/判据/待观察 各一句；2026-11-09 用户要求：不以单日为单位蒸馏，单日事件多是过程片段，多天的演化/反复/被推翻才值得归档）。**素材日由 agent 围绕主题检索推理挑选**（memory_search 全库找相关日，可不连续、可跨周月），不是机械取最近 3 天——选证据关联不选日历相邻，块内说明为何选这些日。相关素材不足 3 天先积累不蒸馏（周检是天然时机）；用户显式要求或踩坑因果/安全约束可豁免，块内注明素材日期与理由。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
@@ -4592,6 +4765,12 @@ const DISCIPLINE_TEXT = [
 	'- **层级判据是硬闸门，不是建议（2026-11-02）**：写入前就拒绝，不会先落盘再提醒。**道**：命题须有哲学形态（对立/张力 或 生成性/演化 至少其一；静态断言如「所有系统都会腐烂」被拒），正文须含描述节（说世界是什么，禁规范动词）、推演节（论证几条法如何**共同**逼出命题，不是逐条复述）、边界节（说出何时不成立）。**法**：须有边界节且含**反面**（只有「适用于哪些场景」会被判 boundary-one-sided）。**术**：块 ≤900 字、概括 ≤110 字。判据实现见 `src/layer-gate.js` / `layer-selfcheck.js` / `dao-shape.js`；回执里的 `selfCheck` 是磁盘回读结果。',
 	'- **经验三分**：会**重跑**的操作进 functions/；会**重套**的原则用 memory_insight 进 insights/；**反复重跑且被验证**的操作程序用 memory_skill 结晶为宿主技能目录包（`<dshHome>/skills/<kebab>/`，`agent_created: true` 是归属标记）；跨功能共识与环境常量只在 MEMORY.md。',
 	'- **使用信号让记忆自己排序**：召回命中与 memory_read 会自动记信号；用户纠正/明确认可时用 `memory_usage(action=record, kind=correction|positive)` 记一笔（这是分层判断里唯一不能自动获得的信号）。`memory_usage(action=report)` 给出 实验/专项/通用 建议；某域近 7 天纠正率 >40% 时体检 R18 报熔断——先重构再追加。',
+	// SECOND-LINE DEFENCE for recall misses (2026-11-16). Measured 5/8 on a real
+	// query set: three realistic requests recalled the WRONG entry or nothing,
+	// because the tokenizer is lexical —「hook 的 inject 语义」共享不了任何中文摘要词。
+	// The index can always miss; what matters is that a miss is not silently read
+	// as "we have no such experience".
+	'- **召回没有命中 ≠ 记忆里没有**（前提没建立就下结论是这套系统最贵的错误）。每次 pre-step 注入的条目来自索引行摘要的**词法匹配**；用词不同就会漏。三条兜底，按顺序：①看见 `⚠ 召回未命中` 标记时就当"索引看不懂这次问法"，**先 `memory_search` 全库找正文**，再判断是否真的没有；②还不确定就用 `memory_sag` 取正文（实验层，覆盖面更广，但要 `memory_read` 核对）；③确实是新话题才按新工作做。**禁止**在只做过一次索引召回之后就宣称"没有相关记录"。反过来，当某个问法确实该命中却漏了，把它的用词补进对应索引行摘要（`memory_index`），漏判就变成了一次改进。',
 	'- **守护型**：低频但高价值的记忆（安全审计、关键踩坑、兜底规则）用 `memory_write(guard=true)` 标记，体检的冷记忆规则会跳过它——不要因为"很久没写"就删掉兜底经验。',
 	'- **项目归属**：涉及特定项目的记忆，在功能域 slug 或正文里注明项目名（如 `toolbox-login`）。功能域多到单根过大时，可启用**联邦模式**（`federation: { root, projects }`）：项目真相源留在各项目记忆根，`memory_federation` 负责刷副本与跨项目索引，项目细节不上升。',
 	'- **收缩机制**：功能文件超 30KB 用 `memory_fold` 折叠最旧块；MEMORY.md 超线按 ### 子分区拆分；重命名/合并用 `memory_rename`（改写派生层引用并报告剩余死链；历史每日记录保留原样，可能仍指向旧名）。',
@@ -4690,6 +4869,188 @@ async function zoneCounts(root, skillRoot = '') {
 }
 
 /**
+ * The panel overview payload — extracted (2026-11-16) so the HTTP route and the
+ * SSE stream read the SAME assembly. Two copies would drift, and a monitor whose
+ * one-shot page and live feed disagree is worse than having neither.
+ *
+ * Field-label discipline (learned 2026-11-16 when the user asked whether 4372
+ * signals were real): exposure, size and engagement are three different facts.
+ *   signalCount   = every usage line (almost all are self-produced `recall`
+ *                   exposures; the same file repeats hundreds of times)
+ *   recallEvents  = recall rows only
+ *   distinctHrefs = how many distinct memories those events touch
+ *   engagement    = reads + verdicts (the only honest "usage")
+ *   indexRows     = rows in MEMORY.md (the real index size)
+ */
+async function overviewPayload(root, opts) {
+	const health = panelizeHealth(await runHealthCheck(root, opts));
+	const usage = summarizeUsage(await readUsage(root, 30));
+	const layerCounts = { 实验: 0, 专项: 0, 通用: 0 };
+	const hotspots = [];
+	for (const it of usage) {
+		if (layerCounts[it.layer] !== undefined) layerCounts[it.layer]++;
+		if (it.flips >= 2 || (it.uses >= 3 && it.badRate > 0.4)) {
+			hotspots.push({ href: it.href, flips: it.flips, badRate: it.badRate, uses: it.uses });
+		}
+	}
+	const usageLines = [];
+	for (const uf of await usageFiles(root)) {
+		const text = (await readIfExists(uf.file)) ?? '';
+		for (const line of text.split('\n')) if (line.trim()) usageLines.push(line);
+	}
+	const signalCount = usageLines.length;
+	let recallEvents = 0;
+	let readEvents = 0;
+	let verdictEvents = 0;
+	const hrefsSeen = new Set();
+	for (const line of usageLines) {
+		try {
+			const e = JSON.parse(line);
+			if (e?.href) hrefsSeen.add(canonicalHref(e.href));
+			if (e?.kind === 'recall') recallEvents++;
+			else if (e?.kind === 'read') readEvents++;
+			else if (e?.kind === 'correction' || e?.kind === 'positive') verdictEvents++;
+		} catch {
+			/* corrupt line — counted in the total, not in the breakdown */
+		}
+	}
+	let indexRows = 0;
+	let indexBytes = 0;
+	try {
+		const idxText = (await readIfExists(path.join(root, 'MEMORY.md'))) ?? '';
+		indexRows = idxText.split('\n').filter((l) => /^\|\s*[^|\s]/.test(l) && !/^\|\s*:?-{2,}/.test(l) && !/^\|\s*(功能域|思想主题|技能|验收项|编号|规则|资产)/.test(l)).length;
+		indexBytes = byteLen(idxText);
+	} catch {
+		/* fresh root */
+	}
+	const env = {
+		version: opts.version ?? '',
+		canReload: Boolean(opts.canReload),
+		hotReloadRunning: isReloading(),
+		memoryRoot: root,
+		skillRoot: opts.skillRoot ? path.resolve(opts.skillRoot) : path.join(dshHome(), 'skills'),
+		indexBytes,
+		indexComfortBytes: opts.maxIndexBytes,
+		indexHardBytes: opts.maxIndexHardBytes,
+		lastReload: globalThis[Symbol.for('dsh-memory-manager.last-reload')] ?? null,
+	};
+	const capture = opts.captureStatus?.();
+	// SAG second channel: three separate facts, because they fail for different
+	// reasons and need different fixes (no key / not started / key rejected).
+	const sagEndpoint = readSagEndpoint();
+	const sagKey = resolveSagApiKey();
+	const sagStatus = await sagPing({ endpoint: sagEndpoint.endpoint, apiKey: sagKey.key ?? null }).catch(() => ({ online: false, authorized: null }));
+	return {
+		...health,
+		title: '全局记忆',
+		path: joinDshHome(),
+		counts: await zoneCounts(root, opts.skillRoot),
+		usage: {
+			signalCount, layers: layerCounts, hotspots: hotspots.slice(0, 5),
+			recallEvents, readEvents, verdictEvents, distinctHrefs: hrefsSeen.size, indexRows,
+		},
+		sag: {
+			configured: Boolean(sagKey.key),
+			online: sagStatus.online === true,
+			authorized: sagStatus.authorized,
+			endpoint: sagEndpoint.endpoint,
+			tool: 'memory_sag',
+		},
+		capture: capture ? { ...capture, intentWitness: await inspectCaptureIntent(root) } : null,
+		env,
+	};
+}
+
+/**
+ * SSE stream for the panel (`GET /api/memory-org/stream`).
+ *
+ * WHY SSE AND NOT MORE POLLING (2026-11-16, user asked for a real-time monitor):
+ * the panel used to re-fetch every route on a 30s tick. A monitor that is 30s
+ * stale is not a monitor — when the user writes a memory they want to see the
+ * number move, and 30s of "did it work?" is exactly the doubt this panel exists
+ * to remove.
+ *
+ * WHY IT PUSHES ONLY ON CHANGE:
+ * emitting every second would move the same bytes 86k times a day and still be
+ * no fresher than the moment something changed. We hash the payload and only
+ * send when the hash differs; a heartbeat every 20s keeps the connection alive
+ * through proxies without pretending anything changed.
+ *
+ * WHY IT STILL POLLS INTERNALLY (2s):
+ * the memory root is plain files written by the agent and by the user's editor —
+ * there is no filesystem event bus we can rely on across network drives and all
+ * platforms. A 2s digest check is the honest fallback; it is server-side work of
+ * a few milliseconds, not a browser round trip.
+ */
+function streamPanel(res, root, opts) {
+	res.writeHead(200, {
+		'content-type': 'text/event-stream; charset=utf-8',
+		'cache-control': 'no-cache, no-transform',
+		connection: 'keep-alive',
+		// Disable proxy buffering so an event arrives when it happens.
+		'x-accel-buffering': 'no',
+	});
+	const send = (event, data) => {
+		try {
+			res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+		} catch {
+			/* client vanished mid-write; the close handler cleans up */
+		}
+	};
+	let closed = false;
+	let lastHash = '';
+	let timer = null;
+	let heartbeat = null;
+
+	const tick = async () => {
+		if (closed) return;
+		try {
+			const payload = await overviewPayload(root, opts);
+			// JSON.stringify order is stable for the same source object shape, so the
+			// digest is a reliable "did anything change" signal.
+			const text = JSON.stringify(payload);
+			if (text !== lastHash) {
+				lastHash = text;
+				send('overview', payload);
+			}
+		} catch (err) {
+			// Report the failure instead of silently going quiet: a dead monitor that
+			// looks merely idle is the worst of both worlds.
+			send('error', { message: String(err?.message ?? err) });
+		}
+	};
+
+	tick();
+	timer = setInterval(tick, 2000);
+	heartbeat = setInterval(() => {
+		if (!closed) {
+			try {
+				res.write(': keep-alive\n\n');
+			} catch {
+				/* ignore */
+			}
+		}
+	}, 20000);
+	// Never hold the host process open for a stream.
+	timer.unref?.();
+	heartbeat.unref?.();
+
+	const close = () => {
+		if (closed) return;
+		closed = true;
+		clearInterval(timer);
+		clearInterval(heartbeat);
+		try {
+			res.end();
+		} catch {
+			/* already ended */
+		}
+	};
+	res.on?.('close', close);
+	res.on?.('error', close);
+}
+
+/**
  * Build the panel API handler. The memory root is global and always resolved
  * server-side, so a request can never widen it: there is deliberately no
  * client-supplied `?path=`.
@@ -4726,47 +5087,10 @@ function memoryPanelApi(opts, connection, inbox) {
 		const handle = async () => {
 		try {
 			if (seg === 'overview') {
-				const health = panelizeHealth(await runHealthCheck(root, opts));
-				// Panel-side usage snapshot: layer histogram + flip/correction hot
-				// spots, so the overview answers "how is the memory being used"
-				// alongside "how big is it". Optional data — absent when the log is
-				// empty (a fresh root starts with no signals).
-				const usage = summarizeUsage(await readUsage(root, 30));
-				const layerCounts = { 实验: 0, 专项: 0, 通用: 0 };
-				const hotspots = [];
-				for (const it of usage) {
-					if (layerCounts[it.layer] !== undefined) layerCounts[it.layer]++;
-					if (it.flips >= 2 || (it.uses >= 3 && it.badRate > 0.4)) {
-						hotspots.push({ href: it.href, flips: it.flips, badRate: it.badRate, uses: it.uses });
-					}
-				}
-				const signalCount = (await readIfExists(usagePath(root)))?.split('\n').filter((l) => l.trim()).length ?? 0;
-				// Overview environment block (5.26.0): the panel answers "which
-				// build is actually running, where do my two stores live, how full
-				// is the index" from the SERVER's own truth. `version` is opts.version
-				// — captured when THIS fiber applied — not a fresh disk read, so it
-				// is the RUNNING build, which may lag an edit until the swap.
-				let indexBytes = 0;
-				try {
-					indexBytes = byteLen((await readIfExists(path.join(root, 'MEMORY.md'))) ?? '');
-				} catch {
-					/* fresh root */
-				}
-				const env = {
-					version: opts.version ?? '',
-					canReload: Boolean(opts.canReload),
-					hotReloadRunning: isReloading(),
-					memoryRoot: root,
-					skillRoot: opts.skillRoot ? path.resolve(opts.skillRoot) : path.join(dshHome(), 'skills'),
-					indexBytes,
-					indexComfortBytes: opts.maxIndexBytes,
-					indexHardBytes: opts.maxIndexHardBytes,
-					// The swap's TERMINAL outcome (not just "it started") so the
-					// panel can tell success from a swallowed rollback.
-					lastReload: globalThis[Symbol.for('dsh-memory-manager.last-reload')] ?? null,
-				};
-				const capture = opts.captureStatus?.();
-				return json(res, 200, [{ ...health, title: '全局记忆', path: joinDshHome(), counts: await zoneCounts(root, opts.skillRoot), usage: { signalCount, layers: layerCounts, hotspots: hotspots.slice(0, 5) }, capture: capture ? { ...capture, intentWitness: await inspectCaptureIntent(root) } : null, env }]);
+				return json(res, 200, [await overviewPayload(root, opts)]);
+			}
+			if (seg === 'stream') {
+				return streamPanel(res, root, opts);
 			}
 			if (seg === 'file') {
 				const name = url.searchParams.get('name');
@@ -5535,7 +5859,15 @@ export function apply(ctx, config) {
 			if (Date.now() - last < ARCHIVE_THROTTLE_MS) return;
 			archiveBusy = true;
 			globalThis[ARCHIVE_LAST_RUN] = Date.now();
-			void withMemoryRootTransaction(resolveRoot(opts), () => archiveDailyMonths(resolveRoot(opts)))
+			void withMemoryRootTransaction(resolveRoot(opts), async () => {
+				const root = resolveRoot(opts);
+				await archiveDailyMonths(root);
+				// Same cadence, same transaction: shrink CLOSED usage months. Recall
+				// rows fold into per-(href, day) counts (exposure number preserved),
+				// reads/corrections stay verbatim. Never touches the current or the
+				// previous month, and a failed verification keeps the original file.
+				await compactUsage(root, { olderThanDays: 90 }).catch(() => {});
+			})
 				.catch(() => {})
 				.finally(() => { archiveBusy = false; });
 		};
@@ -5584,6 +5916,8 @@ export function apply(ctx, config) {
 	const disposers = [
 		ctx.tools.register(transactionTool(memoryReadTool(opts))),
 		ctx.tools.register(memorySearchTool(opts)),
+		// Second recall channel: bodies from the SAG experimental layer.
+		ctx.tools.register(memorySagTool(opts)),
 		ctx.tools.register(transactionTool(memoryCapabilityTool(opts))),
 		ctx.tools.register(transactionTool(memoryWriteTool(opts))),
 		ctx.tools.register(transactionTool(memoryIndexTool(opts))),
@@ -5598,7 +5932,7 @@ export function apply(ctx, config) {
 
 	// —— 问题收件箱（2026-10-26）——
 	//
-	// 为什么让记忆管理收：它本来就是"全局长期记忆"的持有者，问题清单也是
+	// 为什么让心智管理收：它本来就是"全局长期记忆"的持有者，问题清单也是
 	// 需要长期跟踪的状态。放在这里不必新建一套存储与面板。
 	//
 	// 四类投递来源：
@@ -5611,6 +5945,25 @@ export function apply(ctx, config) {
 		ctx.tools.register(memoryInboxTool(opts, inbox)),
 	);
 	disposers.push(...archiveDisposers);
+
+	// —— SAG 服务随宿主启动（2026-11-16，用户授权）——
+	//
+	// 为什么放在 apply 里而不是只靠 `sag api autostart`：实测自启只拉起 SAG 的
+	// **后台索引进程**（pid 常驻），HTTP API 仍是 stopped —— `sag api autostart
+	// enable` 之后再 `sag api status` 仍是 running=false。所以两者都要：
+	// 自启带后台、这里带 API。
+	//
+	// 三个不变量：
+	//   1. **不 await**。`sag api start` 实测 512ms，装载期不能等它。
+	//   2. **不抛错**。SAG 没装、被删、端口占用 —— 都只让 memory_sag 报不可用，
+	//      记忆系统本体完全不受影响。
+	//   3. **可卸载**。cancel 进 disposers，热重载不会堆出一串 sag 子进程。
+	{
+		const sagHandle = startSagService({ timeoutMs: 8000 });
+		disposers.push(() => sagHandle.cancel());
+		void sagHandle.ready;
+	}
+
 
 	// 订阅其他插件的健康通报 —— 这是"问题投递"的自动通道。
 	// 用 ctx.on 注册，随插件卸载自动取消（Cordis 保证）。

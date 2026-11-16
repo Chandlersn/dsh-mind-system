@@ -63,6 +63,10 @@ const env = { ...process.env, DSH_INSTALL_DIR: host, DSH_REQUIRE_HOST: '1' };
 
 const suites = [
 	'tests/layer-gate.test.js',
+	// Usage ledger sharding (2026-11-16): the event log is now written to monthly
+	// shards. This suite pins the compatibility contract — legacy single file
+	// still readable, both layouts read together, recall stays an EVENT.
+	'tests/usage-shard.test.js',
 	'tests/layer-selfcheck.test.js',
 	'tests/dao-shape.test.js',
 	'tests/coverage.test.js',
@@ -141,6 +145,8 @@ const suites = [
 	'tests/write-intent.test.js',
 	'tests/write-guard.test.js',
 	'tests/recall-combined.test.js',
+	// 召回漏判可见性（2026-11-16）：词法没匹配上必须报，不能读成"没有记录"。
+	'tests/recall-miss.test.js',
 	'tests/recall-optional-budget.test.js',
 	'tests/recall-budget-failure.test.js',
 	'tests/recall-budget-metrics.test.js',

@@ -27,7 +27,7 @@ import {
 
 export function memoryIndexTemplate() {
 	return [
-		'# 记忆管理（索引 + 纪律）',
+		'# 心智管理（索引 + 纪律）',
 		'',
 		'> 读取纪律：先查本索引（行内摘要足以判断相关性），再打开对应 functions/ 文件；日期不是骨架，只做迭代标签。',
 		'> 数据流：每日记录（原始层，自由格式）→ memory_write 蒸馏出 functions/ 迭代块 → memory_insight 提取 insights/ 思想 → memory_index 收进本索引（整合展示层）→ memory_skill 把反复验证的操作程序结晶为宿主技能目录包（使用环收口）。本文件是派生物，不与单次写入强绑。',

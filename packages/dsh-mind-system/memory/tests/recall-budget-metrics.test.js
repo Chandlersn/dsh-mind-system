@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { readUsageLedgerText } from './usage-ledger-helper.mjs';
 
 const query = 'alpha bravo charlie delta echo';
 const heldName = 'held-' + 'h'.repeat(1200);
@@ -72,9 +73,12 @@ async function fixture(t) {
   return { root, usageFile, preStep, probe: services.get('memory.healthProbe') };
 }
 
-async function waitForUsage(file, href) {
+async function waitForUsage(root, href) {
+  // The ledger may be the legacy file or a monthly shard; read the whole ledger
+  // rather than one hardcoded path (2026-11-16 sharding).
   for (let i = 0; i < 1000; i++) {
-    const entries = (await readFile(file, 'utf8')).trim().split('\n').map(JSON.parse);
+    const text = await readUsageLedgerText(root);
+    const entries = text.trim().split('\n').filter(Boolean).map(JSON.parse);
     if (entries.some((e) => e.kind === 'recall' && e.href === href)) return entries;
     await new Promise((resolve) => setImmediate(resolve));
   }
@@ -102,7 +106,7 @@ test('真实注入后的预算曝光：省略四类与 UTF-8 字节必须与实�
   assert.ok(omitted, 'the injected message must disclose the omitted items');
   const [, rows, repairs, held, archives] = omitted.map(Number);
   assert.deepEqual({ rows, repairs, held, archives }, { rows: 2, repairs: 1, held: 1, archives: 1 }, 'fixture independently establishes omitted counts');
-  const usage = await waitForUsage(f.usageFile, refs.short);
+  const usage = await waitForUsage(f.root, refs.short);
   const exposed = usage.filter((e) => e.kind === 'recall').map((e) => e.href);
   assert.deepEqual(exposed, [refs.short], 'usage exposure records only the short row actually included');
   const report = await f.probe.probe();

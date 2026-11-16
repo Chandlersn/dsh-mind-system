@@ -15,6 +15,8 @@
 import { mkdir, mkdtemp, rm, readFile, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+// Usage ledger reader: handles the legacy single file and the monthly shards.
+import { readUsageLedgerText } from './tests/usage-ledger-helper.mjs';
 
 // 宿主缺席时**跳过**而不是失败：本脚本验证的是"与真宿主协作"，没有宿主就
 // 没有可验证的对象。CI 要求必须有宿主时设 DSH_REQUIRE_HOST=1（缺席即失败）。
@@ -834,7 +836,9 @@ ok(cg2.results.some((r) => r.rule === 'TEMP' && r.message.includes('普通冷域
 // usage recording: recalls from the pre-step hook are logged automatically
 const psH = globalThis.__preStepListener;
 ok(typeof psH === 'function', 'pre-step listener available for usage logging');
-const usageLog = await readFile(path.join(root, '.usage.jsonl'), 'utf8').catch(() => '');
+// The ledger may be the legacy single file OR a monthly shard (2026-11-16
+// sharding): read the whole ledger, never one hardcoded path.
+const usageLog = await readUsageLedgerText(root);
 ok(usageLog.length > 0 && usageLog.includes('recall'), 'recall injections are logged as usage');
 // manual record: correction + positive, then report layers
 await US.execute({ action: 'record', href: 'functions/检索目标.md', kind: 'correction', note: '用户说不对' }, exec);

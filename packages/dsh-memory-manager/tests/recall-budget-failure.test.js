@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { withMemoryRootTransaction } from '../src/root-transaction.js';
+import { readUsageLedgerText } from './usage-ledger-helper.mjs';
 
 // Instrument the ESM binding before server.js imports it. This changes only the
 // module loaded into this isolated test process, never a source or memory file.
@@ -103,10 +104,7 @@ async function runCase(t, apply, mod, mode) {
   for (let attempt = 0; attempt < (mode === 'throw' ? 12 : 1000); attempt++) {
     await new Promise((resolve) => setImmediate(resolve));
     await withMemoryRootTransaction(f.root, async () => {});
-    const usage = await readFile(path.join(f.root, '.usage.jsonl'), 'utf8').catch((error) => {
-      if (error.code === 'ENOENT') return '';
-      throw error;
-    });
+    const usage = await readUsageLedgerText(f.root);
     recalls = usage.split('\n').filter(Boolean).map(JSON.parse).filter((entry) => entry.kind === 'recall');
     if (mode !== 'throw' && recalls.length) break;
   }

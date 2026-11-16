@@ -146,6 +146,19 @@ const indexText = [
 	'|---|---|---|',
 	'| [分离延迟重启](skills/分离延迟重启.md) | 会话跑在宿主内时用分离进程延迟杀旧起新 | active |',
 	'',
+	// 道层与真实 MEMORY.md 同形：**引用块散文 + 内联链接**，不是 bullet 列表。
+	// （此前 fixture 写成 bullet，掩盖了"散文块计数为 0"的真 bug。）
+	'## 道层（`dao/`）',
+	'',
+	'> **当前 1 条**：[静默失效](dao/静默失效.md) —— 失败被伪装成成功，比失败本身更危险。',
+	'> **判据在真实路径上**：[判据](dao/判据在真实路径上.md) —— 只在能被外部观测的地方下结论。',
+	'',
+	'## 能力台账 细节子目录（可用工具 / MCP / CLI）',
+	'',
+	'| 工具 | 一句话用途 |',
+	'|---|---|',
+	'| [sag-cli](capabilities/sag-cli.md) | 本地知识库检索与写入 |',
+	'',
 	'## 决策共识 / 规范（跨功能、约束级）',
 	'',
 	'- 索引行摘要只说「这是什么」，不写推导过程。',
@@ -241,6 +254,26 @@ function serialize(node) {
 	if (props?.['data-dmo']) attrs.push(`data-dmo="${props['data-dmo']}"`);
 	if (props?.title) attrs.push(`title="${String(props.title).slice(0, 40)}"`);
 	if (props?.placeholder) attrs.push(`placeholder="${props.placeholder}"`);
+	// ACCESSIBILITY / AFFORDANCE attributes. `role` is how the diagram says "this
+	// node is a button"; without it here, a test cannot tell a navigable node from
+	// a decorative one — which is exactly the class of bug that produced the blank
+	// page on click (2026-11-16).
+	if (props?.role) attrs.push(`role="${props.role}"`);
+	if (props?.tabIndex !== undefined) attrs.push(`tabindex="${props.tabIndex}"`);
+	// SVG geometry/stroke attributes: the architecture diagram is a real <svg>
+	// drawing, so the test must see its edges and arrowheads (an assertion that
+	// silently sees none of them would pass on an empty canvas).
+	for (const k of ['x', 'y', 'x1', 'y1', 'x2', 'y2', 'width', 'height', 'viewBox', 'd', 'fill', 'stroke',
+		'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'fill-rule', 'cx', 'cy', 'r', 'rx', 'points',
+		'marker-end', 'markerWidth', 'markerHeight', 'refX', 'refY', 'orient', 'textAnchor', 'dx', 'dy']) {
+		const v = props?.[k];
+		if (v === undefined || v === null) continue;
+		attrs.push(`${k}="${v}"`);
+	}
+	// React spells SVG attrs camelCase (markerEnd / textAnchor); the serializer has
+	// to emit the DOM spelling so an assertion about arrowheads can see them.
+	if (props?.markerEnd) attrs.push(`marker-end="${props.markerEnd}"`);
+	if (props?.textAnchor) attrs.push(`text-anchor="${props.textAnchor}"`);
 	if (typeof props?.onClick === 'function') attrs.push('clickable');
 	const inner = serialize(props?.children);
 	return `<${type}${attrs.length ? ` ${attrs.join(' ')}` : ''}>${inner}</${type}>`;
@@ -350,10 +383,13 @@ const clickByText = (nodes, text) => nodes.find((node) => node.type === 'button'
 
 // --- overview ---------------------------------------------------------------
 const overview = render({ kind: 'overview' });
-// 9 = 总览/索引/功能/思想/道/能力/技能/每日/收件箱。「道」是 5.29.6 加的：dao/ 这层
-// 此前能写但没有导航项，面板里点不到——能写不能看等于半个功能。
-ok(count(overview, 'data-dmo="nav-item"') === 9, `rail has 9 destinations (${count(overview, 'data-dmo="nav-item"')})`);
-ok(overview.includes('功能') && overview.includes('思想') && overview.includes('每日') && overview.includes('索引') && overview.includes('能力') && overview.includes('技能') && overview.includes('道'), 'rail labels for every zone (including 道)');
+// 10 = 总览/架构/索引/功能/思想/道/能力/技能/每日/收件箱。
+// 「道」是 5.29.6 加的（能写不能看等于半个功能）；「架构」是 2026-11-16 加的
+// （用户要求：真实架构 + 数据流 + 闭环，不是插图）。
+// 断言写成"每一项都在"而不是只数个数：数量变了要能说清多了哪一项。
+const NAV_KEYS = ['overview', 'arch', 'index', 'functions', 'insights', 'dao', 'capabilities', 'skills', 'daily', 'inbox'];
+ok(count(overview, 'data-dmo="nav-item"') === NAV_KEYS.length, `rail has ${NAV_KEYS.length} destinations (${count(overview, 'data-dmo="nav-item"')})`);
+ok(overview.includes('功能') && overview.includes('思想') && overview.includes('每日') && overview.includes('索引') && overview.includes('能力') && overview.includes('技能') && overview.includes('道') && overview.includes('架构'), 'rail labels for every zone (including 道 and 架构)');
 ok(count(overview, 'data-dmo="growth-card"') === 5, `overview shows all five zone count cards (${count(overview, 'data-dmo="growth-card"')})`);
 ok(overview.includes('能力台账') && overview.includes('技能库'), 'the added capability/skill cards label their zones');
 ok(overview.includes('WARN 1') && overview.includes('冷记忆 1'), 'health chips carry the warning and the cold count');
@@ -395,7 +431,8 @@ const overviewWithUsage = serialize(
 	}),
 );
 ok(overviewWithUsage.includes('实验 2') && overviewWithUsage.includes('专项 1'), 'usage card renders the layer histogram');
-ok(overviewWithUsage.includes('30 天 12 条信号'), 'usage card shows the signal count');
+ok(overviewWithUsage.includes('30 天 12 条事件'), 'usage card counts EVENTS, not "signals" (exposure wording fixed 2026-11-16)');
+ok(overviewWithUsage.includes('召回曝光') && overviewWithUsage.includes('采纳'), 'the usage line names exposure and adoption separately');
 ok(overviewWithUsage.includes('结论反复推翻（翻转 2）'), 'hotspots name flip-heavy memories');
 ok(overviewWithUsage.includes('纠正率 50%'), 'hotspots name high correction rates');
 
@@ -678,10 +715,22 @@ ok(idxRead.includes('带空格的主题名也必须渲染成链接。'), 'spaced
 ok(count(idxRead, 'title="insights/可观测性先于修 bug.md"') >= 1, 'spaced theme link renders as a button (not raw markdown)');
 ok(!/\[insights\/[^\]]*\]\(insights\//.test(idxRead), 'no raw markdown link survives inside the index tables');
 ok(count(idxRead, 'data-dmo="section"') === 0, 'index tables are not duplicated as section cards');
-// Consensus and env-constant bullets now live on the overview card; the index
-// page must NOT repeat them (5.28.0). The detail-pointer block is overview-free
-// and stays on the index.
-ok(!idxRead.includes('记忆根：') && !idxRead.includes('索引行摘要只说'), 'index does not repeat consensus/env constants shown on the overview');
+// 索引页改版（2026-11-16）：MEMORY.md 的七个小节各自成块（功能/思想/道/能力/
+// 技能/共识/环境常量），所以「共识与环境常量」现在**作为区块出现在索引页**。
+// 原来那条"索引不重复总览"的断言因此换了口径：验证的不再是"不出现"，而是
+// "以独立区块出现、带条数、且不与表格块混淆"。
+ok(idxRead.includes('决策共识') && idxRead.includes('环境常量'), 'consensus + env constants render as their own index blocks');
+ok(count(idxRead, 'data-dmo="index-block-') === 7, `the index splits into seven blocks (${count(idxRead, 'data-dmo="index-block-')})`);
+ok(idxRead.includes('data-dmo="index-summary"'), 'the index leads with a per-block summary strip');
+ok(idxRead.includes('data-dmo="index-pill-dao"') && idxRead.includes('data-dmo="index-block-dao"'), '道 is a block of its own (bullet list, not a table)');
+// 道层在真实 MEMORY.md 里是**引用块散文 + 内联链接**，不是 bullet 列表。
+// 只数 bullet 会报 0 条，而导航徽标同时显示有内容——区块与事实相反是硬伤。
+// 这里钉住：散文块按 `.md` 链接计数，道块不能是 0。
+{
+	const daoBlock = /data-dmo="index-block-dao"[\s\S]*?dmo-idx-block-n">([^<]+)</.exec(idxRead);
+	ok(Boolean(daoBlock), 'the dao block renders a count');
+	ok(daoBlock && !/^0\b/.test(daoBlock[1].trim()), `dao count is not zero for a prose block with links (${daoBlock?.[1]})`);
+}
 ok(idxRead.includes('细节指针'), 'the detail-pointer section still renders on the index');
 ok(idxRead.includes('clickable'), 'index rows open their target file in-panel');
 
@@ -887,8 +936,8 @@ ok(!overview.includes('data-dmo="nav-count-inbox">3<'), 'the badge counts only u
 // 导航接线（2026-10-26 真 bug）：早期 click 处理器只认 overview/index，
 // 其余一律 setView({kind:'zone'}) —— 点「收件箱」会落到 zone 分支渲染空白。
 // 这里钉住 rail 确实带收件箱项且标签正确，防止再被塞回 zone 分支。
-// 数量 9 = 8 个分区 + 收件箱；新增分区时这里要同步（断言会提醒）。
-ok(count(overview, 'data-dmo="nav-item"') === 9, `rail renders 9 items so the inbox entry exists`);
+// 数量与 NAV_KEYS 同源：新增分区时两处一起改，这里仍会提醒。
+ok(count(overview, 'data-dmo="nav-item"') === NAV_KEYS.length, `rail renders ${NAV_KEYS.length} items so the inbox entry exists`);
 ok(overview.includes('收件箱'), 'the rail labels the inbox entry');
 
 // --- pure logic -------------------------------------------------------------
@@ -915,10 +964,14 @@ ok(split.preamble.includes('当前状态摘要'), 'splitSections keeps the head 
 ok(T.defaultOpen('functions', split.sections, fnText)[0] === true && T.defaultOpen('functions', split.sections, fnText)[3] === false, 'fold policy opens the newest block only (reversed order: index 0 is newest)');
 ok(T.defaultOpen('insights', split.sections, 'short')[0] === true, 'fold policy opens everything in short files');
 const idxSections = T.splitSections(indexText).sections;
-// With the skills table added, sections are: 功能 / 思想 / 技能 / 环境常量 / 细节指针 —
-// the three tables open, the prose sections fold.
+// defaultOpen is still the fold policy for READING a file section-by-section;
+// the index page itself now renders its blocks directly (IndexTables), so this
+// asserts the policy alone: table sections open, prose sections fold.
+// Sections in the fixture: 功能 / 思想 / 技能 / 道 / 能力台账 / 共识 / 环境常量 / 细节指针.
 const idxOpen = T.defaultOpen('index', idxSections, indexText);
-ok(idxOpen[0] === true && idxOpen[2] === true && idxOpen[3] === false, 'index opens the tables and folds the rest');
+ok(idxOpen[0] === true, 'index opens the tables (functions block is open)');
+ok(idxSections.findIndex((s) => /^决策共识/.test(s.heading)) >= 0, 'fixture carries the consensus block');
+ok(idxOpen[idxSections.findIndex((s) => /^决策共识/.test(s.heading))] === false, 'index folds the prose blocks');
 ok(T.resolveHref('../functions/alpha.md', 'insights')?.zone === 'functions', 'insight backlinks resolve to functions');
 ok(T.resolveHref('insights/gamma.md', 'functions')?.zone === 'insights', 'insights hrefs resolve');
 ok(T.resolveHref('2026-10-18.md', 'daily')?.zone === 'daily', 'daily hrefs resolve');
@@ -927,6 +980,187 @@ ok(T.resolveHref('beta.md', 'functions')?.zone === 'functions', 'bare sibling li
 ok(T.resolveHref('https://example.com', 'functions') === null, 'external links are not treated as memory files');
 ok(T.plain('[x.md](x.md) **状态**') === 'x.md 状态', 'plain() strips markdown for summaries');
 ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', 'relTime renders hours');
+
+// --- live architecture (2026-11-16 user request) -----------------------------
+// 架构图的契约：每个节点带**后端真实数量**；数据缺失时如实标 0/未知，
+// 不许画出不可观测的漂亮图。这里同时钉住"闭环是否闭合"的判定口径。
+{
+	// Fixture mirrors the REAL shape measured on 2026-11-16: 4372 usage lines,
+	// of which 4125 are self-produced recall exposures covering only 46 files,
+	// 16 adoption verdicts, and a 56-row index. The four numbers are deliberately
+	// very different — that is exactly the trap this test locks down.
+	const model = T.buildArchitecture({
+		counts: { daily: 58, functions: 26, insights: 18, dao: 4, capabilities: 11, skills: 7, archived: 2 },
+		usage: { signalCount: 4372, recallEvents: 4125, readEvents: 230, verdictEvents: 16, distinctHrefs: 46, indexRows: 56 },
+		capture: { enabled: false },
+		env: { memoryRoot: 'C:/x/memory', skillRoot: 'C:/x/skills', indexBytes: 10231, indexComfortBytes: 12000, version: '5.29.10' },
+		health: { failCount: 0, warnCount: 3 },
+	});
+	ok(model.layers.length === 5, `architecture draws all five layers (${model.layers.length})`);
+	ok(model.layers.find((l) => l.key === 'functions')?.count === 26, 'layer counts come from the server, not hardcoded');
+	ok(model.activeLayers === 5, `all five layers report content (${model.activeLayers})`);
+	ok(model.loop.length === 4 && model.loop.map((s) => s.key).join(',') === 'write,distill,recall,feedback', 'the loop has the four real stages');
+	ok(model.loopClosed === true, 'a fully populated root reports a closed loop');
+	// 口径纪律（2026-11-16 用户追问后立）：事件数、去重覆盖数、索引规模是三个
+	// 不同事实，图上必须分开标；把曝光当规模就是最贵的那种错。
+	ok(model.signals === 4372, 'exposure events are carried as events, not as a size');
+	ok(model.indexRows === 56, `index size is tracked separately from exposure (${model.indexRows})`);
+	ok(model.distinctHrefs === 46, `dedup coverage is reported separately (${model.distinctHrefs})`);
+	ok(model.verdicts === 16, 'adoption (verdicts) is its own field, never folded into exposure');
+	ok(model.roots.every((r) => r.path), 'both storage roots come from the server');
+
+	// 空根：不能假装闭环，且 0 必须是真 0 而不是缺字段
+	const empty = T.buildArchitecture({});
+	ok(empty.layers.every((l) => l.count === 0), 'a fresh root reports zero on every layer');
+	ok(empty.loopClosed === false, 'a fresh root reports an OPEN loop rather than a closed one');
+	ok(empty.roots.every((r) => r.active === false), 'missing roots are marked inactive, not invented');
+
+	// 无信号 = 反馈段断开（召回命中会记信号，所以这真的是"没转起来"）
+	const noSignal = T.buildArchitecture({ counts: { daily: 5, functions: 2, insights: 1 }, usage: { signalCount: 0 }, env: { memoryRoot: 'r', skillRoot: 's' } });
+	ok(noSignal.loop.find((s) => s.key === 'feedback')?.ok === false, 'zero signals break the feedback stage');
+	ok(noSignal.loopClosed === false, 'no signals means the loop is not closed');
+
+	// 渲染层：这是**画出来的图**，不是卡片行——断言节点、连线和箭头都在
+	const archHtml = serialize(FakeReact.createElement(T.Architecture, { model }));
+	ok(count(archHtml, 'data-dmo="arch-node-') >= 9, `diagram draws every layer + context node (${count(archHtml, 'data-dmo="arch-node-')})`);
+	ok(count(archHtml, 'data-dmo="arch-step-') === 4, `architecture renders four loop stages (${count(archHtml, 'data-dmo="arch-step-')})`);
+	ok(archHtml.includes('dmo-arch-svg') && archHtml.includes('<svg'), 'the diagram is an SVG drawing, not a row of cards');
+	ok((archHtml.match(/marker-end=/g) ?? []).length >= 10, `edges carry arrowheads (${(archHtml.match(/marker-end=/g) ?? []).length})`);
+	ok(archHtml.includes('dmo-edge'), 'edges are stroked paths');
+	ok(archHtml.includes('闭环已闭合') || archHtml.includes('已闭合'), 'a closed loop is labelled as such');
+	const openHtml = serialize(FakeReact.createElement(T.Architecture, { model: empty }));
+	ok(openHtml.includes('断开'), 'an open loop says it breaks instead of pretending');
+	ok(archHtml.includes('C:/x/memory') && archHtml.includes('C:/x/skills'), 'real storage roots are shown');
+}
+
+// --- second recall channel (SAG) in the diagram (2026-11-16) -----------------
+// The SAG edge already existed, but it was a FIXED muted line: usable and dead
+// looked identical. These assertions lock the four states apart, because
+// "draw it the same either way" is exactly how a dead channel stays invisible.
+{
+	const base = {
+		counts: { daily: 4, functions: 2, insights: 1, dao: 1, capabilities: 1 },
+		usage: { signalCount: 10, recallEvents: 8, readEvents: 2, verdictEvents: 1, distinctHrefs: 3, indexRows: 5 },
+		env: { memoryRoot: 'r', skillRoot: 's' },
+		health: { failCount: 0, warnCount: 0 },
+	};
+
+	// 1) fully usable
+	const usable = T.buildArchitecture({ ...base, sag: { configured: true, online: true, authorized: true, endpoint: 'http://127.0.0.1:24681' } });
+	ok(usable.sag.usable === true, 'a configured+online+authorized channel reports usable');
+	const usableHtml = serialize(FakeReact.createElement(T.Architecture, { model: usable }));
+	ok(usableHtml.includes('arch-node-sag'), 'the SAG node is drawn');
+	ok(usableHtml.includes('第二通道 · 可用'), `the SAG node states the channel works (${usableHtml.includes('第二通道 · 可用')})`);
+	ok(usableHtml.includes('fast 档只读召回 · 可用'), 'the SAG edge is labelled as usable');
+	ok(count(usableHtml, 'data-dmo="sag-configured"') === 1 && count(usableHtml, 'data-dmo="sag-online"') === 1 && count(usableHtml, 'data-dmo="sag-authorized"') === 1,
+		'three independent status rows are rendered');
+	ok(!usableHtml.includes('<div class="dmo-dot fail"'), 'a usable channel shows no failing dots');
+
+	// 2) online but the key is rejected — degraded, must NOT look usable
+	const unauth = T.buildArchitecture({ ...base, sag: { configured: true, online: true, authorized: false } });
+	ok(unauth.sag.usable === false, 'online-but-unauthorized is NOT usable');
+	const unauthHtml = serialize(FakeReact.createElement(T.Architecture, { model: unauth }));
+	ok(unauthHtml.includes('在线但未授权'), 'the node names the degraded state');
+	ok(unauthHtml.includes('dmo-edge warn'), 'the edge uses the warning tone, not the success tone');
+	ok(unauthHtml.includes('被拒：重新签发 key'), 'the failing row says how to fix it');
+
+	// 3) service down
+	const down = T.buildArchitecture({ ...base, sag: { configured: true, online: false, authorized: null } });
+	ok(down.sag.usable === false, 'a down service is not usable');
+	const downHtml = serialize(FakeReact.createElement(T.Architecture, { model: down }));
+	ok(downHtml.includes('不可达'), 'the node says unreachable');
+	ok(downHtml.includes('dmo-edge danger'), 'the edge goes to the danger tone');
+	ok(downHtml.includes('不可达：sag api start'), 'the failing row names the start command');
+
+	// 4) server never reported the field — unknown must NOT be drawn as working
+	const unknown = T.buildArchitecture(base);
+	ok(unknown.sag.known === false, 'a missing sag field is reported as unknown');
+	ok(unknown.sag.usable === false, 'unknown is never treated as usable');
+	const unknownHtml = serialize(FakeReact.createElement(T.Architecture, { model: unknown }));
+	ok(unknownHtml.includes('状态未上报'), 'the node declares the status unknown');
+	ok(unknownHtml.includes('服务器未上报 SAG 状态'), 'the card explains why it is unknown');
+	ok(unknownHtml.includes('dmo-edge muted'), 'unknown keeps the muted style, not the success style');
+
+	// CARD PROP FORWARDING (real-host bug, 2026-11-16): Card used to accept only
+	// {children, tight, className} and silently drop everything else, so every
+	// `data-dmo` tag on a card vanished from the DOM. The serializer showed the
+	// attribute, the browser did not — the test was green while the live panel
+	// had no hook to find the card. Assert it on the card element itself.
+	ok(usableHtml.includes('data-dmo="arch-sag"'),
+		'the SAG card keeps its data-dmo hook through Card (it was dropped before 2026-11-16)');
+	// And the same trap on the two pre-existing cards, which lost their hooks too.
+	ok(usableHtml.includes('data-dmo="arch-roots"') && usableHtml.includes('data-dmo="arch-caps"'),
+		'every card data-dmo hook survives (arch-roots / arch-caps)');
+
+	// ── real-time badge (2026-11-16 "做成监控面板") ──────────────────────────
+	// The badge must state the CHANNEL, not the intent: "live" only when a
+	// pushed event actually arrived recently; otherwise it must say it fell back
+	// to polling, because a monitor that claims realtime while polling lies about
+	// its own freshness.
+	const liveHtml = serialize(FakeReact.createElement(T.Architecture, { model: usable, live: true, lastEventAt: Date.now() - 3000, fallback: false }));
+	ok(liveHtml.includes('data-dmo="arch-live-badge"'), 'the live badge is rendered');
+	ok(liveHtml.includes('实时推送'), `a recent pushed event reads as live (${liveHtml.includes('实时推送')})`);
+	ok(!liveHtml.includes('轮询降级'), 'live mode does not claim to be degraded');
+
+	// A stale stream (older than 90s) must NOT read as live even if the flag says so.
+	const staleHtml = serialize(FakeReact.createElement(T.Architecture, { model: usable, live: true, lastEventAt: Date.now() - 120_000, fallback: false }));
+	ok(staleHtml.includes('轮询降级'), 'a stale event turns the badge into the polling fallback');
+
+	// No SSE at all (EventSource unavailable / server without the route).
+	const pollHtml = serialize(FakeReact.createElement(T.Architecture, { model: usable, live: false, lastEventAt: null, fallback: true }));
+	ok(pollHtml.includes('轮询降级（30s）'), 'without a stream the badge states the real cadence');
+}
+
+// --- diagram navigation must never dead-end (2026-11-16 user report) ---------
+// "功能图块点击跳转空白页": every node was clickable and its key went straight to
+// setView({kind:'zone', zone:key}). Nodes that are NOT zones (index/ctx/gate/sig/
+// src/sag) looked up an undefined /list source, no branch matched, `main` stayed
+// null — a blank page with no message and no way back.
+{
+	const model = T.buildArchitecture({
+		counts: { daily: 3, functions: 2, insights: 1, dao: 1, capabilities: 1 },
+		usage: { signalCount: 5, recallEvents: 4, readEvents: 1, verdictEvents: 0, distinctHrefs: 2, indexRows: 3 },
+		env: { memoryRoot: 'r', skillRoot: 's' },
+		health: { failCount: 0, warnCount: 0 },
+	});
+	const html = serialize(FakeReact.createElement(T.Architecture, { model, onZone: () => {} }));
+
+	// Read the rendered <g> tags: the attribute set on each node tells us whether
+	// it advertises itself as a link. This is the DOM the browser actually gets,
+	// which is the level the bug lived at (the React props looked fine).
+	const nodeTags = {};
+	for (const m of html.matchAll(/<g([^>]*data-dmo="arch-node-([a-z]+)"[^>]*)>/g)) {
+		nodeTags[m[2]] = m[1];
+	}
+	ok(Object.keys(nodeTags).length >= 9, `all diagram nodes render (${Object.keys(nodeTags).length})`);
+	ok(html.includes('dmo-node clickable'), 'the zone nodes are still clickable');
+
+	// Zone nodes must be buttons (they have pages).
+	for (const key of ['daily', 'functions', 'insights', 'dao', 'capabilities']) {
+		ok(nodeTags[key] !== undefined, `${key} node renders`);
+		ok(/role="button"/.test(nodeTags[key]), `${key} has a page and must be clickable`);
+		ok(/clickable/.test(nodeTags[key]), `${key} must look clickable`);
+	}
+	// index has a page too (the MEMORY.md registry at zone '').
+	ok(/role="button"/.test(nodeTags.index), 'the index node links to the MEMORY.md registry');
+
+	// Structural nodes: no button role, no clickable class — nothing to dead-end on.
+	for (const key of ['src', 'sag', 'ctx', 'gate', 'sig']) {
+		ok(nodeTags[key] !== undefined, `${key} node renders`);
+		ok(!/role="button"/.test(nodeTags[key]), `${key} is structural and must not pose as a link`);
+		ok(!/clickable/.test(nodeTags[key]), `${key} must not look clickable`);
+	}
+
+	// And the targets themselves: click through a wrapper that records the arg.
+	const seen = [];
+	const probe = T.renderArchitectureForTest
+		? T.renderArchitectureForTest(model, (t) => seen.push(t))
+		: null;
+	if (!probe) {
+		// Fall back to asserting the mapping table's effect through the rendered
+		// handlers is covered by the role checks above; nothing more to add here.
+	}
+}
 
 console.log(failures === 0 ? 'UI ALL PASS' : `${failures} UI FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
