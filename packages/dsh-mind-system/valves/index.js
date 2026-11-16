@@ -57,7 +57,8 @@ import { detectSemanticBypass } from './src/semantic.js';
 import {
 	weeklyPrinciplePatrol, quarterlyLayerPatrol,
 	writePatrolReport, readLatestPatrolReport, isPatrolDue, PATROL_PERIODS, clampTimerDelay,
-	readPendingAxiomCandidates, readPrinciplesFromDisk, readLayerCountsFromDisk,
+	readPendingAxiomCandidates, readPrinciplesFromDisk, readLayerCountsFromDisk, MIN_REFS_ROWS,
+	scanRecallSubjects, summarizeRecallBoundary,
 } from './src/patrol.js';
 // IV-5 公理闸门限速：每月最多生效一次 + 显式测试通道（不消耗额度）。
 import { checkAxiomRate, applyAxiomLimit } from './src/ratelimit.js';
@@ -737,11 +738,22 @@ export function apply(ctx, config = {}, overrides = {}) {
 			const configPrinciples = Array.isArray(patrolConfig.principles) ? patrolConfig.principles : null;
 			let principles = configPrinciples ?? [];
 			let principlesBasis = configPrinciples ? 'config' : 'none';
+			// Rows carrying explicit principle_refs, counted where the ledger is read so
+			// the number survives the branch boundary.
+			let refsRowsForPatrol = 0;
+			// Read the decision ledger once at runPatrol scope: the disk-
+			// enumeration branch below needs it for reference counts, and the
+			// refs-sufficiency gate near runtime.patrol needs it on EVERY path
+			// (config-provided principles too) — keeping it inside the if block
+			// left that gate with an out-of-scope reference.
+			const ledgerForRefs = await readDecisions(runtime.storageDir);
+			refsRowsForPatrol = Array.isArray(ledgerForRefs)
+				? ledgerForRefs.filter((e) => Array.isArray(e?.principle_refs) && e.principle_refs.length > 0).length
+				: 0;
 			if (principles.length === 0 && configPrinciples === null) {
 				const rootForPrinciples = typeof patrolConfig.memoryRoot === 'string' && patrolConfig.memoryRoot.trim()
 					? patrolConfig.memoryRoot.trim()
 					: memoryRootForStorage(runtime.storageDir);
-				const ledgerForRefs = await readDecisions(runtime.storageDir);
 				const got = await readPrinciplesFromDisk(rootForPrinciples, ledgerForRefs ?? []);
 				if (got.ok) {
 					principles = got.principles;
@@ -775,6 +787,36 @@ export function apply(ctx, config = {}, overrides = {}) {
 			} catch (err) {
 				facts.patrolCandidates = `error:${err instanceof Error ? err.message : String(err)}`;
 			}
+			// VI-4 (2026-11-16) recall boundary: inventory excluded-twin subjects
+			// (`_deleted`) on disk and diff against the previous weekly report; an
+			// optional `patrol.recallProbe` callback (same injection pattern as
+			// layerCounts) verifies actual recall results. Computed on every weekly
+			// path — including the no_input skip below — so the report always carries
+			// this section (the K4 observable) even when principles are absent.
+			let recallBoundary = null;
+			try {
+				const roots = Array.isArray(patrolConfig.recallRoots) && patrolConfig.recallRoots.length
+					? patrolConfig.recallRoots
+					: [rootForCandidates];
+				const scan = await scanRecallSubjects(roots);
+				const probe = typeof patrolConfig.recallProbe === 'function'
+					? await patrolConfig.recallProbe({ subjects: scan.subjects })
+					: undefined;
+				recallBoundary = summarizeRecallBoundary({
+					scan,
+					previousSubjects: last?.recall_boundary?.subjects ?? null,
+					probe,
+				});
+				const bs = recallBoundary.summary;
+				// Facts stay descriptive, never a verdict word: a boundary with no
+				// probe configured must not read like a verified-clean boundary.
+				facts.patrolBoundary = bs.added
+					? `added:${bs.added}`
+					: (bs.violations ? `violations:${bs.violations}` : `subjects:${bs.subjects}/probe:${bs.probe}`);
+			} catch (err) {
+				// Degrade honestly: a missing section reads differently from a clean one.
+				facts.patrolBoundary = `error:${err instanceof Error ? err.message : String(err)}`;
+			}
 			if (principles.length === 0 && pendingCandidates === null) {
 				const skipped = {
 					kind: 'weekly',
@@ -782,13 +824,26 @@ export function apply(ctx, config = {}, overrides = {}) {
 					ok: false,
 					error: 'no_input',
 					note: '未提供原则清单、也没有候选公理来源，本轮未实际巡检任何东西（不是 clean）',
+					// VI-4: the boundary inventory is independent of principles —
+					// attach it even to a no_input report so K4 observable never
+					// depends on whether principles happen to be present.
+					...(recallBoundary ? { recall_boundary: recallBoundary } : {}),
 				};
 				await writePatrolReport(runtime.storageDir, skipped);
 				facts.patrolWeekly = 'skipped_no_principles';
 				return null;
 			}
 			// 原则为空但有候选：仍要跑一轮，否则"每周提醒候选"这件事永远不发生。
-			const report = await runtime.patrol('weekly', { principles });
+			// Reference evidence must be able to show something before zero-reference is
+			// reported per principle; otherwise the report is a copy of the list.
+			const report = await runtime.patrol('weekly', {
+				principles,
+				options: { refsSufficient: refsRowsForPatrol >= MIN_REFS_ROWS },
+			});
+			// VI-4: attach the boundary section and re-persist (same-day overwrite,
+			// the exact pattern the pending-candidates enrichment below uses).
+			if (recallBoundary) report.recall_boundary = recallBoundary;
+			await writePatrolReport(runtime.storageDir, report);
 			if (pendingCandidates !== null) {
 				// 候选单独成段，不混进 findings：findings 是"原则本身有问题"，
 				// 候选是"等你决策"，两件事混在一起会让人以为候选也是故障。

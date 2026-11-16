@@ -8,7 +8,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,6 +16,7 @@ import {
 	weeklyPrinciplePatrol, quarterlyLayerPatrol,
 	writePatrolReport, readLatestPatrolReport, isPatrolDue,
 	patrolReportPath, PATROL_DIR, PATROL_PERIODS, clampTimerDelay, MAX_TIMER_DELAY_MS,
+	scanRecallSubjects, summarizeRecallBoundary, isExcludedHitPath, MIN_REFS_ROWS,
 } from '../src/patrol.js';
 
 function sandbox() {
@@ -269,6 +270,20 @@ test('runtime.patrol 对空清单如实返回 0/0（判据层不撒谎，clean �
 	}
 });
 
+// Startup patrol writes the report on a next-tick timer, and this suite runs
+// many test files in parallel; a fixed 250ms sleep that passed standalone
+// tips over under load (P0-1 flaked exactly that way). Poll instead — the
+// assertion stays "report must exist", only the race goes away.
+async function readWeeklyReportOrWait(dir, timeoutMs = 5000) {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const r = await readLatestPatrolReport(dir, 'weekly');
+		if (r !== null) return r;
+		if (Date.now() >= deadline) return null;
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
+}
+
 test('apply 的巡检在没拿到原则清单时落盘 no_input，绝不落 clean', async () => {
 	// 这条必须走 apply（真机路径），因为短路写在 apply 的 runPatrol 里。
 	// 只测判据层会漏掉它——实测该变异就是这样存活的。
@@ -283,9 +298,7 @@ test('apply 的巡检在没拿到原则清单时落盘 no_input，绝不落 clea
 		// P0-1：磁盘枚举接入后，no_input 只在「沙箱里确实没有 insights/」时触发。
 		// 显式传空数组（人工指定受检面为空）保持原语义。
 		apply(ctx, { storageDir: dir, patrol: { enabled: true, principles: [], memoryRoot: join(dir, 'memory') } }, { loadDefineTool: () => (s) => s });
-		await new Promise((r) => setTimeout(r, 250));
-
-		const onDisk = await readLatestPatrolReport(dir, 'weekly');
+		const onDisk = await readWeeklyReportOrWait(dir);
 		assert.ok(onDisk !== null, '必须落一份报告（哪怕是"没跑成"）');
 		assert.equal(onDisk.ok, false, '没查任何原则不能报 ok:true');
 		assert.equal(onDisk.error, 'no_input', '要明确说"没有输入"，而不是 clean');
@@ -318,9 +331,7 @@ test('P0-1：配置没给原则清单时从磁盘枚举 insights/，周检真的
 		};
 		// No patrol.principles at all — the disk enumeration must kick in.
 		apply(ctx, { storageDir: dir, patrol: { enabled: true, memoryRoot: memory } }, { loadDefineTool: () => (s) => s });
-		await new Promise((r) => setTimeout(r, 250));
-
-		const onDisk = await readLatestPatrolReport(dir, 'weekly');
+		const onDisk = await readWeeklyReportOrWait(dir);
 		assert.ok(onDisk !== null, '必须落报告');
 		assert.equal(onDisk.error, undefined, '磁盘有原则时不得再报 no_input');
 		assert.equal(onDisk.ok, true);
@@ -498,4 +509,258 @@ test('readPrinciplesFromDisk：每条原则带 statement（只报 id 等于让�
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+// ——————————————————————————————————————————————
+// VI-4 召回边界（deleted twins 不得再入召回）
+// ——————————————————————————————————————————————
+
+test('边界盘点：_deleted 主题目录逐个入册（嵌套层也算），根缺失如实报 root_absent', async () => {
+	const root = sandbox();
+	try {
+		mkdirSync(join(root, 'dao', '_deleted'), { recursive: true });
+		writeFileSync(join(root, 'dao', '_deleted', 'a.md'), 'x');
+		writeFileSync(join(root, 'dao', '_deleted', 'b.md'), 'x');
+		mkdirSync(join(root, 'functions', 'insights', '_deleted'), { recursive: true });
+		writeFileSync(join(root, 'functions', 'insights', '_deleted', 'c.md'), 'x');
+		// A sibling named exactly the marker's plural/substring must NOT match:
+		// only the full segment counts.
+		mkdirSync(join(root, 'deleted'), { recursive: true });
+
+		const scan = await scanRecallSubjects([root, join(root, 'missing')]);
+		assert.deepEqual(scan.subjects.map((s) => s.rel), ['dao/_deleted', 'functions/insights/_deleted']);
+		assert.deepEqual(scan.subjects.map((s) => s.files), [2, 1]);
+		assert.equal(scan.errors.length, 1, '缺根是一条错误记录，不是静默');
+		assert.equal(scan.errors[0].error, 'root_absent');
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test('边界 diff：新出现的主题报 recall_subject_added；首轮只立基线不算再现', () => {
+	const one = { root: 'R', rel: 'dao/_deleted', files: 2 };
+	const scanA = { subjects: [one], errors: [] };
+
+	const baseline = summarizeRecallBoundary({ scan: scanA, previousSubjects: null });
+	assert.equal(baseline.baseline_first_run, true, '没有上一份报告时只能立基线');
+	assert.equal(baseline.summary.added, 0, '首轮没有 diff 基准，不得报"再现"');
+
+	const same = summarizeRecallBoundary({ scan: scanA, previousSubjects: baseline.subjects });
+	assert.equal(same.summary.added, 0, '同样的主题不算再现');
+
+	const grown = summarizeRecallBoundary({
+		scan: { subjects: [one, { root: 'R', rel: 'collide/_deleted', files: 1 }], errors: [] },
+		previousSubjects: baseline.subjects,
+	});
+	assert.equal(grown.summary.added, 1);
+	const finding = grown.findings.find((f) => f.kind === 'recall_subject_added');
+	assert.equal(finding.rel, 'collide/_deleted', '新主题必须点名到具体路径');
+	assert.ok(finding.note.includes('sag remove'), '要给出可执行的补救方向');
+});
+
+test('边界探针：命中已删除副本 → violation；未配置/失败绝不冒充 0 违例', () => {
+	const scan = { subjects: [], errors: [] };
+
+	const hit = summarizeRecallBoundary({
+		scan, previousSubjects: [],
+		probe: { ok: true, hits: ['C:\\m\\dao\\_deleted\\x.md', 'C:\\m\\functions\\a.md', '/root/nested/_deleted/y.md'] },
+	});
+	assert.equal(hit.probe.checked, true);
+	assert.equal(hit.summary.violations, 2, 'Windows 段与 POSIX 段两处 _deleted 命中都算违例');
+	const v = hit.findings.find((f) => f.kind === 'recall_boundary_violation');
+	assert.ok(v && v.hits.length === 2);
+
+	const clean = summarizeRecallBoundary({ scan, previousSubjects: [], probe: { ok: true, hits: [] } });
+	assert.equal(clean.summary.violations, 0, '真查过且干净才允许报 0');
+
+	const failed = summarizeRecallBoundary({ scan, previousSubjects: [], probe: { ok: false, error: 'ECONNREFUSED' } });
+	assert.equal(failed.probe.checked, false);
+	assert.equal(failed.summary.violations, null, '探针失败 = 未知，不是 0');
+	assert.ok(failed.probe.reason.startsWith('probe_failed:'));
+
+	const unprobed = summarizeRecallBoundary({ scan, previousSubjects: [] });
+	assert.equal(unprobed.probe.checked, false);
+	assert.equal(unprobed.probe.reason, 'no_probe_configured');
+	assert.equal(unprobed.summary.violations, null, '没配探针 = 未知，不是 0');
+	assert.ok(unprobed.probe.note.includes('not evidence'), '必须写明"没查不等于干净"');
+
+	// isExcludedHitPath 边界：整段匹配，相邻词不误报。
+	assert.ok(isExcludedHitPath('/root/dao/_deleted/x.md'));
+	assert.ok(isExcludedHitPath('\\\\?\\D:\\m\\dao\\_deleted\\x.md'), 'UNC 前缀也要命中');
+	assert.ok(!isExcludedHitPath('/root/deleted/x.md'), '没下划线的不许命中');
+	assert.ok(!isExcludedHitPath('/root/my_deleted_file.md'), '下划线连体词不是段');
+});
+
+test('apply 真机路径：周检报告落盘必含 recall_boundary 段（K4 观测面），默认不冒充已验证', async () => {
+	const { apply } = await import('../index.js');
+	const dir = sandbox();
+	try {
+		const memRoot = join(dir, 'memory');
+		mkdirSync(join(memRoot, 'insights'), { recursive: true });
+		writeFileSync(join(memRoot, 'insights', '某法.md'), [
+			'# 创新优化思想：某法', '', '## 核心原则', '', '- 判据要可证伪。', '',
+		].join('\n'), 'utf8');
+		mkdirSync(join(memRoot, 'dao', '_deleted'), { recursive: true });
+		writeFileSync(join(memRoot, 'dao', '_deleted', 'x.md'), 'gone', 'utf8');
+
+		const ctx = {
+			logger: () => ({ info() {}, warn() {}, error() {} }),
+			provide() {}, set() {}, on() {},
+			tools: { register: () => () => {} },
+		};
+		apply(ctx, { storageDir: dir, patrol: { enabled: true, memoryRoot: memRoot } }, { loadDefineTool: () => (s) => s });
+		const onDisk = await readWeeklyReportOrWait(dir);
+		assert.ok(onDisk !== null, '必须落盘');
+		assert.ok(onDisk.recall_boundary, 'K4：周检报告必须含召回边界段');
+		assert.ok(onDisk.recall_boundary.subjects.some((s) => s.rel === 'dao/_deleted'), '边界主题要入册');
+		assert.equal(onDisk.recall_boundary.probe.checked, false, '没配探针不得声称已验证');
+		assert.equal(onDisk.recall_boundary.summary.violations, null, '未知必须是 null 而不是 0');
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('apply 真机路径：配置 recallProbe → 违例随周检报告落盘（端到端能变红）', async () => {
+	const { apply } = await import('../index.js');
+	const dir = sandbox();
+	try {
+		const memRoot = join(dir, 'memory');
+		mkdirSync(join(memRoot, 'insights'), { recursive: true });
+		writeFileSync(join(memRoot, 'insights', '某法.md'), [
+			'# 创新优化思想：某法', '', '## 核心原则', '', '- 判据要可证伪。', '',
+		].join('\n'), 'utf8');
+		mkdirSync(join(memRoot, 'dao', '_deleted'), { recursive: true });
+		writeFileSync(join(memRoot, 'dao', '_deleted', 'x.md'), 'gone', 'utf8');
+
+		const ctx = {
+			logger: () => ({ info() {}, warn() {}, error() {} }),
+			provide() {}, set() {}, on() {},
+			tools: { register: () => () => {} },
+		};
+		apply(ctx, {
+			storageDir: dir,
+			patrol: {
+				enabled: true,
+				memoryRoot: memRoot,
+				// Simulates the real SAG probe: a deleted twin leaking into recall.
+				recallProbe: async () => ({ ok: true, hits: [join(memRoot, 'dao', '_deleted', 'x.md')] }),
+			},
+		}, { loadDefineTool: () => (s) => s });
+		const onDisk = await readWeeklyReportOrWait(dir);
+		assert.ok(onDisk !== null && onDisk.recall_boundary, '报告要含边界段');
+		assert.equal(onDisk.recall_boundary.summary.violations, 1, '真探针命中的违例数要如实入账');
+		assert.ok(onDisk.recall_boundary.findings.some((f) => f.kind === 'recall_boundary_violation'));
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test('apply 真机路径：no_input 跳过路径同样落召回边界段（K4 不依赖原则在场）', async () => {
+	const { apply } = await import('../index.js');
+	const dir = sandbox();
+	try {
+		const memRoot = join(dir, 'memory');
+		mkdirSync(join(memRoot, 'dao', '_deleted'), { recursive: true });
+		writeFileSync(join(memRoot, 'dao', '_deleted', 'x.md'), 'gone', 'utf8');
+
+		const ctx = {
+			logger: () => ({ info() {}, warn() {}, error() {} }),
+			provide() {}, set() {}, on() {},
+			tools: { register: () => () => {} },
+		};
+		apply(ctx, {
+			storageDir: dir,
+			patrol: {
+				enabled: true,
+				principles: [],            // explicit empty input → no_input path
+				pendingAxiomCandidates: () => null, // and no candidates source
+				memoryRoot: memRoot,
+			},
+		}, { loadDefineTool: () => (s) => s });
+		const onDisk = await readWeeklyReportOrWait(dir);
+		assert.ok(onDisk !== null, '必须落盘');
+		assert.equal(onDisk.error, 'no_input', '空原则+无候选仍然走跳过语义');
+		assert.ok(onDisk.recall_boundary, 'K4：no_input 报告也要含召回边界段');
+		assert.ok(onDisk.recall_boundary.subjects.some((s) => s.rel === 'dao/_deleted'));
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+// ——————————————————————————————————————————————
+// 零引用只在引用证据够厚时逐条展开（2026-11-16 真机演练发现）
+// ——————————————————————————————————————————————
+
+test('refsSufficient:false → 不逐条报零引用（否则报告等于把清单重抄一遍）', async () => {
+	const { weeklyPrinciplePatrol } = await import("../src/patrol.js");
+	// Real shape found by dry-running against the live memory root: 12 principles,
+	// every refs=0 because almost no ledger row carries principle_refs. Emitting 12
+	// findings there is noise, not signal.
+	const principles = Array.from({ length: 12 }, (_, i) => ({ id: `p${i}`, statement: `s${i}`, refs: 0, antiExamples: 0 }));
+	const r = weeklyPrinciplePatrol({ principles }, { refsSufficient: false });
+	assert.equal(r.findings.length, 0, "证据不足时不展开");
+	// The COUNT is still reported: the fact survives, only the flood does not.
+	assert.equal(r.summary.zero_reference, 12);
+	assert.equal(r.summary.refs_basis, 'insufficient');
+});
+
+test('refsSufficient 缺省为 true：既有行为不变（逐条报）', async () => {
+	const { weeklyPrinciplePatrol } = await import("../src/patrol.js");
+	const r = weeklyPrinciplePatrol({ principles: [{ id: 'a', refs: 0 }, { id: 'b', refs: 2 }] });
+	assert.equal(r.findings.length, 1, '缺省仍逐条报，避免改动既有调用方语义');
+	assert.equal(r.summary.refs_basis, 'sufficient');
+});
+
+test('MIN_REFS_ROWS 与治理的 min_sample_size 同量级（10）', async () => {
+	const { MIN_REFS_ROWS } = await import("../src/patrol.js");
+	assert.equal(MIN_REFS_ROWS, 10);
+});
+
+test('apply 真机路径：refs 闸接线随周检落盘——10 行引用账目 sufficient 且点名零引用，1 行 insufficient 只计数', async () => {
+	// Judge-layer tests above cover weeklyPrinciplePatrol in isolation; this one
+	// covers the WIRING in index.js (ledger count → options.refsSufficient), which
+	// stayed green through both broken wiring states on 2026-11-16 (out-of-scope
+	// ledgerForRefs, then a never-assigned refsRowsForPatrol).
+	const { apply } = await import('../index.js');
+	const { mkdirSync, writeFileSync } = await import('node:fs');
+	// Two independent sandboxes: same-day reports overwrite by design, so a
+	// second apply in the same storageDir would race its own first report.
+	async function runOnce(ledgerRows) {
+		const dir = sandbox();
+		const memory = join(dir, 'memory');
+		const insights = join(memory, 'insights');
+		try {
+			mkdirSync(insights, { recursive: true });
+			mkdirSync(join(dir, 'storages'), { recursive: true });
+			writeFileSync(join(insights, '判据甲.md'), '# 判据甲\n\n原则正文。\n', 'utf8');
+			// 判据丙 is never referenced by any ledger row → zero-reference.
+			writeFileSync(join(insights, '判据丙.md'), '# 判据丙\n\n原则正文。\n', 'utf8');
+			let rows = '';
+			for (let i = 0; i < ledgerRows; i++) {
+				rows += `${JSON.stringify({ t: new Date().toISOString(), gate: 'x', outcome: 'admitted', principle_refs: ['判据甲'] })}\n`;
+			}
+			writeFileSync(join(dir, 'mind-valves.jsonl'), rows, 'utf8');
+			const ctx = {
+				logger: () => ({ info() {}, warn() {}, error() {} }),
+				provide() {}, set() {}, on() {},
+				tools: { register: () => () => {} },
+			};
+			apply(ctx, { storageDir: dir, patrol: { enabled: true, memoryRoot: memory } }, { loadDefineTool: () => (s) => s });
+			const onDisk = await readWeeklyReportOrWait(dir);
+			assert.ok(onDisk !== null, '必须落报告');
+			return onDisk;
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}
+	// Thin ledger (1 ref row < floor): count the zero-ref principle, never name it.
+	const thin = await runOnce(1);
+	assert.equal(thin.summary.refs_basis, 'insufficient', '1 行引用证据不够下结论');
+	assert.equal(thin.summary.zero_reference, 1, '判据丙零引用——数字必须还在');
+	assert.ok(!thin.findings.some((f) => f.kind === 'zero_reference'), '证据薄时报告里不得出现零引用点名');
+	// Rich ledger (at the floor): the same observation is now reportable evidence.
+	const rich = await runOnce(MIN_REFS_ROWS);
+	assert.equal(rich.summary.refs_basis, 'sufficient');
+	assert.equal(rich.summary.zero_reference, 1);
+	assert.ok(rich.findings.some((f) => f.kind === 'zero_reference'), '证据够时零引用要被点名');
 });

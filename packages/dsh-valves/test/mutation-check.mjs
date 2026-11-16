@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 一次性变异验证：逐条改坏判据 → 跑测试 → 必须红 → 恢复 → 必须绿。
  * 跑完自删由调用方负责。产物只写临时副本，不碰源文件。
  */
@@ -97,6 +97,18 @@ MUTATIONS.push(
 	// statement must travel with each principle (2026-11-16): a patrol report
 	// listing only ids makes the reader open every file to learn what was flagged.
 	{ file: 'src/patrol.js', find: 'principles.push({ id: stem, statement, refs, antiExamples });', replace: 'principles.push({ id: stem, refs, antiExamples });', label: 'principles 丢掉 statement（报告只剩 id）' },
+	// VI-4 recall boundary (2026-11-16): a boundary nobody re-checks erodes
+	// silently — each entry kills one distinct way the report can lie about it.
+	{ file: 'src/patrol.js', find: 'if (e.name === marker) {', replace: 'if (false) {', label: '边界盘点失明（_deleted 主题永不入册）' },
+	{ file: 'src/patrol.js', find: 'const added = prevKeys === null ? [] : subjects.filter((s) => !prevKeys.has(keyOf(s)));', replace: 'const added = [];', label: '边界 diff 失效（新主题不报再现）' },
+	{ file: 'src/patrol.js', find: 'const bad = hits.filter(isExcludedHitPath);', replace: 'const bad = [];', label: '探针违例被吞（命中已删副本仍报干净）' },
+	{ file: 'src/patrol.js', find: 'violations, // null = unknown', replace: 'violations: 0,', label: '未探针冒充 0 违例（未知被报成干净）' },
+	{ file: 'index.js', find: '...(recallBoundary ? { recall_boundary: recallBoundary } : {}),', replace: '...( {}),', label: 'no_input 报告丢边界段（K4 随原则在场摇摆）' },
+	// Zero-reference must not flood when the ledger cannot show references (2026-11-16).
+	{ file: 'src/patrol.js', find: 'if (!refsSufficient) continue;', replace: '', label: '证据不足仍逐条报零引用（报告退化成清单副本）' },
+	// The refs-gate WIRING in index.js (2026-11-16): both real defects of the day
+	// lived at this handoff while every judge-layer test stayed green.
+	{ file: 'index.js', find: 'refsRowsForPatrol = Array.isArray(ledgerForRefs)', replace: 'refsRowsForPatrol = false && Array.isArray(ledgerForRefs)', label: 'refs 闸接线恒 insufficient（计数不落位，证据够也说不够）' },
 );
 let red = 0;
 for (const m of MUTATIONS) {

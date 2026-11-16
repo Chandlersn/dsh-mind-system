@@ -78,8 +78,20 @@ export function clampTimerDelay(periodMs) {
  * @param {object} [options] `{ zeroRefWarn }` 零引用告警阈值（缺省 1：0 次即告警）
  * @returns {{findings: object[], summary: object}} 纯结果，不写文件。
  */
+/**
+ * Minimum ledger rows carrying `principle_refs` before zero-reference findings
+ * mean anything. Same floor as governance's min_sample_size (10): below it the
+ * absence of references says more about the ledger than about the principles.
+ */
+export const MIN_REFS_ROWS = 10;
+
 export function weeklyPrinciplePatrol(input, options = {}) {
 	const zeroRefWarn = Number.isFinite(options.zeroRefWarn) ? options.zeroRefWarn : 1;
+	// Zero-reference only means something if the ledger can actually show references.
+	// With a handful of principle_refs rows every principle reads as zero and the
+	// report degenerates into a copy of the principle list - noise carrying no
+	// information, the mirror image of a green light that proves nothing.
+	const refsSufficient = options.refsSufficient !== false;
 	const list = Array.isArray(input?.principles) ? input.principles : [];
 	const findings = [];
 	let zeroRef = 0;
@@ -95,6 +107,7 @@ export function weeklyPrinciplePatrol(input, options = {}) {
 		if (anti > 0) withAnti++;
 		if (refs < zeroRefWarn) {
 			zeroRef++;
+			if (!refsSufficient) continue;
 			findings.push({
 				principle_id: id,
 				kind: 'zero_reference',
@@ -112,6 +125,9 @@ export function weeklyPrinciplePatrol(input, options = {}) {
 			principles: counted,
 			zero_reference: zeroRef,
 			with_anti_examples: withAnti,
+			// Stated explicitly so a reader can tell "no zero references" from
+			// "reference evidence was too thin to judge".
+			refs_basis: refsSufficient ? 'sufficient' : 'insufficient',
 		},
 	};
 }
@@ -212,6 +228,214 @@ export function quarterlyLayerPatrol(input) {
 	return {
 		findings,
 		summary: { layers: layers.length, empty: empty.length, total, skipped_balance_check: total < 10 },
+	};
+}
+
+// ——————————————————————————————————————————————
+// Recall boundary (VI-4, 2026-11-16)
+// ——————————————————————————————————————————————
+
+/**
+ * Marker for directories whose content must NEVER surface in recall
+ * (deleted twins: `dao/_deleted/` and any future `_deleted/` twin folder).
+ *
+ * WHY patrol owns this (the SAG collision that motivated it): the semantic
+ * index returned deleted-twin files ABOVE canonical notes in top hits —
+ * excluded content re-entering recall. The fix was a one-shot `sag remove`,
+ * but a one-shot exclusion is exactly the kind of boundary that silently
+ * erodes: nothing re-checks it. So the weekly run re-inventories the
+ * subjects and diffs against the previous report.
+ */
+export const RECALL_EXCLUDED_MARKER = '_deleted';
+
+/**
+ * True when a recall-hit path points inside an excluded twin directory.
+ * Matches `_deleted` as a full path segment only (`\_deleted\` or `/_deleted/`),
+ * so a folder merely named `deleted` is never flagged.
+ *
+ * @param {string} p Path from a recall result (POSIX, Windows or UNC).
+ * @returns {boolean}
+ */
+export function isExcludedHitPath(p) {
+	return /(^|[\\/])_deleted([\\/]|$)/.test(String(p ?? ''));
+}
+
+/**
+ * Recursively inventory excluded-marker directories under one root.
+ * Never descends into a marker directory (its contents are the payload,
+ * not further subjects).
+ *
+ * @param {string} root Absolute root to scan.
+ * @param {string} rel Relative path of `root` inside itself ('' at top).
+ * @param {number} depth Current depth (0-based).
+ * @param {number} maxDepth Stop descending beyond this depth.
+ * @param {string} marker Directory name to detect.
+ * @param {object[]} sink Collected subjects.
+ */
+async function walkForExcluded(root, rel, depth, maxDepth, marker, sink) {
+	const entries = await readdir(join(root, rel), { withFileTypes: true });
+	for (const e of entries) {
+		if (!e.isDirectory()) continue;
+		const childRel = rel ? `${rel}/${e.name}` : e.name;
+		if (e.name === marker) {
+			sink.push({ root, rel: childRel, files: await countFilesUnder(root, childRel) });
+			continue;
+		}
+		if (depth + 1 <= maxDepth) {
+			await walkForExcluded(root, childRel, depth + 1, maxDepth, marker, sink);
+		}
+	}
+}
+
+/**
+ * Count files under a relative path (best effort; unreadable subtrees count
+ * what they can — inventory size is informational, not a gate).
+ *
+ * @param {string} root Absolute root.
+ * @param {string} rel Relative path.
+ * @returns {Promise<number>}
+ */
+async function countFilesUnder(root, rel) {
+	let total = 0;
+	const queue = [rel];
+	while (queue.length) {
+		const cur = queue.pop();
+		let entries;
+		try {
+			entries = await readdir(join(root, cur), { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const e of entries) {
+			const child = `${cur}/${e.name}`;
+			if (e.isDirectory()) queue.push(child);
+			else total++;
+		}
+	}
+	return total;
+}
+
+/**
+ * Scan one or more roots for excluded-marker subject directories.
+ *
+ * Roots that do not exist are reported as `root_absent` (an honest state:
+ * nothing indexed there, nothing to protect) — any other read failure lands
+ * in `errors` verbatim. The scan itself never throws: patrol is an optional
+ * capability and must degrade without taking the plugin down (N4).
+ *
+ * @param {string[]} roots Absolute roots to scan.
+ * @param {object} [options] `{ maxDepth, marker }` (defaults: 6, `_deleted`).
+ * @returns {Promise<{subjects: object[], errors: object[]}>}
+ *   subjects: `{ root, rel, files }`; errors: `{ root, error }`.
+ */
+export async function scanRecallSubjects(roots, options = {}) {
+	const maxDepth = Number.isFinite(options.maxDepth) ? options.maxDepth : 6;
+	const marker = typeof options.marker === 'string' && options.marker ? options.marker : RECALL_EXCLUDED_MARKER;
+	const subjects = [];
+	const errors = [];
+	const unique = [...new Set((Array.isArray(roots) ? roots : []).filter((r) => typeof r === 'string' && r.trim()))];
+	for (const root of unique) {
+		try {
+			await readdir(root);
+		} catch (err) {
+			const code = err?.code === 'ENOENT' ? 'root_absent' : String(err?.message ?? err);
+			errors.push({ root, error: code });
+			continue;
+		}
+		try {
+			await walkForExcluded(root, '', 0, maxDepth, marker, subjects);
+		} catch (err) {
+			errors.push({ root, error: String(err?.message ?? err) });
+		}
+	}
+	// Stable sort so report-to-report diffs compare cleanly.
+	const normalized = [...subjects].sort((a, b) => `${a.root}::${a.rel}`.localeCompare(`${b.root}::${b.rel}`));
+	return { subjects: normalized, errors };
+}
+
+/**
+ * Turn a scan (+ previous report snapshot + optional probe) into the
+ * `recall_boundary` section of the weekly report.
+ *
+ * Three states are kept strictly apart, because collapsing them is the
+ * "green light carries no information" failure mode:
+ * - `probe not configured` → subjects inventoried, recall NOT verified
+ *   (`violations: null` — unknown, never 0);
+ * - `probe failed` → same honesty with the reason attached;
+ * - `probe checked, zero hits` → the only state allowed to say `violations: 0`.
+ *
+ * @param {object} input
+ * @param {{subjects: object[], errors: object[]}} input.scan Result of scanRecallSubjects.
+ * @param {object[]|null} input.previousSubjects Previous report's subjects (null = first run, baseline only).
+ * @param {{ok: true, hits: string[]}|{ok: false, error: string}|undefined} [input.probe]
+ *   Optional recall probe result (injected by config `patrol.recallProbe`).
+ * @returns {object} The `recall_boundary` report section.
+ */
+export function summarizeRecallBoundary(input = {}) {
+	const scan = input.scan && typeof input.scan === 'object' ? input.scan : { subjects: [], errors: [] };
+	const subjects = Array.isArray(scan.subjects) ? scan.subjects : [];
+	const errors = Array.isArray(scan.errors) ? scan.errors : [];
+	const keyOf = (s) => `${s.root}::${s.rel}`;
+	const previous = Array.isArray(input.previousSubjects) ? input.previousSubjects : null;
+	const prevKeys = previous === null ? null : new Set(previous.map(keyOf));
+	const added = prevKeys === null ? [] : subjects.filter((s) => !prevKeys.has(keyOf(s)));
+
+	const findings = [];
+	for (const s of added) {
+		findings.push({
+			kind: 'recall_subject_added',
+			root: s.root,
+			rel: s.rel,
+			files: s.files,
+			note: 'Excluded-by-policy directory newly present since the last weekly report: confirm it is removed from the recall index (e.g. sag remove) before it can surface.',
+		});
+	}
+
+	let probe;
+	let violations = null;
+	const probeIn = input.probe;
+	if (probeIn === undefined || probeIn === null) {
+		probe = {
+			checked: false,
+			reason: 'no_probe_configured',
+			note: 'Subjects are inventoried, but recall results were NOT probed this run — absence of violations is not evidence of a clean boundary.',
+		};
+	} else if (probeIn.ok === true) {
+		const hits = Array.isArray(probeIn.hits) ? probeIn.hits : [];
+		const bad = hits.filter(isExcludedHitPath);
+		violations = bad.length;
+		if (bad.length) {
+			findings.push({
+				kind: 'recall_boundary_violation',
+				hits: bad,
+				note: 'Deleted-twin paths appeared in actual recall results: the exclusion is lost. Re-apply removal before trusting recall hits.',
+			});
+		}
+		probe = { checked: true, hits: hits.length, violations: bad.length };
+	} else {
+		probe = {
+			checked: false,
+			reason: `probe_failed:${probeIn.error ?? 'unknown'}`,
+			note: 'Recall probe did not complete; this run says nothing about the boundary.',
+		};
+	}
+
+	const rootsAbsent = errors.filter((e) => e.error === 'root_absent').length;
+	return {
+		subjects,
+		added_since_last: added,
+		findings,
+		probe,
+		errors,
+		baseline_first_run: previous === null,
+		summary: {
+			subjects: subjects.length,
+			added: added.length,
+			violations, // null = unknown (unprobed/failed); only a real probe may say 0
+			probe: probe.checked ? 'checked' : (probe.reason === 'no_probe_configured' ? 'not_configured' : 'failed'),
+			roots_absent: rootsAbsent,
+			roots_error: errors.length - rootsAbsent,
+		},
 	};
 }
 
