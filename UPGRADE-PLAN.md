@@ -80,7 +80,7 @@
 
 | 节点 | 动作 | 完成标志（可外部检验） | 关联验收 | 状态 |
 | :--- | :--- | :--- | :--- | :--- |
-| I-1 日常使用自然过阀 | 每次 memory_insight/memory_dao 写入照常（桥自动留痕）；遇反复失败模式时走 valve_check 提名 | 账本 ≥30 条**非部署验证**记录；byReason 分布可读 | F12 | 🔶 周检已建；origin 口径已落地；2026-11-10 `valve_metrics` 实测 dailyCount 1/30 |
+| I-1 日常使用自然过阀 | 每次 memory_insight/memory_dao 写入照常（桥自动留痕）；遇反复失败模式时走 valve_check 提名 | 账本 ≥30 条**非部署验证**记录；byReason 分布可读 | F12 | 🔶 2026-11-16 周检：dailyCount **12/30**（11-10 修好 origin 归属后 6 天自然长到 12）；calibration_writable=false，阈值继续等分布 |
 | I-2 首条真实负向规则 | 用户确认一条真实禁令 → valve_confirm 生效 → 下一轮相关任务召回注入 | 生效库 ≥1 条；一次真实召回注入可在会话转录中找到；同关键词下行 deny | F14, F7 | 🔶 规则已生效（forbidden-inspect-query-explicit-input）；下行对照 deny/allow 已验；**召回注入待下轮真实任务**。证据：docs/valves-weekly-review.md §I-2 |
 | I-3 阈值首轮校准 | 读 valve_metrics 分布：downgrade 占比高 → 补证据提示；某 reason 从未出现 → 检查判据是否可达；按分布调 thresholds 并记录调整理由 | 至少一次有数据依据的阈值调整（或书面结论"分布不足以调"）；调整前后 missRate 对照 | F17 | ✅ 首轮结论"分布不足以调"（真实判定仅 1 组）；读数与依据落 docs/valves-weekly-review.md 2026-11-09 节 |
 | I-4 valve_evidence 填写率观察 | 统计 insight 写入中带 verifiable_by 的比例 | 比例数字落账本分析；<20% 则改工具描述引导（不是改判据） | F3 | 🔶 基线 0 样本（桥今日上线）；周检自动统计 |

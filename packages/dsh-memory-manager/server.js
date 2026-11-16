@@ -1375,7 +1375,9 @@ async function runHealthCheck(root, opts) {
 		const ledger = await readLedger(root);
 		const files = [];
 		const unknown = new Set();
-		const zones = ['functions', 'insights', 'dao', 'capabilities', 'daily'];
+		// daily included on purpose: direct edits to daily logs may trigger R26, which
+			// the memory discipline explicitly accepts (it forbids forging the ledger).
+			const zones = ['functions', 'insights', 'dao', 'capabilities', 'daily'];
 		const scan = async (key, optionalRoot = false) => {
 			let entries;
 			try {
@@ -4522,7 +4524,14 @@ function memoryIndexTool(opts) {
 				if (zone === 'insights') {
 					const srcs = (Array.isArray(args.sources) ? args.sources : []).map((s) => safeSlug(s)).filter((s) => s !== name);
 					if (!srcs.length) throw new Error('zone=insights requires sources: the theme must name the areas it was distilled from');
-					row = `| [${name}](insights/${name}.md) | ${summary}（来源：${srcs.map((s) => `[${s}.md](functions/${s}.md)`).join('、')}） |`;
+					// Source names are rendered BARE, not as markdown links (2026-11-16).
+					// A full `[functions-x.md](functions/functions-x.md)` link costs ~57B per
+					// source vs ~27B for the bare name; three sources per row tripled that
+					// column and pushed MEMORY.md over its size line. The row's primary name
+					// is already a link, so the origin only needs to be identifiable.
+					// R23 parses the insight FILE body, not this table, so nothing depends on
+					// these being clickable.
+					row = `| [${name}](insights/${name}.md) | ${summary}（来源：${srcs.join('、')}） |`;
 					if (!(await statExists(path.join(root, 'insights', `${name}.md`)))) {
 						warnings.push(`insights/${name}.md 尚不存在——索引行先建了，记得用 memory_insight 沉淀文件本体`);
 					}

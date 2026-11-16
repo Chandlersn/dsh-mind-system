@@ -49,7 +49,12 @@ import { dirname, join, posix, relative, sep } from 'node:path';
  */
 export const LEDGER_REL = '.write-ledger.jsonl';
 
-/** 受本机制约束的层目录（相对记忆根）。daily 也在内——它同样只能由 agent 经工具写。 */
+/** Tracked zones, relative to the memory root.
+ *  daily is INCLUDED on purpose: daily logs are written with file tools by
+ *  design, and the discipline accepts that such writes may trigger R26
+ *  reconciliation. Exempting it would hide that accounting instead of
+ *  reporting it. Do not re-add an exemption without the rule changing first.
+ */
 export const TRACKED_ZONES = Object.freeze(['functions', 'insights', 'dao', 'capabilities', 'daily']);
 
 /** 报告代号（体检与面板共用稳定字符串）。 */

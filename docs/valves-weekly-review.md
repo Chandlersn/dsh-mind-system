@@ -89,4 +89,27 @@ valve_evidence 此前只送账本不持久化——criteria 从磁盘重跑永�
 
 ## 周检记录（每周一 10:00 reminder 触发后追加）
 
-（暂无）
+### 2026-11-16 周检
+
+**双侧分布**（累计）：evaluated 112 · admitted 99 · skipped 13 · missRate 11.6%。
+byOrigin：nomination 82 · untagged 16 · daily **12** · verification 2。
+
+**校准口径读数**（阈值调整只认这一段）：evaluated 12 · admitted 11 · skipped 1 · missRate 8.3%；
+byGate：downward_L2_L3 9 · downward_L1_L2 1 · downward_L2_L1 1 · patrol 1。
+`sampleSufficient: false` / `calibration_writable: false` —— **12/30，未达门槛**。
+
+**I-1 判定**：❌ 未达标。6 天里 daily 从 0 长到 12（11-10 修的"不传 origin 就丢归属"确实生效），
+但距离 30 条还差 18 条。阈值校准继续等分布，不调。
+
+**I-4（带阀门证据的洞察比例）**：2/12 = 17%。仍有 10 条法缺证据节，按"每周 1–2 条"节奏补。
+
+**候选公理**：待决策 **0 条**（`dao/_candidates/` 不存在）。无待办。
+
+**巡检状态**：weekly 停在 2026-11-10（no_input：当时没配原则清单）；quarterly 已在 2026-11-14 跑过，ok 且 0 findings。
+注意 weekly 一直是 no_input —— 候选提醒这条路还没真正被走过一次。
+
+**本周蒸馏**：新增法「失败被伪装成成功」（素材日 11-10 / 11-13 / 11-15，跨三个项目：阀门巡检、记忆插件面板、syskeeper）。
+选这三天的理由：它们各自独立地暴露了"失败被说成成功"的同一族形态（假绿 / 静默回退 / 假完工+安全旁路），
+而不是日历相邻——11-11、11-12 无记录，11-14 属另一主题（设计交付），故未入选。
+
+**遗留**：daily 还差 18 条才可校准；weekly 巡检持续 no_input（需配 principles 才有意义）；I-4 补证 10 条待推进。

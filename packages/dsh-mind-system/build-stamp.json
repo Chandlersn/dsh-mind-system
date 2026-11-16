@@ -173,7 +173,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "84c15f7a91ea55902cea27ac1ee39725a08ac4a8b4063456d98399586a9bfce8"
+      "sha256": "5b4fee6a5d4b91b71dfcff6601356d7b78e0e3acce00c0607342e3cb567e8aff"
     },
     "memory/src/axiom-candidate.js": {
       "source": "dsh-memory-manager/src/axiom-candidate.js",
@@ -277,7 +277,7 @@
     },
     "memory/src/write-ledger.js": {
       "source": "dsh-memory-manager/src/write-ledger.js",
-      "sha256": "c3bd4b6cef220714e2153dabcc5ffde6d005b1e1fdceb60cb24547ee68daf3aa"
+      "sha256": "196f56fceb0410218b43df60776309faf5d833f60132bfa9e88bc6eff0158cda"
     },
     "memory/tests/axiom-candidate.test.js": {
       "source": "dsh-memory-manager/tests/axiom-candidate.test.js",
