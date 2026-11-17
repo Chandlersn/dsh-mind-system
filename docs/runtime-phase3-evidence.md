@@ -86,7 +86,18 @@ DR-08-c要求"业务预算耗尽后仅可使用独立、有界、已声明的恢
 
 另补`goal_verifier_always_passes`变异（G-3）：把模板Verifier改成恒`pass`后，"错误产物触发分析"用例必须变红，使DR-01的反事实有直接证据而非间接传导。
 
-## 9. 执行的检查
+## 9. 迁移自身的两处修复（DL-3.1剩余排查）
+
+尝试接入`rollback_to`派发时发现repairs表的CHECK迁移用`!repairsSql.includes("'observed'")`这种**子串探针**判断是否需要重建：每加一个允许值都要记得手改探针，漏改的形态是"旧库永远不被升级，但没有任何测试变红"。修复为：
+
+- 列定义提取为`REPAIRS_COLUMNS`常量，初始schema与迁移共用一份——两处永不失同步；
+- 比较改为**存储DDL与期望DDL的空白归一化全等**，且必须把`IF NOT EXISTS`前缀归一化掉：SQLite存的是原始语句文本，不归一化的话每次open都会重建表并销毁表上触发器。
+
+两个方向都有测试且都做了杀伤性验证（临时改生产代码、跑完恢复）：强制"总是重建"→`fires only when the stored CHECK really differs`变红；强制"从不迁移"→`widened on reopen`变红。恢复基线后15/15。这是本会话一贯标准：**绿灯不算证据，能变红的绿灯才算**。
+
+**本轮未做的事，如实记录**：`rollback_to`提议的派发执行仍未接入。我一度把`rollback_to`/`restored`加进CHECK白名单，随即发现`startRepair`仍拒绝该kind、没有任何代码路径能持久化这两个值——那正是本轮已经抓过两次的"声明而不执行"，因此回退，保持DDL与代码一致。DL-2.2/DR-11维持部分已验。
+
+## 10. 执行的检查
 
 ```powershell
 node --test packages/dsh-execution-runtime/test/*.test.js
@@ -106,10 +117,10 @@ node packages/dsh-execution-runtime/scripts/verify-knowledge-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-diagnosis-mutations.mjs
 ```
 
-整包416 tests / 416 pass / 0 fail / 0 skipped，退出码0。本节相关套件：租约与暂停12、补偿契约10（含恢复预留2）、插件与卸载10（含取消1）、恢复与幂等7。
+整包422 tests / 422 pass / 0 fail / 0 skipped，退出码0。本节相关套件：租约与暂停12、补偿契约10（含恢复预留2）、插件与卸载10（含取消1）、恢复与幂等7、修复持久化15（含DDL迁移双向2）。迁移改动后复跑：repair 6、recovery 4、rollback 8、lease 7，杀死数与改动前一致。
 
 14个套件共95个边界变异全部由指定断言检出。本轮新增3个：`compensation_skips_recovery_reserve`（跳过扣减）、`exhaustion_not_persisted`（耗尽不落盘）、`goal_verifier_always_passes`（Verifier恒pass后正常路径用例必须变红）。
 
-## 10. 下一步
+## 11. 下一步
 
 DL-3.4剩余：接合成构建与隔离加载——源/产物一致、结构/发布/原计划守卫通过（本轮只做了卸载/排空语义，没有触碰合成成员与活动junction）。DR-13第二子项：在活动宿主上验证"关闭运行不影响原有五成员"，同样需要真实装载授权。真实Jev、推理提供者、生产装配与跨任务推广均未验收。
