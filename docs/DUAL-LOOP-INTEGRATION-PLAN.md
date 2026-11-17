@@ -444,7 +444,7 @@ SQLite与外部工具没有分布式事务，因此不承诺 exactly-once。崩�
 | DL-3.1 | 实现恢复、幂等与补偿 | 崩溃后未知动作冻结为reconciling，逐条核对需外部证据并固定记为unknown验证；幂等按工具+键只拦已核验生效；补偿需目标事实、不可逆拒绝、失败不冒充已回滚 | 隔离已验 |
 | DL-3.2 | 实现pause/resume/cancel与单写者 | 租约+fence已验：旧owner派发与结算均被拒、暂停清owner并推进fence、重复resume被拒、越截止拒绝恢复、模板/范围/工作区/工具集变更拒绝盲恢复 | 隔离已验 |
 | DL-3.3 | 注册任务级工具、状态与健康接口 | 真Cordis装载已验：runtime_status/runtime_run注册、原生任务执行、未登记引用与匿名调用被拒、卸载后宿主可用且探针区分unloaded/not-applied | 隔离已验 |
-| DL-3.4 | 接合成构建与隔离加载 | HMR卸载语义已验：卸载先拒新派发、`drain()`等待在途work、活动run持久可恢复、探针区分draining；合成构建/发布守卫与源产物一致未做 | 部分已验 |
+| DL-3.4 | 接合成构建与隔离加载 | HMR卸载语义已验（卸载先拒新派发、`drain()`等待在途work、活动run持久可恢复、探针区分draining）；隔离树`verify-combined` ALL PASS（243产物）、结构/README/计划守卫全绿、新增隔离装载守卫13项ALL PASS；`clis`系列在真实Cordis宿主内未验（peer依赖未装） | 部分已验 |
 
 阶段门：DR-10/11/12/13及DR-08-c通过。这一阶段才有可供日常试用的首版运行时。
 

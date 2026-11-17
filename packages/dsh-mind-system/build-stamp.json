@@ -241,7 +241,7 @@
     },
     "memory/src/recall.js": {
       "source": "dsh-memory-manager/src/recall.js",
-      "sha256": "98193237207ffc79cf2b73afaad498f1ec08a55333ffa89b651ed78ad84f6218"
+      "sha256": "f99db174119517667c63db22f6a83f3001d3d2b705da16341ad12905ea504641"
     },
     "memory/src/reload.js": {
       "source": "dsh-memory-manager/src/reload.js",
@@ -537,7 +537,7 @@
     },
     "memory/tests/recall-miss.test.js": {
       "source": "dsh-memory-manager/tests/recall-miss.test.js",
-      "sha256": "7ff7f2438359f2c1490be3f722b3c8e0666ced43ac79c082368f479c9a1d1dc2"
+      "sha256": "5dfec9f1a1071d4cd9f2689d6bc9707ffd6a69c326381f7275b0e6c60eb9afaf"
     },
     "memory/tests/recall-mutation.mjs": {
       "source": "dsh-memory-manager/tests/recall-mutation.mjs",
@@ -645,55 +645,55 @@
     },
     "meta/README.md": {
       "source": "dsh-meta-framework/README.md",
-      "sha256": "a4a5c3a4ff1c6d62bbe18238da604779bee66b56a7e577031dcfa43d34b0830e"
+      "sha256": "2d2cf459cbdfbe0b5c9c8e7cb322277c0c4a71a28d0809ed4979700c42e6aca1"
     },
     "meta/index.js": {
       "source": "dsh-meta-framework/index.js",
-      "sha256": "e35910f53b840974f8b547a7b13a7dc4630dc8a9dd00265013f539603cc4b916"
+      "sha256": "29514c1ab84682442c956699d5204f6df2ba4a5bd1522116f71b4a75e2b722de"
     },
     "meta/package.json": {
       "source": "dsh-meta-framework/package.json",
-      "sha256": "bc99fe27ec1306653d70e937a810ad7b446a86bbaa6a7f0da6b0b0739173d7bd"
+      "sha256": "827419c073d9c3417dfe5df6b14d9de9098a4bf4fe71f82ab36d278a2873dfe0"
     },
     "meta/src/clis.js": {
       "source": "dsh-meta-framework/src/clis.js",
-      "sha256": "fbe971f4101ef52dc6d5de9171c0ff741090b9120ac95da672e1bab791eeb952"
+      "sha256": "901c47a5590b8f66d106b809b845cc50774975068610ea656803a7319c8cfd52"
     },
     "meta/src/health.js": {
       "source": "dsh-meta-framework/src/health.js",
-      "sha256": "8bfafc4f3e6a5d04b6dc39e8d61041aca04058ca9f11c2f0a1e1d6ebd8301980"
+      "sha256": "34cf3e765e492b9b194c5e93669ff76f28fc146051bc1a0b934604dbaa3acd5b"
     },
     "meta/src/host.js": {
       "source": "dsh-meta-framework/src/host.js",
-      "sha256": "112acc1ab7a6cb86d2458dcb85b11acb20966383e8685b673692f86fa70799b7"
+      "sha256": "7d20755f53f8a3518e7860f4999c5c347f1081f0c53fcf73819358b5171396a3"
     },
     "meta/src/tools.js": {
       "source": "dsh-meta-framework/src/tools.js",
-      "sha256": "03fbf116f00535ce6713ce9bd374c03e0cffff231dddffe0f3def5acc9ea0eef"
+      "sha256": "9568a0cbc4b93d8243cdb9044955335f80001940c5007e0c908818cce5a72163"
     },
     "meta/test/clis-rule.js": {
       "source": "dsh-meta-framework/test/clis-rule.js",
-      "sha256": "30c15a5017c532c185a19f6678cbef5f74b28c2e0be503d955b3f97e9b6a37fb"
+      "sha256": "107154d8e2904db605414060941d77ecc699e5163edfae311c5e6dd6fa367024"
     },
     "meta/test/clis-rule.test.js": {
       "source": "dsh-meta-framework/test/clis-rule.test.js",
-      "sha256": "6c42a5e935544a85789076ce0fdb1d26f881e3afc7f86b3a12c7014db16173a6"
+      "sha256": "91ff43656eb5f0163d7c1448f9bda7ce5969ec4bf90b25c1cca3bbbab3581524"
     },
     "meta/test/entry.test.js": {
       "source": "dsh-meta-framework/test/entry.test.js",
-      "sha256": "8cc3b3e6481d43e6ebf0e7cb9db785d3f39a3c08809267385a6f2d6304636c94"
+      "sha256": "f31c2cf41a7e06c5305229e84f847e2f3784565f7a042a35169a2ac7e49edc12"
     },
     "meta/test/health.test.js": {
       "source": "dsh-meta-framework/test/health.test.js",
-      "sha256": "243f5dea34af852a9395b6fd2eed9c8beabd5a6fb1a84da57f23787e633aba1e"
+      "sha256": "29f17a789310465f9c6c184f23818822feaf495dfb004d081c802fc2e6786e7d"
     },
     "meta/test/host.test.js": {
       "source": "dsh-meta-framework/test/host.test.js",
-      "sha256": "08b84a64e6b7b193670deaaa66ef0098ed700fe1806907dd9278e93e7b1ee105"
+      "sha256": "cd5116f37a94d3f7b20d8e7603c7c872280ea4cb8326b2216abc5a849b675940"
     },
     "meta/test/tools.test.js": {
       "source": "dsh-meta-framework/test/tools.test.js",
-      "sha256": "f96c4de9a9b873d8617387c93b69c6c27d70f0948b227d66908bcdf6b458a9a3"
+      "sha256": "fe2a5d5ab6b49596ff2cee633e2467b47d17c4d0ebd04275517b3218558ecf9c"
     },
     "mind/README.md": {
       "source": "dsh-agent-mind/README.md",
@@ -765,7 +765,7 @@
     },
     "mind/test/fixes-2026-11-04.test.js": {
       "source": "dsh-agent-mind/test/fixes-2026-11-04.test.js",
-      "sha256": "61ae2499a66173107359b0a67088d6ac1afe4c6df3455e617507238ca7e6978d"
+      "sha256": "5b091005593e9402f15a18d8279936550969cbdba1dfc794befe892f0027a716"
     },
     "mind/test/hitrate.test.js": {
       "source": "dsh-agent-mind/test/hitrate.test.js",
@@ -841,7 +841,7 @@
     },
     "valves/src/patrol.js": {
       "source": "dsh-valves/src/patrol.js",
-      "sha256": "fe1561dde7bf097bd0f38f0b203a286aefb8cf8d1fcec1c845fc9bf41f4e1ba3"
+      "sha256": "390516dec8ca252d271acd499975399d8f993137437058eb41c9a502adbf3f70"
     },
     "valves/src/predicates.js": {
       "source": "dsh-valves/src/predicates.js",
@@ -929,7 +929,7 @@
     },
     "valves/test/patrol.test.js": {
       "source": "dsh-valves/test/patrol.test.js",
-      "sha256": "076e000b60093403ed816f34ff32a34ee314bc545bd03848cfd46cf7c39e0201"
+      "sha256": "3cc9a73ff0cfd4fdc6b65b339b61884ff2d957a766ff46642775038d29a8faac"
     },
     "valves/test/predicates.test.js": {
       "source": "dsh-valves/test/predicates.test.js",
@@ -961,7 +961,7 @@
     },
     "valves/test/store.test.js": {
       "source": "dsh-valves/test/store.test.js",
-      "sha256": "5c85c0219a18b904aed05a01407add07ff2363ef3ae8d7398ab86b3a1b777fe0"
+      "sha256": "49bf0be589caa4a44339a7e51c0fbc2d4120b7226375d5e52ba29a955336cee8"
     },
     "valves/test/trace-e2e.test.js": {
       "source": "dsh-valves/test/trace-e2e.test.js",
