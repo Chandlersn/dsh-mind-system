@@ -1,0 +1,53 @@
+{
+  "name": "dsh-execution-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Isolated exception-driven execution runtime contracts and development probes.",
+  "engines": {
+    "node": ">=22.23.0"
+  },
+  "exports": {
+    "./contracts": "./src/contracts.js",
+    "./store": "./src/store.js",
+    "./json-recipe": "./recipes/json-normalize.js",
+    "./json-repair": "./recipes/json-repair.js",
+    "./decision-client": "./src/decision-client.js",
+    "./admission": "./src/admission.js",
+    "./executor": "./src/executor.js",
+    "./scheduler": "./src/scheduler.js",
+    "./analyzer": "./src/analyzer.js",
+    "./exceptions": "./src/exceptions.js",
+    "./probes": "./src/probes.js",
+    "./compensation": "./src/compensation.js",
+    "./plugin": "./src/plugin.js",
+    "./repair-patterns": "./src/repair-patterns.js",
+    "./pattern-approval": "./src/pattern-approval.js",
+    "./valve-bridge": "./src/valve-bridge.js",
+    "./pattern-runtime": "./src/pattern-runtime.js",
+    "./knowledge": "./src/knowledge.js",
+    "./diagnosis": "./src/diagnosis.js",
+    "./rollback": "./src/rollback.js",
+    "./csv-recipe": "./recipes/csv-normalize.js",
+    "./host-plugin": "./src/host-plugin.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "verify:core": "node scripts/verify-core-mutations.mjs",
+    "verify:phase1": "node scripts/verify-phase1-mutations.mjs",
+    "verify:analysis": "node scripts/verify-analysis-mutations.mjs",
+    "verify:repair": "node scripts/verify-repair-mutations.mjs",
+    "verify:recovery": "node scripts/verify-recovery-mutations.mjs",
+    "verify:lease": "node scripts/verify-lease-mutations.mjs",
+    "verify:compensation": "node scripts/verify-compensation-mutations.mjs",
+    "verify:plugin": "node scripts/verify-plugin-mutations.mjs",
+    "verify:patterns": "node scripts/verify-pattern-mutations.mjs",
+    "verify:approval": "node scripts/verify-approval-mutations.mjs",
+    "verify:hits": "node scripts/verify-hit-mutations.mjs",
+    "verify:knowledge": "node scripts/verify-knowledge-mutations.mjs",
+    "verify:diagnosis": "node scripts/verify-diagnosis-mutations.mjs",
+    "verify:rollback": "node scripts/verify-rollback-mutations.mjs",
+    "probe:jev": "node scripts/probe-jev.mjs",
+    "verify:loop": "node scripts/verify-loop-mutations.mjs"
+  }
+}

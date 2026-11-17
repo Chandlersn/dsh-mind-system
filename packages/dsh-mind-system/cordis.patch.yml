@@ -38,3 +38,11 @@
     - id: mind-system
       name: 'dsh-mind-system'
       config: {}
+    # 双循环执行运行时：默认关闭。
+    # 关闭时只装载适配层、不注册任何工具，健康探针报告 disabled —— 装了等于没装，
+    # 不改变现有行为。要启用须显式给 enabled:true 与 agent（执行器必须有明确调用者身份），
+    # 并按需在 tasks 里声明模板任务；没有声明任务时探针报告 no-tasks 而非假装可用。
+    - id: execution-runtime
+      name: 'dsh-mind-system/runtime'
+      config:
+        enabled: false

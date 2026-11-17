@@ -28,7 +28,8 @@
     "./knowledge": "./src/knowledge.js",
     "./diagnosis": "./src/diagnosis.js",
     "./rollback": "./src/rollback.js",
-    "./csv-recipe": "./recipes/csv-normalize.js"
+    "./csv-recipe": "./recipes/csv-normalize.js",
+    "./host-plugin": "./src/host-plugin.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
