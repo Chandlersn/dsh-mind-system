@@ -20,7 +20,7 @@
 | DR-08-c | `compensation.test.js`恢复额度扣减与耗尽转人工、恢复用量不占业务预算；`recovery.test.js`核对走恢复额度；变异`compensation_skips_recovery_reserve`、`exhaustion_not_persisted` |
 | DR-09 | `analyzer.test.js`坏JSON/迟到/取消隔离；`recovery.test.js`核对不冒充成功；变异`array_kind_coercion_allowed`、`late_task_proposal_accepted`、`reconciliation_claims_goal_success` |
 | DR-10 | `recovery.test.js`崩溃式未知冻结、核对前不重放；`exceptions.test.js`未知副作用不触发分析也不使retry可执行；变异`unknown_effect_unfrozen`、`unknown_outcome_keeps_running` |
-| DR-11 | `rollback.test.js`三档处置与跨环境拒绝；`compensation.test.js`目标事实必需；变异`irreversible_rollback_allowed`、`rollback_settles_without_target_fact`、`failed_compensation_reports_finished_rollback` |
+| DR-11 | `rollback.test.js`三档处置与跨环境拒绝、真实管线记录检查点（含负控：验证未过则不记录）；`compensation.test.js`目标事实必需；变异`irreversible_rollback_allowed`、`rollback_settles_without_target_fact`、`failed_compensation_reports_finished_rollback`、`pipeline_records_no_checkpoint`、`checkpoint_recorded_without_verification`。**注意口径**：补偿成功有目标事实、失败不假装回滚已完成这两条已验；但`rollback_to`提议的派发执行尚未接入（调度器仍返回`repair_branch_unavailable`），故DR-11为**部分**，对应DL-2.2=部分已验 |
 | DR-12 | `lease.test.js`12项（fence推进、旧owner派发/结算被拒、暂停清owner、双resume拒绝、越截止拒绝、重启后fence仍在）；`plugin.test.js`卸载后排空；变异`scheduler_ignores_lease_fence` |
 | DR-14 | `repair-patterns.js`失败只进分母、同run只算1样本、重复回执去重；变异`verified_failure_excluded_from_rate`、`one_run_manufactures_samples` |
 | DR-15 | `pattern-integration.test.js`命中时分析器调用0、弃权时1（真实管线计数）；`pattern-approval.test.js`撤销后不再复用、编辑后批准失效 |
