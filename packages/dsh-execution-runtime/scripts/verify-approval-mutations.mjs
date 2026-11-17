@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { collectModuleClosure } from './build/module-closure.mjs';
 
 const source = fileURLToPath(new URL('../', import.meta.url));
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'runtime-approval-mutations-')));
@@ -17,12 +18,13 @@ function run(args, label) {
 }
 try {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
-  for (const file of ['src/contracts.js', 'src/pattern-approval.js', 'src/valve-bridge.js',
-    'test/pattern-approval.test.js', 'test/valve-bridge.test.js']) {
+  // Stage the real import graph: a hand-written list silently misses new dependencies.
+  const testsInOrder = ['test/pattern-approval.test.js', 'test/valve-bridge.test.js'];
+  for (const file of collectModuleClosure(source, testsInOrder)) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
     writeFileSync(join(root, file), readFileSync(join(source, file)));
   }
-  const tests = [join(root, 'test/pattern-approval.test.js'), join(root, 'test/valve-bridge.test.js')];
+  const tests = testsInOrder.map((file) => join(root, file));
   const baseline = run(['--test', ...tests], 'baseline');
   assert.equal(baseline.status, 0, baseline.output);
   const mutants = [

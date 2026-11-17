@@ -85,14 +85,30 @@ node packages/dsh-execution-runtime/scripts/verify-pattern-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-approval-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-hit-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-knowledge-mutations.mjs
+node packages/dsh-execution-runtime/scripts/verify-diagnosis-mutations.mjs
+node packages/dsh-execution-runtime/scripts/verify-rollback-mutations.mjs
 ```
 
-整包394 tests / 394 pass / 0 fail / 0 skipped，退出码0：阶段1既有171，加Analyzer17、分析存储24、异常协调器13、JSON修复策略47、修复管线19、修复存储12、取证探针7、恢复与幂等7、租约与暂停12、补偿契约8、插件与卸载9、模式证据9、确认适配8、阀门桥接8、命中与回退11、命中集成3、知识读写与outbox8。
+整包413 tests / 413 pass / 0 fail / 0 skipped，退出码0。按测试文件逐个实测（合计413）：admission 44、analyzer 17、compensation 8、decision-client 32、diagnosis 8、diagnosis-route 3、exceptions 13、executor 18、host-pipeline 14、json-recipe 13、json-repair 48、knowledge 8、lease 12、pattern-approval 9、pattern-integration 3、pattern-runtime 11、plugin 9、probes 7、recovery 7、repair-patterns 9、repair 19、rollback 7、scheduler 38、store-analysis 24、store-repair 12、store-runtime 3、store 9、valve-bridge 8。
 
 确认变异10个、命中变异8个、知识变异7个全部由指定断言检出：pending请求可授权、分析结果可签票、票不绑版本、编辑后旧批准仍生效、忽略过期、撤销后仍适用、夹带票被接受、运行时自签human、阀门拒绝报成功、无有效批准仍写入；弃权抑制分析、越界工具被忽略、模板版本变更被忽略、证据不足仍命中、回退恢复票据、伪造命中被记录、弃权不留痕、命中仍调分析器；scratch冒充formal、存储冒充索引、失败写冒充已存、daily origin不限域、outbox重放不幂等、失败投递显示已投递、未知域被接受。
 
 其中"失败被排除出分母"这条，最初是我的**实现**错了而不是测试错了：测试先失败、我一度怀疑断言，排查后发现失败样本确实没进分母。这正是本轮最值得记的一点——成功率的分母必须包含失败，否则它只是"成功了多少次"。
 
-## 10. 下一步
+## 10. 整体复核：14个套件与依赖闭包漂移
+
+本轮不加新功能，把已完成部分整体重跑一遍。**结果是这次复核本身发现了漂移。**
+
+14个变异套件全部重跑，基线均为0，共**92个边界变异全部被指定断言杀死**：core 4、phase1 9、analysis 4、repair 6、plugin 7、recovery 4、lease 7、approval 10、compensation 5、diagnosis 8、hit 8、knowledge 7、pattern 7、rollback 6。整包413项通过。
+
+复核直接抓到的缺陷：`verify-analysis-mutations`与`verify-hit-mutations`**基线就已经失败**——`src/exceptions.js`新增了对`src/diagnosis.js`的依赖，而这两个脚本的暂存文件清单是手写的，没同步更新，临时目录里模块缺失。此前几轮我只跑"新增套件+相关套件"，让这两个脚本悄悄坏掉了；而且它们的失败形态是"找不到模块"，极易被误读成功能回归。
+
+修法不是再补一次清单，而是消除清单：新增`scripts/build/module-closure.mjs`，从测试入口按真实import图（静态、`await import()`、再导出）递归收集需暂存的文件，14个套件全部改用它。改后逐个重跑，杀死数与改前完全一致，说明闭包收集**没有少放文件**；同时人工比对了core/phase1/lease/plugin四个入口的闭包，与原手写清单一致且无多余项。
+
+这类"哨兵脚本自己也需要跟着模块图维护"的坑，此前已出现三次（新增`probes.js`、`diagnosis.js`各触发一次），只是前两次都被我手工补上了。手工补的清单迟早再漏，改成从代码事实推导才是终止条件。
+
+复核也顺手清掉两处遗留：`module-closure.mjs`初版有一段冗余的存在性判断，改为`statSync().isFile()`；一次性迁移脚本用完即删，不留与主逻辑重复的代码。README中"多数套件用闭包收集"的说法先被写成事实核对——当时实际只有3个，改为准确数字，全部转换完成后再更新为14个。
+
+## 11. 下一步
 
 阶段4机制已完成（DL-4.1–4.4全部隔离已验），但**真实样本不足，自动推广维持关闭**——这是方案写明的阶段门。剩余工作属阶段5与生产侧：任务集与三组对照实验（DL-5.1）、故障注入与延迟测试（DL-5.2）、文档与隔离部署回退演练（DL-5.3）；以及DL-3.4剩余（合成构建/发布守卫）、真实Jev与推理提供者、生产装配，均继续单列待验。

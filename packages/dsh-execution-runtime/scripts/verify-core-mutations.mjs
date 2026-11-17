@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { collectModuleClosure } from './build/module-closure.mjs';
 
 const source = fileURLToPath(new URL('../', import.meta.url));
 const root = mkdtempSync(join(tmpdir(), 'runtime-mutations-'));
@@ -21,11 +22,13 @@ function run(args, label) {
 
 try {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
-  for (const relative of ['src/contracts.js', 'src/store.js', 'src/analyzer.js', 'recipes/json-normalize.js', 'test/store.test.js', 'test/json-recipe.test.js']) {
-    mkdirSync(dirname(join(root, relative)), { recursive: true });
-    writeFileSync(join(root, relative), readFileSync(join(source, relative)));
+  // Stage the real import graph: a hand-written list silently misses new dependencies.
+  const testsInOrder = ['test/store.test.js', 'test/json-recipe.test.js'];
+  for (const file of collectModuleClosure(source, testsInOrder)) {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), readFileSync(join(source, file)));
   }
-  const tests = [join(root, 'test/store.test.js'), join(root, 'test/json-recipe.test.js')];
+  const tests = testsInOrder.map((file) => join(root, file));
   const baseline = run(['--test', ...tests], 'baseline');
   assert.equal(baseline.status, 0, baseline.output);
   const mutants = [

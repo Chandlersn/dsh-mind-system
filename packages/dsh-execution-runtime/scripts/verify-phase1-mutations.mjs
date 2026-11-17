@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { collectModuleClosure } from './build/module-closure.mjs';
 
 const source = fileURLToPath(new URL('../', import.meta.url));
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'runtime-phase1-mutations-')));
@@ -18,14 +19,13 @@ function run(args, label) {
 }
 try {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
-  const files = ['src/contracts.js', 'src/store.js', 'src/analyzer.js', 'src/probes.js', 'src/decision-client.js', 'src/admission.js',
-    'src/executor.js', 'src/scheduler.js', 'recipes/json-normalize.js', 'test/scheduler.test.js',
-    'test/store-runtime.test.js', 'test/admission.test.js', 'test/executor.test.js', 'test/helpers/host.js'];
-  for (const relative of files) {
-    mkdirSync(dirname(join(root, relative)), { recursive: true });
-    writeFileSync(join(root, relative), readFileSync(join(source, relative)));
+  // Stage the real import graph: a hand-written list silently misses new dependencies.
+  const testsInOrder = ['test/scheduler.test.js', 'test/store-runtime.test.js', 'test/admission.test.js', 'test/executor.test.js'];
+  for (const file of collectModuleClosure(source, testsInOrder)) {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), readFileSync(join(source, file)));
   }
-  const tests = ['test/scheduler.test.js', 'test/store-runtime.test.js', 'test/admission.test.js', 'test/executor.test.js'].map((name) => join(root, name));
+  const tests = testsInOrder.map((file) => join(root, file));
   const baseline = run(['--test', ...tests], 'baseline');
   assert.equal(baseline.status, 0, baseline.output);
   const mutants = [

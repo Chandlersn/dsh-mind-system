@@ -67,8 +67,18 @@ node scripts/verify-analysis-mutations.mjs
 node scripts/verify-repair-mutations.mjs
 node scripts/verify-recovery-mutations.mjs
 node scripts/verify-lease-mutations.mjs
+node scripts/verify-plugin-mutations.mjs
+node scripts/verify-compensation-mutations.mjs
+node scripts/verify-rollback-mutations.mjs
+node scripts/verify-pattern-mutations.mjs
+node scripts/verify-approval-mutations.mjs
+node scripts/verify-hit-mutations.mjs
+node scripts/verify-diagnosis-mutations.mjs
+node scripts/verify-knowledge-mutations.mjs
 node scripts/probe-jev.mjs
 ```
+
+共14个变异套件（92个边界变异），每个都用指定断言证明其守卫在链路上生效；套件基线退出必须为0，否则视为脚本没跑到目标分支。全部14个套件的暂存文件由`scripts/build/module-closure.mjs`按测试入口的真实import图自动收集，新增依赖无需再手工补清单。本轮实测该清单确实会漂移：`src/diagnosis.js`未登记曾让analysis与hit两个套件基线以模块缺失失败并被误读为功能回归，改为闭包收集后消除。
 
 宿主测试默认读取本机安装根，可用`DSH_SEAM_HOST_ROOT`显式覆盖。测试创建独立Context、临时DSH_HOME和临时文件，结束后关闭资源并清理目标目录，不更改活动profile。详见[阶段0证据](../../docs/runtime-phase0-evidence.md)、[阶段1证据](../../docs/runtime-phase1-evidence.md)和[宿主管线证据](../../docs/runtime-host-evidence.md)。
 
