@@ -48,6 +48,14 @@ try {
       old: "      const nextStatus = completed ? row.status : row.status === 'running' ? 'waiting_human' : row.status;",
       replacement: '      const nextStatus = completed ? row.status : row.status === \'running\' ? \'completed\' : row.status;',
       test: /not ok \d+ - a failed compensation on a running task/ },
+    { name: 'compensation_skips_recovery_reserve', file: 'src/store.js',
+      old: "      this.#chargeRecoveryWithinTx(taskId, { column: 'compensations_used',\n        limitName: 'maxCompensations', kind: 'compensation' });",
+      replacement: '      void 0;',
+      test: /not ok \d+ - the compensation reserve bounds recovery attempts/ },
+    { name: 'exhaustion_not_persisted', file: 'src/store.js',
+      old: "        .run(nextStatus, 'recovery_exhausted', this.#now(), taskId);",
+      replacement: '        .run(nextStatus, row.reason, this.#now(), taskId);',
+      test: /not ok \d+ - the compensation reserve bounds recovery attempts/ },
   ];
   const observed = [];
   for (const mutant of mutants) {

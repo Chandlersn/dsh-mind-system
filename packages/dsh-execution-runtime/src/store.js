@@ -62,7 +62,10 @@ export class RuntimeStore {
         tool_calls_used INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
         fence INTEGER NOT NULL DEFAULT 0,
-        owner_id TEXT, owner_expires_at INTEGER, environment_json TEXT
+        owner_id TEXT, owner_expires_at INTEGER, environment_json TEXT,
+        recovery_reads_used INTEGER NOT NULL DEFAULT 0,
+        compensations_used INTEGER NOT NULL DEFAULT 0,
+        recovery_started_at INTEGER
       );
       CREATE TABLE IF NOT EXISTS attempts (
         attempt_id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL REFERENCES runs(task_id),
@@ -132,6 +135,9 @@ export class RuntimeStore {
       owner_id: 'TEXT',
       owner_expires_at: 'INTEGER',
       environment_json: 'TEXT',
+      recovery_reads_used: 'INTEGER NOT NULL DEFAULT 0',
+      compensations_used: 'INTEGER NOT NULL DEFAULT 0',
+      recovery_started_at: 'INTEGER',
     })) {
       if (!columns.has(name)) this.#db.exec(`ALTER TABLE runs ADD COLUMN ${name} ${declaration}`);
     }
@@ -215,7 +221,10 @@ export class RuntimeStore {
       usage: { attempts: row.attempts_used, toolCalls: row.tool_calls_used },
       budgetUsage: { attempts: row.attempts_used, toolCalls: row.tool_calls_used,
         ioOperations: row.io_operations_used, decisionRequests: row.decision_requests_used,
-        analysisCalls: row.analysis_calls_used },
+        analysisCalls: row.analysis_calls_used,
+        // Recovery work is reported separately from business work so neither can hide the other.
+        recovery: { reads: row.recovery_reads_used, compensations: row.compensations_used,
+          startedAt: row.recovery_started_at } },
       state: JSON.parse(row.state_json), reason: row.reason,
       fence: row.fence,
       owner: row.owner_id === null ? null : { ownerId: row.owner_id, expiresAt: row.owner_expires_at },
@@ -513,7 +522,20 @@ export class RuntimeStore {
   }
 
   /** Record one compensation attempt against a settled business attempt. */
-  recordCompensation(taskId, input, { expectedVersion } = {}) {
+  recordCompensation(taskId, input, options = {}) {
+    try {
+      return this.#recordCompensation(taskId, input, options);
+    } catch (failure) {
+      // Persist the exhaustion after the failed transaction rolled back, then rethrow unchanged.
+      if (failure instanceof RuntimeContractError && failure.code === 'recovery_exhausted') {
+        this.#recordRecoveryExhaustion(taskId, { kind: 'compensation',
+          reason: failure.recoveryReason ?? 'count' });
+      }
+      throw failure;
+    }
+  }
+
+  #recordCompensation(taskId, input, { expectedVersion } = {}) {
     const plan = storageSnapshot(input?.plan);
     if (!plan || typeof plan !== 'object' || Array.isArray(plan)) throw error('invalid_compensation', 'A plan is required.');
     if (!['completed', 'unverified', 'diverged', 'unsupported'].includes(input.status)) {
@@ -530,6 +552,10 @@ export class RuntimeStore {
       if (!attempt || attempt.status !== 'settled') {
         throw error('invalid_compensation', 'Compensation requires a settled source attempt.');
       }
+      // A compensation is recovery work: it draws on the recovery reserve, never on business budget.
+      // The limit is per run, so a failed compensation goes to a human instead of buying another try.
+      this.#chargeRecoveryWithinTx(taskId, { column: 'compensations_used',
+        limitName: 'maxCompensations', kind: 'compensation' });
       const completed = input.status === 'completed';
       this.#db.prepare(`INSERT INTO compensations (compensation_id, task_id, source_attempt_id, status,
         plan_json, evidence_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
@@ -589,6 +615,53 @@ export class RuntimeStore {
   }
 
   /**
+   * Recovery reserve accounting, called inside the caller's transaction so the charge and the refusal
+   * decision see one snapshot. The reserve exists so a stopped run can be reconciled or compensated
+   * without spending business budget, and it has to actually bound that work: a declared limit that is
+   * never read would let recovery run unbounded while every test stayed green.
+   *
+   * The window starts at the first recovery action and is measured against `recoveryTimeoutMs`.
+   */
+  #chargeRecoveryWithinTx(taskId, { column, limitName, kind }) {
+    const row = this.#row(taskId);
+    const budget = validateBudget(JSON.parse(row.task_json).budget);
+    const now = this.#now();
+    const startedAt = row.recovery_started_at ?? now;
+    const overCount = row[column] + 1 > budget[limitName];
+    const overTime = now - startedAt > budget.recoveryTimeoutMs;
+    if (overCount || overTime) {
+      // Carry the reason on the error: callers must not re-derive it from message text.
+      const exhaustion = error('recovery_exhausted', `The ${kind} reserve is exhausted.`);
+      exhaustion.recoveryReason = overCount ? 'count' : 'timeout';
+      throw exhaustion;
+    }
+    this.#db.prepare(`UPDATE runs SET ${column} = ${column} + 1, recovery_started_at = ?,
+      version = version + 1, updated_at = ? WHERE task_id = ?`).run(startedAt, now, taskId);
+    this.#event(taskId, null, 'recovery_charged', { kind, used: row[column] + 1, limit: budget[limitName] });
+    return true;
+  }
+
+  /**
+   * A refused recovery action is recorded in its own commit after the failed transaction rolled back, so
+   * the exhaustion is visible in persisted state instead of only living in a thrown error.
+   */
+  #recordRecoveryExhaustion(taskId, { kind, reason }) {
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      const budget = validateBudget(JSON.parse(row.task_json).budget);
+      const column = kind === 'recoveryRead' ? 'recovery_reads_used' : 'compensations_used';
+      const limitName = kind === 'recoveryRead' ? 'maxRecoveryReads' : 'maxCompensations';
+      // Only a stopped run is handed to a human; work still running or already resolved is left alone.
+      const nextStatus = row.status === 'reconciling' ? 'waiting_human' : row.status;
+      this.#db.prepare('UPDATE runs SET status = ?, reason = ?, version = version + 1, updated_at = ? WHERE task_id = ?')
+        .run(nextStatus, 'recovery_exhausted', this.#now(), taskId);
+      this.#event(taskId, null, 'recovery_exhausted', { kind, used: row[column],
+        limit: budget[limitName], timedOut: reason === 'timeout', timeoutMs: budget.recoveryTimeoutMs });
+      return this.getRun(taskId);
+    });
+  }
+
+  /**
    * Resolve one frozen attempt with explicit external evidence. Reconciliation never invents success:
    * it records whether the business effect exists and leaves the goal to a later verified step.
    */
@@ -607,6 +680,9 @@ export class RuntimeStore {
       if (!['started', 'unknown', 'reserved'].includes(attempt.status)) {
         throw error('invalid_attempt_state', 'Only unresolved work may be reconciled.');
       }
+      // Charge the recovery reserve before doing any work: reconciliation is recovery, not business.
+      this.#chargeRecoveryWithinTx(taskId, { column: 'recovery_reads_used',
+        limitName: 'maxRecoveryReads', kind: 'recoveryRead' });
       const status = resolution === 'applied' ? 'reconciled_applied' : 'reconciled_absent';
       const outcome = { status: resolution === 'applied' ? 'succeeded' : 'failed',
         reconciled: true, resolution, evidenceRef, ...(note === null ? {} : { note }),

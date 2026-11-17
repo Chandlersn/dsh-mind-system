@@ -40,6 +40,11 @@ try {
     { name: 'late_task_proposal_accepted', file: 'src/exceptions.js',
       old: 'if (this.#now() >= run.task.deadlineAt || this.#monotonicNow() >= deadlineMono)', replacement: 'if (false)',
       test: /not ok \d+ - task deadline is checked after transport return/ },
+    // G-3: the "wrong artifact triggers analysis" case must die when the goal verifier is weakened.
+    { name: 'goal_verifier_always_passes', file: 'recipes/json-normalize.js',
+      old: "return { status: valid ? 'pass' : 'fail', progress: valid ? 'advanced' : 'unchanged', goalSatisfied: valid,",
+      replacement: "return { status: 'pass', progress: 'advanced', goalSatisfied: true,",
+      test: /not ok \d+ - an actual wrong artifact invokes analysis once/ },
   ];
   const observed = [];
   for (const mutant of mutants) {

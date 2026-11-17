@@ -57,7 +57,8 @@ test('registered recipe completes through the real pipeline with independently v
   assert.equal(env.host.count('json_write'), 1);
   assert.deepEqual(JSON.parse(readFileSync(join(env.host.storage, 'output.json'), 'utf8')),
     [{ id: 'a', name: 'Alpha' }, { id: 'b', name: 'Beta' }]);
-  assert.deepEqual(result.budgetUsage, { attempts: 1, toolCalls: 1, ioOperations: 24, decisionRequests: 0, analysisCalls: 0 });
+  assert.deepEqual(result.budgetUsage, { attempts: 1, toolCalls: 1, ioOperations: 24, decisionRequests: 0,
+    analysisCalls: 0, recovery: { reads: 0, compensations: 0, startedAt: null } });
   const events = env.store.readEvents(env.task.taskId);
   assert.equal(events.filter((event) => event.kind === 'admission_decided').length, 2);
   assert.equal(events.find((event) => event.kind === 'decision_recorded').payload.decisionSource, 'rules');

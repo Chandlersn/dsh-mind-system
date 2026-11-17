@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createHost, installed } from './helpers/host.js';
 import { RuntimeStore } from '../src/store.js';
@@ -32,6 +32,7 @@ async function fixture(t, { withTask = true, slow = false } = {}) {
       return { created: true };
     } });
   const tasks = {};
+  const runIds = [];
   if (withTask) {
     tasks['fixture-normalize'] = async ({ agent }) => ({
       task: { taskId: randomUUID(), recipeId: 'json-normalize', recipeVersion: '1',
@@ -39,13 +40,20 @@ async function fixture(t, { withTask = true, slow = false } = {}) {
         inputs: { inputFile: 'source.json', outputFile: 'output.json' }, deadlineAt: Date.now() + 60_000 },
       authority: { scopeRef: 'plugin-scope', workspaceRoot: host.storage, allowedTools: ['runtime.write_json'], agent },
     });
+    // Remember which run ids the native factory produced so tests can inspect persisted state.
+    const factory = tasks['fixture-normalize'];
+    tasks['fixture-normalize'] = async (input) => {
+      const prepared = await factory(input);
+      runIds.push(prepared.task.taskId);
+      return prepared;
+    };
   }
   const plugin = createExecutionRuntimePlugin({ store, recipes: [jsonNormalizeRecipe], tasks, owner: host.ctx,
     validateArguments({ tool, arguments: args }) {
       assertObjectJsonSchema(tool.parameters);
       return validateJsonSchemaValue(tool.parameters, args);
     } });
-  return { host, store, plugin, release: () => release?.(), close: () => { try { store.close(); } catch { /* closed */ } } };
+  return { host, store, plugin, runIds, release: () => release?.(), close: () => { try { store.close(); } catch { /* closed */ } } };
 }
 
 // The host registry exposes get(name, scope); omitting the scope asks the global view.
@@ -181,6 +189,32 @@ test('drain waits for in-flight work and the persisted run survives unload', asy
     const run = env.store.getRun(result.value.taskId);
     assert.ok(['completed', 'waiting_analysis', 'reconciling'].includes(run.status));
     assert.equal(env.plugin.healthProbe.probe().findings[0].code, 'execution-runtime.unloaded');
+  } finally { env.close(); }
+});
+
+test('a caller cancellation through the plugin tool converges instead of leaving an orphan run', async (t) => {
+  const env = await fixture(t);
+  try {
+    await env.host.ctx.plugin(env.plugin, {}).await();
+    const agent = await env.host.agent('cancelling-caller');
+    // Abort while the business tool is running: the public pipeline must converge and persist a state.
+    const controller = new AbortController();
+    env.host.ctx.on('tools/pre-execute', async (exec, next) => {
+      if (exec.name === 'runtime.write_json') controller.abort('caller cancelled');
+      return next();
+    });
+    const result = await env.host.execute('runtime_run', {
+      arguments: { taskRef: 'fixture-normalize' }, agent, signal: controller.signal,
+    });
+    // The caller's own signal aborts the outer call as well, so the host reports it as cancelled...
+    assert.equal(result.isError, true, 'A cancelled caller call is reported as an error, not a success.');
+    // ...but the run it started must converge in persisted state with nothing left unresolved.
+    const [taskId] = env.runIds;
+    assert.ok(taskId, 'The native factory must have been invoked once.');
+    const inspected = (await env.host.execute('runtime_status', { arguments: { taskId } })).value.run;
+    assert.equal(inspected.status, 'cancelled', `unexpected ${inspected.status}`);
+    assert.equal(env.store.listUnresolved(taskId).length, 0, 'A cancelled run leaves nothing unresolved.');
+    assert.equal(existsSync(join(env.host.storage, 'output.json')), false, 'Cancelling before dispatch must not write.');
   } finally { env.close(); }
 });
 

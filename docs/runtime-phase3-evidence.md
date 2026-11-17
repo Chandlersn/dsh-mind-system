@@ -6,7 +6,7 @@
 
 | 节点 | 当前状态 | 本轮证明 |
 | :--- | :--- | :--- |
-| DL-3.1 恢复、幂等与补偿 | 隔离已验 | 未知副作用冻结、逐条外部核对、核对不冒充目标验证、按工具+键的幂等守卫；补偿计划需目标事实、拒绝不可逆、失败不冒充已回滚 |
+| DL-3.1 恢复、幂等与补偿 | 隔离已验 | 未知副作用冻结、逐条外部核对、核对不冒充目标验证、按工具+键的幂等守卫；补偿计划需目标事实、拒绝不可逆、失败不冒充已回滚；恢复预留真正扣减并按run有界（DR-08-c） |
 | DL-3.2 pause/resume/cancel与单写者 | 隔离已验 | 租约与fence拦截旧owner的派发与结算；暂停清owner并推进fence；重复resume被拒；越截止拒绝恢复；模板/范围/工作区/工具集变更拒绝盲恢复 |
 | DL-3.3 任务级工具与健康接口 | 隔离已验 | 真Cordis装载：runtime_status/runtime_run注册成功、原生任务端到端完成、未登记引用与匿名调用被拒、卸载后宿主其他工具仍可用、探针区分unloaded与not-applied |
 | DL-3.4 合成构建与隔离加载 | 部分已验 | HMR/卸载语义：卸载先拒新派发、`drain()`等待在途work、活动run持久可恢复、探针区分draining；合成构建、发布守卫与源产物一致未做 |
@@ -76,24 +76,40 @@
 
 本轮变异脚本自身也有一处误判值得记：`inflight_work_not_tracked`最初被判"未杀死"，手动复现却发现用例确实失败了——原因是该变异让用例挂到60秒测试超时，而脚本`spawnSync`的timeout也是60秒，超时被当成"没有指定断言失败"。把脚本上限提到180秒后判定正确。**变异脚本的超时必须宽于被测用例自身的超时，否则超时会伪装成"变异存活"。**
 
-## 8. 执行的检查
+## 8. 恢复预留真正被执行
+
+DR-08-c要求"业务预算耗尽后仅可使用独立、有界、已声明的恢复预留"。核对发现`maxRecoveryReads`/`maxCompensations`/`recoveryTimeoutMs`三项此前**只在校验层存在，从未被读取或扣减**——形状对、测试全绿，但一次也没约束过行为。这正是"闸门只证没坏，不证有内容"的实例。
+
+现在`#chargeRecoveryWithinTx`在调用方事务内**先扣再做**，超限抛`recovery_exhausted`并在错误对象上带原因（计数/超时），调用方不必从消息文本里猜。`reconcileAttempt`与`recordCompensation`都走这条路径；恢复用量单独存列并出现在`budgetUsage.recovery`，与业务用量分开呈报，谁也不能替谁掩盖。耗尽后由独立事务落`waiting_human`与事件——被拒的尝试没写业务行，但"耗尽"这件事必须留在持久状态里，不能只活在抛出的错误中。限额是**每run**的：一次失败的补偿不能靠重试买到第二次机会。
+
+同时补上插件路径的取消验证（G-2第一子项）：在`tools/pre-execute`中止调用方信号，验证外层调用以`isError:true`收敛、持久run落在`cancelled`、无未结动作、未产生业务文件。这里我最初把外层断言写成"不是错误"，被真实宿主纠正——中止一个调用，宿主本就该报告该调用被取消；正确的不变式在**持久状态收敛**那一侧。
+
+另补`goal_verifier_always_passes`变异（G-3）：把模板Verifier改成恒`pass`后，"错误产物触发分析"用例必须变红，使DR-01的反事实有直接证据而非间接传导。
+
+## 9. 执行的检查
 
 ```powershell
 node --test packages/dsh-execution-runtime/test/*.test.js
-node packages/dsh-execution-runtime/scripts/verify-plugin-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-compensation-mutations.mjs
-node packages/dsh-execution-runtime/scripts/verify-lease-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-recovery-mutations.mjs
-node packages/dsh-execution-runtime/scripts/verify-repair-mutations.mjs
+node packages/dsh-execution-runtime/scripts/verify-plugin-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-analysis-mutations.mjs
+node packages/dsh-execution-runtime/scripts/verify-lease-mutations.mjs
+node packages/dsh-execution-runtime/scripts/verify-repair-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-core-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-phase1-mutations.mjs
+node packages/dsh-execution-runtime/scripts/verify-rollback-mutations.mjs
+node packages/dsh-execution-runtime/scripts/verify-pattern-mutations.mjs
+node packages/dsh-execution-runtime/scripts/verify-approval-mutations.mjs
+node packages/dsh-execution-runtime/scripts/verify-hit-mutations.mjs
+node packages/dsh-execution-runtime/scripts/verify-knowledge-mutations.mjs
+node packages/dsh-execution-runtime/scripts/verify-diagnosis-mutations.mjs
 ```
 
-整包346 tests / 346 pass / 0 fail / 0 skipped，退出码0：阶段1既有171，加Analyzer17、分析存储24、异常协调器13、JSON修复策略47、修复管线19、修复存储12、取证探针7、恢复与幂等7、租约与暂停12、补偿契约8、插件与卸载9。
+整包416 tests / 416 pass / 0 fail / 0 skipped，退出码0。本节相关套件：租约与暂停12、补偿契约10（含恢复预留2）、插件与卸载10（含取消1）、恢复与幂等7。
 
-插件变异7个、补偿变异5个、恢复变异4个、租约与暂停变异7个全部由指定断言检出：未登记引用放行、匿名调用放行、卸载不标记unloaded、卸载后仍可派发、在途work不追踪、忽略在途排空、卸载隐藏draining、未apply仍报ok；无目标事实仍记完成、允许不可逆补偿、计划重定向工具、无事实写完成、失败补偿返回完成；未知副作用不冻结、核对冒充目标成功、幂等守卫被删、核对缺少外部证据；fence校验被删、租约复用fence、暂停允许未结动作、resume不推进fence、resume忽略截止、调度器忽略fence、resume忽略环境变更。前序6个修复变异、4个分析变异、4个核心变异与阶段1的9个同轮复跑仍全部命中。
+14个套件共95个边界变异全部由指定断言检出。本轮新增3个：`compensation_skips_recovery_reserve`（跳过扣减）、`exhaustion_not_persisted`（耗尽不落盘）、`goal_verifier_always_passes`（Verifier恒pass后正常路径用例必须变红）。
 
-## 9. 下一步
+## 10. 下一步
 
-DL-3.4剩余：接合成构建与隔离加载——源/产物一致、结构/发布/原计划守卫通过（本轮只做了卸载/排空语义，没有触碰合成成员与活动junction）。DL-3.3剩余：在原生scope下验证取消路径与"不影响原有五成员"的完整对照（本轮只验证了宿主其他工具仍可用）。真实Jev、推理提供者、生产装配与跨任务推广均未验收。
+DL-3.4剩余：接合成构建与隔离加载——源/产物一致、结构/发布/原计划守卫通过（本轮只做了卸载/排空语义，没有触碰合成成员与活动junction）。DR-13第二子项：在活动宿主上验证"关闭运行不影响原有五成员"，同样需要真实装载授权。真实Jev、推理提供者、生产装配与跨任务推广均未验收。

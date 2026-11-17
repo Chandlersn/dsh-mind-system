@@ -1,6 +1,6 @@
 # 心智系统 × 双循环执行运行时：融合开发方案与计划
 
-> 版本：v1.18 · 2026-11-17；DL-2.2回滚与重复修复编排补齐，阶段2节点全部完成；阶段5与合成构建仍待做。
+> 版本：v1.19 · 2026-11-17；DR-08-c恢复预留与DR-01/DR-13两处子项经条目级核对后闭合；剩余缺口见[DR对齐核对](runtime-dr-alignment.md)。
 > 性质：开发方案与逐步执行记录；隔离验证不等于活动宿主部署或真实任务验收。执行进展见[阶段0](runtime-phase0-evidence.md)、[阶段1](runtime-phase1-evidence.md)、[阶段2·异常闭环](runtime-phase2-evidence.md)、[阶段3·恢复核对](runtime-phase3-evidence.md)与[阶段4·模式候选](runtime-phase4-evidence.md)。
 > 关联：[现有升级计划](../UPGRADE-PLAN.md)。原计划 I–VI、F1–F19、N1–N6 保留原义；本文使用 DL 节点和 DR 验收编号，不覆盖原编号、不把组件存在记为执行闭环完成。
 > 基线：心智系统仓库 `28029f9`；本机 Node.js `v22.23.3`。开发工作树为 `D:/个人开发/dsh-execution-runtime`，分支 `feat/dual-loop-runtime`。已运行隔离协议、真实安装包管线和持久化原型测试；尚未验证真实Jev服务或部署完整运行时。

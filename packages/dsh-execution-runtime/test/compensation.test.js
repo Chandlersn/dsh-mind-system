@@ -17,11 +17,13 @@ const plan = (overrides = {}) => ({ compensationId: 'restore:1', targetTool: 'ru
 const verification = (overrides = {}) => ({ status: 'pass', progress: 'advanced', goalSatisfied: true,
   verifierId: 'json-source-output', verifierVersion: '1', evidenceRefs: ['file:/w/out.json#sha256:' + A], ...overrides });
 
-function fixture(t, { keepRunning = false } = {}) {
+function fixture(t, { keepRunning = false, maxCompensations } = {}) {
   const store = new RuntimeStore(':memory:');
   t.after(() => store.close());
   const task = { taskId: randomUUID(), recipeId: 'json-normalize', recipeVersion: '1', goal: 'g',
-    scopeRef: 's', workspaceRoot: process.cwd(), inputs: {}, deadlineAt: Date.now() + 60_000 };
+    scopeRef: 's', workspaceRoot: process.cwd(), inputs: {}, deadlineAt: Date.now() + 60_000,
+    // Recovery attempts draw on their own reserve, declared per task.
+    ...(maxCompensations === undefined ? {} : { budget: { maxCompensations } }) };
   store.createRun(task);
   const candidate = { candidateId: 'c', toolName: 'runtime.write_json', progressKey: 'p',
     arguments: { path: '/w/out.json', content: 'new', createOnly: true }, preconditionIds: ['ready'],
@@ -108,7 +110,7 @@ test('only target-verified compensation is recorded as completed', (t) => {
 });
 
 test('a failed compensation on a running task stops it instead of reporting a finished rollback', (t) => {
-  const env = fixture(t, { keepRunning: true });
+  const env = fixture(t, { keepRunning: true, maxCompensations: 3 });
   assert.equal(env.store.getRun(env.task.taskId).status, 'running');
   const input = plan({ sourceAttemptId: env.attemptId });
   for (const status of ['unverified', 'diverged', 'unsupported']) {
@@ -134,6 +136,43 @@ test('compensation cannot target an unsettled or foreign attempt', (t) => {
   assert.throws(() => other.store ?? other.recordCompensation('foreign',
     { status: 'completed', plan: plan({ sourceAttemptId: env.attemptId }), verifiedByTarget: true },
     { expectedVersion: other.getRun('foreign').version }), { code: 'invalid_compensation' });
+});
+
+test('the compensation reserve bounds recovery attempts instead of letting them retry forever', (t) => {
+  const env = fixture(t, { keepRunning: true, maxCompensations: 1 });
+  const input = plan({ sourceAttemptId: env.attemptId });
+  const first = env.store.recordCompensation(env.task.taskId,
+    { status: 'unverified', plan: input, evidenceRef: 'file:x#sha256:' + A },
+    { expectedVersion: env.store.getRun(env.task.taskId).version });
+  assert.equal(first.compensation.status, 'unverified');
+  // A second attempt would buy another try with no new authority, so it is refused and persisted as such.
+  assert.throws(() => env.store.recordCompensation(env.task.taskId,
+    { status: 'unverified', plan: { ...input, compensationId: 'restore:second' }, evidenceRef: 'file:x#sha256:' + A },
+    { expectedVersion: env.store.getRun(env.task.taskId).version }), { code: 'recovery_exhausted' });
+  const run = env.store.getRun(env.task.taskId);
+  assert.equal(run.reason, 'recovery_exhausted');
+  assert.equal(run.status, 'waiting_human', 'An exhausted reserve hands the run to a human.');
+  assert.equal(env.store.listCompensations(env.task.taskId).length, 1, 'The refused attempt wrote no compensation row.');
+  const events = env.store.readEvents(env.task.taskId);
+  assert.deepEqual(events.filter((event) => event.kind === 'recovery_charged').map((event) => event.payload.kind),
+    ['compensation']);
+  assert.equal(events.some((event) => event.kind === 'recovery_exhausted'), true);
+});
+
+test('recovery charging stays inside its own reserve and does not spend business budget', (t) => {
+  const env = fixture(t, { keepRunning: true });
+  const keys = ['attempts', 'toolCalls', 'ioOperations', 'decisionRequests', 'analysisCalls'];
+  const business = (run) => Object.fromEntries(keys.map((key) => [key, run.budgetUsage[key]]));
+  const before = business(env.store.getRun(env.task.taskId));
+  env.store.recordCompensation(env.task.taskId,
+    { status: 'completed', plan: plan({ sourceAttemptId: env.attemptId }), verifiedByTarget: true,
+      evidenceRef: 'file:/w/out.json#sha256:' + A },
+    { expectedVersion: env.store.getRun(env.task.taskId).version });
+  const after = env.store.getRun(env.task.taskId);
+  assert.deepEqual(business(after), before, 'A recovery action must not consume business attempts, tools or I/O.');
+  // Recovery usage is reported on its own so neither side can hide the other.
+  assert.equal(after.budgetUsage.recovery.reads, 0);
+  assert.equal(after.budgetUsage.recovery.compensations, 1);
 });
 
 test('the JSON template builds a restore plan from observed versions, not from a model claim', () => {

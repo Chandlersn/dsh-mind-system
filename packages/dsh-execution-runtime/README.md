@@ -201,6 +201,12 @@ SAG在这里的角色是**读写引擎**，不是身份判定者。`knowledgeRef
 
 首个JSON修复要求原始create-only动作建立所有权；**第二次修复**允许从"上一次已核验的owned替换"继续建立上下文：仍然要求同一产物路径、同一模板版本、同一inputVersion、同一后置条件集与修复策略前置条件，只是不再要求`createOnly`。这样修复链可以延续，而所有权仍可回溯到最初的创建动作。路径或条件不符仍然fail closed。
 
+## 恢复预留
+
+核对与补偿属于恢复工作，不消耗业务预算，而是走独立的**恢复预留**：`maxRecoveryReads`、`maxCompensations`、`recoveryTimeoutMs`。计费在调用方事务内先扣再做，超限抛`recovery_exhausted`并在错误对象上带原因（计数或超时）；耗尽后由独立事务把仍冻结的run交给`waiting_human`并落`recovery_exhausted`事件。限额按**每run**计，一次失败的补偿不能靠重试买到第二次机会。
+
+恢复用量单独出现在`getRun().budgetUsage.recovery`，与`attempts/toolCalls/ioOperations/decisionRequests/analysisCalls`分开，两者互不遮掩。这三个键此前只在校验层存在、从未被读取——声明了限额却不执行，比没有限额更危险。
+
 ## 持久化与授权边界
 
 当前使用Node.js内建`node:sqlite`；本机Node v22.23.3仍将该API标记为实验性。原型验证不等于生产驱动选型已完成。事件不可改限制来自SQLite触发器，不能防御拥有数据库文件写权限的外部进程。
