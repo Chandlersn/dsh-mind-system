@@ -18,7 +18,8 @@
     "./exceptions": "./src/exceptions.js",
     "./probes": "./src/probes.js",
     "./compensation": "./src/compensation.js",
-    "./plugin": "./src/plugin.js"
+    "./plugin": "./src/plugin.js",
+    "./repair-patterns": "./src/repair-patterns.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
@@ -30,6 +31,7 @@
     "verify:lease": "node scripts/verify-lease-mutations.mjs",
     "verify:compensation": "node scripts/verify-compensation-mutations.mjs",
     "verify:plugin": "node scripts/verify-plugin-mutations.mjs",
+    "verify:patterns": "node scripts/verify-pattern-mutations.mjs",
     "probe:jev": "node scripts/probe-jev.mjs"
   }
 }

@@ -125,6 +125,16 @@ JSON模板提供`buildJsonCompensation`：从原Verifier观察到的版本与先
 
 `drain()`等待真正的在途work，并在等待前快照pending，所以`drained`反映实际等待的条数；卸载时有在途work，探针返回`degraded/execution-runtime.draining`，排空后才回到`execution-runtime.unloaded`。run持久在SQLite中，卸载只影响插件实例，后续owner仍可resume或reconcile。
 
+## 修正证据与模式候选
+
+`patternIdentity`按**实际约束**生成身份：模板与版本、范围、Verifier及版本、触发类型、工具名。它不读退出码、也不读瞬时错误文本——同一个约束换一句报错仍是同一模式，不同工具或范围不会塌缩成一个。
+
+`classifyRepairEvidence`决定一条修正记录算不算样本：只有`settled`且`succeeded===true`计入成功；**已验证失败计入分母但不计成功**（否则成功率只由成功样本构成，必然虚高）；`blocked`/`unknown`/`observed`（取证）既不进分子也不进分母，并在`rejected`里留下原因。`settled`但未声明成败会被拒绝，不默认成功。
+
+`summarizePatternEvidence`按**独立run**计数：同一个run反复修正只算一个独立样本，重复回执按`repairId`去重。`eligible`需要独立run数达阈值且成功率达标——重复次数不能替代覆盖面。
+
+`buildPatternCandidates`只产出**候选**：`activatable:false`且附注说明"候选不是生效规则"。它不写任何规则库，推广仍需人工评审（DL-4.2）。
+
 ## 持久化与授权边界
 
 当前使用Node.js内建`node:sqlite`；本机Node v22.23.3仍将该API标记为实验性。原型验证不等于生产驱动选型已完成。事件不可改限制来自SQLite触发器，不能防御拥有数据库文件写权限的外部进程。
