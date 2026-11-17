@@ -132,11 +132,14 @@ export class AnalysisCoordinator {
         allowedTools: [...authority.allowedTools], recipeId: run.task.recipeId, recipeVersion: run.task.recipeVersion };
       const summary = JSON.stringify(authorityDetails);
       const scopeRef = summary.length <= 1000 && Buffer.byteLength(summary) <= 1000 ? null : putEvidence('authority', authorityDetails).ref;
+      // Probe observations are bounded task evidence; make them readable by the next analysis.
+      const probeRefs = this.#store.listEvidence(taskId, { limit: 8 })
+        .filter((item) => item.label.startsWith('probe:')).map((item) => item.ref);
       const packet = buildExceptionPackage({ task: run.task, attemptId: attempt?.attemptId ?? `unexecuted:${randomUUID()}`,
         trigger: exceptionTrigger(run, attempt), scopeSummary: scopeRef ? `Authorized scope details: ${scopeRef}` : summary,
         candidate: attempt?.candidate ?? null, decision: null,
         executionSummary: attempt?.outcome ?? { reason: run.reason }, verification: attempt?.verification ?? null,
-        recentTrace, evidenceRefs: [...(scopeRef ? [scopeRef] : []), ...(attempt?.verification?.evidenceRefs ?? [])],
+        recentTrace, evidenceRefs: [...(scopeRef ? [scopeRef] : []), ...(attempt?.verification?.evidenceRefs ?? []), ...probeRefs],
         putEvidence, maxBytes: this.#maxBytes });
       if (scopeRef) { packet.truncation.fields.push('scopeSummary'); packet.truncation.omittedBytes += bytes(authorityDetails); }
       const allowedEvidenceRefs = [...packet.evidenceRefs];

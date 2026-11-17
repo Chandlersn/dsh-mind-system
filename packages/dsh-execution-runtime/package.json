@@ -15,7 +15,8 @@
     "./executor": "./src/executor.js",
     "./scheduler": "./src/scheduler.js",
     "./analyzer": "./src/analyzer.js",
-    "./exceptions": "./src/exceptions.js"
+    "./exceptions": "./src/exceptions.js",
+    "./probes": "./src/probes.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",

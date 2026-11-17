@@ -95,7 +95,7 @@ export class RuntimeStore {
         analysis_id TEXT NOT NULL UNIQUE REFERENCES analyses(analysis_id),
         task_id TEXT NOT NULL REFERENCES runs(task_id), signature TEXT NOT NULL,
         kind TEXT NOT NULL CHECK(kind IN ('retry_with', 'gather_evidence', 'abort')),
-        status TEXT NOT NULL CHECK(status IN ('reserved', 'settled', 'blocked', 'unknown')),
+        status TEXT NOT NULL CHECK(status IN ('reserved', 'settled', 'blocked', 'unknown', 'observed')),
         candidate_json TEXT, attempt_id TEXT UNIQUE REFERENCES attempts(attempt_id),
         attempt_floor INTEGER NOT NULL, outcome_json TEXT,
         created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
@@ -130,6 +130,23 @@ export class RuntimeStore {
       this.#db.exec(`DROP INDEX IF EXISTS analyses_one_unresolved;
         CREATE UNIQUE INDEX analyses_one_unresolved ON analyses(task_id)
           WHERE status IN ('pending', 'proposed') AND consumed_at IS NULL`);
+      // A database created before evidence observation keeps an older status CHECK; rebuild it in place.
+      const repairsSql = this.#db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'repairs'").get()?.sql ?? '';
+      if (repairsSql && !repairsSql.includes("'observed'")) {
+        this.#db.exec(`ALTER TABLE repairs RENAME TO repairs_legacy;
+          CREATE TABLE repairs (
+            repair_id TEXT PRIMARY KEY NOT NULL,
+            analysis_id TEXT NOT NULL UNIQUE REFERENCES analyses(analysis_id),
+            task_id TEXT NOT NULL REFERENCES runs(task_id), signature TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('retry_with', 'gather_evidence', 'abort')),
+            status TEXT NOT NULL CHECK(status IN ('reserved', 'settled', 'blocked', 'unknown', 'observed')),
+            candidate_json TEXT, attempt_id TEXT UNIQUE REFERENCES attempts(attempt_id),
+            attempt_floor INTEGER NOT NULL, outcome_json TEXT,
+            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+          );
+          INSERT INTO repairs SELECT * FROM repairs_legacy;
+          DROP TABLE repairs_legacy;`);
+      }
     });
   }
 
@@ -492,6 +509,17 @@ export class RuntimeStore {
     });
   }
 
+  /** Bounded recent evidence metadata for reuse by a later analysis package. */
+  listEvidence(taskId, { limit = 8 } = {}) {
+    this.#row(taskId);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 16) {
+      throw error('invalid_evidence_limit', 'Evidence listing must be from 1 to 16 entries.');
+    }
+    return this.#db.prepare(`SELECT ref, label, bytes, created_at FROM evidence WHERE task_id = ?
+      ORDER BY rowid DESC LIMIT ?`).all(taskId, limit)
+      .map((row) => ({ ref: row.ref, label: row.label, bytes: row.bytes, createdAt: row.created_at }));
+  }
+
   recordAnalysis(taskId, analysisId, input, { expectedVersion } = {}) {
     const result = storageSnapshot(input);
     const statuses = ['proposed', 'analysis_parse_failed', 'analysis_timeout', 'analysis_cancelled', 'analysis_failed', 'analysis_package_failed'];
@@ -612,7 +640,7 @@ export class RuntimeStore {
 
   finishRepair(taskId, repairId, { attemptId, status, succeeded, reason, expectedVersion } = {}) {
     requireString(repairId, 'repairId');
-    if (!['settled', 'blocked', 'unknown'].includes(status) || (succeeded !== undefined && typeof succeeded !== 'boolean')) {
+    if (!['settled', 'blocked', 'unknown', 'observed'].includes(status) || (succeeded !== undefined && typeof succeeded !== 'boolean')) {
       throw error('invalid_repair_outcome', 'A valid repair status and optional boolean success are required.');
     }
     if (attemptId !== undefined) requireString(attemptId, 'attemptId');
@@ -623,7 +651,13 @@ export class RuntimeStore {
       const repair = this.#db.prepare('SELECT * FROM repairs WHERE task_id = ? AND repair_id = ?').get(taskId, repairId);
       if (!repair || repair.status !== 'reserved') throw error('invalid_repair_state', 'Only a reserved same-task repair may finish.');
       let actualSuccess = false;
-      if (status === 'blocked') {
+      if (status === 'observed') {
+        // Evidence gathering observes; it neither dispatches business work nor proves success.
+        if (attemptId !== undefined || succeeded !== undefined || row.status !== 'running'
+          || this.#db.prepare('SELECT 1 FROM attempts WHERE task_id = ? AND rowid > ?').get(taskId, repair.attempt_floor)) {
+          throw error('invalid_repair_outcome', 'Observed repair work must not dispatch or claim an outcome.');
+        }
+      } else if (status === 'blocked') {
         if (attemptId !== undefined || succeeded === true || row.status !== 'running'
           || this.#db.prepare('SELECT 1 FROM attempts WHERE task_id = ? AND rowid > ?').get(taskId, repair.attempt_floor)) {
           throw error('invalid_repair_outcome', 'A blocked repair must have no attempted work.');
@@ -661,12 +695,14 @@ export class RuntimeStore {
         ON CONFLICT(task_id, signature) DO UPDATE SET failures = failures + 1`).run(taskId, repair.signature);
       const limited = this.getRepairFailures(taskId, repair.signature) >= 2;
       const now = this.#now();
-      const metadata = { ...(status === 'unknown' ? {} : { succeeded: actualSuccess }), ...(reason === undefined ? {} : { reason }) };
+      const metadata = { ...(['unknown', 'observed'].includes(status) ? {} : { succeeded: actualSuccess }), ...(reason === undefined ? {} : { reason }) };
       this.#db.prepare('UPDATE repairs SET status = ?, attempt_id = ?, outcome_json = ?, updated_at = ? WHERE repair_id = ?')
         .run(status, attemptId ?? null, JSON.stringify(metadata), now, repairId);
       const nextStatus = row.status === 'reconciling' ? row.status : limited ? 'waiting_human'
+        : status === 'observed' ? 'waiting_analysis'
         : status === 'blocked' ? 'failed' : failed && row.status === 'running' ? 'waiting_analysis' : row.status;
       const nextReason = row.status === 'reconciling' ? row.reason : limited ? 'repair_limit'
+        : status === 'observed' ? 'evidence_gathered'
         : status === 'blocked' ? reason ?? 'repair_blocked'
           : failed && row.status === 'running' ? 'repair_no_progress' : row.reason;
       this.#db.prepare('UPDATE runs SET status = ?, reason = ?, version = version + 1, updated_at = ? WHERE task_id = ?')

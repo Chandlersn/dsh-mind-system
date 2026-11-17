@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { validateRepairAction } from './analyzer.js';
+import { createProbeRegistry, probeIo, runEvidenceProbe } from './probes.js';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { admitCandidate } from './admission.js';
@@ -64,9 +65,10 @@ export class RuntimeScheduler {
   #now;
   #monotonicNow;
   #active = new Set();
+  #probes = [];
 
   constructor({ store, recipes, executor, tools, validateArguments, decisionClient = null,
-    decisionPolicy = null, admission = admitCandidate, now = Date.now, monotonicNow = () => performance.now() }) {
+    decisionPolicy = null, admission = admitCandidate, probes = [], now = Date.now, monotonicNow = () => performance.now() }) {
     if (!store || !executor || typeof executor.execute !== 'function' || !Array.isArray(recipes)
       || typeof admission !== 'function' || typeof validateArguments !== 'function') {
       fail('invalid_runtime', 'Store, registered recipes, executor, admission and argument validation are required.');
@@ -80,6 +82,7 @@ export class RuntimeScheduler {
     this.#admit = admission;
     this.#now = now;
     this.#monotonicNow = monotonicNow;
+    this.#probes = createProbeRegistry(probes);
     for (const input of recipes) {
       const recipe = registerRecipe(input);
       const key = `${recipe.id}:${recipe.version}`;
@@ -115,6 +118,7 @@ export class RuntimeScheduler {
     let repairContext = null;
     let repairCandidate = null;
     let repairHistory = Object.freeze([]);
+    let probeIds = null;
     if (!authority || authority.scopeRef !== task.scopeRef || !Array.isArray(authority.allowedTools)
       || !authority.allowedTools.length || typeof authority.workspaceRoot !== 'string') {
       fail('authority_unavailable', 'Explicit task authority is required before reading task files.');
@@ -186,7 +190,8 @@ export class RuntimeScheduler {
         const analysis = this.#store.getAnalysis(task.taskId, repairAnalysisId);
         if (!analysis?.result || analysis.status !== 'proposed') fail('repair_not_proposed', 'A persisted proposal is required.');
         const proposal = validateRepairAction(analysis.result.repair, { allowedEvidenceRefs: analysis.evidenceRefs });
-        if (!['retry_with', 'abort'].includes(proposal.kind)) fail('repair_branch_unavailable', 'This repair branch requires its dedicated native controller.');
+        if (!['retry_with', 'abort', 'gather_evidence'].includes(proposal.kind)) fail('repair_branch_unavailable', 'This repair branch requires its dedicated native controller.');
+        probeIds = proposal.kind === 'gather_evidence' ? Object.freeze([...proposal.probeIds]) : null;
         const previousAttempt = this.#store.getLatestAttempt(task.taskId);
         if (proposal.kind === 'retry_with') {
           const policy = baseRecipe.repairPolicy;
@@ -222,6 +227,15 @@ export class RuntimeScheduler {
       }
       let noProgress = 0;
       repairHistory = Object.freeze(this.#store.readRepairTrace(task.taskId).map((item) => Object.freeze(item)));
+      if (probeIds) {
+        const outcome = await runEvidenceProbe({ store: this.#store, probes: this.#probes, task,
+          authority: trustedAuthority, probeIds, signal: combinedSignal,
+          io: probeIo({ workspaceRoot: root, charge: () => charge('ioOperations') }),
+          putEvidence: (label, value) => this.#store.putEvidence(task.taskId, label, value, version()) });
+        observe('repair_evidence_gathered', jsonSnapshot(outcome));
+        this.#store.finishRepair(task.taskId, repairId, { ...version(), status: 'observed' });
+        return this.#store.getRun(task.taskId);
+      }
       while (current().status === 'running') {
         check();
         const state = snapshot(current().state);

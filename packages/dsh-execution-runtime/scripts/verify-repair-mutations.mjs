@@ -17,12 +17,14 @@ function run(args, label) {
 try {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
   for (const file of ['src/contracts.js', 'src/store.js', 'src/admission.js', 'src/executor.js',
-    'src/decision-client.js', 'src/scheduler.js', 'src/analyzer.js', 'src/exceptions.js', 'recipes/json-normalize.js',
-    'recipes/json-repair.js', 'test/helpers/host.js', 'test/repair.test.js', 'test/store-repair.test.js']) {
+    'src/decision-client.js', 'src/scheduler.js', 'src/analyzer.js', 'src/exceptions.js', 'src/probes.js',
+    'recipes/json-normalize.js',
+    'recipes/json-repair.js', 'test/helpers/host.js', 'test/repair.test.js', 'test/store-repair.test.js',
+    'test/probes.test.js']) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
     writeFileSync(join(root, file), readFileSync(join(source, file)));
   }
-  const tests = ['test/repair.test.js', 'test/store-repair.test.js'].map((file) => join(root, file));
+  const tests = ['test/repair.test.js', 'test/store-repair.test.js', 'test/probes.test.js'].map((file) => join(root, file));
   const baseline = run(['--test', ...tests], 'baseline');
   assert.equal(baseline.status, 0, baseline.output);
   const mutants = [
@@ -42,6 +44,10 @@ try {
     { name: 'repair_history_ignored_by_next_choice', file: 'recipes/json-normalize.js',
       old: '    if (previous.length) {', replacement: '    if (false) {',
       test: /not ok \d+ - the plain recipe refuses to regenerate its original action/ },
+    { name: 'probe_result_not_persisted', file: 'src/probes.js',
+      old: '    const stored = putEvidence(`probe:${probeId}`, value);',
+      replacement: '    const stored = { ref: `runtime-evidence:00000000-0000-0000-0000-000000000000#sha256:${"0".repeat(64)}`, bytes: 0 };',
+      test: /not ok \d+ - a registered read-only probe records task evidence/ },
   ];
   const observed = [];
   for (const mutant of mutants) {

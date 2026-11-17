@@ -18,7 +18,7 @@ function run(args, label) {
 }
 try {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
-  const files = ['src/contracts.js', 'src/store.js', 'src/analyzer.js', 'src/decision-client.js', 'src/admission.js',
+  const files = ['src/contracts.js', 'src/store.js', 'src/analyzer.js', 'src/probes.js', 'src/decision-client.js', 'src/admission.js',
     'src/executor.js', 'src/scheduler.js', 'recipes/json-normalize.js', 'test/scheduler.test.js',
     'test/store-runtime.test.js', 'test/admission.test.js', 'test/executor.test.js', 'test/helpers/host.js'];
   for (const relative of files) {
