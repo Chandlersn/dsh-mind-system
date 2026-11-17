@@ -109,14 +109,26 @@ export const jsonNormalizeRepairPolicy = freeze({
       fail('Only a settled successful original creation establishes ownership.');
     }
     const original = validateCandidate(previous.candidate);
-    if (original.toolName !== 'runtime.write_json' || original.arguments.createOnly !== true
-      || original.arguments.path !== prepared.outputPath || typeof original.arguments.content !== 'string'
-      || !sameIds(Object.keys(original.arguments), ['path', 'content', 'createOnly'])
+    // A previous repair may re-establish context only when it was itself an owned replacement of the same
+    // artifact; the ownership still traces back to the original create-only action recorded in the task.
+    const viaRepair = original.toolName === 'runtime.replace_json';
+    if (!viaRepair && (original.toolName !== 'runtime.write_json' || original.arguments.createOnly !== true)) {
+      fail('Ownership must come from the original scoped create-only recipe action.');
+    }
+    if (original.arguments.path !== prepared.outputPath || typeof original.arguments.content !== 'string'
       || original.effect !== 'reversible_write' || original.inputVersion !== prepared.inputSha256
       || original.source.recipeId !== 'json-normalize' || original.source.version !== '1'
-      || !sameIds(original.preconditionIds, ['source-hash-unchanged', 'output-absent', 'workspace-scope'])
       || !sameIds(original.postconditionIds, POSTCONDITIONS)) {
       fail('Ownership must come from the original scoped create-only recipe action.');
+    }
+    if (!viaRepair && !sameIds(Object.keys(original.arguments), ['path', 'content', 'createOnly'])) {
+      fail('Ownership must come from the original scoped create-only recipe action.');
+    }
+    if (!viaRepair && !sameIds(original.preconditionIds, ['source-hash-unchanged', 'output-absent', 'workspace-scope'])) {
+      fail('Ownership must come from the original scoped create-only recipe action.');
+    }
+    if (viaRepair && !sameIds(original.preconditionIds, REQUIRED)) {
+      fail('A repeated repair must carry the repair policy preconditions.');
     }
     const verification = previous.verification;
     if (verification?.status !== 'fail' || verification.goalSatisfied !== false

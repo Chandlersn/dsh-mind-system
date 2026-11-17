@@ -24,7 +24,8 @@
     "./valve-bridge": "./src/valve-bridge.js",
     "./pattern-runtime": "./src/pattern-runtime.js",
     "./knowledge": "./src/knowledge.js",
-    "./diagnosis": "./src/diagnosis.js"
+    "./diagnosis": "./src/diagnosis.js",
+    "./rollback": "./src/rollback.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
@@ -41,6 +42,7 @@
     "verify:hits": "node scripts/verify-hit-mutations.mjs",
     "verify:knowledge": "node scripts/verify-knowledge-mutations.mjs",
     "verify:diagnosis": "node scripts/verify-diagnosis-mutations.mjs",
+    "verify:rollback": "node scripts/verify-rollback-mutations.mjs",
     "probe:jev": "node scripts/probe-jev.mjs"
   }
 }

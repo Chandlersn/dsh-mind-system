@@ -147,6 +147,26 @@ test('model-cloned context and task/state goal or version changes cannot authori
   assert.equal(env.calls.length, 0);
 });
 
+test('a second repair re-establishes ownership from the previous owned replacement', (t) => {
+  const env = fixture(t);
+  // The first repair replaced the artifact; a second failure arrives with that replacement as its predecessor.
+  const repairCandidate = { ...clone(env.previousAttempt.candidate), candidateId: 'repair-1',
+    toolName: 'runtime.replace_json',
+    arguments: { path: join(env.root, 'output.json'), content: env.previousAttempt.candidate.arguments.content,
+      expectedSha256: env.context.observedSha256 },
+    preconditionIds: [...policy.requiredPreconditionIds] };
+  const repaired = { attemptId: 'repair-1', status: 'settled', candidate: repairCandidate,
+    outcome: { status: 'succeeded' }, verification: env.previousAttempt.verification };
+  // The artifact still holds the version the previous verification observed, so ownership continues.
+  const second = policy.prepare({ task: env.task, state: env.state, previousAttempt: repaired });
+  assert.equal(second.observedSha256, env.context.observedSha256);
+  assert.equal(second.originalAttemptId, 'repair-1');
+  // A replacement that is not the owned artifact still fails closed.
+  assert.throws(() => policy.prepare({ task: env.task, state: env.state, previousAttempt: {
+    ...repaired, candidate: { ...repairCandidate, arguments: { ...repairCandidate.arguments, path: join(env.root, 'other.json') } } } }),
+  { code: 'repair_not_authorized' });
+});
+
 test('prepare refuses task recipe changes, unsafe filenames, and state source drift', (t) => {
   const env = fixture(t);
   for (const patch of [{ recipeId: 'other' }, { recipeVersion: '2' }]) {

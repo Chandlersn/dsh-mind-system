@@ -175,6 +175,22 @@ SAG在这里的角色是**读写引擎**，不是身份判定者。`knowledgeRef
 
 `nextStepAfterDiagnosis`给出落点：已诊断 → `waiting_analysis`且`repairAuthorized:false`（结构只是指引，仍需走准入与验证）；`unknown`/`unavailable`/预算耗尽 → `waiting_human`，不靠猜。诊断预算耗尽本身也是停止条件，而不是继续猜的许可。
 
+## 回滚与补偿编排
+
+`createCheckpoint`记录的**不只是业务游标**，还包括它产生时的环境（模板与版本、范围、工作区）与外部证据引用。`planRollbackTo`据此分三种情况，只有前两种能自动进行：
+
+- **只读步骤**：直接恢复到检查点游标，不需要补偿。
+- **可逆写**：必须带已登记的补偿计划（前后版本可观测），否则返回`compensation_required`。
+- **不可逆/未知**：一律`not_compensable`，没有安全撤销就不假装能撤销。
+
+环境任一项变化即`environment_changed:<key>`——跨模板或跨工作区的检查点不是回滚点，而是另一个任务。
+
+`settleRollback`要求补偿被独立验证且目标事实匹配才置`restored`；失败、分歧或缺少目标事实都返回`unresolved`，留待人工，不冒充"已回滚"。
+
+## 重复修复的上下文刷新
+
+首个JSON修复要求原始create-only动作建立所有权；**第二次修复**允许从"上一次已核验的owned替换"继续建立上下文：仍然要求同一产物路径、同一模板版本、同一inputVersion、同一后置条件集与修复策略前置条件，只是不再要求`createOnly`。这样修复链可以延续，而所有权仍可回溯到最初的创建动作。路径或条件不符仍然fail closed。
+
 ## 持久化与授权边界
 
 当前使用Node.js内建`node:sqlite`；本机Node v22.23.3仍将该API标记为实验性。原型验证不等于生产驱动选型已完成。事件不可改限制来自SQLite触发器，不能防御拥有数据库文件写权限的外部进程。
