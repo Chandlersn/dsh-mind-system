@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { join } from 'node:path';
+import { writeFileSync, readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { randomUUID, createHash } from 'node:crypto';
+import { createHost, installed } from './helpers/host.js';
+import { RuntimeStore } from '../src/store.js';
+import { HostExecutor } from '../src/executor.js';
+import { RuntimeScheduler } from '../src/scheduler.js';
+import { jsonNormalizeRecipe } from '../recipes/json-normalize.js';
 import { createCheckpoint, planRollbackTo, settleRollback } from '../src/rollback.js';
 
 const hash = (text) => createHash('sha256').update(text).digest('hex');
@@ -89,4 +97,86 @@ test('a checkpoint requires an environment and bounded step identity', () => {
   assert.throws(() => planRollbackTo({ checkpoint: checkpoint(), current: environment(), effect: 'invented' }),
     { code: 'invalid_rollback' });
   assert.throws(() => settleRollback({ plan: { allowed: false } }), { code: 'invalid_rollback' });
+});
+
+/**
+ * The rollback module is only useful if the runtime actually records checkpoints. This drives the real
+ * host pipeline so the claim "DR-11 has data to roll back to" rests on an observed row, not on a
+ * pure-function contract that nothing calls.
+ */
+async function pipeline(t) {
+  const host = await createHost(t);
+  const store = new RuntimeStore(join(host.root, 'checkpoint.sqlite'));
+  const agent = await host.agent('checkpoint-caller');
+  const executor = new HostExecutor({ context: host.ctx, tools: host.tools, agent });
+  const { assertObjectJsonSchema, validateJsonSchemaValue } = await import(pathToFileURL(installed['dsh-tools'].entry).href);
+  writeFileSync(join(host.storage, 'source.json'), JSON.stringify([{ id: 'a', name: ' Alpha ' }]));
+  host.tools.register({ name: 'runtime.write_json', description: 'Create the owned fixture artifact.',
+    parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, createOnly: { type: 'boolean', enum: [true] } },
+      required: ['path', 'content', 'createOnly'], additionalProperties: false },
+    output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
+    async execute({ path, content }) { writeFileSync(path, content, { flag: 'wx' }); return { created: true }; } });
+  const scheduler = new RuntimeScheduler({ store, executor, recipes: [jsonNormalizeRecipe], tools: host.tools,
+    validateArguments({ tool, arguments: args }) { assertObjectJsonSchema(tool.parameters); return validateJsonSchemaValue(tool.parameters, args); } });
+  const authority = { scopeRef: 'cp-scope', workspaceRoot: host.storage, allowedTools: ['runtime.write_json'], agent };
+  const task = { taskId: randomUUID(), recipeId: 'json-normalize', recipeVersion: '1', goal: 'Create sorted records.',
+    scopeRef: authority.scopeRef, workspaceRoot: host.storage, inputs: { inputFile: 'source.json', outputFile: 'output.json' },
+    deadlineAt: Date.now() + 60_000 };
+  // Close handles inside the test body: the host fixture removes its temp root in its own teardown.
+  const close = async () => { await executor.dispose(); store.close(); };
+  return { host, store, scheduler, task, authority, close };
+}
+
+test('the running pipeline records a checkpoint for a verified step', async (t) => {
+  const env = await pipeline(t);
+  try {
+    const run = await env.scheduler.run(env.task, { authority: env.authority });
+    assert.equal(run.status, 'completed');
+    const recorded = env.store.listCheckpoints(env.task.taskId);
+    assert.equal(recorded.length, 1, 'A verified step must leave a rollback point behind.');
+    const checkpointRow = recorded[0];
+    assert.equal(checkpointRow.stepIndex, 1);
+    assert.match(checkpointRow.evidenceRef, /^file:/, 'The checkpoint cites the verifier evidence.');
+    // The environment is stored with it, so a later restore can detect drift.
+    assert.deepEqual(checkpointRow.environment, { recipeId: 'json-normalize', recipeVersion: '1',
+      scopeRef: 'cp-scope', workspaceRoot: env.host.storage });
+    const events = env.store.readEvents(env.task.taskId).map((event) => event.kind);
+    assert.ok(events.includes('checkpoint_recorded'));
+    // A checkpoint taken under the same environment is a usable target for a reversible effect.
+    const plan = planRollbackTo({ checkpoint: createCheckpoint({ taskId: env.task.taskId,
+      stepIndex: checkpointRow.stepIndex, state: checkpointRow.state, environment: checkpointRow.environment,
+      evidenceRef: checkpointRow.evidenceRef }), current: checkpointRow.environment, effect: 'read' });
+    assert.equal(plan.allowed, true);
+  } finally { await env.close(); }
+});
+
+test('a failed or unverified step records no checkpoint', async (t) => {
+  const env = await pipeline(t);
+  try {
+    // The recipe writes an empty artifact through a tool that ignores its content argument.
+    env.host.tools.get('runtime.write_json').execute = async ({ path }) => {
+      writeFileSync(path, '[]', { flag: 'wx' });
+      return { created: true };
+    };
+    const run = await env.scheduler.run(env.task, { authority: env.authority });
+    // Verified below: the run stops at a failed verdict, so no checkpoint may exist. Asserting the reason
+    // too keeps this from passing merely because the run crashed before verification.
+    assert.equal(run.status, 'waiting_analysis');
+    assert.equal(run.reason, 'output_mismatch');
+    assert.equal(env.store.listCheckpoints(env.task.taskId).length, 0,
+      'Unverified progress must not become a rollback point.');
+  } finally { await env.close(); }
+});
+
+test('a checkpoint from a drifted environment is refused as a target in the pipeline too', async (t) => {
+  const env = await pipeline(t);
+  try {
+    await env.scheduler.run(env.task, { authority: env.authority });
+    const [row] = env.store.listCheckpoints(env.task.taskId);
+    const plan = planRollbackTo({ checkpoint: createCheckpoint({ taskId: env.task.taskId, stepIndex: row.stepIndex,
+      state: row.state, environment: row.environment, evidenceRef: row.evidenceRef }),
+      current: { ...row.environment, recipeVersion: '2' }, effect: 'read' });
+    assert.equal(plan.allowed, false);
+    assert.equal(plan.reason, 'environment_changed:recipeVersion');
+  } finally { await env.close(); }
 });

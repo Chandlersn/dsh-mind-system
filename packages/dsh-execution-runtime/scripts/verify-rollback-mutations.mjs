@@ -52,6 +52,15 @@ try {
       old: "    return Object.freeze({ allowed: false, reason: 'compensation_invalid', requiresCompensation: true });",
       replacement: "    return Object.freeze({ allowed: true, reason: 'compensation_invalid', requiresCompensation: true });",
       test: /not ok \d+ - an invalid compensation is refused/ },
+    // The runtime must actually record checkpoints: a rollback module nothing calls proves nothing.
+    { name: 'pipeline_records_no_checkpoint', file: 'src/scheduler.js',
+      old: '          this.#store.recordCheckpoint(task.taskId, {',
+      replacement: '          if (false) this.#store.recordCheckpoint(task.taskId, {',
+      test: /not ok \d+ - the running pipeline records a checkpoint/ },
+    { name: 'checkpoint_recorded_without_verification', file: 'src/scheduler.js',
+      old: "        if (verification.status === 'pass' && verification.evidenceRefs.length) {",
+      replacement: '        if (true) {',
+      test: /not ok \d+ - a failed or unverified step records no checkpoint/ },
   ];
   const observed = [];
   for (const mutant of mutants) {

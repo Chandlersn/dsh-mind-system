@@ -410,6 +410,18 @@ export class RuntimeScheduler {
           repairHistory = Object.freeze(this.#store.readRepairTrace(task.taskId).map((item) => Object.freeze(item)));
         }
         attemptId = null;
+        // A checkpoint records only a verified step with evidence, so a later rollback target is a fact
+        // rather than a model claim. The environment travels with it: the same state under a changed
+        // template or scope is not a valid restore point.
+        if (verification.status === 'pass' && verification.evidenceRefs.length) {
+          this.#store.recordCheckpoint(task.taskId, {
+            stepIndex: current().budgetUsage.attempts,
+            state: current().state,
+            environment: { recipeId: task.recipeId, recipeVersion: task.recipeVersion, scopeRef: task.scopeRef,
+              workspaceRoot: trustedAuthority.workspaceRoot },
+            evidenceRef: verification.evidenceRefs[0],
+          }, version());
+        }
         if (current().status !== 'running') break;
         noProgress = verification.progress === 'advanced' ? 0 : noProgress + 1;
         if (noProgress >= 3) { stop('waiting_analysis', 'no_progress'); break; }

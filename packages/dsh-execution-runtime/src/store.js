@@ -105,6 +105,12 @@ export class RuntimeStore {
         attempt_floor INTEGER NOT NULL, outcome_json TEXT,
         created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS checkpoints (
+        checkpoint_id TEXT PRIMARY KEY NOT NULL,
+        task_id TEXT NOT NULL REFERENCES runs(task_id),
+        step_index INTEGER NOT NULL, state_json TEXT NOT NULL, environment_json TEXT NOT NULL,
+        evidence_ref TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS repair_failures (
         task_id TEXT NOT NULL REFERENCES runs(task_id), signature TEXT NOT NULL,
         failures INTEGER NOT NULL CHECK(failures >= 0), PRIMARY KEY(task_id, signature)
@@ -587,6 +593,53 @@ export class RuntimeStore {
     return this.#db.prepare('SELECT * FROM compensations WHERE task_id = ? ORDER BY rowid')
       .all(taskId).map((row) => ({ compensationId: row.compensation_id, sourceAttemptId: row.source_attempt_id,
         status: row.status, evidenceRef: row.evidence_ref, createdAt: row.created_at }));
+  }
+
+  /**
+   * Record a business cursor checkpoint. The environment and evidence are stored with it because a
+   * checkpoint is only meaningful as "this state, under these conditions, proven by this fact" — a bare
+   * state blob could be replayed into a context it was never verified in.
+   */
+  recordCheckpoint(taskId, input, { expectedVersion } = {}) {
+    const value = storageSnapshot(input);
+    requireString(value?.evidenceRef, 'checkpoint evidence reference');
+    if (!Number.isSafeInteger(value?.stepIndex) || value.stepIndex < 0) throw error('invalid_checkpoint', 'A step index is required.');
+    if (!value.state || typeof value.state !== 'object' || Array.isArray(value.state)) {
+      throw error('invalid_checkpoint', 'A checkpoint records the verified business state.');
+    }
+    if (!value.environment || typeof value.environment !== 'object' || Array.isArray(value.environment)) {
+      throw error('invalid_checkpoint', 'A checkpoint records the environment it was taken under.');
+    }
+    const checkpointId = randomUUID();
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      this.#db.prepare(`INSERT INTO checkpoints (checkpoint_id, task_id, step_index, state_json,
+        environment_json, evidence_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(checkpointId, taskId, value.stepIndex, JSON.stringify(value.state),
+          JSON.stringify(value.environment), value.evidenceRef, this.#now());
+      // Checkpoints are metadata about verified progress; they advance the version like any event.
+      this.#db.prepare('UPDATE runs SET version = version + 1, updated_at = ? WHERE task_id = ?')
+        .run(this.#now(), taskId);
+      this.#event(taskId, value.attemptId ?? null, 'checkpoint_recorded', { checkpointId, stepIndex: value.stepIndex });
+      return { checkpointId, run: this.getRun(taskId) };
+    });
+  }
+
+  getCheckpoint(taskId, checkpointId) {
+    this.#row(taskId);
+    const row = this.#db.prepare('SELECT * FROM checkpoints WHERE task_id = ? AND checkpoint_id = ?')
+      .get(taskId, checkpointId);
+    return row ? { checkpointId: row.checkpoint_id, stepIndex: row.step_index, state: JSON.parse(row.state_json),
+      environment: JSON.parse(row.environment_json), evidenceRef: row.evidence_ref, createdAt: row.created_at } : null;
+  }
+
+  /** Most recent checkpoints first; a rollback target is chosen from recorded facts, never from a model claim. */
+  listCheckpoints(taskId, { limit = 5 } = {}) {
+    this.#row(taskId);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw error('invalid_checkpoint', 'Checkpoint limit must be from 1 to 20.');
+    return this.#db.prepare('SELECT checkpoint_id FROM checkpoints WHERE task_id = ? ORDER BY step_index DESC, rowid DESC LIMIT ?')
+      .all(taskId, limit).map((row) => this.getCheckpoint(taskId, row.checkpoint_id));
   }
 
   /** Freeze unfinished work; this does not prove the previous owner is dead. */
