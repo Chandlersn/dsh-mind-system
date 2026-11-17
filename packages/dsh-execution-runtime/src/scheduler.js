@@ -98,9 +98,39 @@ export class RuntimeScheduler {
     return this.#run(this.#store.getRun(taskId).task, options, analysisId);
   }
 
-  /** Bounded persisted repair state for the next candidate decision; does not start or resume work. */
-  nextRepairContext(taskId, { authority } = {}) {
+  /**
+   * Resolve frozen attempts from external evidence. This never dispatches work and never marks a goal
+   * complete; it only converts unknown effects into applied/absent so a later verified step may run.
+   */
+  reconcile(taskId, { authority, signal = new AbortController().signal, resolutions } = {}) {
     const run = this.#store.getRun(taskId);
+    if (!authority || authority.scopeRef !== run.task.scopeRef || !authority.agent
+      || authority.agent !== this.#executor.agent) {
+      fail('authority_agent_mismatch', 'Reconciliation requires the explicit task caller.');
+    }
+    if (!(signal instanceof AbortSignal)) fail('invalid_runtime', 'A caller-owned AbortSignal is required.');
+    signal.throwIfAborted();
+    if (run.status !== 'reconciling') fail('not_reconciling', 'Only a frozen run needs reconciliation.');
+    const unresolved = new Map(this.#store.listUnresolved(taskId).map((item) => [item.attemptId, item]));
+    if (!Array.isArray(resolutions) || !resolutions.length) fail('invalid_reconciliation', 'Explicit per-attempt resolutions are required.');
+    if (resolutions.length !== unresolved.size || new Set(resolutions.map((item) => item?.attemptId)).size !== resolutions.length) {
+      fail('invalid_reconciliation', 'Every frozen attempt needs exactly one resolution.');
+    }
+    for (const item of resolutions) {
+      if (!unresolved.has(item?.attemptId)) fail('invalid_reconciliation', 'The resolution names an attempt that is not frozen.');
+      if (typeof item.evidenceRef !== 'string' || !item.evidenceRef || item.evidenceRef.length > 1024) {
+        fail('invalid_reconciliation', 'Every resolution needs a bounded external evidence reference.');
+      }
+    }
+    for (const item of resolutions) {
+      this.#store.reconcileAttempt(taskId, item.attemptId, { ...({ expectedVersion: this.#store.getRun(taskId).version }),
+        resolution: item.resolution, evidenceRef: item.evidenceRef, note: item.note ?? null });
+    }
+    return this.#store.getRun(taskId);
+  }
+
+  /** Bounded persisted repair state for the next candidate decision; does not start or resume work. */
+  nextRepairContext(taskId, { authority } = {}) {    const run = this.#store.getRun(taskId);
     if (!authority || authority.scopeRef !== run.task.scopeRef || !authority.agent
       || authority.agent !== this.#executor.agent) {
       fail('authority_agent_mismatch', 'Persisted repair state requires the explicit task caller.');

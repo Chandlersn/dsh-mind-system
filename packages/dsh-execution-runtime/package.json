@@ -24,6 +24,7 @@
     "verify:phase1": "node scripts/verify-phase1-mutations.mjs",
     "verify:analysis": "node scripts/verify-analysis-mutations.mjs",
     "verify:repair": "node scripts/verify-repair-mutations.mjs",
+    "verify:recovery": "node scripts/verify-recovery-mutations.mjs",
     "probe:jev": "node scripts/probe-jev.mjs"
   }
 }

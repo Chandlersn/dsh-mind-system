@@ -72,11 +72,23 @@ node scripts/probe-jev.mjs
 
 真实Jev探针只读取`DSH_JEV_ENDPOINT`、`DSH_JEV_MODEL`、`DSH_JEV_API_KEY`。缺少配置返回`external_dependency_not_verified`，不会发送请求。具体参数见[协议证据](../../docs/runtime-jev-evidence.md)。
 
+## 恢复与幂等
+
+`recoverRun`只把未结动作冻结为`unknown`，不重放、不清空预算，也不证明旧worker已停止。冻结后的run停在`reconciling`，除核对外的业务派发一律被`attempt_unresolved`拒绝。
+
+核对必须逐条给出未结动作的结论与外部证据引用：`scheduler.reconcile(taskId,{authority,resolutions})`把每条未知动作记为`reconciled_applied`或`reconciled_absent`。核对**不冒充目标验证**——它的verification固定为`unknown`、`goalSatisfied=null`，只是把"副作用到底有没有发生"落成可审计的事实；全部核完才回到`waiting_analysis`，是否达成目标仍由原Verifier后续判定。核对不会重放写入，也不会因为模型或调用方声明就记为成功。
+
+`idempotencyKey`按**工具+键**在同一任务内绑定，且只拦"已核验生效"的同一意图：已`reconciled_applied`，或已结算且验证通过。已验证失败的动作保留同键可修复，未知动作先由冻结阻止而非幂等表判断。不同工具复用同键不算同一副作用。该守卫在`reserveAttempt`内生效，因此拦在派发之前。
+
+```powershell
+node scripts/verify-recovery-mutations.mjs
+```
+
 ## 持久化与授权边界
 
 当前使用Node.js内建`node:sqlite`；本机Node v22.23.3仍将该API标记为实验性。原型验证不等于生产驱动选型已完成。事件不可改限制来自SQLite触发器，不能防御拥有数据库文件写权限的外部进程。
 
-`recoverRun`只把未结动作冻结为`reconciling`，不自动重放、不清空预算，也不证明旧worker已停止。运行时暂不提供resume；租约、fencing、恢复预留、显式核对和补偿仍待DL-3。执行中的取消等待公开管线收敛，不宣称能强杀不响应信号的任意原生回调。
+`recoverRun`只把未结动作冻结为`reconciling`，不自动重放、不清空预算，也不证明旧worker已停止。运行时暂不提供resume；租约、fencing、恢复预留与补偿仍待后续节点。执行中的取消等待公开管线收敛，不宣称能强杀不响应信号的任意原生回调。
 
 证据引用的类型校验不证明真实性。调度器已强制使用登记的Verifier身份、版本与后置条件，JSON模板实际检查磁盘产物；其他Verifier必须各自证明目标事实。准入支持显式约束/负向检查回调，但尚未接活动valves规则库。
 

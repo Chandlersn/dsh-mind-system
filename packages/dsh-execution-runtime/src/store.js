@@ -286,8 +286,21 @@ export class RuntimeStore {
       this.#version(row, expectedVersion);
       const task = JSON.parse(row.task_json);
       if (row.status !== 'running') throw error('run_not_running', 'The run cannot dispatch new work.');
-      if (this.#db.prepare("SELECT 1 FROM attempts WHERE task_id = ? AND status != 'settled'").get(taskId)) {
+      if (this.#db.prepare("SELECT 1 FROM attempts WHERE task_id = ? AND status IN ('reserved', 'started', 'unknown')").get(taskId)) {
         throw error('attempt_unresolved', 'Resolve the previous attempt before reserving another.');
+      }
+      const key = candidate.idempotencyKey;
+      if (typeof key === 'string' && key.length > 0 && key.length <= 256) {
+        // Block only effects already known to be applied and verified. A known-bad effect stays correctable,
+        // and unresolved work is already stopped by the check above.
+        const claimed = this.#db.prepare(`SELECT 1 FROM attempts WHERE task_id = ?
+          AND json_extract(candidate_json, '$.toolName') = ?
+          AND json_extract(candidate_json, '$.idempotencyKey') = ?
+          AND (status = 'reconciled_applied'
+            OR (status = 'settled' AND json_extract(outcome_json, '$.status') = 'succeeded'
+              AND json_extract(verification_json, '$.status') = 'pass'))
+          LIMIT 1`).get(taskId, candidate.toolName, key);
+        if (claimed) throw error('idempotency_conflict', 'This idempotency key already applied a verified effect.');
       }
       if (candidate.source.recipeId !== task.recipeId || candidate.source.version !== task.recipeVersion) {
         throw error('recipe_version_mismatch', 'The candidate does not belong to this task recipe version.');
@@ -347,7 +360,7 @@ export class RuntimeStore {
       this.#version(row, expectedVersion);
       const attempt = this.#db.prepare('SELECT * FROM attempts WHERE task_id = ? AND attempt_id = ?')
         .get(taskId, attemptId);
-      if (!attempt || attempt.status === 'settled') throw error('invalid_attempt_state', 'The attempt is absent or already settled.');
+      if (!attempt || attempt.status === 'settled' || attempt.status.startsWith('reconciled_')) throw error('invalid_attempt_state', 'The attempt is absent or already resolved.');
       if (row.status !== 'running') throw error('run_not_running', 'Only the current running owner may record an outcome.');
       if (attempt.status === 'reserved' && outcome.status !== 'not_started') {
         throw error('invalid_attempt_state', 'A tool outcome requires a persisted dispatch-start record.');
@@ -377,7 +390,7 @@ export class RuntimeStore {
       this.#version(row, expectedVersion);
       const unresolved = this.listUnresolved(taskId);
       if (!unresolved.length) return this.getRun(taskId);
-      this.#db.prepare("UPDATE attempts SET status = 'unknown' WHERE task_id = ? AND status != 'settled'").run(taskId);
+      this.#db.prepare("UPDATE attempts SET status = 'unknown' WHERE task_id = ? AND status IN ('reserved', 'started')").run(taskId);
       this.#db.prepare("UPDATE runs SET status = 'reconciling', version = version + 1, updated_at = ? WHERE task_id = ?")
         .run(this.#now(), taskId);
       this.#event(taskId, null, 'recovery_required', { attemptIds: unresolved.map((item) => item.attemptId) });
@@ -387,12 +400,64 @@ export class RuntimeStore {
 
   listUnresolved(taskId) {
     this.#row(taskId);
-    return this.#db.prepare("SELECT * FROM attempts WHERE task_id = ? AND status != 'settled' ORDER BY created_at, attempt_id")
+    return this.#db.prepare("SELECT * FROM attempts WHERE task_id = ? AND status IN ('reserved', 'started', 'unknown') ORDER BY created_at, attempt_id")
       .all(taskId).map((row) => ({
         attemptId: row.attempt_id, status: row.status, candidate: JSON.parse(row.candidate_json),
         outcome: row.outcome_json === null ? null : JSON.parse(row.outcome_json),
         verification: row.verification_json === null ? null : JSON.parse(row.verification_json),
       }));
+  }
+
+  /**
+   * Resolve one frozen attempt with explicit external evidence. Reconciliation never invents success:
+   * it records whether the business effect exists and leaves the goal to a later verified step.
+   */
+  reconcileAttempt(taskId, attemptId, { expectedVersion, resolution, evidenceRef, note = null } = {}) {
+    requireString(attemptId, 'attemptId');
+    requireString(evidenceRef, 'reconciliation evidence reference');
+    if (!['applied', 'absent'].includes(resolution)) {
+      throw error('invalid_reconciliation', 'Reconciliation must state whether the effect was applied or absent.');
+    }
+    if (note !== null && typeof note !== 'string') throw error('invalid_reconciliation', 'A reconciliation note must be text.');
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      const attempt = this.#db.prepare('SELECT * FROM attempts WHERE task_id = ? AND attempt_id = ?').get(taskId, attemptId);
+      if (!attempt) throw error('invalid_attempt_state', 'The attempt does not belong to this task.');
+      if (!['started', 'unknown', 'reserved'].includes(attempt.status)) {
+        throw error('invalid_attempt_state', 'Only unresolved work may be reconciled.');
+      }
+      const status = resolution === 'applied' ? 'reconciled_applied' : 'reconciled_absent';
+      const outcome = { status: resolution === 'applied' ? 'succeeded' : 'failed',
+        reconciled: true, resolution, evidenceRef, ...(note === null ? {} : { note }),
+        error: { code: `reconciled_${resolution}`, message: 'Reconciled from external evidence; this is not goal verification.' } };
+      const verification = validateVerification({ status: 'unknown', progress: 'unknown', goalSatisfied: null,
+        verifierId: 'runtime-reconciliation', verifierVersion: '1', evidenceRefs: [evidenceRef],
+        reason: `reconciled_${resolution}` });
+      this.#db.prepare('UPDATE attempts SET status = ?, outcome_json = ?, verification_json = ? WHERE attempt_id = ?')
+        .run(status, JSON.stringify(outcome), JSON.stringify(verification), attemptId);
+      const remaining = this.#db.prepare("SELECT count(*) AS count FROM attempts WHERE task_id = ? AND status IN ('reserved', 'started', 'unknown')")
+        .get(taskId).count;
+      const nextStatus = remaining ? 'reconciling' : 'waiting_analysis';
+      this.#db.prepare('UPDATE runs SET status = ?, reason = ?, version = version + 1, updated_at = ? WHERE task_id = ?')
+        .run(nextStatus, remaining ? 'reconciliation_incomplete' : `reconciled_${resolution}`, this.#now(), taskId);
+      this.#event(taskId, attemptId, 'attempt_reconciled', { resolution, evidenceRef, remaining });
+      return this.getRun(taskId);
+    });
+  }
+
+  /** True when this tool and key already applied an effect that passed verification. */
+  idempotencyClaimed(taskId, key, toolName) {
+    requireString(key, 'idempotencyKey');
+    requireString(toolName, 'toolName');
+    this.#row(taskId);
+    return this.#db.prepare(`SELECT 1 FROM attempts WHERE task_id = ?
+      AND json_extract(candidate_json, '$.toolName') = ?
+      AND json_extract(candidate_json, '$.idempotencyKey') = ?
+      AND (status = 'reconciled_applied'
+        OR (status = 'settled' AND json_extract(outcome_json, '$.status') = 'succeeded'
+          AND json_extract(verification_json, '$.status') = 'pass'))
+      LIMIT 1`).get(taskId, toolName, key) !== undefined;
   }
 
   putEvidence(taskId, label, value, { expectedVersion } = {}) {
@@ -429,7 +494,7 @@ export class RuntimeStore {
       const row = this.#row(taskId);
       this.#version(row, expectedVersion);
       if (row.status !== 'waiting_analysis') throw error('invalid_analysis_state', 'The run is not waiting for analysis.');
-      if (this.#db.prepare("SELECT 1 FROM attempts WHERE task_id = ? AND status != 'settled'").get(taskId)) {
+      if (this.#db.prepare("SELECT 1 FROM attempts WHERE task_id = ? AND status IN ('reserved', 'started', 'unknown')").get(taskId)) {
         throw error('attempt_unresolved', 'Business effects must be resolved before analysis.');
       }
       if (this.#db.prepare("SELECT 1 FROM analyses WHERE task_id = ? AND status IN ('pending', 'proposed') AND consumed_at IS NULL").get(taskId)) {
