@@ -41,6 +41,16 @@ I/O计数是文件读取、lstat和realpath等逻辑能力调用，不是操作�
 
 完整验收范围见[阶段2·DL-2.1证据](../../docs/runtime-phase2-evidence.md)。真实推理提供者、模型取证工具循环与修复后的再次准入/验证尚未验收。
 
+## 修正提议的执行边界
+
+`json-repair.js`登记了`jsonNormalizeRepairPolicy`，只授权替换本任务**独占创建且哈希未变**的产物；它不提供写入工具，写入仍走宿主工具边界。原生上下文经`WeakSet`标记身份并深冻结，不能由模型提交或序列化重建；目标、模板版本、验收条件与Verifier始终取自原任务登记，修复策略不能替换。
+
+`scheduler.repair(taskId, analysisId, {authority, signal})`只消费已持久化的提议：先以原生模板策略准备原始所有权上下文，再按修复工具集重新准入（必需前置条件、副作用、宿主schema），随后经同一公开宿主管线派发，最后由**原任务登记的独立Verifier**判定。提议中的目标、模板、参数结构或自报成功均不能放行；越界提议在写入前被拒并计为一次失败。
+
+`startRepair`/`finishRepair`把提议消费、修复意图、新attempt归属与结果分开记账。成功只由实际验证派生，模型回执或调度器布尔值都不能替代；派发后结果未知保持`reconciling`，不重放也不计为成功。同一原生异常签名两次实际失败后停止为`waiting_human/repair_limit`；取消与非派发不计失败样本。
+
+当前仅支持首个JSON `retry_with`与`abort`。取证、回滚/补偿、第二次修复的原生上下文刷新、重复修复编排及正式工具注册仍待后续节点；未登记策略时拒绝执行。
+
 ## 验证
 
 在本包目录运行：
@@ -50,6 +60,7 @@ node --test test/*.test.js
 node scripts/verify-core-mutations.mjs
 node scripts/verify-phase1-mutations.mjs
 node scripts/verify-analysis-mutations.mjs
+node scripts/verify-repair-mutations.mjs
 node scripts/probe-jev.mjs
 ```
 

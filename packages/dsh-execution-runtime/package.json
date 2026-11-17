@@ -9,6 +9,7 @@
     "./contracts": "./src/contracts.js",
     "./store": "./src/store.js",
     "./json-recipe": "./recipes/json-normalize.js",
+    "./json-repair": "./recipes/json-repair.js",
     "./decision-client": "./src/decision-client.js",
     "./admission": "./src/admission.js",
     "./executor": "./src/executor.js",
@@ -21,6 +22,7 @@
     "verify:core": "node scripts/verify-core-mutations.mjs",
     "verify:phase1": "node scripts/verify-phase1-mutations.mjs",
     "verify:analysis": "node scripts/verify-analysis-mutations.mjs",
+    "verify:repair": "node scripts/verify-repair-mutations.mjs",
     "probe:jev": "node scripts/probe-jev.mjs"
   }
 }

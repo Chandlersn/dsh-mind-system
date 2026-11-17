@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { validateRepairAction } from './analyzer.js';
 import { RuntimeContractError, jsonSnapshot, requireString, validateBudget, validateCandidate, validateTask, validateVerification } from './contracts.js';
 
@@ -89,8 +90,24 @@ export class RuntimeStore {
         bytes_read INTEGER NOT NULL DEFAULT 0 CHECK(bytes_read BETWEEN 0 AND 32768),
         created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
       );
-      CREATE UNIQUE INDEX IF NOT EXISTS analyses_one_unresolved ON analyses(task_id)
-        WHERE status IN ('pending', 'proposed');
+      CREATE TABLE IF NOT EXISTS repairs (
+        repair_id TEXT PRIMARY KEY NOT NULL,
+        analysis_id TEXT NOT NULL UNIQUE REFERENCES analyses(analysis_id),
+        task_id TEXT NOT NULL REFERENCES runs(task_id), signature TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('retry_with', 'gather_evidence', 'abort')),
+        status TEXT NOT NULL CHECK(status IN ('reserved', 'settled', 'blocked', 'unknown')),
+        candidate_json TEXT, attempt_id TEXT UNIQUE REFERENCES attempts(attempt_id),
+        attempt_floor INTEGER NOT NULL, outcome_json TEXT,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS repair_failures (
+        task_id TEXT NOT NULL REFERENCES runs(task_id), signature TEXT NOT NULL,
+        failures INTEGER NOT NULL CHECK(failures >= 0), PRIMARY KEY(task_id, signature)
+      );
+      CREATE TRIGGER IF NOT EXISTS analyses_result_immutable BEFORE UPDATE ON analyses
+        WHEN OLD.result_json IS NOT NULL AND
+          (NEW.result_json IS NOT OLD.result_json OR NEW.status IS NOT OLD.status)
+        BEGIN SELECT RAISE(ABORT, 'Runtime analysis results are immutable'); END;
       CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
         BEGIN SELECT RAISE(ABORT, 'Runtime events are immutable'); END;
       CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
@@ -105,6 +122,15 @@ export class RuntimeStore {
     })) {
       if (!columns.has(name)) this.#db.exec(`ALTER TABLE runs ADD COLUMN ${name} ${declaration}`);
     }
+    this.#transaction(() => {
+      const analysisColumns = this.#db.prepare('PRAGMA table_info(analyses)').all();
+      if (!analysisColumns.some((column) => column.name === 'consumed_at')) {
+        this.#db.exec('ALTER TABLE analyses ADD COLUMN consumed_at INTEGER');
+      }
+      this.#db.exec(`DROP INDEX IF EXISTS analyses_one_unresolved;
+        CREATE UNIQUE INDEX analyses_one_unresolved ON analyses(task_id)
+          WHERE status IN ('pending', 'proposed') AND consumed_at IS NULL`);
+    });
   }
 
   close() { this.#db.close(); }
@@ -389,7 +415,7 @@ export class RuntimeStore {
       if (this.#db.prepare("SELECT 1 FROM attempts WHERE task_id = ? AND status != 'settled'").get(taskId)) {
         throw error('attempt_unresolved', 'Business effects must be resolved before analysis.');
       }
-      if (this.#db.prepare("SELECT 1 FROM analyses WHERE task_id = ? AND status IN ('pending', 'proposed')").get(taskId)) {
+      if (this.#db.prepare("SELECT 1 FROM analyses WHERE task_id = ? AND status IN ('pending', 'proposed') AND consumed_at IS NULL").get(taskId)) {
         throw error('analysis_unresolved', 'Resolve the previous analysis before reserving another.');
       }
       const task = JSON.parse(row.task_json);
@@ -507,10 +533,132 @@ export class RuntimeStore {
   getAnalysis(taskId, analysisId) {
     this.#row(taskId);
     const row = this.#db.prepare(`SELECT analysis_id, status, evidence_refs_json, result_json, reads_used,
-      bytes_read, created_at, updated_at FROM analyses WHERE task_id = ? AND analysis_id = ?`).get(taskId, analysisId);
+      bytes_read, created_at, updated_at, consumed_at FROM analyses WHERE task_id = ? AND analysis_id = ?`).get(taskId, analysisId);
     return row ? { analysisId: row.analysis_id, status: row.status, evidenceRefs: JSON.parse(row.evidence_refs_json),
       result: row.result_json === null ? null : JSON.parse(row.result_json), readsUsed: row.reads_used,
-      bytesRead: row.bytes_read, createdAt: row.created_at, updatedAt: row.updated_at } : null;
+      bytesRead: row.bytes_read, createdAt: row.created_at, updatedAt: row.updated_at, consumedAt: row.consumed_at } : null;
+  }
+
+  startRepair(taskId, analysisId, { expectedVersion, signature, repairId = randomUUID() } = {}) {
+    requireString(analysisId, 'analysisId');
+    requireString(repairId, 'repairId');
+    // The trusted runtime supplies this stable signature, never the analyzer response.
+    requireString(signature, 'signature');
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      const analysis = this.getAnalysis(taskId, analysisId);
+      if (row.status !== 'waiting_analysis' || row.reason !== 'repair_proposed'
+        || !analysis || analysis.status !== 'proposed' || analysis.consumedAt !== null) {
+        throw error('invalid_repair_state', 'Only an unconsumed proposal waiting for repair may start.');
+      }
+      if (this.listUnresolved(taskId).length) throw error('attempt_unresolved', 'Resolve business work before repair.');
+      const action = validateRepairAction(analysis.result?.repair, { allowedEvidenceRefs: analysis.evidenceRefs });
+      if (action.requiresHumanReview) throw error('repair_requires_review', 'The repair requires human review.');
+      if (action.kind === 'rollback_to') throw error('repair_requires_recovery', 'Rollback requires the recovery protocol.');
+      const task = JSON.parse(row.task_json);
+      if (this.getRepairFailures(taskId, signature) >= 2) throw error('repair_limit', 'This repair signature has failed twice.');
+      if (this.#now() >= task.deadlineAt || (action.kind === 'retry_with'
+        && (row.attempts_used >= task.budget.maxAttempts || row.tool_calls_used >= task.budget.maxToolCalls))) {
+        throw error('budget_exceeded', 'The task has no repair budget remaining.');
+      }
+      const now = this.#now();
+      const floor = this.#db.prepare('SELECT coalesce(max(rowid), 0) AS floor FROM attempts').get().floor;
+      const aborted = action.kind === 'abort';
+      this.#db.prepare(`INSERT INTO repairs (repair_id, analysis_id, task_id, signature, kind, status,
+        candidate_json, attempt_floor, outcome_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(repairId, analysisId, taskId, signature, action.kind, aborted ? 'settled' : 'reserved',
+          action.kind === 'retry_with' ? JSON.stringify(action.candidate) : null, floor,
+          aborted ? JSON.stringify({ reason: action.reason }) : null, now, now);
+      this.#db.prepare('UPDATE analyses SET consumed_at = ? WHERE analysis_id = ?').run(now, analysisId);
+      this.#db.prepare('UPDATE runs SET status = ?, reason = ?, version = version + 1, updated_at = ? WHERE task_id = ?')
+        .run(aborted ? 'cancelled' : 'running', aborted ? action.reason : null, now, taskId);
+      this.#event(taskId, null, aborted ? 'repair_aborted' : 'repair_started',
+        { repairId, analysisId, signature, kind: action.kind });
+      return { repairId, repair: { ...action, id: repairId, signature }, run: this.getRun(taskId) };
+    });
+  }
+
+  getRepair(taskId, repairId) {
+    this.#row(taskId);
+    const row = this.#db.prepare('SELECT * FROM repairs WHERE task_id = ? AND repair_id = ?').get(taskId, repairId);
+    return row ? { id: row.repair_id, analysisId: row.analysis_id, kind: row.kind, signature: row.signature,
+      status: row.status, candidate: row.candidate_json === null ? null : JSON.parse(row.candidate_json),
+      attemptId: row.attempt_id, outcome: row.outcome_json === null ? null : JSON.parse(row.outcome_json),
+      createdAt: row.created_at, updatedAt: row.updated_at } : null;
+  }
+
+  getRepairFailures(taskId, signature) {
+    this.#row(taskId);
+    requireString(signature, 'signature');
+    return this.#db.prepare('SELECT failures FROM repair_failures WHERE task_id = ? AND signature = ?')
+      .get(taskId, signature)?.failures ?? 0;
+  }
+
+  finishRepair(taskId, repairId, { attemptId, status, succeeded, reason, expectedVersion } = {}) {
+    requireString(repairId, 'repairId');
+    if (!['settled', 'blocked', 'unknown'].includes(status) || (succeeded !== undefined && typeof succeeded !== 'boolean')) {
+      throw error('invalid_repair_outcome', 'A valid repair status and optional boolean success are required.');
+    }
+    if (attemptId !== undefined) requireString(attemptId, 'attemptId');
+    if (reason !== undefined) requireString(reason, 'reason');
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      const repair = this.#db.prepare('SELECT * FROM repairs WHERE task_id = ? AND repair_id = ?').get(taskId, repairId);
+      if (!repair || repair.status !== 'reserved') throw error('invalid_repair_state', 'Only a reserved same-task repair may finish.');
+      let actualSuccess = false;
+      if (status === 'blocked') {
+        if (attemptId !== undefined || succeeded === true || row.status !== 'running'
+          || this.#db.prepare('SELECT 1 FROM attempts WHERE task_id = ? AND rowid > ?').get(taskId, repair.attempt_floor)) {
+          throw error('invalid_repair_outcome', 'A blocked repair must have no attempted work.');
+        }
+      } else {
+        const attempt = this.#db.prepare('SELECT rowid AS ordinal, * FROM attempts WHERE task_id = ? AND attempt_id = ?')
+          .get(taskId, attemptId ?? null);
+        if (!attempt || attempt.ordinal <= repair.attempt_floor
+          || (repair.candidate_json !== null && !isDeepStrictEqual(JSON.parse(attempt.candidate_json), JSON.parse(repair.candidate_json)))) {
+          throw error('invalid_repair_attempt', 'Repair work must match a newer same-task attempt.');
+        }
+        if (status === 'unknown') {
+          if (attempt.status === 'settled' || row.status !== 'reconciling' || succeeded !== undefined) {
+            throw error('invalid_repair_outcome', 'Unknown repair work must remain unresolved and reconciling.');
+          }
+        } else {
+          if (!['running', 'completed', 'waiting_analysis', 'reconciling', 'failed', 'waiting_human', 'cancelled'].includes(row.status)
+            || attempt.status !== 'settled' || !attempt.outcome_json || !attempt.verification_json) {
+            throw error('invalid_repair_outcome', 'Settled repair work requires a stored settled outcome and verification.');
+          }
+          const outcome = JSON.parse(attempt.outcome_json);
+          const verification = validateVerification(JSON.parse(attempt.verification_json));
+          if (!['succeeded', 'failed', 'not_started'].includes(outcome.status)) {
+            throw error('invalid_repair_outcome', 'Settled repair work requires an actual execution outcome.');
+          }
+          actualSuccess = outcome.status === 'succeeded' && verification.status === 'pass'
+            && (verification.goalSatisfied === true || verification.progress === 'advanced');
+          if (succeeded !== undefined && succeeded !== actualSuccess) {
+            throw error('invalid_repair_outcome', 'Claimed repair success disagrees with stored verification.');
+          }
+        }
+      }
+      const failed = status === 'blocked' || (status === 'settled' && !actualSuccess && row.status !== 'cancelled');
+      if (failed) this.#db.prepare(`INSERT INTO repair_failures (task_id, signature, failures) VALUES (?, ?, 1)
+        ON CONFLICT(task_id, signature) DO UPDATE SET failures = failures + 1`).run(taskId, repair.signature);
+      const limited = this.getRepairFailures(taskId, repair.signature) >= 2;
+      const now = this.#now();
+      const metadata = { ...(status === 'unknown' ? {} : { succeeded: actualSuccess }), ...(reason === undefined ? {} : { reason }) };
+      this.#db.prepare('UPDATE repairs SET status = ?, attempt_id = ?, outcome_json = ?, updated_at = ? WHERE repair_id = ?')
+        .run(status, attemptId ?? null, JSON.stringify(metadata), now, repairId);
+      const nextStatus = row.status === 'reconciling' ? row.status : limited ? 'waiting_human'
+        : status === 'blocked' ? 'failed' : failed && row.status === 'running' ? 'waiting_analysis' : row.status;
+      const nextReason = row.status === 'reconciling' ? row.reason : limited ? 'repair_limit'
+        : status === 'blocked' ? reason ?? 'repair_blocked'
+          : failed && row.status === 'running' ? 'repair_no_progress' : row.reason;
+      this.#db.prepare('UPDATE runs SET status = ?, reason = ?, version = version + 1, updated_at = ? WHERE task_id = ?')
+        .run(nextStatus, nextReason, now, taskId);
+      this.#event(taskId, attemptId ?? null, 'repair_finished', { repairId, status, ...metadata });
+      return this.getRun(taskId);
+    });
   }
 
   getLatestAttempt(taskId) {

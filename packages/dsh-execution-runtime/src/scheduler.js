@@ -1,4 +1,6 @@
 import * as fs from 'node:fs';
+import { createHash } from 'node:crypto';
+import { validateRepairAction } from './analyzer.js';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { admitCandidate } from './admission.js';
@@ -86,10 +88,21 @@ export class RuntimeScheduler {
     }
   }
 
-  async run(input, { authority, signal = new AbortController().signal, decisionMode = 'rules' } = {}) {
+  async run(input, options) { return this.#run(input, options); }
+
+  async repair(taskId, analysisId, options) {
+    requireString(analysisId, 'analysisId');
+    return this.#run(this.#store.getRun(taskId).task, options, analysisId);
+  }
+
+  async #run(input, { authority, signal = new AbortController().signal, decisionMode = 'rules' } = {}, repairAnalysisId = null) {
     const task = snapshot(validateTask(input));
-    const recipe = this.#recipes.get(`${task.recipeId}:${task.recipeVersion}`);
-    if (!recipe) fail('recipe_not_registered', 'The task recipe version is not registered.');
+    const baseRecipe = this.#recipes.get(`${task.recipeId}:${task.recipeVersion}`);
+    if (!baseRecipe) fail('recipe_not_registered', 'The task recipe version is not registered.');
+    let recipe = baseRecipe;
+    let repairId = null;
+    let repairContext = null;
+    let repairCandidate = null;
     if (!authority || authority.scopeRef !== task.scopeRef || !Array.isArray(authority.allowedTools)
       || !authority.allowedTools.length || typeof authority.workspaceRoot !== 'string') {
       fail('authority_unavailable', 'Explicit task authority is required before reading task files.');
@@ -156,19 +169,51 @@ export class RuntimeScheduler {
     const stop = (status, reason) => this.#store.stopRun(task.taskId, status, reason, version());
     let attemptId = null;
     try {
-      this.#store.createRun(task);
-      created = true;
+      if (repairAnalysisId !== null) {
+        check();
+        const analysis = this.#store.getAnalysis(task.taskId, repairAnalysisId);
+        if (!analysis?.result || analysis.status !== 'proposed') fail('repair_not_proposed', 'A persisted proposal is required.');
+        const proposal = validateRepairAction(analysis.result.repair, { allowedEvidenceRefs: analysis.evidenceRefs });
+        if (!['retry_with', 'abort'].includes(proposal.kind)) fail('repair_branch_unavailable', 'This repair branch requires its dedicated native controller.');
+        const previousAttempt = this.#store.getLatestAttempt(task.taskId);
+        if (proposal.kind === 'retry_with') {
+          const policy = baseRecipe.repairPolicy;
+          if (!policy || typeof policy.prepare !== 'function') fail('repair_policy_unavailable', 'A native template repair policy must be registered.');
+          repairContext = await policy.prepare({ task, state: snapshot(current().state), previousAttempt });
+          recipe = registerRecipe({ ...baseRecipe, allowedTools: policy.allowedTools, toolEffects: policy.toolEffects,
+            requiredPreconditionIds: policy.requiredPreconditionIds, preconditions: policy.preconditions,
+            postconditionIds: baseRecipe.postconditionIds, verifier: baseRecipe.verifier,
+            verificationIoReserve: baseRecipe.verificationIoReserve });
+          repairCandidate = snapshot(proposal.candidate);
+        }
+        const category = previousAttempt?.verification?.status === 'fail' && previousAttempt.outcome?.status === 'succeeded'
+          ? 'verification_failed' : previousAttempt?.verification?.status === 'pass' ? 'no_progress'
+            : previousAttempt ? `execution_error:${failureCode(previousAttempt.outcome?.error, 'tool_failed')}` : 'plan_gap';
+        const signature = createHash('sha256').update(JSON.stringify({ recipeId: task.recipeId,
+          recipeVersion: task.recipeVersion, scopeRef: task.scopeRef, verifierId: baseRecipe.verifier.id,
+          verifierVersion: baseRecipe.verifier.version, category })).digest('hex');
+        const reservation = this.#store.startRepair(task.taskId, repairAnalysisId, { ...version(), signature });
+        repairId = reservation.repairId;
+        created = true;
+        if (proposal.kind === 'abort') return reservation.run;
+      } else {
+        this.#store.createRun(task);
+        created = true;
+      }
       armDeadline();
       check();
-      const initialState = recipe.prepare
-        ? await recipe.prepare({ task, io: io('prepare'), signal: combinedSignal }) : {};
-      check();
-      this.#store.setState(task.taskId, snapshot(initialState), version());
+      if (repairId === null) {
+        const initialState = recipe.prepare
+          ? await recipe.prepare({ task, io: io('prepare'), signal: combinedSignal }) : {};
+        check();
+        this.#store.setState(task.taskId, snapshot(initialState), version());
+      }
       let noProgress = 0;
       while (current().status === 'running') {
         check();
         const state = snapshot(current().state);
-        const generated = await recipe.candidates({ task, state, io: io('candidate'), signal: combinedSignal });
+        const generated = repairId !== null ? [repairCandidate]
+          : await recipe.candidates({ task, state, io: io('candidate'), signal: combinedSignal });
         check();
         if (!Array.isArray(generated) || generated.length === 0) { stop('waiting_analysis', 'plan_gap'); break; }
         const candidates = generated.map((item) => snapshot(validateCandidate(item)));
@@ -186,7 +231,7 @@ export class RuntimeScheduler {
           let budgetFailure = null;
           const wrappedRecipe = { ...recipe, preconditions: Object.fromEntries(Object.entries(recipe.preconditions)
             .map(([id, condition]) => [id, async (args) => {
-              try { return await condition({ ...args, state, io: io(phase) }); }
+              try { return await condition({ ...args, state, repairContext, io: io(phase) }); }
               catch (failure) {
                 if (['budget_exceeded', 'runtime_cancelled'].includes(failureCode(failure))) budgetFailure = failure;
                 throw failure;
@@ -206,9 +251,20 @@ export class RuntimeScheduler {
           if (decision.verdict === 'unavailable') unavailable = true;
         }
         check();
-        if (!admitted.length) { stop(unavailable ? 'waiting_human' : 'failed', unavailable ? 'admission_unavailable' : 'admission_denied'); break; }
+        if (!admitted.length) {
+          const reason = unavailable ? 'admission_unavailable' : 'admission_denied';
+          if (repairId !== null) {
+            this.#store.finishRepair(task.taskId, repairId, { ...version(), status: 'blocked', reason });
+            repairId = null;
+          } else stop(unavailable ? 'waiting_human' : 'failed', reason);
+          break;
+        }
         let decision;
-        if (decisionMode === 'rules') {
+        if (repairId !== null) {
+          decision = { selectedCandidateId: admitted[0].candidateId, decisionSource: 'analysis_repair',
+            policyVersion: baseRecipe.ruleVersion, analysisId: repairAnalysisId, repairId,
+            scores: {}, confidence: null, confidenceSource: 'unavailable' };
+        } else if (decisionMode === 'rules') {
           if (admitted.length !== 1) { stop('waiting_analysis', 'decision_ambiguous'); break; }
           decision = { selectedCandidateId: admitted[0].candidateId, decisionSource: 'rules', policyVersion: recipe.ruleVersion,
             scores: {}, confidence: null, confidenceSource: 'unavailable' };
@@ -279,7 +335,15 @@ export class RuntimeScheduler {
           }
         }
         this.#store.recordOutcome(task.taskId, attemptId, outcome, verification,
-          { ...version(), notStartedStatus: combinedSignal.aborted ? 'cancelled' : 'failed', nextState });
+          { ...version(), notStartedStatus: combinedSignal.aborted && !expired() ? 'cancelled' : 'failed', nextState });
+        if (repairId !== null) {
+          this.#store.finishRepair(task.taskId, repairId, { ...version(), attemptId,
+            status: current().status === 'reconciling' ? 'unknown' : 'settled' });
+          repairId = null;
+          repairCandidate = null;
+          repairContext = null;
+          recipe = baseRecipe;
+        }
         attemptId = null;
         if (current().status !== 'running') break;
         noProgress = verification.progress === 'advanced' ? 0 : noProgress + 1;
@@ -288,10 +352,17 @@ export class RuntimeScheduler {
     } catch (failure) {
       if (!created) throw failure;
       const reason = failureCode(failure);
+      if (repairId !== null && current().status !== 'running') throw failure;
       if (current().status === 'running') {
         if (attemptId) {
-          this.#store.recordOutcome(task.taskId, attemptId, { status: 'outcome_unknown', error: { code: reason, message: 'The action requires reconciliation.' } },
-            unknownVerification(reason), version());
+          const reservedOnly = this.#store.getLatestAttempt(task.taskId)?.status === 'reserved';
+          this.#store.recordOutcome(task.taskId, attemptId,
+            { status: reservedOnly ? 'not_started' : 'outcome_unknown', error: { code: reason, message: 'The action stopped before an authoritative result.' } },
+            reservedOnly ? failVerification(reason) : unknownVerification(reason), version());
+          if (repairId !== null) this.#store.finishRepair(task.taskId, repairId, { ...version(), attemptId,
+            status: current().status === 'reconciling' ? 'unknown' : 'settled' });
+        } else if (repairId !== null) {
+          this.#store.finishRepair(task.taskId, repairId, { ...version(), status: 'blocked', reason });
         } else stop(reason === 'runtime_cancelled' ? 'cancelled' : reason === 'budget_exceeded' ? 'failed' : 'waiting_analysis', reason);
       }
     } finally {
