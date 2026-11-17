@@ -97,8 +97,27 @@ runtime_execute({
 })
 ```
 
-## 9. 仍未做
+## 9. 多步配方（本轮补）
 
-- 配方的**多步组合**：当前一个规格产出一个动作；多步任务需要规格支持 steps 数组。
-- 原语库仍是最小集：缺"输出是一个合法 JSON 且字段值来自输入派生"这类关系型判据。
+上一轮的多步缺口已补上，且**引擎零改动**——`recipe.advance` 与循环的"候选为空即停"机制本来就在，缺的是工厂支持 `steps`。
+
+规格里 `steps` 是一个有序数组，每项是**单动作**（不允许嵌套）。执行时：
+
+- `prepare` 写入 `{ step: 0 }` 游标；
+- `candidates` 按游标返回该步动作，游标越界时返回空数组（循环据此正常结束，不是 `plan_gap`）；
+- `advance` 在每步验证通过后把游标 +1。
+
+踩到并修掉的两个真实缺陷：
+
+1. **每步验证器返回 `goalSatisfied: true` 会让运行在第一步就结束**。`recordOutcome` 里 `goalSatisfied === true` 直接把 run 置为 `completed`，所以中间步骤必须报 `false`。现在只有最后一步可以声称目标达成。
+2. **原语只认 `inputs.outputFile`**，多步任务写第二个文件时被判 `output_absent`。给原语参数加了 `targetFile`（裸文件名、限制在工作区内），使每一步能验收自己的产物。
+
+另有一处架构约束：调度器要求验证器返回的 `verifierId` 精确等于注册的 ID，所以多步配方用一层 `stepVerifier` 统一改写身份，并把步骤名留在 `reason` 里（形如 `second:line_sets_differ`）。
+
+新增两个变异：`intermediate_step_claims_goal`、`step_cannot_target_own_artifact`，都被对应断言杀死。dynamic 变异现为 **8/8**。
+
+## 10. 仍未做
+
+- 配方的**条件分支**：目前步骤是线性的，不支持"若 X 则走 A 否则走 B"。
+- 原语库仍是最小集：缺"字段值由输入派生"这类关系型判据。
 - 真实任务样本仍为 0，模式自动推广尚未被真实数据驱动。

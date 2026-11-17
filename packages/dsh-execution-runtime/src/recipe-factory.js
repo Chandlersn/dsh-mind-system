@@ -30,7 +30,7 @@ const fail = (code, message) => { throw new RuntimeContractError(code, message);
 
 /** Declared specification shape. Extra fields are refused so a spec cannot smuggle in behaviour. */
 const SPEC_FIELDS = ['recipeId', 'version', 'description', 'tool', 'effect', 'verifier', 'arguments',
-  'preconditions', 'postconditions', 'allowedTools'];
+  'preconditions', 'postconditions', 'allowedTools', 'steps'];
 
 function validateSpec(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
@@ -61,7 +61,42 @@ function validateSpec(input) {
   if (input.arguments !== undefined && (typeof input.arguments !== 'object' || Array.isArray(input.arguments))) {
     fail('invalid_recipe_spec', 'spec.arguments must be an object template.');
   }
+  // Multi-step specs: each step is itself a single-action spec shape, so a step cannot carry nested steps
+  // (that would need a scheduler change rather than a data change) and every step is validated the same way.
+  if (input.steps !== undefined) {
+    if (!Array.isArray(input.steps) || input.steps.length === 0 || input.steps.length > 32) {
+      fail('invalid_recipe_spec', 'spec.steps must be a non-empty array of at most 32 steps.');
+    }
+    for (const [index, step] of input.steps.entries()) {
+      if (!step || typeof step !== 'object' || Array.isArray(step)) {
+        fail('invalid_recipe_spec', `step ${index} must be an object.`);
+      }
+      if (step.steps !== undefined) {
+        fail('invalid_recipe_spec', 'steps may not nest: a step is a single action.');
+      }
+      const allowed = ['id', 'tool', 'effect', 'arguments', 'verifier', 'description'];
+      for (const key of Object.keys(step)) {
+        if (!allowed.includes(key)) fail('invalid_recipe_spec', `Unknown step field at ${index}: ${key}.`);
+      }
+      requireString(step.tool, `steps[${index}].tool`);
+      if (!['read', 'reversible_write'].includes(step.effect)) {
+        fail('invalid_recipe_spec', `steps[${index}].effect must be read or reversible_write.`);
+      }
+      if (!verifierSpecOf(step.verifier)) {
+        fail('invalid_recipe_spec', `steps[${index}].verifier must declare a known primitive.`);
+      }
+    }
+  }
   return input;
+}
+
+/** Shared verifier-spec validation, so a top-level verifier and a step verifier cannot drift apart. */
+function verifierSpecOf(verifier) {
+  if (!verifier || typeof verifier !== 'object' || Array.isArray(verifier)) return false;
+  for (const key of Object.keys(verifier)) {
+    if (!['primitive', 'parameters'].includes(key)) return false;
+  }
+  return VERIFIER_PRIMITIVES.includes(verifier.primitive);
 }
 
 /** Substitute `{{inputFile}}` / `{{outputFile}}` / `{{workspaceRoot}}` placeholders from the task. */
@@ -110,38 +145,106 @@ export function buildRecipeFromSpec(spec, { toolEffects } = {}) {
   const preconditionIds = Array.isArray(checked.preconditions) ? [...checked.preconditions] : ['workspace-scope'];
   const postconditionIds = Array.isArray(checked.postconditions) && checked.postconditions.length
     ? [...checked.postconditions] : ['goal-verified'];
+  // A spec is either a single action or an ordered list of steps. Multi-step recipes advance through
+  // persisted state, and stop by returning no candidate once the last step is done — that is how the
+  // scheduler's loop terminates, so no engine change is needed.
+  const steps = Array.isArray(checked.steps) && checked.steps.length
+    ? checked.steps.map((step, index) => ({
+      id: step.id ?? `step-${index}`,
+      tool: step.tool,
+      effect: step.effect,
+      arguments: step.arguments ?? {},
+      verifier: buildVerifier(step.verifier),
+    }))
+    : null;
+  const stepTools = steps ? [...new Set(steps.map((step) => step.tool))] : [checked.tool];
+  const tools = [...new Set([...allowedTools, ...stepTools])];
+  for (const name of tools) {
+    if (!Object.hasOwn(toolEffects, name)) {
+      fail('invalid_recipe_spec', `The host has not declared an effect for ${name}.`);
+    }
+  }
+
+  /**
+   * The scheduler verifies every attempt, including intermediate ones, so a multi-step recipe routes each
+   * verdict to the step that produced it. The candidate id carries the step id, which is what makes the
+   * routing unambiguous rather than positional guesswork.
+   */
+  const stepVerifier = {
+    id: `${verifier.id}+steps`, version: '1',
+    async verify(context) {
+      const candidateId = context?.candidate?.candidateId ?? '';
+      const index = steps.findIndex((item) => candidateId.endsWith(`:${item.id}`));
+      const step = index >= 0 ? steps[index] : null;
+      const verdict = await (step === null ? verifier : step.verifier).verify(context);
+      // The scheduler pins the verdict to the registered verifier identity, so a delegated verdict must
+      // carry this identity; the step that produced it stays visible in the reason.
+      //
+      // An intermediate step satisfying its own predicate is *not* the task being done: reporting
+      // goalSatisfied here would end the run after step one, which is exactly what it did before this was
+      // split out. Only the final step may claim the goal.
+      const last = step !== null && index === steps.length - 1;
+      return { ...verdict, verifierId: `${verifier.id}+steps`, verifierVersion: '1',
+        goalSatisfied: last ? verdict.goalSatisfied : (verdict.status === 'pass' ? false : verdict.goalSatisfied),
+        reason: step === null ? verdict.reason : `${step.id}:${verdict.reason ?? verdict.status}` };
+    },
+  };
 
   return Object.freeze({
     id: checked.recipeId,
     version: checked.version ?? '1',
     ruleVersion: `generated:${checked.recipeId}:v${checked.version ?? '1'}`,
     description: checked.description ?? null,
-    allowedTools: Object.freeze([...allowedTools]),
-    toolEffects: Object.freeze(Object.fromEntries(allowedTools.map((name) => [name, toolEffects[name]]))),
+    allowedTools: Object.freeze([...tools]),
+    toolEffects: Object.freeze(Object.fromEntries(tools.map((name) => [name, toolEffects[name]]))),
     requiredPreconditionIds: Object.freeze(preconditionIds),
     postconditionIds: Object.freeze(postconditionIds),
     verificationIoReserve: 5,
     prepare() {
       // Preparation is deliberately identity: the task already carries its inputs, and inventing state here
-      // would diverge from what the caller declared.
-      return {};
+      // would diverge from what the caller declared. Multi-step recipes record a step cursor instead.
+      return steps ? { step: 0 } : {};
     },
     candidates({ task, state }) {
+      if (!steps) {
+        return [{
+          candidateId: `${checked.recipeId}:main`,
+          toolName: checked.tool,
+          arguments: renderArguments(checked.arguments, task, state),
+          preconditionIds: [...preconditionIds],
+          postconditionIds: [...postconditionIds],
+          inputVersion: state?.inputs?.inputSha256 ?? null,
+          progressKey: `${checked.recipeId}:progress`,
+          effect: checked.effect,
+          idempotencyKey: `${task.taskId}:${checked.recipeId}:main`,
+          source: { recipeId: checked.recipeId, version: checked.version ?? '1' },
+        }];
+      }
+      const cursor = Number.isSafeInteger(state?.step) ? state.step : 0;
+      // Returning no candidate is the loop's stop signal; it is not a failure.
+      if (cursor >= steps.length) return [];
+      const step = steps[cursor];
       return [{
-        candidateId: `${checked.recipeId}:main`,
-        toolName: checked.tool,
-        arguments: renderArguments(checked.arguments, task, state),
+        candidateId: `${checked.recipeId}:${step.id}`,
+        toolName: step.tool,
+        arguments: renderArguments(step.arguments, task, state),
         preconditionIds: [...preconditionIds],
         postconditionIds: [...postconditionIds],
         inputVersion: state?.inputs?.inputSha256 ?? null,
-        progressKey: `${checked.recipeId}:progress`,
-        effect: checked.effect,
-        idempotencyKey: `${task.taskId}:${checked.recipeId}:main`,
+        progressKey: `${checked.recipeId}:${step.id}`,
+        effect: step.effect,
+        idempotencyKey: `${task.taskId}:${checked.recipeId}:${step.id}`,
         source: { recipeId: checked.recipeId, version: checked.version ?? '1' },
       }];
     },
+    ...(steps ? {
+      advance({ state }) {
+        const cursor = Number.isSafeInteger(state?.step) ? state.step : 0;
+        return { ...state, step: cursor + 1 };
+      },
+    } : {}),
     preconditions: Object.fromEntries(preconditionIds.map((id) => [id, () => ({ verdict: 'allow' })])),
-    verifier,
+    verifier: steps ? stepVerifier : verifier,
   });
 }
 

@@ -172,7 +172,7 @@ export function buildVerifier({ primitive, parameters = {} } = {}) {
     verify({ task, state, io }) {
       // The verifier reads through the task's own I/O so every read stays metered and scoped; it never
       // reaches the filesystem directly.
-      const paths = resolvePaths(task, state);
+      const paths = resolvePaths(task, state, parameters?.targetFile ?? null);
       const readBytes = (path, options) => {
         try { return io.readFileSync(path); } catch (error) {
           if (options?.allowMissing && (failureCode(error) === 'ENOENT' || failureCode(error) === 'not_found')) return null;
@@ -188,17 +188,30 @@ export function buildVerifier({ primitive, parameters = {} } = {}) {
   });
 }
 
-/** Resolve the input/output pair from task inputs and the persisted state. */
-function resolvePaths(task, state) {
+/**
+ * Resolve the input/output pair the verifier reads.
+ *
+ * By default this is the task's declared input/output. A multi-step task produces intermediate artifacts
+ * too, so a primitive may name its own `targetFile` (relative to the workspace); without that, every step
+ * would have to write to `outputFile` and a two-step run could never judge its own intermediate results.
+ */
+function resolvePaths(task, state, targetFile = null) {
   const inputs = state?.inputs ?? task?.inputs ?? {};
   requireStringField(inputs.inputFile, 'inputs.inputFile');
-  requireStringField(inputs.outputFile, 'inputs.outputFile');
+  // A named target replaces the declared output, so the outputFile requirement only applies to the default.
+  if (targetFile === null) requireStringField(inputs.outputFile, 'inputs.outputFile');
   const root = task.workspaceRoot;
   requireStringField(root, 'workspaceRoot');
   const join = (name) => (root.endsWith('/') || root.endsWith('\\') ? `${root}${name}` : `${root}/${name}`);
+  if (targetFile !== null) {
+    requireStringField(targetFile, 'targetFile');
+    if (targetFile.includes('/') || targetFile.includes('\\') || targetFile === '..') {
+      fail('invalid_verifier_primitive', 'targetFile must be a bare filename inside the workspace.');
+    }
+    return { input: join(inputs.inputFile), output: join(targetFile) };
+  }
   return { input: join(inputs.inputFile), output: join(inputs.outputFile) };
 }
-
 function requireStringField(value, name) {
   if (typeof value !== 'string' || !value) fail('invalid_verifier_primitive', `${name} is required to verify.`);
 }

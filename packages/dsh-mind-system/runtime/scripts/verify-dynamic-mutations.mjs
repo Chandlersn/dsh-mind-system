@@ -58,14 +58,25 @@ try {
       test: /not ok \d+ - a runtime task whose output misses its declared primitive/ },
     // A generated recipe must still verify rather than trusting the tool result.
     { name: 'generated_recipe_skips_verification', file: 'src/recipe-factory.js',
-      old: '    verifier,',
-      replacement: '    verifier: { ...verifier, verify: async () => ({ status: \'pass\', progress: \'advanced\', goalSatisfied: true, verifierId: verifier.id, verifierVersion: \'1\', evidenceRefs: [\'forged\'] }) },',
+      old: '    verifier: steps ? stepVerifier : verifier,',
+      replacement: '    verifier: { id: verifier.id, version: "1", async verify() { return { status: "pass", progress: "advanced", goalSatisfied: true, verifierId: verifier.id, verifierVersion: "1", evidenceRefs: ["forged"] }; } },',
       test: /not ok \d+ - a generated recipe whose output does not satisfy/ },
     // The primitives must be discoverable, since a caller is expected to choose one.
     { name: 'primitives_not_listed', file: 'src/dynamic-tools.js',
       old: '  async execute() { return { primitives: describePrimitives() }; },',
       replacement: '  async execute() { return { primitives: [] }; },',
       test: /not ok \d+ - the verifier vocabulary is discoverable/ },
+    // An intermediate step satisfying itself is not the task being done; claiming the goal would end the
+    // run after step one.
+    { name: 'intermediate_step_claims_goal', file: 'src/recipe-factory.js',
+      old: "        goalSatisfied: last ? verdict.goalSatisfied : (verdict.status === 'pass' ? false : verdict.goalSatisfied),",
+      replacement: '        goalSatisfied: verdict.goalSatisfied,',
+      test: /not ok \d+ - a multi-step recipe advances through its steps/ },
+    // A step must be able to judge its own artifact, or a two-step run can never verify the first result.
+    { name: 'step_cannot_target_own_artifact', file: 'src/verifier-primitives.js',
+      old: '      const paths = resolvePaths(task, state, parameters?.targetFile ?? null);',
+      replacement: '      const paths = resolvePaths(task, state, null);',
+      test: /not ok \d+ - a multi-step recipe advances through its steps/ },
   ];
   const observed = [];
   for (const mutant of mutants) {

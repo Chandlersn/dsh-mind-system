@@ -16,7 +16,7 @@ import { describePrimitives, VERIFIER_PRIMITIVES } from '../src/verifier-primiti
  * specification, runs end to end and is judged by one of the closed verifier primitives.
  *
  * That is the difference between "the engine can run templates someone wrote" and "any task can be
- * described at runtime". The verifier stays closed on purpose — see verifier-primitives.js.
+ * described at runtime". The verifier stays closed on purpose 鈥?see verifier-primitives.js.
  */
 
 const digest = (text) => createHash('sha256').update(text).digest('hex');
@@ -131,6 +131,60 @@ test('the verifier vocabulary is closed and introspectable', () => {
   assert.deepEqual(described.map((item) => item.name), [...VERIFIER_PRIMITIVES]);
   // Each primitive must explain itself, so a caller can choose without reading source.
   assert.ok(described.every((item) => typeof item.describe === 'string' && item.describe.length > 10));
+});
+
+test('a multi-step recipe advances through its steps and stops on its own', async (t) => {
+  const env = await pipeline(t);
+  try {
+    // Two writes in order: the second step's argument references its own output file, so a run that
+    // skipped a step or repeated one would not produce the expected artifacts.
+    env.registry.generate({
+      recipeId: 'gen-two-steps', tool: 'runtime.write_text', effect: 'reversible_write',
+      // The step verifier judges each intermediate artifact; the top-level verifier judges the final state.
+      verifier: { primitive: 'line_set', parameters: { expectedLines: ['a', 'b', 'c'] } },
+      steps: [
+        { id: 'first', tool: 'runtime.write_text', effect: 'reversible_write',
+          verifier: { primitive: 'line_set', parameters: { expectedLines: ['a', 'b', 'c'] } },
+          arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'a\nb\nc\n', createOnly: true } },
+        { id: 'second', tool: 'runtime.write_text', effect: 'reversible_write',
+          // A step may judge its own artifact: without targetFile every step would have to write to the
+          // declared outputFile, so a two-step run could never verify its intermediate result.
+          verifier: { primitive: 'line_set', parameters: { expectedLines: ['done'], targetFile: 'second.txt' } },
+          arguments: { path: '{{workspaceRoot}}/second.txt', content: 'done\n', createOnly: true } },
+      ],
+    }, { toolEffects: env.toolEffects });
+    const task = { taskId: randomUUID(), recipeId: 'gen-two-steps', recipeVersion: '1',
+      goal: 'Write the sorted lines, then a marker.', scopeRef: env.authority.scopeRef,
+      workspaceRoot: env.host.storage, inputs: { inputFile: 'input.txt', outputFile: 'output.txt' },
+      deadlineAt: Date.now() + 60_000 };
+    const run = await schedulerFor(env).run(task, { authority: env.authority });
+    assert.equal(run.status, 'completed', JSON.stringify({ status: run.status, reason: run.reason }));
+    // Both steps ran; the cursor reached the end, which is what made the loop stop.
+    assert.equal(run.state.step, 2);
+    assert.equal(run.budgetUsage.attempts, 2);
+    assert.equal(readFileSync(join(env.host.storage, 'output.txt'), 'utf8'), 'a\nb\nc\n');
+    assert.equal(readFileSync(join(env.host.storage, 'second.txt'), 'utf8'), 'done\n');
+  } finally { await env.close(); }
+});
+
+test('a multi-step recipe may not nest steps or hide extra fields', async (t) => {
+  const env = await pipeline(t);
+  try {
+    const base = { recipeId: 'gen-bad-steps', tool: 'runtime.write_text', effect: 'reversible_write',
+      verifier: { primitive: 'structure', parameters: { rule: { type: 'string' } } } };
+    assert.throws(() => env.registry.generate({ ...base,
+      steps: [{ tool: 'runtime.write_text', effect: 'reversible_write', arguments: {},
+        verifier: { primitive: 'structure', parameters: { rule: { type: 'string' } } },
+        steps: [] }] }, { toolEffects: env.toolEffects }),
+    { code: 'invalid_recipe_spec' });
+    assert.throws(() => env.registry.generate({ ...base,
+      steps: [{ tool: 'runtime.write_text', effect: 'reversible_write', arguments: {},
+        verifier: { primitive: 'structure', parameters: { rule: { type: 'string' } } },
+        candidates: () => [] }] }, { toolEffects: env.toolEffects }),
+    { code: 'invalid_recipe_spec' });
+    assert.throws(() => env.registry.generate({ ...base, steps: [] }, { toolEffects: env.toolEffects }),
+      { code: 'invalid_recipe_spec' });
+  } finally { await env.close(); }
 });
 
 test('two different tasks can share one generated recipe with different placeholders', async (t) => {
