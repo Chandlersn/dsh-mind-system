@@ -56,6 +56,16 @@ try {
       old: "        .run(nextStatus, 'recovery_exhausted', this.#now(), taskId);",
       replacement: '        .run(nextStatus, row.reason, this.#now(), taskId);',
       test: /not ok \d+ - the compensation reserve bounds recovery attempts/ },
+    // The generic builder must bind the plan to the verifier the caller observed, not accept any attempt.
+    { name: 'compensation_accepts_foreign_verifier', file: 'src/compensation.js',
+      old: '  if (observed.verifierId !== verifierId) {',
+      replacement: '  if (false) {',
+      test: /not ok \d+ - a compensation cannot be built from a different template/ },
+    // And it must not be possible to name one verifier while observing another.
+    { name: 'json_wrapper_ignores_its_own_binding', file: 'src/compensation.js',
+      old: "  return buildCompensation({ ...input, verifierId: 'json-source-output', targetTool: 'runtime.replace_json' });",
+      replacement: "  return buildCompensation({ ...input, verifierId: input.verifierId ?? 'json-source-output', targetTool: 'runtime.replace_json' });",
+      test: /not ok \d+ - the JSON wrapper cannot be talked out of its own verifier binding/ },
   ];
   const observed = [];
   for (const mutant of mutants) {

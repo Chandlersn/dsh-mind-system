@@ -32,22 +32,38 @@ export function validateCompensationPlan(input) {
   return value;
 }
 
-/** Build the plan for the JSON template: restoring the previous owned artifact content, never a generic undo. */
-export function buildJsonCompensation({ task, sourceAttempt, observedSha256, priorSha256, priorContent, targetPath }) {
+/**
+ * Build a prior-version restore plan for any template.
+ *
+ * The verifier identity is a parameter rather than a constant: an engine that only compensates one
+ * template's verifier cannot support a second recipe, and the failure would look like a policy refusal
+ * rather than the hard-coding it is. The caller must name the verifier it observed, and the plan is
+ * rejected unless the source attempt was actually verified by that same verifier.
+ */
+export function buildCompensation({ task, sourceAttempt, verifierId, targetTool, observedSha256, priorSha256,
+  priorContent, targetPath }) {
   const checked = validateTask(task);
+  requireString(verifierId, 'verifierId');
+  requireString(targetTool, 'targetTool');
   const attempt = sourceAttempt;
   if (!attempt || attempt.status !== 'settled' || !attempt.verification) fail('Compensation requires a settled source attempt.');
-  if (validateVerification(attempt.verification).verifierId !== 'json-source-output') {
-    fail('Compensation must be based on the template verifier observation.');
+  const observed = validateVerification(attempt.verification);
+  if (observed.verifierId !== verifierId) {
+    fail(`Compensation must be based on the ${verifierId} observation, not ${observed.verifierId}.`);
   }
   if (!HASH.test(observedSha256) || !HASH.test(priorSha256)) fail('Compensation requires concrete content versions.');
   if (typeof priorContent !== 'string') fail('Compensation requires the prior content it will restore.');
   return validateCompensationPlan({ compensationId: `restore:${createHash('sha256')
     .update(`${checked.taskId}:${attempt.attemptId}:${priorSha256}`).digest('hex').slice(0, 32)}`,
-  targetTool: 'runtime.replace_json',
+  targetTool,
   targetArguments: { path: targetPath, content: priorContent, expectedSha256: observedSha256 },
   expectedBeforeSha256: observedSha256, expectedAfterSha256: priorSha256,
   reason: 'restore_prior_version', sourceAttemptId: attempt.attemptId });
+}
+
+/** The JSON template's plan: a thin wrapper so the template keeps its tool name out of generic code. */
+export function buildJsonCompensation(input) {
+  return buildCompensation({ ...input, verifierId: 'json-source-output', targetTool: 'runtime.replace_json' });
 }
 
 /**

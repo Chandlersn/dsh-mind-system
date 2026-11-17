@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
 import { RuntimeStore } from '../src/store.js';
-import { validateCompensationPlan, assessCompensation, buildJsonCompensation,
+import { validateCompensationPlan, assessCompensation, buildJsonCompensation, buildCompensation,
   assertCompensationSupported, bindCompensationToAttempt, registerCompensation } from '../src/compensation.js';
 
 const hash = (text) => createHash('sha256').update(text).digest('hex');
@@ -190,4 +190,54 @@ test('the JSON template builds a restore plan from observed versions, not from a
   assert.equal(built.sourceAttemptId, 'attempt-1');
   assert.throws(() => buildJsonCompensation({ task, sourceAttempt: attempt, observedSha256: 'bad',
     priorSha256: A, priorContent: 'old', targetPath: '/w/out.json' }), { code: 'invalid_compensation' });
+});
+
+test('a second template builds its own restore plan instead of needing engine changes', () => {
+  // The engine must not hard-code one template's verifier: otherwise a second recipe can only be
+  // compensated by editing generic code, and the refusal would look like a policy decision.
+  const attempt = { attemptId: 'attempt-csv', status: 'settled',
+    verification: { status: 'fail', progress: 'unchanged', goalSatisfied: false, verifierId: 'csv-source-output',
+      verifierVersion: '1', evidenceRefs: ['file:/w/out.csv#sha256:' + B] } };
+  const task = { taskId: 'task-csv', recipeId: 'csv-normalize', recipeVersion: '1', goal: 'g',
+    scopeRef: 's', workspaceRoot: process.cwd(), inputs: { inputFile: 'i.csv', outputFile: 'out.csv' },
+    deadlineAt: Date.now() + 60_000 };
+  const built = buildCompensation({ task, sourceAttempt: attempt, verifierId: 'csv-source-output',
+    targetTool: 'runtime.replace_text', observedSha256: B, priorSha256: A, priorContent: 'id,name\n',
+    targetPath: '/w/out.csv' });
+  assert.equal(built.targetTool, 'runtime.replace_text');
+  assert.equal(built.expectedAfterSha256, A);
+  assert.equal(built.sourceAttemptId, 'attempt-csv');
+});
+
+test('a compensation cannot be built from a different template\'s verification', () => {
+  // Cross-template borrowing would let one verifier's observation justify undoing another's artifact.
+  const attempt = { attemptId: 'attempt-x', status: 'settled',
+    verification: { status: 'fail', progress: 'unchanged', goalSatisfied: false, verifierId: 'json-source-output',
+      verifierVersion: '1', evidenceRefs: ['file:/w/out.json#sha256:' + B] } };
+  const task = { taskId: 'task-x', recipeId: 'csv-normalize', recipeVersion: '1', goal: 'g',
+    scopeRef: 's', workspaceRoot: process.cwd(), inputs: { inputFile: 'i.csv', outputFile: 'out.csv' },
+    deadlineAt: Date.now() + 60_000 };
+  assert.throws(() => buildCompensation({ task, sourceAttempt: attempt, verifierId: 'csv-source-output',
+    targetTool: 'runtime.replace_text', observedSha256: B, priorSha256: A, priorContent: 'x',
+    targetPath: '/w/out.csv' }), { code: 'invalid_compensation' });
+  // And the JSON wrapper keeps its own binding, so swapping the observed verifier is refused too.
+  assert.throws(() => buildJsonCompensation({ task, sourceAttempt: { ...attempt,
+    verification: { ...attempt.verification, verifierId: 'csv-source-output' } },
+  observedSha256: B, priorSha256: A, priorContent: 'x', targetPath: '/w/out.json' }),
+  { code: 'invalid_compensation' });
+});
+
+test('the JSON wrapper cannot be talked out of its own verifier binding', () => {
+  // A caller must not be able to redirect the wrapper by passing verifierId: the wrapper exists precisely
+  // to fix the template's binding, and honouring the argument would let any observation justify an undo.
+  const jsonTask = { taskId: 'task-json', recipeId: 'json-normalize', recipeVersion: '1', goal: 'g',
+    scopeRef: 's', workspaceRoot: process.cwd(), inputs: { inputFile: 'i.json', outputFile: 'out.json' },
+    deadlineAt: Date.now() + 60_000 };
+  const csvAttempt = { attemptId: 'attempt-csv-2', status: 'settled',
+    verification: { status: 'fail', progress: 'unchanged', goalSatisfied: false, verifierId: 'csv-source-output',
+      verifierVersion: '1', evidenceRefs: ['file:/w/out.csv#sha256:' + B] } };
+  assert.throws(() => buildJsonCompensation({ task: jsonTask, sourceAttempt: csvAttempt,
+    verifierId: 'csv-source-output', observedSha256: B, priorSha256: A, priorContent: 'x',
+    targetPath: '/w/out.json' }), { code: 'invalid_compensation' },
+  'The wrapper must reject a foreign observation even when the caller supplies a matching verifierId.');
 });

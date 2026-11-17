@@ -36,7 +36,20 @@
 - **失败留在分母**：成功率不会因为忽略失败而虚高。
 - **报告不等于许可**：`describePatternEvidence` 明确输出 `activatable: false`。
 
-## 4. 我这轮踩的三个坑（如实记录）
+## 4. 消除引擎里的模板硬编码
+
+原本 `compensation.js` 只有一个 `buildJsonCompensation`，里面同时写死了验证器 `json-source-output` 和工具名 `runtime.replace_json`。后果不是崩溃，而是**第二个配方走补偿路径会被拒**，且拒绝长得像"策略不允许"，掩盖了硬编码这个真实原因。
+
+改为两层：
+
+- `buildCompensation({ ..., verifierId, targetTool })`——通用构建器，验证器身份是参数；只有在源尝试**确实由该验证器**验证过时才成案。
+- `buildJsonCompensation(input)`——JSON 模板的薄包装，固定它自己的绑定。
+
+关键一点：包装器**不接受调用方传入 `verifierId` 覆盖**。否则任何一次观测都能为任意产物的撤销背书。这条我最初没写测试，变异 `json_wrapper_ignores_its_own_binding` 存活后才补上"精确夹具"的断言（原先那条用 csv 任务，即使包装器被污染也会因别的校验先失败而"恰好通过"）。
+
+复核后 `src/` 里只剩包装器这一处 `json-source-output`，属模板专用约定而非引擎逻辑——引擎已是通用的。
+
+## 5. 我这轮踩的三个坑（如实记录）
 
 **坑一：变异脚本自身有缺陷，误报 9/9 存活。**
 第一次跑，9 个变异全部 "存活"。我没有当成"测试很弱"就收工——先核对 `node --test` 的真实输出格式（TAP `not ok N - 名称`），再逐步复现。真实原因是脚本的 staging 路径算错一层（`join(here,'..','packages','dsh-execution-runtime')` 多算了一级），测试文件根本没被正确装载。改用与既有变异套件相同的 `new URL('../', import.meta.url)` + fd 重定向后，立刻得到 7/9。
@@ -53,13 +66,16 @@
 
 另有一次自造事故：对含中文注释的测试文件用了 PowerShell `Set-Content`，写成非 UTF-8 并损坏，已用 write 重写。**中文文件只用编辑工具改**。
 
-## 5. 执行证据
+## 6. 执行证据
 
 ```
 node --test packages/dsh-execution-runtime/test/*.test.js
-# tests 442 / pass 442 / fail 0
+# tests 445 / pass 445 / fail 0
 
 node packages/dsh-execution-runtime/scripts/verify-loop-mutations.mjs
+{"baselineExitCode": 0, "killed": 9}
+
+node packages/dsh-execution-runtime/scripts/verify-compensation-mutations.mjs
 {"baselineExitCode": 0, "killed": 9}
 ```
 
@@ -77,8 +93,8 @@ node packages/dsh-execution-runtime/scripts/verify-loop-mutations.mjs
 | `csv_quoting_not_parsed` | 引号被当字面量 |
 | `csv_recipe_borrows_json_verifier` | 借用他人验证器 |
 
-## 6. 仍未达成
+## 7. 仍未达成
 
 - **无真实跨任务样本**：阈值与聚合都在，但真实证据为 0。因此自动推广**保持关闭**（`activatable: false`），任何命中都需人工确认的审批。这是设计选择，不是未完成项。
-- `compensation.js:40` 仍硬编码 `json-source-output`，第二个配方走补偿路径会被误判。属通用性残留，下一步处理。
 - 阶段5 对照实验（DR-17/18）需真实任务集。
+- 引擎内的模板硬编码已清除（`src/` 仅剩 JSON 包装器一处，属模板约定）；补偿的**运行期派发**仍依赖调度器侧的 native 控制器，与回滚派发同属阶段2的已完成部分。
