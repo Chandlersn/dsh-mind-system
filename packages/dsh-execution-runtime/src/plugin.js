@@ -21,6 +21,9 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
   // Probe state belongs to this plugin instance, never to the module: two loaded runtimes must not share it.
   let lastProbe = null;
   let disposed = false;
+  // Drain bookkeeping: unloading stops new dispatch first, then waits for the work already in flight.
+  const active = new Set();
+  let draining = null;
 
   /** One executor and scheduler per calling agent: identity is never widened by a model-supplied value. */
   const schedulerFor = (agent) => {
@@ -66,6 +69,7 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
     },
     output: { schema: { type: 'object' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] },
     async execute(args, exec) {
+      if (disposed) fail('runtime_unloaded', 'The runtime plugin is unloaded and cannot dispatch new work.');
       requireString(args?.taskRef, 'taskRef');
       const factory = tasks[args.taskRef];
       if (typeof factory !== 'function') fail('task_not_registered', 'The task reference is not registered natively.');
@@ -73,9 +77,27 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
       const prepared = await factory({ agent: exec.agent });
       if (!prepared || typeof prepared !== 'object') fail('task_not_registered', 'The native task factory returned no task.');
       const scheduler = schedulerFor(exec.agent);
-      const run = await scheduler.run(prepared.task, { authority: prepared.authority, signal: exec.signal });
+      const work = scheduler.run(prepared.task, { authority: prepared.authority, signal: exec.signal });
+      active.add(work);
+      work.finally(() => active.delete(work)).catch(() => {});
+      const run = await work;
       return { taskId: run.task.taskId, status: run.status, reason: run.reason, budgetUsage: run.budgetUsage };
     },
+  };
+
+  /**
+   * Stop new dispatch, then wait for work already in flight. Draining never invents an outcome: a run that
+   * was interrupted stays in its persisted state so a later owner can reconcile or resume it.
+   */
+  const drain = async () => {
+    // Snapshot before awaiting: settling removes entries from `active`, so reading it afterwards would
+    // always report zero and make a real wait indistinguishable from a no-op.
+    const pending = [...active];
+    if (!pending.length) return { drained: 0, pending: 0 };
+    draining ??= Promise.allSettled(pending);
+    await draining;
+    draining = null;
+    return { drained: pending.length, pending: active.size };
   };
 
   return {
@@ -96,14 +118,16 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
         findings: [{ code: 'execution-runtime.loaded', severity: 'info',
           message: `Loaded ${recipes.length} template(s) and ${Object.keys(tasks).length} native task reference(s).` }] };
       return () => {
+        // Order matters on unload: refuse new dispatch first, then stop allowing the tools, then report.
         disposed = true;
         for (const dispose of disposers.splice(0)) dispose();
-        // Disposal stops new dispatch; in-flight work is drained by the owning application, not silently killed.
         lastProbe = { plugin: 'execution-runtime', status: 'ok',
           findings: [{ code: 'execution-runtime.unloaded', severity: 'info',
-            message: 'The runtime plugin released its tools; the host keeps working without it.' }] };
+            message: `The runtime plugin released its tools; ${active.size} run(s) still in flight remain resumable.` }] };
       };
     },
+    /** Explicit drain for unload/HMR paths; resolves once the in-flight work settles or fails. */
+    drain,
     /** Zero-argument probe: report what the plugin knows without reaching into ctx. */
     healthProbe: {
       probe() {
@@ -112,12 +136,17 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
             findings: [{ code: 'execution-runtime.not-applied', severity: 'warn',
               message: 'The runtime plugin has not been applied in this process.' }] };
         }
-        if (disposed) return lastProbe;
+        // In-flight work during unload is reported rather than hidden: a green probe must not imply idle.
+        if (disposed && active.size) {
+          return { plugin: 'execution-runtime', status: 'degraded',
+            findings: [{ code: 'execution-runtime.draining', severity: 'warn',
+              message: `Unloaded with ${active.size} run(s) still in flight; call drain() before replacing the plugin.` }] };
+        }
         return lastProbe;
       },
     },
     /** Test and host-embedding access to the bound services; never exposed to the model. */
-    describe() { return { disposed, executors: executors.size, schedulers: schedulers.size }; },
+    describe() { return { disposed, executors: executors.size, schedulers: schedulers.size, active: active.size }; },
   };
 }
 

@@ -119,6 +119,12 @@ JSON模板提供`buildJsonCompensation`：从原Verifier观察到的版本与先
 
 宿主真实契约（本机实测，不是推测）：工具`output.schema.type`只能是`object/array/string/number/integer/boolean/null`；`execute`返回`{isError, content, value}`；注册表用`get(name, scope)`查询，没有列表面API。
 
+## 卸载与排空
+
+`apply`返回的dispose按HMR语义执行：先置`disposed`拒绝新派发，再释放两个工具，最后记录状态。工具从注册表消失后宿主以`UNKNOWN_TOOL`拒绝调用；持有旧定义直接调用时由运行时自身以`runtime_unloaded`拒绝，两层都有测试。
+
+`drain()`等待真正的在途work，并在等待前快照pending，所以`drained`反映实际等待的条数；卸载时有在途work，探针返回`degraded/execution-runtime.draining`，排空后才回到`execution-runtime.unloaded`。run持久在SQLite中，卸载只影响插件实例，后续owner仍可resume或reconcile。
+
 ## 持久化与授权边界
 
 当前使用Node.js内建`node:sqlite`；本机Node v22.23.3仍将该API标记为实验性。原型验证不等于生产驱动选型已完成。事件不可改限制来自SQLite触发器，不能防御拥有数据库文件写权限的外部进程。

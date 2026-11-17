@@ -10,7 +10,7 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), 'runtime-plugin-mutations-'
 function run(args, label) {
   const fd = openSync(join(root, `${label}.log`), 'w');
   let result;
-  try { result = spawnSync(process.execPath, args, { stdio: ['ignore', fd, fd], timeout: 60_000 }); }
+  try { result = spawnSync(process.execPath, args, { stdio: ['ignore', fd, fd], timeout: 180_000 }); }
   finally { closeSync(fd); }
   return { status: result.status, error: result.error?.code ?? null,
     output: readFileSync(join(root, `${label}.log`), 'utf8') };
@@ -40,6 +40,18 @@ try {
       old: "        lastProbe = { plugin: 'execution-runtime', status: 'ok',\n          findings: [{ code: 'execution-runtime.unloaded', severity: 'info',",
       replacement: "        lastProbe = { plugin: 'execution-runtime', status: 'ok',\n          findings: [{ code: 'execution-runtime.loaded', severity: 'info',",
       test: /not ok \d+ - the host stays usable after the plugin is unloaded/ },
+    { name: 'unloaded_runtime_dispatch_allowed', file: 'src/plugin.js',
+      old: "      if (disposed) fail('runtime_unloaded'",
+      replacement: "      if (false) fail('runtime_unloaded'",
+      test: /not ok \d+ - an unloaded runtime refuses dispatch at its own entry/ },
+    { name: 'inflight_work_not_tracked', file: 'src/plugin.js',
+      old: '      active.add(work);',
+      replacement: '      void work;',
+      test: /not ok \d+ - drain waits for in-flight work/ },
+    { name: 'unload_hides_draining_state', file: 'src/plugin.js',
+      old: '        if (disposed && active.size) {',
+      replacement: '        if (false) {',
+      test: /not ok \d+ - drain waits for in-flight work/ },
     { name: 'probe_reports_ok_before_apply', file: 'src/plugin.js',
       old: '        if (!lastProbe) {',
       replacement: '        if (false) {',

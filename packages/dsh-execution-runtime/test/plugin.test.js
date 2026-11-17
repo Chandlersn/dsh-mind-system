@@ -15,15 +15,22 @@ const { assertObjectJsonSchema, validateJsonSchemaValue } = await import(pathToF
  * The host fixture removes its temporary root in its own teardown, so SQLite must be closed first.
  * Every case here closes the store explicitly before returning instead of relying on hook order.
  */
-async function fixture(t, { withTask = true } = {}) {
+async function fixture(t, { withTask = true, slow = false } = {}) {
   const host = await createHost(t);
   const store = new RuntimeStore(join(host.root, 'plugin.sqlite'));
   writeFileSync(join(host.storage, 'source.json'), JSON.stringify([{ id: 'a', name: ' Alpha ' }]));
+  let release;
+  let gate = null;
+  if (slow) gate = new Promise((resolve) => { release = resolve; });
   host.tools.register({ name: 'runtime.write_json', description: 'Create an owned fixture artifact.',
     parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, createOnly: { type: 'boolean', enum: [true] } },
       required: ['path', 'content', 'createOnly'], additionalProperties: false },
     output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
-    async execute({ path, content }) { writeFileSync(path, content, { flag: 'wx' }); return { created: true }; } });
+    async execute({ path, content }) {
+      if (gate) await gate;
+      writeFileSync(path, content, { flag: 'wx' });
+      return { created: true };
+    } });
   const tasks = {};
   if (withTask) {
     tasks['fixture-normalize'] = async ({ agent }) => ({
@@ -38,7 +45,7 @@ async function fixture(t, { withTask = true } = {}) {
       assertObjectJsonSchema(tool.parameters);
       return validateJsonSchemaValue(tool.parameters, args);
     } });
-  return { host, store, plugin, close: () => { try { store.close(); } catch { /* closed */ } } };
+  return { host, store, plugin, release: () => release?.(), close: () => { try { store.close(); } catch { /* closed */ } } };
 }
 
 // The host registry exposes get(name, scope); omitting the scope asks the global view.
@@ -112,7 +119,68 @@ test('the host stays usable after the plugin is unloaded', async (t) => {
     env.host.register('post-unload-probe', () => ({ alive: true }));
     const result = await env.host.execute('post-unload-probe', { arguments: {} });
     assert.equal(result.isError, false);
-    assert.deepEqual(env.plugin.describe(), { disposed: true, executors: 0, schedulers: 0 });
+    assert.deepEqual(env.plugin.describe(), { disposed: true, executors: 0, schedulers: 0, active: 0 });
+  } finally { env.close(); }
+});
+
+test('unloading removes the tools so a late call is refused by the host', async (t) => {
+  const env = await fixture(t);
+  try {
+    const fiber = await env.host.ctx.plugin(env.plugin, {});
+    await fiber.dispose();
+    assert.equal(registered(env.host, 'runtime_run'), false);
+    const agent = await env.host.agent('late-caller');
+    const outcome = await env.host.execute('runtime_run', { arguments: { taskRef: 'fixture-normalize' }, agent });
+    assert.equal(outcome.isError, true);
+    assert.equal(outcome.error.info.code, 'UNKNOWN_TOOL');
+    assert.equal(env.plugin.describe().active, 0, 'A refused call must not be tracked as in-flight work.');
+  } finally { env.close(); }
+});
+
+test('an unloaded runtime refuses dispatch at its own entry too', async (t) => {
+  const env = await fixture(t);
+  try {
+    const fiber = await env.host.ctx.plugin(env.plugin, {});
+    // Capture the registered definition before unload, then call its body directly afterwards.
+    const tool = env.host.tools.get('runtime_run');
+    assert.ok(tool, 'runtime_run must be registered while loaded');
+    await fiber.dispose();
+    const agent = await env.host.agent('direct-caller');
+    await assert.rejects(async () => tool.execute({ taskRef: 'fixture-normalize' }, { agent }),
+      { code: 'runtime_unloaded' });
+  } finally { env.close(); }
+});
+
+test('drain waits for in-flight work and the persisted run survives unload', async (t) => {
+  const env = await fixture(t, { slow: true });
+  try {
+    const fiber = await env.host.ctx.plugin(env.plugin, {});
+    const agent = await env.host.agent('slow-caller');
+    const work = env.host.execute('runtime_run', { arguments: { taskRef: 'fixture-normalize' }, agent });
+    // Wait until the run actually reaches the tool body, so the unload happens mid-flight.
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && env.plugin.describe().active === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(env.plugin.describe().active, 1,
+      'An in-flight run must be tracked; a green drain with nothing tracked proves nothing.');
+    await fiber.dispose();
+    assert.equal(env.plugin.healthProbe.probe().findings[0].code, 'execution-runtime.draining',
+      'Unloading with work in flight must not report a plain unloaded state.');
+    let drainedEarly = null;
+    const early = env.plugin.drain().then((value) => { drainedEarly = value; });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(drainedEarly, null, 'drain() must not resolve while the gated tool body is still running.');
+    env.release();
+    await early;
+    assert.equal(drainedEarly.drained, 1, 'drain() must report the work it actually waited for.');
+    assert.equal(drainedEarly.pending, 0);
+    const result = await work;
+    assert.equal(result.isError, false);
+    // The persisted run outlives the plugin instance, which is what makes resume or reconcile possible.
+    const run = env.store.getRun(result.value.taskId);
+    assert.ok(['completed', 'waiting_analysis', 'reconciling'].includes(run.status));
+    assert.equal(env.plugin.healthProbe.probe().findings[0].code, 'execution-runtime.unloaded');
   } finally { env.close(); }
 });
 
