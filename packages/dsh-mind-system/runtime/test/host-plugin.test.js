@@ -1,6 +1,6 @@
-import test from 'node:test';
+﻿import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createHost } from './helpers/host.js';
@@ -10,7 +10,7 @@ import * as hostEntry from '../src/host-plugin.js';
  * The host entry must survive a real Cordis mount, because that is where the traps live: a swallowed
  * `inject`, an optional service read as a property, an `apply` that throws and disappears.
  *
- * These tests load through `ctx.plugin(...)` rather than calling `apply` by hand — calling apply directly
+ * These tests load through `ctx.plugin(...)` rather than calling `apply` by hand 鈥?calling apply directly
  * would prove nothing about activation.
  */
 
@@ -87,7 +87,7 @@ test('unloading stops the runtime instead of leaving it in flight', async (t) =>
   assert.equal(hostEntry.healthProbe.probe().facts.state, 'unloaded');
 });
 
-test('a task declared to the host reaches the runtime through the tool', async (t) => {
+test('an enabled runtime actually dispatches a declared task through the host tool', async (t) => {
   const taskId = randomUUID();
   await withMount(t, async (host) => {
     writeFileSync(join(host.storage, 'source.csv'), 'id,name\nb, Beta \na, Alpha \n');
@@ -98,10 +98,45 @@ test('a task declared to the host reaches the runtime through the tool', async (
       output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
       async execute({ path, content }) { writeFileSync(path, content, { flag: 'wx' }); return { created: true }; } });
     return { enabled: true, stateDir: mkdtempSync(join(host.root, 'state-')),
-      agent: await host.agent('host-caller'),
       tasks: [{ taskId, recipeId: 'csv-normalize', recipeVersion: '1', goal: 'Normalize the CSV.',
         scopeRef: 'host-scope', workspaceRoot: host.storage,
-        inputs: { inputFile: 'source.csv', outputFile: 'output.csv' }, deadlineAt: Date.now() + 60_000 }] };
+        inputs: { inputFile: 'source.csv', outputFile: 'output.csv' }, deadlineAt: Date.now() + 60_000,
+        allowedTools: ['runtime.write_text'] }] };
+  }, async (host) => {
+    // The caller identity comes from the host invocation, so this is a real dispatch, not a stub.
+    const agent = await host.agent('runtime-caller');
+    const result = await host.execute('runtime_run', { arguments: { taskRef: taskId }, agent });
+    assert.equal(result.isError, false, JSON.stringify(result.content));
+    assert.equal(result.value.status, 'completed', JSON.stringify(result.value));
+    // The artifact proves the work happened through the real tool pipeline.
+    assert.equal(readFileSync(join(host.storage, 'output.csv'), 'utf8'), 'id,name\na,Alpha\nb,Beta\n');
+  });
+});
+
+test('an unregistered task reference is refused instead of running something else', async (t) => {
+  await withMount(t, async (host) => ({ enabled: true, stateDir: mkdtempSync(join(host.root, 'state-')) }),
+    async (host) => {
+      const agent = await host.agent('runtime-caller');
+      const result = await host.execute('runtime_run', { arguments: { taskRef: 'invented' }, agent });
+      assert.equal(result.isError, true, 'A model must not be able to name work that was never declared.');
+    });
+});
+
+test('a declared task is reported by id but has no run until it is dispatched', async (t) => {
+  const taskId = randomUUID();
+  await withMount(t, async (host) => {
+    writeFileSync(join(host.storage, 'source.csv'), 'id,name\nb, Beta \na, Alpha \n');
+    host.tools.register({ name: 'runtime.write_text', description: 'Create the owned text artifact.',
+      parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' },
+        createOnly: { type: 'boolean', enum: [true] } },
+        required: ['path', 'content', 'createOnly'], additionalProperties: false },
+      output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
+      async execute({ path, content }) { writeFileSync(path, content, { flag: 'wx' }); return { created: true }; } });
+    return { enabled: true, stateDir: mkdtempSync(join(host.root, 'state-')),
+      tasks: [{ taskId, recipeId: 'csv-normalize', recipeVersion: '1', goal: 'Normalize the CSV.',
+        scopeRef: 'host-scope', workspaceRoot: host.storage,
+        inputs: { inputFile: 'source.csv', outputFile: 'output.csv' }, deadlineAt: Date.now() + 60_000,
+        allowedTools: ['runtime.write_text'] }] };
   }, async (host) => {
     const probe = hostEntry.healthProbe.probe();
     assert.equal(probe.facts.tasks, 1);

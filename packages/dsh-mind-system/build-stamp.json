@@ -921,7 +921,7 @@
     },
     "runtime/src/host-plugin.js": {
       "source": "dsh-execution-runtime/src/host-plugin.js",
-      "sha256": "2757cca027af200f264eed2598ead74f046d459721a9eeaf1775d677e0265b74"
+      "sha256": "1dcdfa85fd8bca9888a86dc72459a21cc6cf6668c21084d82b9d3f0ccfa2f480"
     },
     "runtime/src/knowledge.js": {
       "source": "dsh-execution-runtime/src/knowledge.js",
@@ -1007,13 +1007,17 @@
       "source": "dsh-execution-runtime/test/helpers/host.js",
       "sha256": "9cc11eaef9c2640c3039292f8a4b5cb73f94cde52bd2650a5ef08632cf09fec6"
     },
+    "runtime/test/host-enablement.test.js": {
+      "source": "dsh-execution-runtime/test/host-enablement.test.js",
+      "sha256": "9761881b46c7d91171e6ba567b589b0ced433bfd7e265c2056794a3d440ac4d8"
+    },
     "runtime/test/host-pipeline.test.js": {
       "source": "dsh-execution-runtime/test/host-pipeline.test.js",
       "sha256": "23ede3bf3ddc5d690046e81ecb4df210cbadecc0c7655a772be0e4abac8ea92d"
     },
     "runtime/test/host-plugin.test.js": {
       "source": "dsh-execution-runtime/test/host-plugin.test.js",
-      "sha256": "294aac850615c655eab5b602b10eb501cb2b7d0b29b27eead34011bcce23a520"
+      "sha256": "fe0dfe4564b3da4cf3a9640b98d8fab813f29068256689dcba77ba35047f87f0"
     },
     "runtime/test/json-recipe.test.js": {
       "source": "dsh-execution-runtime/test/json-recipe.test.js",

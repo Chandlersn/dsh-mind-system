@@ -20,7 +20,9 @@
  *   failures to hide, and a green probe never implies that work is possible.
  */
 import { mkdirSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { RuntimeStore } from './store.js';
 import { HostExecutor } from './executor.js';
 import { createExecutionRuntimePlugin } from './plugin.js';
@@ -54,16 +56,46 @@ const optional = (ctx, key) => {
   try { return typeof ctx?.get === 'function' ? ctx.get(key) : undefined; } catch { return undefined; }
 };
 
-/** Reuse the host's own validator when it offers one; a hand-rolled check would drift from its schema. */
-function argumentValidator(ctx) {
-  const tools = ctx.tools;
-  const found = [optional(ctx, 'validateSchemaValue'), tools?.validateArgs, tools?.validateArguments]
-    .find((item) => typeof item === 'function');
-  if (!found) return null;
-  return ({ tool, arguments: args }) => found.call(tools ?? ctx, tool?.parameters, args);
+/**
+ * The admission layer calls the validator with a context object and expects a list of violation strings
+ * (an empty list means valid). A boolean-returning check is rejected as an invalid result, so whatever the
+ * host provides is normalized into that contract here.
+ *
+ * The host does not always expose a validator on `ctx`. In that case the host's own
+ * `@deepseek-ai/dsh-tools` is loaded — preloaded during `apply`, so the value is available synchronously
+ * when admission calls it later. Reimplementing schema checks here would drift from the host's schema
+ * dialect, which is a known source of silent divergence.
+ */
+function makeValidator(validate) {
+  if (typeof validate !== 'function') return null;
+  return ({ tool, arguments: args }) => {
+    const outcome = validate(tool?.parameters, args);
+    if (Array.isArray(outcome)) return outcome.map(String);
+    if (outcome === true || outcome === undefined) return [];
+    if (outcome === false) return ['arguments did not satisfy the tool schema'];
+    return ['the host validator returned an unusable result'];
+  };
 }
 
-export function apply(ctx, config = {}) {
+/** Load the host's own JSON-schema validator synchronously-compatible; null when unavailable. */
+async function loadHostValidator(ctx) {
+  const tools = ctx.tools;
+  const direct = [optional(ctx, 'validateSchemaValue'), tools?.validateArgs, tools?.validateArguments]
+    .find((item) => typeof item === 'function');
+  if (direct) return (schema, value) => direct.call(tools ?? ctx, schema, value);
+  for (const root of [process.env.DSH_HOST_ROOT, 'D:/dsh']) {
+    if (typeof root !== 'string' || !root) continue;
+    try {
+      const require = createRequire(pathToFileURL(join(root, 'package.json')));
+      const entry = require.resolve('@deepseek-ai/dsh-tools');
+      const module = await import(pathToFileURL(entry).href);
+      if (typeof module.validateJsonSchemaValue === 'function') return module.validateJsonSchemaValue;
+    } catch { /* try the next root */ }
+  }
+  return null;
+}
+
+export async function apply(ctx, config = {}) {
   const logger = optional(ctx, 'logger')?.('execution-runtime') ?? null;
   const base = { enabled: config?.enabled === true, loadError: null, recipes: [], tasks: 0, patterns: false };
   facts = base;
@@ -78,29 +110,42 @@ export function apply(ctx, config = {}) {
 
   let store = null;
   let executor = null;
+  // Executors are created per invocation, so the mount has to keep them to release the handlers on unload.
+  const executors = [];
   try {
-    // The executor requires an explicit caller agent: the runtime must never dispatch as an anonymous
-    // principal. It comes from config (the host's identified caller), never from a default.
-    const agent = config?.agent ?? optional(ctx, 'agent') ?? null;
-    if (!agent) throw new Error('execution runtime needs an explicit caller agent (config.agent).');
     const root = stateRoot(config);
     mkdirSync(root, { recursive: true });
     base.storePath = join(root, 'runtime.sqlite');
     store = new RuntimeStore(base.storePath);
-    executor = new HostExecutor({ context: ctx, tools: ctx.tools, agent });
+    // The host passes the calling agent on every tool invocation (`exec.agent`). Binding an executor to a
+    // configured agent would let one caller's task run under another's authority, so the executor is built
+    // per call by the task factory below instead of once here.
+    executor = null;
 
     const recipes = Object.values(RECIPES).filter((recipe) => config?.recipes?.[recipe.id] !== false);
     base.recipes = recipes.map((recipe) => `${recipe.id}@${recipe.version}`);
 
-    // Tasks come from host config: the runtime executes a declared template, never an ad-hoc script.
+    // Task factories are native closures: each returns the prepared task plus the authority it may use, and
+    // the runtime refuses anything the factory does not grant. They are declared in host config because a
+    // model must never widen its own authority.
     const tasks = {};
     for (const entry of Array.isArray(config?.tasks) ? config.tasks : []) {
-      try { tasks[entry.taskId] = validateTask(entry); }
-      catch (error) { logger?.warn?.(`skipped task ${entry?.taskId}: ${error?.code ?? error?.message}`); }
+      try {
+        const template = validateTask(entry);
+        tasks[entry.taskId] = async ({ agent }) => {
+          // A fresh executor per call: the caller identity is the one the host handed to this invocation.
+          const scoped = new HostExecutor({ context: ctx, tools: ctx.tools, agent });
+          executors.push(scoped);
+          return { task: template, authority: { scopeRef: template.scopeRef, workspaceRoot: template.workspaceRoot,
+            allowedTools: Array.isArray(entry.allowedTools) ? entry.allowedTools : [],
+            agent } };
+        };
+      } catch (error) { logger?.warn?.(`skipped task ${entry?.taskId}: ${error?.code ?? error?.message}`); }
     }
     base.tasks = Object.keys(tasks).length;
 
-    const supplied = argumentValidator(ctx);
+    const supplied = makeValidator(await loadHostValidator(ctx));
+    base.validator = supplied === null ? 'none' : 'host';
     const resolvePattern = createPatternResolver({ store,
       patterns: Array.isArray(config?.patterns) ? config.patterns : [],
       approvals: Array.isArray(config?.approvals) ? config.approvals : [],
@@ -126,7 +171,9 @@ export function apply(ctx, config = {}) {
     base.state = 'unloading';
     try { if (typeof disposeInner === 'function') await disposeInner(); }
     catch (error) { logger?.warn?.(`inner dispose failed: ${error?.message}`); }
-    try { await executor?.dispose?.(); } catch (error) { logger?.warn?.(`executor dispose failed: ${error?.message}`); }
+    for (const item of executors.splice(0)) {
+      try { await item.dispose?.(); } catch (error) { logger?.warn?.(`executor dispose failed: ${error?.message}`); }
+    }
     try { store?.close?.(); } catch (error) { logger?.warn?.(`store close failed: ${error?.message}`); }
     base.state = 'unloaded';
   };

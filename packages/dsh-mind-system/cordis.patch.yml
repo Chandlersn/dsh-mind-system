@@ -38,11 +38,14 @@
     - id: mind-system
       name: 'dsh-mind-system'
       config: {}
-    # 双循环执行运行时：默认关闭。
-    # 关闭时只装载适配层、不注册任何工具，健康探针报告 disabled —— 装了等于没装，
-    # 不改变现有行为。要启用须显式给 enabled:true 与 agent（执行器必须有明确调用者身份），
-    # 并按需在 tasks 里声明模板任务；没有声明任务时探针报告 no-tasks 而非假装可用。
+    # 双循环执行运行时：已启用。
+    # 启用后注册 runtime_status / runtime_run 两个工具；任务是原生声明的模板，
+    # 模型只能按 taskId 引用，不能自己描述目标或扩大工具面。
+    # 每次调用的调用者身份由宿主在 exec.agent 里给出，因此执行器不绑定固定 agent。
+    # tasks 里没有声明任务时，runtime_run 会拒绝，探针报 no-tasks 而不是假装可用。
     - id: execution-runtime
       name: 'dsh-mind-system/runtime'
       config:
-        enabled: false
+        enabled: true
+        # 状态目录默认落在 $DSH_HOME/execution-runtime；这里显式写出来便于排查。
+        tasks: []
