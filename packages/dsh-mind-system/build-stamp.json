@@ -805,7 +805,7 @@
     },
     "runtime/package.json": {
       "source": "dsh-execution-runtime/package.json",
-      "sha256": "c24d16eeef6f497bb02ee2f544d23f04b3a838073ede9b4c2e409937fe73a50d"
+      "sha256": "99fb0f23ee05a2e0c4df47ef7b06c638509e000f522b6a8608bf67cea6dcd43b"
     },
     "runtime/recipes/csv-normalize.js": {
       "source": "dsh-execution-runtime/recipes/csv-normalize.js",
@@ -846,6 +846,10 @@
     "runtime/scripts/verify-diagnosis-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-diagnosis-mutations.mjs",
       "sha256": "4720d13d5376d221704520631339cfcf6cfd12f0481011915848a3d6422b65f8"
+    },
+    "runtime/scripts/verify-dynamic-mutations.mjs": {
+      "source": "dsh-execution-runtime/scripts/verify-dynamic-mutations.mjs",
+      "sha256": "40cb7a2e86cf376a198bbfc64cb880b1c26c9e8608e9404c5abe89fb8748c725"
     },
     "runtime/scripts/verify-hit-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-hit-mutations.mjs",
@@ -911,6 +915,10 @@
       "source": "dsh-execution-runtime/src/diagnosis.js",
       "sha256": "0eaed6930a108f5cabfab5cc059da17b5c880eb0ec5de03eb342ee2027675d5b"
     },
+    "runtime/src/dynamic-tools.js": {
+      "source": "dsh-execution-runtime/src/dynamic-tools.js",
+      "sha256": "b8cc9de3d50728f7f75a55063fb4c62fd00a85fe054491d62d011d0eeaff9c35"
+    },
     "runtime/src/exceptions.js": {
       "source": "dsh-execution-runtime/src/exceptions.js",
       "sha256": "d30711a29fbca83722c8acd135cdf7decbe3d4a7a40bfbd7cb3378af52d94dcd"
@@ -921,7 +929,7 @@
     },
     "runtime/src/host-plugin.js": {
       "source": "dsh-execution-runtime/src/host-plugin.js",
-      "sha256": "1dcdfa85fd8bca9888a86dc72459a21cc6cf6668c21084d82b9d3f0ccfa2f480"
+      "sha256": "cee23db153d5f17208d02525d32da51067cc053e9bce2f7e252cf396b6c287d5"
     },
     "runtime/src/knowledge.js": {
       "source": "dsh-execution-runtime/src/knowledge.js",
@@ -947,6 +955,10 @@
       "source": "dsh-execution-runtime/src/probes.js",
       "sha256": "e591a52f4cf6f14a0379be81b03c37472e4d65ee6ba1b420c50ddbac41329819"
     },
+    "runtime/src/recipe-factory.js": {
+      "source": "dsh-execution-runtime/src/recipe-factory.js",
+      "sha256": "54cd463dc36f3dd8277e2c8270300a123edbecbd8401153b03c5537468003719"
+    },
     "runtime/src/repair-patterns.js": {
       "source": "dsh-execution-runtime/src/repair-patterns.js",
       "sha256": "3f49172227df1eb21ce7e507b6967a8a5cf64445e6b2e44d5d08a0afef542652"
@@ -966,6 +978,10 @@
     "runtime/src/valve-bridge.js": {
       "source": "dsh-execution-runtime/src/valve-bridge.js",
       "sha256": "c447f409ba4e355a6173f8800c1b402ce6acb28e699d3a947386d66a5d0a394b"
+    },
+    "runtime/src/verifier-primitives.js": {
+      "source": "dsh-execution-runtime/src/verifier-primitives.js",
+      "sha256": "12224e6491602f0a8667f0827ef268024a1d949fdd04a2bda2dc7048825023fc"
     },
     "runtime/test/admission.test.js": {
       "source": "dsh-execution-runtime/test/admission.test.js",
@@ -994,6 +1010,10 @@
     "runtime/test/diagnosis.test.js": {
       "source": "dsh-execution-runtime/test/diagnosis.test.js",
       "sha256": "998258f34f399e97ea1dcceeafdbead2076eb523c82c42f880ac9a43d750131f"
+    },
+    "runtime/test/dynamic-task.test.js": {
+      "source": "dsh-execution-runtime/test/dynamic-task.test.js",
+      "sha256": "0e244b608f38b2af505a72a3bd6e5296a9af0943b35e5c383d3d003020a5ea91"
     },
     "runtime/test/exceptions.test.js": {
       "source": "dsh-execution-runtime/test/exceptions.test.js",
@@ -1062,6 +1082,10 @@
     "runtime/test/probes.test.js": {
       "source": "dsh-execution-runtime/test/probes.test.js",
       "sha256": "44932005756f085c3f2a478532c141825c53e0c5e725cfee845566aa05d4b73a"
+    },
+    "runtime/test/recipe-factory.test.js": {
+      "source": "dsh-execution-runtime/test/recipe-factory.test.js",
+      "sha256": "09734677baad6e00340ed2bdb908f3b12be24c34ddc968ed95d1ad5ae5303a53"
     },
     "runtime/test/recovery.test.js": {
       "source": "dsh-execution-runtime/test/recovery.test.js",

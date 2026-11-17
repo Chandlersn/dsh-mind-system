@@ -25,8 +25,11 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { RuntimeStore } from './store.js';
 import { HostExecutor } from './executor.js';
+import { RuntimeScheduler } from './scheduler.js';
 import { createExecutionRuntimePlugin } from './plugin.js';
 import { createPatternResolver } from './pattern-resolver.js';
+import { createRecipeRegistry } from './recipe-factory.js';
+import { createExecuteTool, describePrimitivesTool } from './dynamic-tools.js';
 import { jsonNormalizeRecipe } from '../recipes/json-normalize.js';
 import { csvNormalizeRecipe } from '../recipes/csv-normalize.js';
 import { validateTask } from './contracts.js';
@@ -39,6 +42,8 @@ const RECIPES = Object.freeze({ 'json-normalize': jsonNormalizeRecipe, 'csv-norm
 /** Assembly facts for this mount; never shared between two loads in one process. */
 let facts = null;
 let disposeInner = null;
+// Executors are created per invocation, so the mount keeps them to release handlers on unload.
+const executors = [];
 
 /** A writable state directory, without assuming DSH_HOME exists. */
 function stateRoot(config) {
@@ -95,6 +100,13 @@ async function loadHostValidator(ctx) {
   return null;
 }
 
+/** One executor per call so the caller identity is the one the host just supplied. */
+function makeExecutor(ctx, agent) {
+  const executor = new HostExecutor({ context: ctx, tools: ctx.tools, agent });
+  executors.push(executor);
+  return executor;
+}
+
 export async function apply(ctx, config = {}) {
   const logger = optional(ctx, 'logger')?.('execution-runtime') ?? null;
   const base = { enabled: config?.enabled === true, loadError: null, recipes: [], tasks: 0, patterns: false };
@@ -110,8 +122,6 @@ export async function apply(ctx, config = {}) {
 
   let store = null;
   let executor = null;
-  // Executors are created per invocation, so the mount has to keep them to release the handlers on unload.
-  const executors = [];
   try {
     const root = stateRoot(config);
     mkdirSync(root, { recursive: true });
@@ -155,9 +165,42 @@ export async function apply(ctx, config = {}) {
     const inner = createExecutionRuntimePlugin({ store, recipes, tasks,
       validateArguments: supplied ?? (() => true), owner: ctx, resolvePattern });
     // Delegate with the host ctx: that is the ctx whose `tools` service must receive the registrations.
-    disposeInner = inner.apply(ctx);
+    const innerDispose = inner.apply(ctx);
+
+    // The general path: a caller may describe a task at runtime instead of naming a declared template.
+    // It shares the same store and mount authority, so nothing about scope or effects widens.
+    const dynamicRegistry = createRecipeRegistry();
+    for (const recipe of recipes) dynamicRegistry.register(recipe);
+    const toolEffects = Object.fromEntries(recipes.flatMap((recipe) =>
+      Object.entries(recipe.toolEffects ?? {})));
+    const mount = { scopeRef: config?.scopeRef ?? 'execution-runtime',
+      workspaceRoot: config?.workspaceRoot ?? process.cwd(),
+      allowedTools: Object.keys(toolEffects) };
+    const schedulerFactory = (agent, registry) => new RuntimeScheduler({ store,
+      executor: makeExecutor(ctx, agent), tools: ctx.tools,
+      recipes: registry.list().map((key) => registry.get(key)),
+      validateArguments: supplied ?? (() => true) });
+    const dynamicDisposers = [];
+    for (const tool of [createExecuteTool({ store, schedulerFor: schedulerFactory, toolEffects, mount,
+      registry: dynamicRegistry }), describePrimitivesTool]) {
+      const disposeTool = ctx.tools?.register?.(tool);
+      if (typeof disposeTool === 'function') dynamicDisposers.push(disposeTool);
+      else base.dynamicToolsError = 'the host did not accept a dynamic tool';
+    }
+    base.dynamicTools = Array.isArray(base.dynamicTools) ? base.dynamicTools : [];
+    base.dynamicTools = ['runtime_execute', 'runtime_verifiers']
+      .filter((name) => !base.dynamicToolsError);
+    base.mount = { scopeRef: mount.scopeRef, workspaceRoot: mount.workspaceRoot,
+      allowedTools: mount.allowedTools };
+    disposeInner = async () => {
+      for (const disposeTool of dynamicDisposers.splice(0)) {
+        try { disposeTool(); } catch { /* a failed tool removal must not block unload */ }
+      }
+      await innerDispose?.();
+    };
     base.state = 'ready';
-    logger?.info?.(`execution runtime ready: ${base.recipes.join(', ')}; tasks=${base.tasks}`);
+    logger?.info?.(`execution runtime ready: ${base.recipes.join(', ')}; tasks=${base.tasks}`
+      + `; dynamic tools=${base.dynamicTools.join(',') || 'none'}`);
   } catch (error) {
     // Never rethrow: an apply() throw makes the plugin disappear with no trace.
     base.state = 'failed';

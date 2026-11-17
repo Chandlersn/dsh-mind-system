@@ -29,7 +29,10 @@
     "./diagnosis": "./src/diagnosis.js",
     "./rollback": "./src/rollback.js",
     "./csv-recipe": "./recipes/csv-normalize.js",
-    "./host-plugin": "./src/host-plugin.js"
+    "./host-plugin": "./src/host-plugin.js",
+    "./recipe-factory": "./src/recipe-factory.js",
+    "./verifier-primitives": "./src/verifier-primitives.js",
+    "./dynamic-tools": "./src/dynamic-tools.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
@@ -48,6 +51,7 @@
     "verify:diagnosis": "node scripts/verify-diagnosis-mutations.mjs",
     "verify:rollback": "node scripts/verify-rollback-mutations.mjs",
     "probe:jev": "node scripts/probe-jev.mjs",
-    "verify:loop": "node scripts/verify-loop-mutations.mjs"
+    "verify:loop": "node scripts/verify-loop-mutations.mjs",
+    "verify:dynamic": "node scripts/verify-dynamic-mutations.mjs"
   }
 }
