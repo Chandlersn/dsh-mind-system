@@ -9,10 +9,15 @@
     "./contracts": "./src/contracts.js",
     "./store": "./src/store.js",
     "./json-recipe": "./recipes/json-normalize.js",
-    "./decision-client": "./src/decision-client.js"
+    "./decision-client": "./src/decision-client.js",
+    "./admission": "./src/admission.js",
+    "./executor": "./src/executor.js",
+    "./scheduler": "./src/scheduler.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
+    "verify:core": "node scripts/verify-core-mutations.mjs",
+    "verify:phase1": "node scripts/verify-phase1-mutations.mjs",
     "probe:jev": "node scripts/probe-jev.mjs"
   }
 }

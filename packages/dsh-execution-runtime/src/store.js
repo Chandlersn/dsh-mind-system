@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import { RuntimeContractError, jsonSnapshot, requireString, validateCandidate, validateTask, validateVerification } from './contracts.js';
+import { RuntimeContractError, jsonSnapshot, requireString, validateBudget, validateCandidate, validateTask, validateVerification } from './contracts.js';
 
 const error = (code, message) => new RuntimeContractError(code, message);
 
@@ -39,6 +39,15 @@ export class RuntimeStore {
       CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
         BEGIN SELECT RAISE(ABORT, 'Runtime events are immutable'); END;
     `);
+    const columns = new Set(this.#db.prepare('PRAGMA table_info(runs)').all().map((column) => column.name));
+    for (const [name, declaration] of Object.entries({
+      state_json: "TEXT NOT NULL DEFAULT '{}'", reason: 'TEXT',
+      io_operations_used: 'INTEGER NOT NULL DEFAULT 0',
+      decision_requests_used: 'INTEGER NOT NULL DEFAULT 0',
+      analysis_calls_used: 'INTEGER NOT NULL DEFAULT 0',
+    })) {
+      if (!columns.has(name)) this.#db.exec(`ALTER TABLE runs ADD COLUMN ${name} ${declaration}`);
+    }
   }
 
   close() { this.#db.close(); }
@@ -91,8 +100,82 @@ export class RuntimeStore {
     return {
       task: JSON.parse(row.task_json), status: row.status, version: row.version,
       usage: { attempts: row.attempts_used, toolCalls: row.tool_calls_used },
+      budgetUsage: { attempts: row.attempts_used, toolCalls: row.tool_calls_used,
+        ioOperations: row.io_operations_used, decisionRequests: row.decision_requests_used,
+        analysisCalls: row.analysis_calls_used },
+      state: JSON.parse(row.state_json), reason: row.reason,
       createdAt: row.created_at, updatedAt: row.updated_at,
     };
+  }
+
+  setState(taskId, input, { expectedVersion } = {}) {
+    const state = jsonSnapshot(input);
+    if (!state || Array.isArray(state) || typeof state !== 'object') throw error('invalid_state', 'Recipe state must be an object.');
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      if (row.status !== 'running') throw error('run_not_running', 'The run cannot change recipe state.');
+      this.#db.prepare('UPDATE runs SET state_json = ?, version = version + 1, updated_at = ? WHERE task_id = ?')
+        .run(JSON.stringify(state), this.#now(), taskId);
+      this.#event(taskId, null, 'state_updated', { state });
+      return this.getRun(taskId);
+    });
+  }
+
+  reserveBudget(taskId, kind, amount, { expectedVersion } = {}) {
+    const mapping = {
+      ioOperations: ['io_operations_used', 'maxIoOperations'],
+      decisionRequests: ['decision_requests_used', 'maxDecisionRequests'],
+      analysisCalls: ['analysis_calls_used', 'maxAnalysisCalls'],
+    };
+    if (!Object.hasOwn(mapping, kind) || !Number.isSafeInteger(amount) || amount < 1) {
+      throw error('invalid_budget', 'A known budget dimension and positive amount are required.');
+    }
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      if (row.status !== 'running') throw error('run_not_running', 'The run cannot reserve work.');
+      const task = JSON.parse(row.task_json);
+      const [column, limitName] = mapping[kind];
+      if (this.#now() >= task.deadlineAt || row[column] + amount > validateBudget(task.budget)[limitName]) {
+        throw error('budget_exceeded', `The task has no ${kind} budget remaining.`);
+      }
+      this.#db.prepare(`UPDATE runs SET ${column} = ${column} + ?, version = version + 1, updated_at = ? WHERE task_id = ?`)
+        .run(amount, this.#now(), taskId);
+      this.#event(taskId, null, 'budget_reserved', { kind, amount });
+      return this.getRun(taskId);
+    });
+  }
+
+  observe(taskId, kind, payload, { expectedVersion } = {}) {
+    requireString(kind, 'event kind');
+    const value = jsonSnapshot(payload);
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      this.#event(taskId, null, kind, value);
+      this.#db.prepare('UPDATE runs SET version = version + 1, updated_at = ? WHERE task_id = ?')
+        .run(this.#now(), taskId);
+      return this.getRun(taskId);
+    });
+  }
+
+  stopRun(taskId, status, reason, { expectedVersion } = {}) {
+    if (!['failed', 'cancelled', 'waiting_analysis', 'waiting_human', 'reconciling'].includes(status)) {
+      throw error('invalid_state', 'An explicit stop state is required.');
+    }
+    requireString(reason, 'stop reason');
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      if (row.status !== 'running') return this.getRun(taskId);
+      const unresolved = this.listUnresolved(taskId);
+      const actualStatus = unresolved.length ? 'reconciling' : status;
+      this.#db.prepare('UPDATE runs SET status = ?, reason = ?, version = version + 1, updated_at = ? WHERE task_id = ?')
+        .run(actualStatus, reason, this.#now(), taskId);
+      this.#event(taskId, null, 'run_stopped', { status: actualStatus, reason });
+      return this.getRun(taskId);
+    });
   }
 
   reserveAttempt(taskId, input, { expectedVersion, attemptId = randomUUID() } = {}) {
@@ -143,7 +226,14 @@ export class RuntimeStore {
     });
   }
 
-  recordOutcome(taskId, attemptId, outcomeInput, verificationInput, { expectedVersion } = {}) {
+  recordOutcome(taskId, attemptId, outcomeInput, verificationInput, { expectedVersion, notStartedStatus = 'failed', nextState } = {}) {
+    const state = nextState === undefined ? undefined : jsonSnapshot(nextState);
+    if (state !== undefined && (!state || typeof state !== 'object' || Array.isArray(state))) {
+      throw error('invalid_state', 'The next recipe state must be an object.');
+    }
+    if (!['failed', 'cancelled', 'waiting_human'].includes(notStartedStatus)) {
+      throw error('invalid_state', 'Invalid state for a non-dispatched attempt.');
+    }
     const outcome = jsonSnapshot(outcomeInput);
     const verification = validateVerification(verificationInput);
     if (!['succeeded', 'failed', 'not_started', 'outcome_unknown'].includes(outcome?.status)) {
@@ -164,13 +254,18 @@ export class RuntimeStore {
       }
       const unknown = outcome.status === 'outcome_unknown' || verification.status === 'unknown';
       const status = unknown ? 'reconciling'
-        : verification.goalSatisfied === true ? 'completed'
+        : outcome.status === 'not_started' ? notStartedStatus
+          : verification.goalSatisfied === true ? 'completed'
           : verification.status === 'pass' ? 'running' : 'waiting_analysis';
       this.#db.prepare('UPDATE attempts SET status = ?, outcome_json = ?, verification_json = ? WHERE attempt_id = ?')
         .run(unknown ? 'unknown' : 'settled', JSON.stringify(outcome), JSON.stringify(verification), attemptId);
-      this.#db.prepare('UPDATE runs SET status = ?, version = version + 1, updated_at = ? WHERE task_id = ?')
-        .run(status, this.#now(), taskId);
-      this.#event(taskId, attemptId, 'outcome_recorded', { outcome, verification, status });
+      const reason = ['running', 'completed'].includes(status) ? null
+        : typeof verification.reason === 'string' ? verification.reason
+          : typeof outcome.error?.code === 'string' ? outcome.error.code : null;
+      this.#db.prepare('UPDATE runs SET status = ?, reason = ?, state_json = ?, version = version + 1, updated_at = ? WHERE task_id = ?')
+        .run(status, reason, state === undefined ? row.state_json : JSON.stringify(state), this.#now(), taskId);
+      this.#event(taskId, attemptId, 'outcome_recorded', { outcome, verification, status,
+        ...(state === undefined ? {} : { nextState: state }) });
       return this.getRun(taskId);
     });
   }

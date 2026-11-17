@@ -8,9 +8,17 @@ export class RuntimeContractError extends Error {
   }
 }
 
+export function failureCode(failure, fallback = 'runtime_failed') {
+  try {
+    const code = failure?.code;
+    return typeof code === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(code) ? code : fallback;
+  } catch { return fallback; }
+}
+
 export const DEFAULT_BUDGET = Object.freeze({
   maxAttempts: 50,
   maxToolCalls: 20,
+  maxIoOperations: 100,
   maxDecisionRequests: 100,
   maxAnalysisCalls: 5,
   maxRecoveryReads: 3,
@@ -53,7 +61,7 @@ export function validateBudget(input = {}) {
   }
   const budget = { ...DEFAULT_BUDGET, ...jsonSnapshot(input) };
   for (const [key, value] of Object.entries(budget)) {
-    if (!(key in DEFAULT_BUDGET) || !Number.isSafeInteger(value) || value < 0) {
+    if (!Object.hasOwn(DEFAULT_BUDGET, key) || !Number.isSafeInteger(value) || value < 0) {
       throw new RuntimeContractError('invalid_budget', `Invalid budget field: ${key}.`);
     }
   }
