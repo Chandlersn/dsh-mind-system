@@ -60,7 +60,9 @@ export class RuntimeStore {
         status TEXT NOT NULL, version INTEGER NOT NULL,
         attempts_used INTEGER NOT NULL DEFAULT 0,
         tool_calls_used INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+        fence INTEGER NOT NULL DEFAULT 0,
+        owner_id TEXT, owner_expires_at INTEGER
       );
       CREATE TABLE IF NOT EXISTS attempts (
         attempt_id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL REFERENCES runs(task_id),
@@ -119,6 +121,9 @@ export class RuntimeStore {
       io_operations_used: 'INTEGER NOT NULL DEFAULT 0',
       decision_requests_used: 'INTEGER NOT NULL DEFAULT 0',
       analysis_calls_used: 'INTEGER NOT NULL DEFAULT 0',
+      fence: 'INTEGER NOT NULL DEFAULT 0',
+      owner_id: 'TEXT',
+      owner_expires_at: 'INTEGER',
     })) {
       if (!columns.has(name)) this.#db.exec(`ALTER TABLE runs ADD COLUMN ${name} ${declaration}`);
     }
@@ -204,8 +209,59 @@ export class RuntimeStore {
         ioOperations: row.io_operations_used, decisionRequests: row.decision_requests_used,
         analysisCalls: row.analysis_calls_used },
       state: JSON.parse(row.state_json), reason: row.reason,
+      fence: row.fence,
+      owner: row.owner_id === null ? null : { ownerId: row.owner_id, expiresAt: row.owner_expires_at },
       createdAt: row.created_at, updatedAt: row.updated_at,
     };
+  }
+
+  /**
+   * Take a single-writer lease. A new owner increments the fence so any older holder loses write authority
+   * even after it wakes up; the previous holder is never trusted to report its own liveness.
+   */
+  acquireLease(taskId, { expectedVersion, ownerId, ttlMs = 30_000 } = {}) {
+    requireString(ownerId, 'ownerId');
+    if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || ttlMs > 86_400_000) {
+      throw error('invalid_lease', 'A lease needs a bounded positive TTL.');
+    }
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      if (row.status !== 'running') throw error('run_not_running', 'Only a running task can be leased.');
+      if (row.owner_id === ownerId && row.owner_expires_at !== null && row.owner_expires_at > this.#now()) {
+        throw error('lease_conflict', 'This owner already holds an unexpired lease.');
+      }
+      const fence = row.fence + 1;
+      const expiresAt = this.#now() + ttlMs;
+      this.#db.prepare('UPDATE runs SET owner_id = ?, owner_expires_at = ?, fence = ?, version = version + 1, updated_at = ? WHERE task_id = ?')
+        .run(ownerId, expiresAt, fence, this.#now(), taskId);
+      this.#event(taskId, null, 'lease_acquired', { ownerId, fence, expiresAt });
+      return { run: this.getRun(taskId), fence };
+    });
+  }
+
+  /** Release a held lease without reusing its fence; a later owner always gets a newer fence. */
+  releaseLease(taskId, { expectedVersion, ownerId, fence } = {}) {
+    requireString(ownerId, 'ownerId');
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      if (row.owner_id !== ownerId || row.fence !== fence) {
+        throw error('stale_owner', 'Only the current fenced owner may release the lease.');
+      }
+      this.#db.prepare('UPDATE runs SET owner_id = NULL, owner_expires_at = NULL, version = version + 1, updated_at = ? WHERE task_id = ?')
+        .run(this.#now(), taskId);
+      this.#event(taskId, null, 'lease_released', { ownerId, fence });
+      return this.getRun(taskId);
+    });
+  }
+
+  /** Reject writes from an owner whose fence was superseded, even if it still believes it is running. */
+  #assertFence(row, fence) {
+    if (fence === undefined) return;
+    if (!Number.isSafeInteger(fence) || row.fence !== fence) {
+      throw error('stale_owner', 'The writer fence was superseded by a newer owner.');
+    }
   }
 
   setState(taskId, input, { expectedVersion } = {}) {
@@ -278,12 +334,13 @@ export class RuntimeStore {
     });
   }
 
-  reserveAttempt(taskId, input, { expectedVersion, attemptId = randomUUID() } = {}) {
+  reserveAttempt(taskId, input, { expectedVersion, attemptId = randomUUID(), fence } = {}) {
     const candidate = validateCandidate(input);
     requireString(attemptId, 'attemptId');
     return this.#transaction(() => {
       const row = this.#row(taskId);
       this.#version(row, expectedVersion);
+      this.#assertFence(row, fence);
       const task = JSON.parse(row.task_json);
       if (row.status !== 'running') throw error('run_not_running', 'The run cannot dispatch new work.');
       if (this.#db.prepare("SELECT 1 FROM attempts WHERE task_id = ? AND status IN ('reserved', 'started', 'unknown')").get(taskId)) {
@@ -320,10 +377,11 @@ export class RuntimeStore {
     });
   }
 
-  markStarted(taskId, attemptId, { expectedVersion } = {}) {
+  markStarted(taskId, attemptId, { expectedVersion, fence } = {}) {
     return this.#transaction(() => {
       const row = this.#row(taskId);
       this.#version(row, expectedVersion);
+      this.#assertFence(row, fence);
       const task = JSON.parse(row.task_json);
       if (row.status !== 'running' || this.#now() >= task.deadlineAt) {
         throw error('dispatch_not_allowed', 'Dispatch is frozen or its deadline has elapsed.');
@@ -339,7 +397,7 @@ export class RuntimeStore {
     });
   }
 
-  recordOutcome(taskId, attemptId, outcomeInput, verificationInput, { expectedVersion, notStartedStatus = 'failed', nextState } = {}) {
+  recordOutcome(taskId, attemptId, outcomeInput, verificationInput, { expectedVersion, notStartedStatus = 'failed', nextState, fence } = {}) {
     const state = nextState === undefined ? undefined : jsonSnapshot(nextState);
     if (state !== undefined && (!state || typeof state !== 'object' || Array.isArray(state))) {
       throw error('invalid_state', 'The next recipe state must be an object.');
@@ -358,6 +416,7 @@ export class RuntimeStore {
     return this.#transaction(() => {
       const row = this.#row(taskId);
       this.#version(row, expectedVersion);
+      this.#assertFence(row, fence);
       const attempt = this.#db.prepare('SELECT * FROM attempts WHERE task_id = ? AND attempt_id = ?')
         .get(taskId, attemptId);
       if (!attempt || attempt.status === 'settled' || attempt.status.startsWith('reconciled_')) throw error('invalid_attempt_state', 'The attempt is absent or already resolved.');
@@ -379,6 +438,43 @@ export class RuntimeStore {
         .run(status, reason, state === undefined ? row.state_json : JSON.stringify(state), this.#now(), taskId);
       this.#event(taskId, attemptId, 'outcome_recorded', { outcome, verification, status,
         ...(state === undefined ? {} : { nextState: state }) });
+      return this.getRun(taskId);
+    });
+  }
+
+  /**
+   * Pause a running task. Outstanding work must already be settled or frozen; pause never cancels a write
+   * that a downstream tool may still complete, and it bumps the fence so the pausing side is no longer a writer.
+   */
+  pauseRun(taskId, { expectedVersion, fence, reason = 'paused' } = {}) {
+    requireString(reason, 'pause reason');
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      this.#assertFence(row, fence);
+      if (row.status !== 'running') throw error('run_not_running', 'Only a running task can be paused.');
+      const unresolved = this.listUnresolved(taskId);
+      if (unresolved.length) throw error('attempt_unresolved', 'Settle or reconcile outstanding work before pausing.');
+      this.#db.prepare(`UPDATE runs SET status = 'paused', reason = ?, fence = fence + 1,
+        owner_id = NULL, owner_expires_at = NULL, version = version + 1, updated_at = ? WHERE task_id = ?`)
+        .run(reason, this.#now(), taskId);
+      this.#event(taskId, null, 'run_paused', { reason });
+      return this.getRun(taskId);
+    });
+  }
+
+  /** Resume a paused task for a new owner; the caller must then acquire a fresh lease. */
+  resumeRun(taskId, { expectedVersion } = {}) {
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      if (row.status !== 'paused') throw error('invalid_state', 'Only a paused task can be resumed.');
+      const task = JSON.parse(row.task_json);
+      if (this.#now() >= task.deadlineAt) throw error('budget_exceeded', 'The task deadline elapsed while paused.');
+      this.#db.prepare(`UPDATE runs SET status = 'running', reason = NULL, fence = fence + 1,
+        owner_id = NULL, owner_expires_at = NULL, version = version + 1, updated_at = ? WHERE task_id = ?`)
+        .run(this.#now(), taskId);
+      this.#event(taskId, null, 'run_resumed', { fence: row.fence + 1 });
       return this.getRun(taskId);
     });
   }

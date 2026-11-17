@@ -130,7 +130,8 @@ export class RuntimeScheduler {
   }
 
   /** Bounded persisted repair state for the next candidate decision; does not start or resume work. */
-  nextRepairContext(taskId, { authority } = {}) {    const run = this.#store.getRun(taskId);
+  nextRepairContext(taskId, { authority } = {}) {
+    const run = this.#store.getRun(taskId);
     if (!authority || authority.scopeRef !== run.task.scopeRef || !authority.agent
       || authority.agent !== this.#executor.agent) {
       fail('authority_agent_mismatch', 'Persisted repair state requires the explicit task caller.');
@@ -165,6 +166,8 @@ export class RuntimeScheduler {
     if (this.#active.has(task.taskId)) fail('run_in_progress', 'This task is already executing.');
     this.#active.add(task.taskId);
     let created = false;
+    // Every write below carries this fence, so a superseded worker cannot dispatch or settle anything.
+    let fence;
     const deadlineMono = this.#monotonicNow() + Math.max(0, task.deadlineAt - this.#now());
     const controller = new AbortController();
     const combinedSignal = AbortSignal.any([signal, controller.signal]);
@@ -175,7 +178,7 @@ export class RuntimeScheduler {
       else timer = setTimeout(armDeadline, Math.max(1, Math.min(2_147_483_647, deadlineMono - this.#monotonicNow())));
     };
     const current = () => this.#store.getRun(task.taskId);
-    const version = () => ({ expectedVersion: current().version });
+    const version = () => ({ expectedVersion: current().version, ...(fence === undefined ? {} : { fence }) });
     const check = () => {
       if (expired()) fail('budget_exceeded', 'The runtime deadline has elapsed.');
       if (combinedSignal.aborted) fail('runtime_cancelled', 'The runtime was cancelled.');
@@ -247,6 +250,10 @@ export class RuntimeScheduler {
         this.#store.createRun(task);
         created = true;
       }
+      // Single writer: take a fenced lease so any previously running worker loses write authority.
+      const leased = this.#store.acquireLease(task.taskId, { expectedVersion: current().version,
+        ownerId: `scheduler:${createHash('sha256').update(`${task.taskId}:${this.#now()}:${Math.random()}`).digest('hex').slice(0, 16)}` });
+      fence = leased.fence;
       armDeadline();
       check();
       if (repairId === null) {

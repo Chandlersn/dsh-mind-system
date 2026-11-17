@@ -65,6 +65,8 @@ node scripts/verify-core-mutations.mjs
 node scripts/verify-phase1-mutations.mjs
 node scripts/verify-analysis-mutations.mjs
 node scripts/verify-repair-mutations.mjs
+node scripts/verify-recovery-mutations.mjs
+node scripts/verify-lease-mutations.mjs
 node scripts/probe-jev.mjs
 ```
 
@@ -83,6 +85,14 @@ node scripts/probe-jev.mjs
 ```powershell
 node scripts/verify-recovery-mutations.mjs
 ```
+
+## 单写者、暂停与恢复
+
+`acquireLease`每次授予都把`fence`加一，旧持有者即使仍在运行也不再是写者。`reserveAttempt`、`markStarted`、`recordOutcome`都接受`fence`并在事务内校验：不一致直接`stale_owner`，因此"以为自己是写者"的旧worker无法派发或结算。同一个未过期租约不能被重复获取；过期后由同一owner重新获取会得到更大的fence。fence与owner持久化在数据库中，进程重启不能凭旧状态绕过。
+
+`pauseRun`要求没有未结动作（未知副作用先走核对），暂停时把fence加一并清空owner，所以"发起暂停的一方"也不再能写。暂停只阻止新派发，不宣称杀死在途工具；已派发动作的收敛仍由公开管线与核对处理。`resumeRun`只接受`paused`状态，恢复时fence再加一，重复resume在`running`上被拒，从而不会双写；暂停期间越过任务截止则直接拒绝恢复。
+
+`RuntimeScheduler.run`在创建或取得run后立即申请租约，并把fence带入其后所有写入；有反例证明：工具执行中途被新worker接管时，旧调度器的结算会被`stale_owner`拒绝，被接管的attempt保持未结，留给新owner核对。
 
 ## 持久化与授权边界
 
