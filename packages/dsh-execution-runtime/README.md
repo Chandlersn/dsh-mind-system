@@ -167,6 +167,14 @@ SAG在这里的角色是**读写引擎**，不是身份判定者。`knowledgeRef
 
 `createGovernanceOutbox`按`eventId+kind`派生稳定ID：重放返回原条目并标`duplicate:true`，不新增行。`markFailed`只增加尝试次数并保留`pending`，`markDelivered`才置为`delivered`——**"投递过"不等于"投递成功"**。
 
+## 选择性接入结构诊断
+
+`classifyFailureRoute`决定一个失败要不要做因果诊断：**自解释的错误直接修**（错误本身已经说清原因，诊断只会增加成本不增加信息）；首次出现也直接修；只有**重复且无进展**才升级为诊断。是否重复读的是持久化的修复历史，不是单次失败的感觉。
+
+`validateDiagnosis`把`unknown`当作一等答案：`unknown`不允许携带置信度、`resolved`恒为`false`，也不允许被"补"成某个具体结构。`createDiagnosisEscalation`每任务最多调用1–3次，同一任务再次请求直接返回`budget_exhausted`；传输失败或结构不合法的答案一律转成`unavailable`，不会被放宽成可用的“原因”。
+
+`nextStepAfterDiagnosis`给出落点：已诊断 → `waiting_analysis`且`repairAuthorized:false`（结构只是指引，仍需走准入与验证）；`unknown`/`unavailable`/预算耗尽 → `waiting_human`，不靠猜。诊断预算耗尽本身也是停止条件，而不是继续猜的许可。
+
 ## 持久化与授权边界
 
 当前使用Node.js内建`node:sqlite`；本机Node v22.23.3仍将该API标记为实验性。原型验证不等于生产驱动选型已完成。事件不可改限制来自SQLite触发器，不能防御拥有数据库文件写权限的外部进程。

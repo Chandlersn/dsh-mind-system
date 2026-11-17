@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { failureCode, jsonSnapshot, requireString, RuntimeContractError, validateTask } from './contracts.js';
 import { validateRepairAction } from './analyzer.js';
+import { classifyFailureRoute } from './diagnosis.js';
 
 const fail = (code, message) => { throw new RuntimeContractError(code, message); };
 const bytes = (value) => Buffer.byteLength(JSON.stringify(value), 'utf8');
@@ -79,6 +80,7 @@ export class AnalysisCoordinator {
   #maxBytes;
   #monotonicNow;
   #patterns;
+  #lastRoute = null;
 
   constructor({ store, analyzer, agent, maxBytes = 16_384, now = Date.now,
     monotonicNow = () => performance.now(), patterns = null }) {
@@ -119,6 +121,9 @@ export class AnalysisCoordinator {
       { expectedVersion: this.#store.getRun(taskId).version, maxBytes });
   }
 
+  /** The routing decision taken for the most recent analysis: repair directly, or diagnose first. */
+  get lastRoute() { return this.#lastRoute; }
+
   async analyze(taskId, { authority, signal = new AbortController().signal, pattern = null } = {}) {
     let run = this.#authorize(taskId, authority, signal);
     if (run.status === 'reconciling') return { status: 'reconciliation_required', run };
@@ -140,6 +145,12 @@ export class AnalysisCoordinator {
       }
     }
     const attempt = this.#store.getLatestAttempt(taskId);
+    // Repetition is read from persisted repair history, so "call the diagnosis" is never guessed from one failure.
+    const history = this.#store.readRepairTrace(taskId, { limit: 10 });
+    const repeated = history.filter((item) => item.kind === 'retry_with' && item.status !== 'observed').length;
+    this.#lastRoute = classifyFailureRoute({ trigger: exceptionTrigger(run, attempt),
+      signatureFailures: repeated, repairAttempts: repeated, selfExplanatory: attempt?.outcome?.error?.code !== undefined
+        && ['verification_failed', 'not_started'].includes(attempt?.verification?.status ?? '') });
     const recentTrace = this.#store.readRecentTrace(taskId).map((event) => `${event.eventId}:${event.kind}`);
     const deadlineMono = this.#monotonicNow() + Math.max(0, run.task.deadlineAt - this.#now());
     const reserved = this.#store.reserveAnalysis(taskId, { expectedVersion: run.version });
