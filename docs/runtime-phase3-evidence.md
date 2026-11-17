@@ -8,7 +8,7 @@
 | :--- | :--- | :--- |
 | DL-3.1 恢复、幂等与补偿 | 隔离已验 | 未知副作用冻结、逐条外部核对、核对不冒充目标验证、按工具+键的幂等守卫；补偿计划需目标事实、拒绝不可逆、失败不冒充已回滚 |
 | DL-3.2 pause/resume/cancel与单写者 | 隔离已验 | 租约与fence拦截旧owner的派发与结算；暂停清owner并推进fence；重复resume被拒；越截止拒绝恢复；模板/范围/工作区/工具集变更拒绝盲恢复 |
-| DL-3.3 任务级工具与健康接口 | 未做 | 包仍是`private`库，不是已装载插件 |
+| DL-3.3 任务级工具与健康接口 | 隔离已验 | 真Cordis装载：runtime_status/runtime_run注册成功、原生任务端到端完成、未登记引用与匿名调用被拒、卸载后宿主其他工具仍可用、探针区分unloaded与not-applied |
 | DL-3.4 合成构建与隔离加载 | 未做 | 未触碰合成成员与活动junction |
 
 ## 2. 未知副作用必须先核对
@@ -51,10 +51,26 @@
 
 `pauseRun`要求先结清或核对未结动作（未知副作用不允许被暂停悄悄掩盖），暂停时fence加一并清空owner，所以发起暂停的一方随即失去写权；同时记录暂停时的模板与授权快照。暂停只阻止新派发，不宣称杀死在途工具。`resumeRun`只接受`paused`，并要求提交当前快照逐项比对：模板版本、范围、工作区或工具集任一变化即拒绝，不做盲恢复。恢复时fence再加一；对`running`重复resume被拒，因此不能靠重复恢复撑开双写窗口；暂停期间越过截止直接拒绝恢复。
 
-## 6. 执行的检查
+## 6. 作为真宿主插件装载
+
+运行时现在有标准Cordis插件形状（`name`/`inject`/`apply`/`healthProbe`），用真实安装的Cordis与ToolRuntime装载，注册`runtime_status`与`runtime_run`两个任务级工具。这两点都不靠自检：注册后能用注册表查询到，工具调用走宿主真实执行器并返回`{isError, content, value}`。
+
+权限边界在工具入口：`runtime_run`只接受`taskRef`，目标、工作区、允许工具与Verifier全部来自原生`tasks`工厂；未登记的引用直接拒绝且不创建run，没有显式调用Agent时也拒绝。执行器与调度器按Agent缓存，模型无法用参数扩大身份。
+
+卸载路径同样有外部证据：`fiber.dispose()`之后`runtime_status`与`runtime_run`从注册表消失，而宿主其他工具仍能执行，说明关插件不影响原系统。探针在未apply时返回`degraded/execution-runtime.not-applied`，apply后`ok`，卸载后`execution-runtime.unloaded`——三种状态可区分，不冒充健康。
+
+本轮抓到两个真实的实现缺陷：
+
+1. 探针状态原本放在**模块级**变量里，两个插件实例会互相污染；测试里表现为"未加载的实例报告ok"。改为实例字段后修复，这正是"全局状态冒充实例状态"的典型。
+2. 我凭想象写了`output.schema:{type:'json'}`、`result.success`、`result.value.report`与`tools.list()`，宿主真实契约全是另一套：schema类型只允许`object/.../null`，结果是`{isError, content, value}`，注册表只有`get(name, scope)`。这些错误全部由真实宿主报出，而不是我推断出来的——**先跑一次真管线，再写断言**。
+
+插件变异4个全部被指定断言杀死：未登记引用放行、匿名调用放行、卸载不标记unloaded、未apply仍报ok。而"删除工具disposer"这个变异杀不死，因为宿主在fiber析构时本身就会回收工具；那说明该变异测的不是我的代码路径，已换成能区分的断言。
+
+## 7. 执行的检查
 
 ```powershell
 node --test packages/dsh-execution-runtime/test/*.test.js
+node packages/dsh-execution-runtime/scripts/verify-plugin-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-compensation-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-lease-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-recovery-mutations.mjs
@@ -64,10 +80,10 @@ node packages/dsh-execution-runtime/scripts/verify-core-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-phase1-mutations.mjs
 ```
 
-整包337 tests / 337 pass / 0 fail / 0 skipped，退出码0：阶段1既有171，加Analyzer17、分析存储24、异常协调器13、JSON修复策略47、修复管线19、修复存储12、取证探针7、恢复与幂等7、租约与暂停12、补偿契约8。
+整包343 tests / 343 pass / 0 fail / 0 skipped，退出码0：阶段1既有171，加Analyzer17、分析存储24、异常协调器13、JSON修复策略47、修复管线19、修复存储12、取证探针7、恢复与幂等7、租约与暂停12、补偿契约8、插件装载6。
 
-补偿变异5个、恢复变异4个、租约与暂停变异7个全部由指定断言检出：无目标事实仍记完成、允许不可逆补偿、计划重定向工具、无事实写完成、失败补偿返回完成；未知副作用不冻结、核对冒充目标成功、幂等守卫被删、核对缺少外部证据；fence校验被删、租约复用fence、暂停允许未结动作、resume不推进fence、resume忽略截止、调度器忽略fence、resume忽略环境变更。前序6个修复变异、4个分析变异、4个核心变异与阶段1的9个同轮复跑仍全部命中。
+插件变异4个、补偿变异5个、恢复变异4个、租约与暂停变异7个全部由指定断言检出：未登记引用放行、匿名调用放行、卸载不标记unloaded、未apply仍报ok；无目标事实仍记完成、允许不可逆补偿、计划重定向工具、无事实写完成、失败补偿返回完成；未知副作用不冻结、核对冒充目标成功、幂等守卫被删、核对缺少外部证据；fence校验被删、租约复用fence、暂停允许未结动作、resume不推进fence、resume忽略截止、调度器忽略fence、resume忽略环境变更。前序6个修复变异、4个分析变异、4个核心变异与阶段1的9个同轮复跑仍全部命中。
 
-## 7. 下一步
+## 8. 下一步
 
-DL-3.3：把运行时注册为真Cordis插件（任务级工具、状态与健康接口），验证原生scope下的执行/拒绝/取消，且关闭插件不影响原有五成员。DL-3.4：接合成构建与隔离加载，源/产物一致与发布守卫通过。真实Jev、推理提供者、生产装配与跨任务推广均未验收。
+DL-3.4：接合成构建与隔离加载——源/产物一致、结构/发布/原计划守卫通过，并验证HMR卸载先停止派发再排空、活动任务可恢复。DL-3.3剩余：在原生scope下验证取消路径与"不影响原有五成员"的完整对照（本轮只验证了宿主其他工具仍可用）。真实Jev、推理提供者、生产装配与跨任务推广均未验收。

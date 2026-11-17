@@ -17,7 +17,8 @@
     "./analyzer": "./src/analyzer.js",
     "./exceptions": "./src/exceptions.js",
     "./probes": "./src/probes.js",
-    "./compensation": "./src/compensation.js"
+    "./compensation": "./src/compensation.js",
+    "./plugin": "./src/plugin.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
@@ -28,6 +29,7 @@
     "verify:recovery": "node scripts/verify-recovery-mutations.mjs",
     "verify:lease": "node scripts/verify-lease-mutations.mjs",
     "verify:compensation": "node scripts/verify-compensation-mutations.mjs",
+    "verify:plugin": "node scripts/verify-plugin-mutations.mjs",
     "probe:jev": "node scripts/probe-jev.mjs"
   }
 }

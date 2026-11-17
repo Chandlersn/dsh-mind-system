@@ -108,6 +108,17 @@ node scripts/verify-recovery-mutations.mjs
 
 JSON模板提供`buildJsonCompensation`：从原Verifier观察到的版本与先前版本构造恢复计划，不接受模型自报的前后哈希。
 
+## 作为宿主插件装载
+
+`createExecutionRuntimePlugin({store,recipes,tasks,validateArguments,owner,...})`返回标准Cordis插件形状：`name`、`inject:['tools']`、`apply(ctx)`、`healthProbe.probe()`。它注册两个任务级工具：
+
+- `runtime_status`：只读报告已登记模板与任务引用；给出`taskId`时返回该run的持久状态、原因、预算用量、fence与owner。
+- `runtime_run`：只接受`taskRef`。目标、工作区、工具集与Verifier全部来自原生`tasks`工厂，模型无法自带或放宽；没有显式调用Agent时直接拒绝。
+
+调度器与执行器按调用Agent缓存，身份不会被模型传值扩大。插件卸载时释放自己注册的工具，并让探针报`execution-runtime.unloaded`；从未apply时探针报`degraded/execution-runtime.not-applied`，不冒充健康。关闭插件不影响宿主其他工具。
+
+宿主真实契约（本机实测，不是推测）：工具`output.schema.type`只能是`object/array/string/number/integer/boolean/null`；`execute`返回`{isError, content, value}`；注册表用`get(name, scope)`查询，没有列表面API。
+
 ## 持久化与授权边界
 
 当前使用Node.js内建`node:sqlite`；本机Node v22.23.3仍将该API标记为实验性。原型验证不等于生产驱动选型已完成。事件不可改限制来自SQLite触发器，不能防御拥有数据库文件写权限的外部进程。
