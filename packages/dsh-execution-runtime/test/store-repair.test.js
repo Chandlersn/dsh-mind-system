@@ -248,6 +248,63 @@ test('transaction failures roll back consumption, run changes and signature fail
   unchanged(f, () => f.store.finishRepair('task', repairId, { ...f.options(), status: 'blocked' }));
 });
 
+test('repair DDL migration fires only when the stored CHECK really differs', (t) => {
+  const f = fixture(t);
+  // A current-shape database must not be rebuilt on reopen: a rebuild drops table-bound triggers,
+  // so keeping a probe trigger is an observable proof that no rewrite happened.
+  const db = f.db();
+  db.exec(`CREATE TRIGGER no_repair_rebuild AFTER INSERT ON repairs BEGIN SELECT RAISE(IGNORE); END`);
+  const before = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='repairs'").get().sql;
+  const runBefore = f.store.getRun('task').status;
+  const reopened = f.open();
+  const after = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='repairs'").get().sql;
+  assert.equal(after, before, 'Reopening a current database must not rewrite the repairs table.');
+  assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name='no_repair_rebuild'").get(),
+    'A spurious rebuild would destroy the probe trigger.');
+  // An idempotent migration must change nothing observable about the run.
+  assert.equal(reopened.getRun('task').status, runBefore);
+});
+
+test('an older narrower repairs CHECK is widened on reopen and keeps its rows', (t) => {
+  const f = fixture(t);
+  const db = f.db();
+  // Use a real analysis id: the migration copies rows with foreign_keys ON, so a fabricated key would
+  // fail for the wrong reason and look like a migration bug.
+  const analysisId = f.propose();
+  // Recreate the pre-observation table exactly as an older release would have had it.
+  db.exec(`ALTER TABLE repairs RENAME TO repairs_ancient;
+    CREATE TABLE repairs (
+      repair_id TEXT PRIMARY KEY NOT NULL,
+      analysis_id TEXT NOT NULL UNIQUE REFERENCES analyses(analysis_id),
+      task_id TEXT NOT NULL REFERENCES runs(task_id), signature TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('retry_with', 'gather_evidence', 'abort')),
+      status TEXT NOT NULL CHECK(status IN ('reserved', 'settled', 'blocked', 'unknown')),
+      candidate_json TEXT, attempt_id TEXT UNIQUE REFERENCES attempts(attempt_id),
+      attempt_floor INTEGER NOT NULL, outcome_json TEXT,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    );
+    INSERT INTO repairs (repair_id, analysis_id, task_id, signature, kind, status, attempt_floor, created_at, updated_at)
+      VALUES ('legacy-1', '${analysisId}', 'task', 'sig-legacy', 'abort', 'settled', 0, 1, 1);
+    DROP TABLE repairs_ancient`);
+  // Precondition: this table genuinely rejects the newer value, otherwise the widening proves nothing.
+  assert.throws(() => db.prepare(`INSERT INTO repairs (repair_id, analysis_id, task_id, signature, kind, status,
+    attempt_floor, created_at, updated_at) VALUES ('probe', '${analysisId}', 'task', 's', 'abort', 'observed', 0, 1, 1)`).run(),
+  /CHECK/i);
+
+  const migrated = f.open();
+  const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='repairs'").get().sql;
+  assert.match(sql, /'observed'/, 'The widened CHECK must accept the newer status value.');
+  assert.equal(migrated.getRepair('task', 'legacy-1').kind, 'abort', 'Existing rows survive the rebuild.');
+});
+
+test('rollback_to stays refused until the recovery protocol can dispatch it', (t) => {
+  const f = fixture(t);
+  const analysisId = f.propose(action('rollback_to'));
+  // Refusal must not consume the proposal: a later attempt has to see the same unconsumed state.
+  unchanged(f, () => f.start(analysisId), 'repair_requires_recovery');
+  assert.equal(f.store.getAnalysis('task', analysisId).consumedAt, null);
+});
+
 test('legacy analyses migration adds consumption and atomically replaces the partial index on reopen', (t) => {
   const f = fixture(t);
   const db = f.db();

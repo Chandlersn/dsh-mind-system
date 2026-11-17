@@ -42,7 +42,22 @@ function storageSnapshot(value, visiting = new Set(), depth = 0) {
   return result;
 }
 
-/** A phase-zero transactional prototype; ownership and leases are not yet implemented. */
+/**
+ * Column list for `repairs`, shared by the initial schema and the in-place rebuild below.
+ * Keeping one source means adding a permitted CHECK value can never desynchronize the two, which is
+ * what previously forced hand-written `'observed'`-style string probes of the stored DDL.
+ */
+const REPAIRS_COLUMNS = `
+        repair_id TEXT PRIMARY KEY NOT NULL,
+        analysis_id TEXT NOT NULL UNIQUE REFERENCES analyses(analysis_id),
+        task_id TEXT NOT NULL REFERENCES runs(task_id), signature TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('retry_with', 'gather_evidence', 'abort')),
+        status TEXT NOT NULL CHECK(status IN ('reserved', 'settled', 'blocked', 'unknown', 'observed')),
+        candidate_json TEXT, attempt_id TEXT UNIQUE REFERENCES attempts(attempt_id),
+        attempt_floor INTEGER NOT NULL, outcome_json TEXT,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL`;
+
+/** Executed transactional store: budgets, leases/fencing, events, evidence, repair and recovery state. */
 export class RuntimeStore {
   #db;
   #now;
@@ -96,14 +111,7 @@ export class RuntimeStore {
         created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS repairs (
-        repair_id TEXT PRIMARY KEY NOT NULL,
-        analysis_id TEXT NOT NULL UNIQUE REFERENCES analyses(analysis_id),
-        task_id TEXT NOT NULL REFERENCES runs(task_id), signature TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('retry_with', 'gather_evidence', 'abort')),
-        status TEXT NOT NULL CHECK(status IN ('reserved', 'settled', 'blocked', 'unknown', 'observed')),
-        candidate_json TEXT, attempt_id TEXT UNIQUE REFERENCES attempts(attempt_id),
-        attempt_floor INTEGER NOT NULL, outcome_json TEXT,
-        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+        ${REPAIRS_COLUMNS}
       );
       CREATE TABLE IF NOT EXISTS checkpoints (
         checkpoint_id TEXT PRIMARY KEY NOT NULL,
@@ -155,20 +163,18 @@ export class RuntimeStore {
       this.#db.exec(`DROP INDEX IF EXISTS analyses_one_unresolved;
         CREATE UNIQUE INDEX analyses_one_unresolved ON analyses(task_id)
           WHERE status IN ('pending', 'proposed') AND consumed_at IS NULL`);
-      // A database created before evidence observation keeps an older status CHECK; rebuild it in place.
-      const repairsSql = this.#db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'repairs'").get()?.sql ?? '';
-      if (repairsSql && !repairsSql.includes("'observed'")) {
+      // An older database can carry a narrower CHECK on repairs.kind/status. Comparing the stored DDL
+      // against REPAIRS_COLUMNS (whitespace-insensitive, `IF NOT EXISTS` normalized away) means widening
+      // either CHECK list activates this rebuild on its own; a substring probe had to be hand-edited each
+      // time and would silently leave an old file rejecting the new value. The comparison must also be
+      // idempotent: SQLite keeps the original statement text, so without normalizing the prefix every
+      // reopen would rebuild the table and destroy table-bound triggers.
+      const repairsRow = this.#db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'repairs'").get();
+      const normalize = (sql) => sql.replace(/\s+/g, ' ').replace(/^CREATE TABLE IF NOT EXISTS /, 'CREATE TABLE ').trim();
+      const wanted = normalize(`CREATE TABLE repairs (${REPAIRS_COLUMNS})`);
+      if (repairsRow?.sql && normalize(repairsRow.sql) !== wanted) {
         this.#db.exec(`ALTER TABLE repairs RENAME TO repairs_legacy;
-          CREATE TABLE repairs (
-            repair_id TEXT PRIMARY KEY NOT NULL,
-            analysis_id TEXT NOT NULL UNIQUE REFERENCES analyses(analysis_id),
-            task_id TEXT NOT NULL REFERENCES runs(task_id), signature TEXT NOT NULL,
-            kind TEXT NOT NULL CHECK(kind IN ('retry_with', 'gather_evidence', 'abort')),
-            status TEXT NOT NULL CHECK(status IN ('reserved', 'settled', 'blocked', 'unknown', 'observed')),
-            candidate_json TEXT, attempt_id TEXT UNIQUE REFERENCES attempts(attempt_id),
-            attempt_floor INTEGER NOT NULL, outcome_json TEXT,
-            created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-          );
+          CREATE TABLE repairs (${REPAIRS_COLUMNS});
           INSERT INTO repairs SELECT * FROM repairs_legacy;
           DROP TABLE repairs_legacy;`);
       }
