@@ -78,8 +78,10 @@ export class AnalysisCoordinator {
   #now;
   #maxBytes;
   #monotonicNow;
+  #patterns;
 
-  constructor({ store, analyzer, agent, maxBytes = 16_384, now = Date.now, monotonicNow = () => performance.now() }) {
+  constructor({ store, analyzer, agent, maxBytes = 16_384, now = Date.now,
+    monotonicNow = () => performance.now(), patterns = null }) {
     if (!store || typeof analyzer?.analyze !== 'function' || !agent
       || !Number.isSafeInteger(maxBytes) || maxBytes < 4096 || maxBytes > 16_384) {
       fail('invalid_analysis_coordinator', 'Store, analyzer, explicit agent and a bounded package limit are required.');
@@ -90,6 +92,10 @@ export class AnalysisCoordinator {
     this.#maxBytes = maxBytes;
     this.#now = now;
     this.#monotonicNow = monotonicNow;
+    if (patterns !== null && typeof patterns !== 'function') {
+      fail('invalid_analysis_coordinator', 'An optional pattern matcher must be a function.');
+    }
+    this.#patterns = patterns;
   }
 
   #authorize(taskId, authority, signal) {
@@ -113,11 +119,26 @@ export class AnalysisCoordinator {
       { expectedVersion: this.#store.getRun(taskId).version, maxBytes });
   }
 
-  async analyze(taskId, { authority, signal = new AbortController().signal } = {}) {
-    const run = this.#authorize(taskId, authority, signal);
+  async analyze(taskId, { authority, signal = new AbortController().signal, pattern = null } = {}) {
+    let run = this.#authorize(taskId, authority, signal);
     if (run.status === 'reconciling') return { status: 'reconciliation_required', run };
     if (run.status !== 'waiting_analysis') return { status: 'not_required', run };
     if (signal.aborted) return { status: 'analysis_cancelled', run };
+    // An approved pattern may answer this case directly; when it declines, analysis still runs as before.
+    if (pattern !== null) {
+      const decision = this.#patterns ? this.#patterns(taskId, pattern, run) : null;
+      if (decision?.hit === true) {
+        this.#store.observe(taskId, 'pattern_applied', { patternId: decision.patternId,
+          patternVersion: decision.patternVersion, reason: decision.reason }, { expectedVersion: run.version });
+        return { status: 'pattern_applied', run: this.#store.getRun(taskId), decision };
+      }
+      if (decision) {
+        // Recording the abstention advances the run version, so reserveAnalysis must use the fresh one.
+        const updated = this.#store.observe(taskId, 'pattern_abstained', { reason: decision.reason },
+          { expectedVersion: run.version });
+        run = updated;
+      }
+    }
     const attempt = this.#store.getLatestAttempt(taskId);
     const recentTrace = this.#store.readRecentTrace(taskId).map((event) => `${event.eventId}:${event.kind}`);
     const deadlineMono = this.#monotonicNow() + Math.max(0, run.task.deadlineAt - this.#now());

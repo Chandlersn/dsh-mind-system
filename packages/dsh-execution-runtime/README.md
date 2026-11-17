@@ -149,6 +149,14 @@ JSON模板提供`buildJsonCompensation`：从原Verifier观察到的版本与先
 
 `createValveWriter({confirmRule})`把已批准模式交给宿主阀门写入：调用前先验批准有效性，调用时**不传`human`也不传`permit`**，所以运行时无法自己签票；阀门若拒绝或抛错，一律变成失败而不是静默成功。既有阀门的许可只绑定`ruleId`、不绑版本，因此版本绑定由本层补齐，并把`patternVersion`随写入一起交给宿主。
 
+## 命中、弃权、撤销与回退
+
+`matchPattern`决定已批准模式能否替代本次分析，要同时满足：批准仍有效（`confirmed`、未过期、版本一致）、范围/触发/工具/模板版本全部匹配、证据达到阈值。任何一条不满足就**弃权**（`analysesSuppressed:false`），分析照常运行——弃权不会静默跳步。
+
+命中时`analyze()`返回`pattern_applied`并写`pattern_applied`事件，**不调用分析器**；弃权时写`pattern_abstained`事件并继续正常分析流程。未配置模式匹配器时行为与之前完全一致，事件也不会出现。用真实宿主管线与计数器验证：命中时分析器调用数为0，弃权时为1。
+
+`planRollback`/`applyRollback`处理版本回退：回退把目标版本重新置为`pending`并**清空`reviewTicket`**，同时把当前批准留为`superseded`。也就是说，回退恢复的是内容而不是票据——那个版本必须重新评审才能再生效。回退目标必须是历史中确实确认过的版本，且不能是当前版本。
+
 ## 持久化与授权边界
 
 当前使用Node.js内建`node:sqlite`；本机Node v22.23.3仍将该API标记为实验性。原型验证不等于生产驱动选型已完成。事件不可改限制来自SQLite触发器，不能防御拥有数据库文件写权限的外部进程。
