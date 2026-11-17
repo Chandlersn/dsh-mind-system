@@ -22,7 +22,8 @@
     "./repair-patterns": "./src/repair-patterns.js",
     "./pattern-approval": "./src/pattern-approval.js",
     "./valve-bridge": "./src/valve-bridge.js",
-    "./pattern-runtime": "./src/pattern-runtime.js"
+    "./pattern-runtime": "./src/pattern-runtime.js",
+    "./knowledge": "./src/knowledge.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
@@ -37,6 +38,7 @@
     "verify:patterns": "node scripts/verify-pattern-mutations.mjs",
     "verify:approval": "node scripts/verify-approval-mutations.mjs",
     "verify:hits": "node scripts/verify-hit-mutations.mjs",
+    "verify:knowledge": "node scripts/verify-knowledge-mutations.mjs",
     "probe:jev": "node scripts/probe-jev.mjs"
   }
 }

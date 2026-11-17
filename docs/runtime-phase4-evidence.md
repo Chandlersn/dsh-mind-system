@@ -9,7 +9,7 @@
 | DL-4.1 修正证据与模式候选视图 | 隔离已验 | 身份按实际约束生成、失败只进分母、不可判与取证不计样本、同run只算一个独立样本、重复回执去重、候选恒不可生效 |
 | DL-4.2 接既有阀门与确认适配 | 隔离已验 | pending请求不能授权；确认须显式human且绑定被评审版本；模式编辑后旧批准失效；撤销保留审计；运行时不能自签票；阀门拒绝/抛错不静默 |
 | DL-4.3 命中、弃权、撤销与版本回退 | 隔离已验 | 命中需有效批准+范围/触发/工具/模板版本匹配+证据达标，且不调分析器（实测0次）；弃权照常分析（实测1次）并留事件；撤销恢复原行为；回退恢复内容但清空票据需重审 |
-| DL-4.4 知识读写适配器与治理outbox | 未做 | 未接触SAG或所属域写入 |
+| DL-4.4 知识读写适配器与治理outbox | 隔离已验 | 域身份显式、scratch不可冒充formal；存储与索引分开报告（stored_not_indexed可区分）；daily origin限formal；outbox按event+kind幂等、失败保持pending |
 
 ## 2. 模式身份：按约束，不按标签
 
@@ -63,21 +63,36 @@
 
 `planRollback`/`applyRollback`把回退定义清楚：目标版本必须是历史中确认过的、且不是当前版本；回退后该版本变回`pending`并**清空`reviewTicket`**，当前批准记为`superseded`。**回退恢复内容，不恢复票据**——旧版本必须重新评审才能再次生效，否则"回退"就成了绕过评审的后门。
 
-## 8. 执行的检查
+## 8. 知识读写与治理outbox
+
+SAG在这里是**读写引擎**，不是身份判定者。`knowledgeRef`要求显式的`domain:id@version`，`domain`只允许`formal`/`workspace`/`scratch`；身份来自所属域，而不是"从哪条检索路径读到的"。
+
+读：`scratch`内容经同一引擎读出仍是`scratch`，`verified`恒为`false`；只有`formal`且适配器明确标记才算已验证。这条针对的是"经过正式检索就默认可信"的常见混淆。
+
+写：`stored`与`indexed`是两个独立事实。`stored_not_indexed`表示"写进去了但还搜不到"并带`indexError`；`write_failed`表示根本没写进去。把两者压成一个`ok`，正是"静默降级"最常见的来源。
+
+`origin:'daily'`只允许`formal`域，避免验证样本污染日常校准记录（这是DL-4.1那条"样本要干净"的延续）。
+
+`createGovernanceOutbox`按`eventId+kind`派生稳定ID，重放返回原条目并标`duplicate:true`而不新增行；`markFailed`只增加尝试次数并保持`pending`，`markDelivered`才置`delivered`——**"投递过"不等于"投递成功"**，否则重试机制会在第一次网络抖动后就静默放弃。
+
+7个变异全部被指定断言杀死：scratch冒充formal、存储冒充索引、失败写冒充已存、daily origin不限域、outbox重放不幂等、失败投递显示已投递、未知域被接受。
+
+## 9. 执行的检查
 
 ```powershell
 node --test packages/dsh-execution-runtime/test/*.test.js
 node packages/dsh-execution-runtime/scripts/verify-pattern-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-approval-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-hit-mutations.mjs
+node packages/dsh-execution-runtime/scripts/verify-knowledge-mutations.mjs
 ```
 
-整包386 tests / 386 pass / 0 fail / 0 skipped，退出码0：阶段1既有171，加Analyzer17、分析存储24、异常协调器13、JSON修复策略47、修复管线19、修复存储12、取证探针7、恢复与幂等7、租约与暂停12、补偿契约8、插件与卸载9、模式证据9、确认适配8、阀门桥接8、命中与回退11、命中集成3。
+整包394 tests / 394 pass / 0 fail / 0 skipped，退出码0：阶段1既有171，加Analyzer17、分析存储24、异常协调器13、JSON修复策略47、修复管线19、修复存储12、取证探针7、恢复与幂等7、租约与暂停12、补偿契约8、插件与卸载9、模式证据9、确认适配8、阀门桥接8、命中与回退11、命中集成3、知识读写与outbox8。
 
-新增10个确认变异与8个命中变异全部由指定断言检出：pending请求可授权、分析结果可签票、票不绑版本、编辑后旧批准仍生效、忽略过期、撤销后仍适用、夹带票被接受、运行时自签human、阀门拒绝报成功、无有效批准仍写入；弃权抑制分析、越界工具被忽略、模板版本变更被忽略、证据不足仍命中、回退恢复票据、伪造命中被记录、弃权不留痕、命中仍调分析器。
+确认变异10个、命中变异8个、知识变异7个全部由指定断言检出：pending请求可授权、分析结果可签票、票不绑版本、编辑后旧批准仍生效、忽略过期、撤销后仍适用、夹带票被接受、运行时自签human、阀门拒绝报成功、无有效批准仍写入；弃权抑制分析、越界工具被忽略、模板版本变更被忽略、证据不足仍命中、回退恢复票据、伪造命中被记录、弃权不留痕、命中仍调分析器；scratch冒充formal、存储冒充索引、失败写冒充已存、daily origin不限域、outbox重放不幂等、失败投递显示已投递、未知域被接受。
 
 其中"失败被排除出分母"这条，最初是我的**实现**错了而不是测试错了：测试先失败、我一度怀疑断言，排查后发现失败样本确实没进分母。这正是本轮最值得记的一点——成功率的分母必须包含失败，否则它只是"成功了多少次"。
 
-## 9. 下一步
+## 10. 下一步
 
-DL-4.4：知识读写适配器与治理outbox——SAG是快速检索与读写引擎，正式内容写入仍走所属域入口；写入成功与索引失败必须可区分，outbox幂等，测试origin不污染daily。DL-3.4剩余（合成构建/发布守卫）与真实Jev、推理提供者、生产装配继续单列待验。
+阶段4机制已完成（DL-4.1–4.4全部隔离已验），但**真实样本不足，自动推广维持关闭**——这是方案写明的阶段门。剩余工作属阶段5与生产侧：任务集与三组对照实验（DL-5.1）、故障注入与延迟测试（DL-5.2）、文档与隔离部署回退演练（DL-5.3）；以及DL-3.4剩余（合成构建/发布守卫）、真实Jev与推理提供者、生产装配，均继续单列待验。

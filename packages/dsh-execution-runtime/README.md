@@ -157,6 +157,16 @@ JSON模板提供`buildJsonCompensation`：从原Verifier观察到的版本与先
 
 `planRollback`/`applyRollback`处理版本回退：回退把目标版本重新置为`pending`并**清空`reviewTicket`**，同时把当前批准留为`superseded`。也就是说，回退恢复的是内容而不是票据——那个版本必须重新评审才能再生效。回退目标必须是历史中确实确认过的版本，且不能是当前版本。
 
+## 知识读写与治理outbox
+
+SAG在这里的角色是**读写引擎**，不是身份判定者。`knowledgeRef`要求显式`domain:id@version`（`formal`/`workspace`/`scratch`），因此身份来自所属域而不是检索路径。
+
+`readKnowledge`保留域身份：`scratch`内容经同一引擎读出仍是`scratch`，`verified`恒为`false`；只有`formal`且适配器明确标记才为已验证。`writeKnowledge`把**存储**与**索引**分成两个事实：`stored_not_indexed`表示"写进去了但还搜不到"，`write_failed`表示根本没写进去，两者都带`indexError`。把这两件事合成一个`ok`正是"静默降级"的常见来源。
+
+写入带`origin`；`daily`origin只允许`formal`域，防止验证样本污染日常校准记录。
+
+`createGovernanceOutbox`按`eventId+kind`派生稳定ID：重放返回原条目并标`duplicate:true`，不新增行。`markFailed`只增加尝试次数并保留`pending`，`markDelivered`才置为`delivered`——**"投递过"不等于"投递成功"**。
+
 ## 持久化与授权边界
 
 当前使用Node.js内建`node:sqlite`；本机Node v22.23.3仍将该API标记为实验性。原型验证不等于生产驱动选型已完成。事件不可改限制来自SQLite触发器，不能防御拥有数据库文件写权限的外部进程。
