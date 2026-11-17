@@ -49,7 +49,28 @@
 
 复核后 `src/` 里只剩包装器这一处 `json-source-output`，属模板专用约定而非引擎逻辑——引擎已是通用的。
 
-## 5. 我这轮踩的三个坑（如实记录）
+## 5. 受限自动确认：让环路真正转起来（用户授权）
+
+用户指示"这个权限可以开放一点点，跑起来看看，有问题再调整"。此前 `approvals` 恒为空，环路**一次都转不起来**——证据在积累，却永远无人复用。这不是安全，是系统没运行。
+
+新增 `confirmApprovalAutomatically(pending, { automation, evidence, pattern })`，把人工闸门改为**有界的委托**，每条边界都可检查：
+
+| 边界 | 规则 | 为什么 |
+|---|---|---|
+| 显式开启 | 必须传对象且 `allowAutomatic: true`，否则 `automation_disabled` | 没有默认开启的路径 |
+| 命名责任人 | `operator` 必填 | 票据必须可归因 |
+| 高于解析器阈值 | `minIndependentRuns ≥ 2`，且实测独立运行数不足即拒 | 首次证据永不自动确认 |
+| 成功率下限 | 低于策略阈值即拒，缺失也拒 | 不四舍五入 |
+| 人工复核优先 | `requiresHumanReview: true` 一律拒绝 | 人要看的东西机器不许代签 |
+| 期限更短 | 取策略 ttl 与请求期限的较小值，上限 24h | 自动授权不该长命 |
+| 版本绑定 | 签发时校验 `patternVersionOf(pattern)` 与请求一致 | 正文变了票据即失效 |
+| 可审计 | 票据带 `confirmedBy: 'automation:<operator>'` 与 `automation` 元数据 | 人签与机签永久可区分 |
+
+自动票据是**真正的 confirmed 审批**：`approvalApplies` 接受它，`revokeApproval` 照样能吊销。解析器侧用 `ticketFor()` 统一取票，已签发的记在 `issued` 里，避免每次调用重复签发。
+
+**这次又抓到一个真实安全缺陷**：`proposeApproval` 原先**丢弃** `requiresHumanReview`，所以自动策略根本看不到"此模式需人工复核"，会照样代签。测试暴露后改为把该标记带进请求。对应变异 `review_requirement_dropped` 现在被杀死。
+
+## 6. 我这轮踩的三个坑（如实记录）
 
 **坑一：变异脚本自身有缺陷，误报 9/9 存活。**
 第一次跑，9 个变异全部 "存活"。我没有当成"测试很弱"就收工——先核对 `node --test` 的真实输出格式（TAP `not ok N - 名称`），再逐步复现。真实原因是脚本的 staging 路径算错一层（`join(here,'..','packages','dsh-execution-runtime')` 多算了一级），测试文件根本没被正确装载。改用与既有变异套件相同的 `new URL('../', import.meta.url)` + fd 重定向后，立刻得到 7/9。
@@ -66,14 +87,14 @@
 
 另有一次自造事故：对含中文注释的测试文件用了 PowerShell `Set-Content`，写成非 UTF-8 并损坏，已用 write 重写。**中文文件只用编辑工具改**。
 
-## 6. 执行证据
+## 7. 执行证据
 
 ```
 node --test packages/dsh-execution-runtime/test/*.test.js
-# tests 445 / pass 445 / fail 0
+# tests 459 / pass 459 / fail 0
 
 node packages/dsh-execution-runtime/scripts/verify-loop-mutations.mjs
-{"baselineExitCode": 0, "killed": 9}
+{"baselineExitCode": 0, "killed": 13}
 
 node packages/dsh-execution-runtime/scripts/verify-compensation-mutations.mjs
 {"baselineExitCode": 0, "killed": 9}
@@ -83,7 +104,7 @@ node packages/dsh-execution-runtime/scripts/verify-compensation-mutations.mjs
 
 | 变异 | 摧毁的性质 |
 |---|---|
-| `reuse_without_approval` | 无审批也能复用 |
+| `reuse_without_approval` | 无策略也能复用 |
 | `resolver_invents_pattern_body` | 凭空合成模式正文 |
 | `self_repair_counts_as_independence` | 一次运行自造多样本 |
 | `pattern_version_ignored` | 跨模板版本静默命中 |
@@ -92,9 +113,13 @@ node packages/dsh-execution-runtime/scripts/verify-compensation-mutations.mjs
 | `csv_verifier_accepts_any_parseable_output` | 只要可解析就算通过 |
 | `csv_quoting_not_parsed` | 引号被当字面量 |
 | `csv_recipe_borrows_json_verifier` | 借用他人验证器 |
+| `automation_enabled_by_default` | 自动策略默认开启 |
+| `review_requirement_dropped` | 人工复核标记被丢弃 |
+| `automation_ignores_run_requirement` | 首次证据即可自动确认 |
+| `automation_skips_version_binding` | 签发时不校验正文版本 |
 
-## 7. 仍未达成
+## 8. 仍未达成
 
-- **无真实跨任务样本**：阈值与聚合都在，但真实证据为 0。因此自动推广**保持关闭**（`activatable: false`），任何命中都需人工确认的审批。这是设计选择，不是未完成项。
+- **真实跨任务样本仍可能为 0**：`store.listPatternEvidence()` 已实现（按 signature 跨任务聚合、`independentTasks` 用 DISTINCT task id 去重），但真实运行数据尚未产生。自动化按阈值拒绝，环路在证据不足时**静默弃权**并回落到正常分析——这是设计行为，不是故障。
 - 阶段5 对照实验（DR-17/18）需真实任务集。
-- 引擎内的模板硬编码已清除（`src/` 仅剩 JSON 包装器一处，属模板约定）；补偿的**运行期派发**仍依赖调度器侧的 native 控制器，与回滚派发同属阶段2的已完成部分。
+- 引擎内的模板硬编码已清除（`src/` 仅剩 JSON 包装器一处，属模板约定）。

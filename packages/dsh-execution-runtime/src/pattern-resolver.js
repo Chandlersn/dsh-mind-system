@@ -1,5 +1,6 @@
 import { RuntimeContractError, requireString } from './contracts.js';
 import { patternIdentity, summarizePatternEvidence } from './repair-patterns.js';
+import { confirmApprovalAutomatically, proposeApproval } from './pattern-approval.js';
 import { matchPattern } from './pattern-runtime.js';
 
 const fail = (code, message) => { throw new RuntimeContractError(code, message); };
@@ -20,13 +21,16 @@ const fail = (code, message) => { throw new RuntimeContractError(code, message);
  * - It abstains loudly. Returning null means "no candidate", which the coordinator treats as ordinary
  *   analysis — never as an implicit pass.
  */
-export function createPatternResolver({ store, approvals = [], patterns = [], minRuns = 3, minSuccessRate = 0.66,
-  now = Date.now } = {}) {
+export function createPatternResolver({ store, approvals = [], patterns = [], automation = null,
+  minRuns = 3, minSuccessRate = 0.66, now = Date.now } = {}) {
   if (!store || typeof store.readRepairTrace !== 'function') {
     fail('invalid_pattern_resolver', 'A store with repair history is required.');
   }
   if (!Array.isArray(approvals)) fail('invalid_pattern_resolver', 'Approvals must be an explicit array.');
   if (!Array.isArray(patterns)) fail('invalid_pattern_resolver', 'Registered patterns must be an explicit array.');
+  if (automation !== null && (typeof automation !== 'object' || Array.isArray(automation))) {
+    fail('invalid_pattern_resolver', 'An automatic policy must be an explicit object.');
+  }
   if (!Number.isSafeInteger(minRuns) || minRuns < 2) {
     fail('invalid_pattern_policy', 'At least two independent runs are required before a pattern may be reused.');
   }
@@ -34,6 +38,13 @@ export function createPatternResolver({ store, approvals = [], patterns = [], mi
   // reviewed", so the text it covers has to be resolvable separately from the ticket.
   const registry = new Map(patterns.map((item) => [item?.patternId, Object.freeze({ ...item })]));
   if (registry.size !== patterns.length) fail('invalid_pattern_resolver', 'Pattern identities must be unique.');
+  // Tickets issued by the automation, kept here so a later call can see what the loop already confirmed.
+  const issued = [];
+  const ticketFor = (patternId) => {
+    const existing = [...approvals, ...issued].find((item) => item?.patternId === patternId
+      && item.status === 'confirmed');
+    return existing ?? null;
+  };
 
   return function resolvePattern(taskId, run) {
     requireString(taskId, 'taskId');
@@ -57,19 +68,31 @@ export function createPatternResolver({ store, approvals = [], patterns = [], mi
     const summarized = summarizePatternEvidence(entries, { minRuns, minSuccessRate });
     for (const candidate of summarized) {
       if (!candidate.eligible) continue;
-      const approval = approvals.find((item) => item?.patternId === candidate.patternId) ?? null;
-      if (approval === null) continue; // No ticket, no reuse: promotion is never inferred from evidence alone.
       // The approval is a credential, not a body: confirming it does not copy the pattern text. The body
       // must come from the registry of what was actually reviewed, because a version hash over a
       // synthesized stub could never equal the version the human approved — and inventing one here would
       // silently re-authorize text nobody saw.
       const approved = registry.get(candidate.patternId) ?? null;
       if (approved === null) continue;
+      let approval = ticketFor(candidate.patternId);
+      if (approval === null) {
+        // No ticket yet. An explicitly configured policy may issue one, but only through the same narrow
+        // gate the approval module enforces; any refusal simply means "no reuse" and analysis proceeds.
+        if (automation === null) continue;
+        try {
+          const request = proposeApproval({ ...approved, activatable: false }, { requestedBy: 'resolver', now });
+          approval = confirmApprovalAutomatically(request, { automation,
+            evidence: { independentRuns: candidate.independentRuns, successRate: candidate.successRate },
+            pattern: approved, now });
+          issued.push(approval);
+        } catch { continue; }
+      }
       const pattern = { ...approved };
       const decision = matchPattern({ approval, pattern, context,
         evidence: { eligible: true, independentRuns: candidate.independentRuns, minRuns }, now });
       if (decision.hit === true) {
-        return Object.freeze({ ...pattern, patternId: candidate.patternId, decision });
+        return Object.freeze({ ...pattern, patternId: candidate.patternId, decision,
+          automatic: approval.confirmedBy?.startsWith('automation:') === true });
       }
     }
     return null;

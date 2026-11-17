@@ -20,7 +20,7 @@ function run(args, label) {
 }
 try {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
-  const testsInOrder = ['test/pattern-resolver.test.js', 'test/csv-recipe.test.js'];
+  const testsInOrder = ['test/pattern-resolver.test.js', 'test/csv-recipe.test.js', 'test/pattern-automation.test.js'];
   for (const file of collectModuleClosure(source, testsInOrder)) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
     writeFileSync(join(root, file), readFileSync(join(source, file)));
@@ -29,11 +29,11 @@ try {
   const baseline = run(['--test', ...tests], 'baseline');
   assert.equal(baseline.status, 0, baseline.output);
   const mutants = [
-    // Activation must never be inferred from evidence alone.
+    // Activation must never be inferred from evidence alone: with no policy and no ticket, abstain.
     { name: 'reuse_without_approval', file: 'src/pattern-resolver.js',
-      old: "      if (approval === null) continue; // No ticket, no reuse: promotion is never inferred from evidence alone.",
-      replacement: "      if (approval === null) { if (candidate.eligible) return Object.freeze({ patternId: candidate.patternId, decision: { hit: true } }); continue; }",
-      test: /not ok \d+ - no approval means no reuse/ },
+      old: '        if (automation === null) continue;',
+      replacement: '        if (automation === null) return Object.freeze({ patternId: candidate.patternId, decision: { hit: true } });',
+      test: /not ok \d+ - the same evidence reuses nothing when automation stays off/ },
     // One run repairing itself must not count as independent evidence.
     { name: 'self_repair_counts_as_independence', file: 'src/repair-patterns.js',
       old: '    current.runs.add(entry.taskId);',
@@ -44,11 +44,12 @@ try {
       old: '  if (pattern.recipeVersion !== undefined && pattern.recipeVersion !== context.recipeVersion) {',
       replacement: '  if (false) {',
       test: /not ok \d+ - a changed recipe version is out of scope/ },
-    // Revoked tickets must not keep working.
+    // Revoked tickets must not keep working. Dropping the resolver's status filter is not enough (the
+    // approval check also refuses it), so the mutant has to break the approval gate itself.
     { name: 'revoked_approval_still_applies', file: 'src/pattern-approval.js',
       old: "  if (!approval || approval.status !== 'confirmed') return { applies: false, reason: 'not_confirmed' };",
       replacement: "  if (!approval || !['confirmed', 'revoked'].includes(approval.status)) return { applies: false, reason: 'not_confirmed' };",
-      test: /not ok \d+ - a revoked or expired approval abstains/ },
+      test: /not ok \d+ - revocation is enforced by the approval gate itself/ },
     // Failures must stay in the denominator.
     { name: 'failed_repair_leaves_denominator', file: 'src/repair-patterns.js',
       old: '    if (classified.success) current.successes += 1;',
@@ -75,6 +76,26 @@ try {
       old: "export const VERIFIER_ID = 'csv-source-output';",
       replacement: "export const VERIFIER_ID = 'json-source-output';",
       test: /not ok \d+ - a second recipe runs through the unchanged engine/ },
+    // The automation must stay opt-in: a default-on policy would silently remove the human gate.
+    { name: 'automation_enabled_by_default', file: 'src/pattern-approval.js',
+      old: "  if (automation === null || typeof automation !== 'object' || Array.isArray(automation)) {\n    fail('automation_disabled', 'Automatic confirmation must be explicitly enabled by the caller.');\n  }",
+      replacement: "  automation = automation ?? { allowAutomatic: true, operator: 'default' };",
+      test: /not ok \d+ - there is no implicit enablement/ },
+    // A review requirement dropped before the request would let automation confirm it blindly.
+    { name: 'review_requirement_dropped', file: 'src/pattern-approval.js',
+      old: '    ...(value.requiresHumanReview === true ? { requiresHumanReview: true } : {}),',
+      replacement: '    ...({}),',
+      test: /not ok \d+ - a pattern that wants human review cannot be auto-confirmed/ },
+    // The run requirement is what stops a single task from manufacturing confidence.
+    { name: 'automation_ignores_run_requirement', file: 'src/pattern-approval.js',
+      old: '  if (independentRuns < minRuns) {',
+      replacement: '  if (false) {',
+      test: /not ok \d+ - the first evidence is never enough/ },
+    // Issuing a ticket must not skip the version binding.
+    { name: 'automation_skips_version_binding', file: 'src/pattern-approval.js',
+      old: '  if (patternVersionOf(pattern) !== value.patternVersion) {',
+      replacement: '  if (false) {',
+      test: /not ok \d+ - issuing a ticket refuses a body that is not the one that was requested/ },
   ];
   const observed = [];
   for (const mutant of mutants) {

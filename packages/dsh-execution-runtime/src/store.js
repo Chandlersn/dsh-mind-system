@@ -1068,6 +1068,37 @@ export class RuntimeStore {
     });
   }
 
+  /**
+   * Cross-task repair evidence grouped by repair signature.
+   *
+   * This is the only read path that spans tasks, and it exists so a pattern can be justified by many
+   * independent runs instead of one task repairing itself. It returns signatures only — no pattern text —
+   * so nothing here can authorize a rule; the resolver still needs a confirmed approval and a registered
+   * body. `independentTasks` is counted by DISTINCT task id, which is what makes self-repair worthless
+   * as evidence.
+   */
+  listPatternEvidence({ limit = 500 } = {}) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 2000) {
+      throw error('invalid_pattern_evidence', 'Pattern evidence limit must be from 1 to 2000.');
+    }
+    const rows = this.#db.prepare(`SELECT signature, task_id, repair_id, status, outcome_json
+      FROM repairs WHERE status IN ('settled', 'blocked', 'restored') ORDER BY rowid DESC LIMIT ?`).all(limit);
+    const bySignature = new Map();
+    for (const row of rows) {
+      const outcome = row.outcome_json === null ? null : JSON.parse(row.outcome_json);
+      const entry = bySignature.get(row.signature) ?? { signature: row.signature, repairs: [] };
+      entry.repairs.push({ repairId: row.repair_id, taskId: row.task_id, status: row.status,
+        succeeded: typeof outcome?.succeeded === 'boolean' ? outcome.succeeded : null });
+      bySignature.set(row.signature, entry);
+    }
+    return [...bySignature.values()].map((entry) => Object.freeze({
+      patternId: entry.signature,
+      samples: entry.repairs.length,
+      independentTasks: new Set(entry.repairs.map((item) => item.taskId)).size,
+      repairs: Object.freeze(entry.repairs.map((item) => Object.freeze(item))),
+    }));
+  }
+
   finishRepair(taskId, repairId, { attemptId, status, succeeded, reason, expectedVersion } = {}) {
     requireString(repairId, 'repairId');
     if (!['settled', 'blocked', 'unknown', 'observed', 'restored'].includes(status) || (succeeded !== undefined && typeof succeeded !== 'boolean')) {

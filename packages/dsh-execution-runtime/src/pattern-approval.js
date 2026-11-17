@@ -38,6 +38,9 @@ export function proposeApproval(candidate, { requestedBy, ttlMs = 86_400_000, no
     scopeRef: value.scopeRef ?? 'global' });
   return Object.freeze({ approvalId: `approval:${randomUUID()}`, patternId: value.patternId,
     patternVersion: version, requestedBy, requestedAt: now(), expiresAt: now() + ttlMs,
+    // A review requirement must survive into the request: if it were dropped here, an automatic policy
+    // could not see it and would happily confirm something a person was supposed to look at.
+    ...(value.requiresHumanReview === true ? { requiresHumanReview: true } : {}),
     // A pending request is deliberately unable to authorize anything by itself.
     status: 'pending' });
 }
@@ -93,4 +96,67 @@ export function rejectBorrowedTicket(candidate) {
     }
   }
   return true;
+}
+
+/**
+ * A deliberately narrow, explicitly opt-in auto-confirmation policy.
+ *
+ * Why it exists: with no confirmed approvals at all, the reuse loop can never turn over once — evidence
+ * accumulates and nothing is ever reused. This lets the loop run for observation, but it is not a removal
+ * of the human gate; it is a bounded delegation with every condition checkable:
+ *
+ * - Opt-in only. The caller must pass an object; there is no default that silently enables it.
+ * - Never on the first evidence: the requirement is strictly above the resolver's own threshold, so a
+ *   pattern only auto-confirms after it already cleared the normal bar.
+ * - Never for out-of-scope or review-required patterns: those still need a person.
+ * - Short-lived, and bound to a distinct pattern version, so any edit to the pattern disables it.
+ * - The ticket records that it was machine-issued, so an audit can always tell the two apart.
+ *
+ * An auto ticket is a real confirmed approval: `approvalApplies` accepts it, and revocation still works.
+ */
+export function confirmApprovalAutomatically(pending, { automation = null, evidence, pattern, now = Date.now } = {}) {
+  if (automation === null || typeof automation !== 'object' || Array.isArray(automation)) {
+    fail('automation_disabled', 'Automatic confirmation must be explicitly enabled by the caller.');
+  }
+  if (automation.allowAutomatic !== true) {
+    fail('automation_disabled', 'Automatic confirmation requires allowAutomatic: true.');
+  }
+  requireString(automation.operator, 'automation.operator');
+  const value = jsonSnapshot(pending);
+  if (value?.status !== 'pending') fail('invalid_approval_state', 'Only a pending request may be confirmed.');
+  if (value.requiresHumanReview === true) {
+    fail('automation_not_permitted', 'A pattern requiring human review cannot be auto-confirmed.');
+  }
+  const minRuns = automation.minIndependentRuns;
+  if (!Number.isSafeInteger(minRuns) || minRuns < 2) {
+    fail('automation_not_permitted', 'Automatic confirmation needs a declared independent-run requirement.');
+  }
+  const independentRuns = evidence?.independentRuns ?? 0;
+  if (independentRuns < minRuns) {
+    fail('automation_evidence_insufficient', `Automatic confirmation needs ${minRuns} independent runs, saw ${independentRuns}.`);
+  }
+  const checked = validateVerificationLike(evidence);
+  if (checked.successRate < (automation.minSuccessRate ?? 0.8)) {
+    fail('automation_success_rate_too_low', 'Automatic confirmation requires a high success rate.');
+  }
+  if (now() >= value.expiresAt) fail('approval_expired', 'The approval request expired before confirmation.');
+  // The ticket is bound to the version that was reviewed, exactly like a human confirmation.
+  if (patternVersionOf(pattern) !== value.patternVersion) {
+    fail('approval_version_mismatch', 'The reviewed pattern version does not match this request.');
+  }
+  const ttlMs = Math.min(automation.ttlMs ?? 3_600_000, 86_400_000);
+  return Object.freeze({ ...value, status: 'confirmed', confirmedBy: `automation:${automation.operator}`,
+    confirmedAt: now(), expiresAt: Math.min(value.expiresAt, now() + ttlMs),
+    automation: Object.freeze({ operator: automation.operator, independentRuns, successRate: checked.successRate }),
+    reviewTicket: createHash('sha256')
+      .update(`${value.approvalId}:${value.patternVersion}:automation:${now()}`).digest('hex') });
+}
+
+/** Narrow validation for the evidence fields auto-confirmation actually relies on. */
+function validateVerificationLike(evidence) {
+  const rate = evidence?.successRate;
+  if (typeof rate !== 'number' || !(rate >= 0 && rate <= 1)) {
+    fail('automation_evidence_insufficient', 'Automatic confirmation needs an observed success rate.');
+  }
+  return { successRate: rate };
 }
