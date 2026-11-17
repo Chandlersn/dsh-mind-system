@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Isolated exception-driven execution runtime contracts and development probes.",
-  "engines": { "node": ">=22.23.0" },
+  "engines": {
+    "node": ">=22.23.0"
+  },
   "exports": {
     "./contracts": "./src/contracts.js",
     "./store": "./src/store.js",
@@ -25,7 +27,8 @@
     "./pattern-runtime": "./src/pattern-runtime.js",
     "./knowledge": "./src/knowledge.js",
     "./diagnosis": "./src/diagnosis.js",
-    "./rollback": "./src/rollback.js"
+    "./rollback": "./src/rollback.js",
+    "./csv-recipe": "./recipes/csv-normalize.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
@@ -43,6 +46,7 @@
     "verify:knowledge": "node scripts/verify-knowledge-mutations.mjs",
     "verify:diagnosis": "node scripts/verify-diagnosis-mutations.mjs",
     "verify:rollback": "node scripts/verify-rollback-mutations.mjs",
-    "probe:jev": "node scripts/probe-jev.mjs"
+    "probe:jev": "node scripts/probe-jev.mjs",
+    "verify:loop": "node scripts/verify-loop-mutations.mjs"
   }
 }

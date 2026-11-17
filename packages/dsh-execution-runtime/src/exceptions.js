@@ -80,10 +80,11 @@ export class AnalysisCoordinator {
   #maxBytes;
   #monotonicNow;
   #patterns;
+  #resolvePattern;
   #lastRoute = null;
 
   constructor({ store, analyzer, agent, maxBytes = 16_384, now = Date.now,
-    monotonicNow = () => performance.now(), patterns = null }) {
+    monotonicNow = () => performance.now(), patterns = null, resolvePattern = null }) {
     if (!store || typeof analyzer?.analyze !== 'function' || !agent
       || !Number.isSafeInteger(maxBytes) || maxBytes < 4096 || maxBytes > 16_384) {
       fail('invalid_analysis_coordinator', 'Store, analyzer, explicit agent and a bounded package limit are required.');
@@ -97,7 +98,11 @@ export class AnalysisCoordinator {
     if (patterns !== null && typeof patterns !== 'function') {
       fail('invalid_analysis_coordinator', 'An optional pattern matcher must be a function.');
     }
+    if (resolvePattern !== null && typeof resolvePattern !== 'function') {
+      fail('invalid_analysis_coordinator', 'An optional pattern resolver must be a function.');
+    }
     this.#patterns = patterns;
+    this.#resolvePattern = resolvePattern;
   }
 
   #authorize(taskId, authority, signal) {
@@ -129,6 +134,12 @@ export class AnalysisCoordinator {
     if (run.status === 'reconciling') return { status: 'reconciliation_required', run };
     if (run.status !== 'waiting_analysis') return { status: 'not_required', run };
     if (signal.aborted) return { status: 'analysis_cancelled', run };
+    // A caller may hand in an approved pattern, and a registered resolver may find one from persisted
+    // evidence. The resolver is what closes the self-iterating loop: without it a proven pattern could
+    // only ever be used by a caller that already knew its identity.
+    if (pattern === null && this.#resolvePattern) {
+      pattern = this.#resolvePattern(taskId, run);
+    }
     // An approved pattern may answer this case directly; when it declines, analysis still runs as before.
     if (pattern !== null) {
       const decision = this.#patterns ? this.#patterns(taskId, pattern, run) : null;
