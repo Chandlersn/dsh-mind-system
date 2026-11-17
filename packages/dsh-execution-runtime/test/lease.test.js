@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { RuntimeStore } from '../src/store.js';
 
@@ -15,6 +16,9 @@ const candidate = (overrides = {}) => ({ candidateId: 'probe', toolName: 'fixtur
 
 const verification = { status: 'pass', progress: 'advanced', goalSatisfied: true, verifierId: 'fixture',
   verifierVersion: '1', evidenceRefs: ['file:x#sha256:y'] };
+
+const environmentOf = (task) => ({ recipeId: task.recipeId, recipeVersion: task.recipeVersion,
+  scopeRef: task.scopeRef, workspaceRoot: task.workspaceRoot, allowedTools: [] });
 
 function fixture(t, options = {}) {
   const store = new RuntimeStore(':memory:', options);
@@ -114,11 +118,11 @@ test('resume requires a fresh fence and never double-writes on repeated resume',
   const { store, task: input } = fixture(t);
   const lease = store.acquireLease(input.taskId, { expectedVersion: 0, ownerId: 'worker-a' });
   const paused = store.pauseRun(input.taskId, { expectedVersion: lease.run.version, fence: lease.fence });
-  const resumed = store.resumeRun(input.taskId, { expectedVersion: paused.version });
+  const resumed = store.resumeRun(input.taskId, { expectedVersion: paused.version, environment: environmentOf(input) });
   assert.equal(resumed.status, 'running');
   assert.ok(resumed.fence > paused.fence, 'Resume must advance the fence for a new owner.');
   // A second resume on a running task is refused, so a stale worker cannot re-open its own window.
-  assert.throws(() => store.resumeRun(input.taskId, { expectedVersion: resumed.version }), { code: 'invalid_state' });
+  assert.throws(() => store.resumeRun(input.taskId, { expectedVersion: resumed.version, environment: environmentOf(input) }), { code: 'invalid_state' });
   const newLease = store.acquireLease(input.taskId, { expectedVersion: resumed.version, ownerId: 'worker-b' });
   assert.ok(newLease.fence > resumed.fence);
   assert.throws(() => store.reserveAttempt(input.taskId, candidate(), { expectedVersion: newLease.run.version, fence: lease.fence }),
@@ -131,7 +135,7 @@ test('resume after the deadline is refused instead of running stale work', (t) =
   const lease = store.acquireLease(input.taskId, { expectedVersion: 0, ownerId: 'worker-a' });
   const paused = store.pauseRun(input.taskId, { expectedVersion: lease.run.version, fence: lease.fence });
   now = input.deadlineAt;
-  assert.throws(() => store.resumeRun(input.taskId, { expectedVersion: paused.version }), { code: 'budget_exceeded' });
+  assert.throws(() => store.resumeRun(input.taskId, { expectedVersion: paused.version, environment: environmentOf(input) }), { code: 'budget_exceeded' });
   assert.equal(store.getRun(input.taskId).status, 'paused');
 });
 
@@ -202,15 +206,42 @@ test('a superseded scheduler cannot settle its own in-flight attempt', async (t)
   store.close();
 });
 
+test('resume refuses a changed template or authority instead of resuming blind', (t) => {
+  const { store, task: input } = fixture(t);
+  const base = environmentOf(input);
+  const lease = store.acquireLease(input.taskId, { expectedVersion: 0, ownerId: 'worker-a' });
+  const paused = store.pauseRun(input.taskId, { expectedVersion: lease.run.version, fence: lease.fence, environment: base });
+  for (const changed of [
+    { ...base, recipeVersion: '2' },
+    { ...base, scopeRef: 'other-scope' },
+    { ...base, workspaceRoot: '/elsewhere' },
+    { ...base, allowedTools: ['extra.tool'] },
+  ]) {
+    assert.throws(() => store.resumeRun(input.taskId, { expectedVersion: paused.version, environment: changed }),
+      { code: 'resume_environment_changed' });
+  }
+  assert.throws(() => store.resumeRun(input.taskId, { expectedVersion: paused.version }),
+    { code: 'resume_environment_required' });
+  assert.equal(store.getRun(input.taskId).status, 'paused');
+  const resumed = store.resumeRun(input.taskId, { expectedVersion: paused.version, environment: base });
+  assert.equal(resumed.status, 'running');
+  assert.ok(resumed.fence > paused.fence);
+});
 test('fence and owner survive a reopen so a restarted worker cannot bypass them', (t) => {
-  const filename = join(process.cwd(), `.lease-fixture-${randomUUID()}.sqlite`);
+  // Keep databases out of the repository so a failed assertion cannot pollute the working tree.
+  const dir = mkdtempSync(join(tmpdir(), 'runtime-lease-reopen-'));
+  const filename = join(dir, 'state.sqlite');
   const input = task();
   const first = new RuntimeStore(filename);
   first.createRun(input);
   const lease = first.acquireLease(input.taskId, { expectedVersion: 0, ownerId: 'worker-a' });
   first.close();
   const reopened = new RuntimeStore(filename);
-  t.after(() => { try { reopened.close(); } catch { /* already closed */ } rmSync(filename, { force: true }); });
+  // Close every handle before deleting the directory; hooks run in reverse order of registration.
+  t.after(() => {
+    try { reopened.close(); } catch { /* already closed */ }
+    rmSync(dir, { recursive: true, force: true });
+  });
   const run = reopened.getRun(input.taskId);
   assert.equal(run.fence, lease.fence);
   assert.equal(run.owner.ownerId, 'worker-a');

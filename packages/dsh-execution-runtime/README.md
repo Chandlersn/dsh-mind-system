@@ -90,7 +90,9 @@ node scripts/verify-recovery-mutations.mjs
 
 `acquireLease`每次授予都把`fence`加一，旧持有者即使仍在运行也不再是写者。`reserveAttempt`、`markStarted`、`recordOutcome`都接受`fence`并在事务内校验：不一致直接`stale_owner`，因此"以为自己是写者"的旧worker无法派发或结算。同一个未过期租约不能被重复获取；过期后由同一owner重新获取会得到更大的fence。fence与owner持久化在数据库中，进程重启不能凭旧状态绕过。
 
-`pauseRun`要求没有未结动作（未知副作用先走核对），暂停时把fence加一并清空owner，所以"发起暂停的一方"也不再能写。暂停只阻止新派发，不宣称杀死在途工具；已派发动作的收敛仍由公开管线与核对处理。`resumeRun`只接受`paused`状态，恢复时fence再加一，重复resume在`running`上被拒，从而不会双写；暂停期间越过任务截止则直接拒绝恢复。
+`pauseRun`要求没有未结动作（未知副作用先走核对），暂停时把fence加一并清空owner，所以"发起暂停的一方"也不再能写。暂停只阻止新派发，不宣称杀死在途工具；已派发动作的收敛仍由公开管线与核对处理。暂停时同时记录当时的模板与授权快照。
+
+`resumeRun`只接受`paused`状态。它要求调用方提交**当前**模板与授权快照，并与暂停时记录的快照逐项比对；模板版本、范围、工作区或工具集任一变化即`resume_environment_changed`，不做"盲恢复"。恢复时fence再加一，重复resume在`running`上被拒，从而不会双写；暂停期间越过任务截止则直接拒绝恢复。
 
 `RuntimeScheduler.run`在创建或取得run后立即申请租约，并把fence带入其后所有写入；有反例证明：工具执行中途被新worker接管时，旧调度器的结算会被`stale_owner`拒绝，被接管的attempt保持未结，留给新owner核对。
 

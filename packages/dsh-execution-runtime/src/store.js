@@ -62,7 +62,7 @@ export class RuntimeStore {
         tool_calls_used INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
         fence INTEGER NOT NULL DEFAULT 0,
-        owner_id TEXT, owner_expires_at INTEGER
+        owner_id TEXT, owner_expires_at INTEGER, environment_json TEXT
       );
       CREATE TABLE IF NOT EXISTS attempts (
         attempt_id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL REFERENCES runs(task_id),
@@ -124,6 +124,7 @@ export class RuntimeStore {
       fence: 'INTEGER NOT NULL DEFAULT 0',
       owner_id: 'TEXT',
       owner_expires_at: 'INTEGER',
+      environment_json: 'TEXT',
     })) {
       if (!columns.has(name)) this.#db.exec(`ALTER TABLE runs ADD COLUMN ${name} ${declaration}`);
     }
@@ -446,8 +447,11 @@ export class RuntimeStore {
    * Pause a running task. Outstanding work must already be settled or frozen; pause never cancels a write
    * that a downstream tool may still complete, and it bumps the fence so the pausing side is no longer a writer.
    */
-  pauseRun(taskId, { expectedVersion, fence, reason = 'paused' } = {}) {
+  pauseRun(taskId, { expectedVersion, fence, reason = 'paused', environment } = {}) {
     requireString(reason, 'pause reason');
+    if (environment !== undefined && (typeof environment !== 'object' || environment === null || Array.isArray(environment))) {
+      throw error('invalid_environment', 'The paused environment snapshot must be a plain object.');
+    }
     return this.#transaction(() => {
       const row = this.#row(taskId);
       this.#version(row, expectedVersion);
@@ -455,22 +459,44 @@ export class RuntimeStore {
       if (row.status !== 'running') throw error('run_not_running', 'Only a running task can be paused.');
       const unresolved = this.listUnresolved(taskId);
       if (unresolved.length) throw error('attempt_unresolved', 'Settle or reconcile outstanding work before pausing.');
-      this.#db.prepare(`UPDATE runs SET status = 'paused', reason = ?, fence = fence + 1,
+      // Record what the run was paused under, so a later resume can detect a changed template or authority.
+      const task = JSON.parse(row.task_json);
+      const snapshotEnvironment = environment === undefined
+        ? { recipeId: task.recipeId, recipeVersion: task.recipeVersion, scopeRef: task.scopeRef,
+          workspaceRoot: task.workspaceRoot, allowedTools: [] }
+        : jsonSnapshot(environment);
+      this.#db.prepare(`UPDATE runs SET status = 'paused', reason = ?, fence = fence + 1, environment_json = ?,
         owner_id = NULL, owner_expires_at = NULL, version = version + 1, updated_at = ? WHERE task_id = ?`)
-        .run(reason, this.#now(), taskId);
+        .run(reason, JSON.stringify(snapshotEnvironment), this.#now(), taskId);
       this.#event(taskId, null, 'run_paused', { reason });
       return this.getRun(taskId);
     });
   }
 
-  /** Resume a paused task for a new owner; the caller must then acquire a fresh lease. */
-  resumeRun(taskId, { expectedVersion } = {}) {
+  /**
+   * Resume a paused task for a new owner. The caller must present the recipe/authority snapshot that was
+   * current when the run paused; a changed template or authorization is refused instead of resumed blind.
+   */
+  resumeRun(taskId, { expectedVersion, environment, requireEnvironment = true } = {}) {
     return this.#transaction(() => {
       const row = this.#row(taskId);
       this.#version(row, expectedVersion);
       if (row.status !== 'paused') throw error('invalid_state', 'Only a paused task can be resumed.');
       const task = JSON.parse(row.task_json);
       if (this.#now() >= task.deadlineAt) throw error('budget_exceeded', 'The task deadline elapsed while paused.');
+      if (requireEnvironment) {
+        if (!row.environment_json) throw error('resume_environment_missing', 'This run has no recorded environment to compare.');
+        if (!environment || typeof environment !== 'object' || Array.isArray(environment)) {
+          throw error('resume_environment_required', 'Resume must present the current template and authority snapshot.');
+        }
+        const recorded = JSON.parse(row.environment_json);
+        for (const key of ['recipeId', 'recipeVersion', 'scopeRef', 'workspaceRoot', 'allowedTools']) {
+          const same = Array.isArray(recorded[key])
+            ? Array.isArray(environment[key]) && [...recorded[key]].sort().join('\u0000') === [...environment[key]].sort().join('\u0000')
+            : recorded[key] === environment[key];
+          if (!same) throw error('resume_environment_changed', `Resume refused: ${key} changed while the run was paused.`);
+        }
+      }
       this.#db.prepare(`UPDATE runs SET status = 'running', reason = NULL, fence = fence + 1,
         owner_id = NULL, owner_expires_at = NULL, version = version + 1, updated_at = ? WHERE task_id = ?`)
         .run(this.#now(), taskId);

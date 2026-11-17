@@ -51,6 +51,10 @@ try {
       old: '    const version = () => ({ expectedVersion: current().version, ...(fence === undefined ? {} : { fence }) });',
       replacement: '    const version = () => ({ expectedVersion: current().version });',
       test: /not ok \d+ - a superseded scheduler cannot settle/ },
+    { name: 'resume_ignores_environment_change', file: 'src/store.js',
+      old: '          if (!same) throw error(\'resume_environment_changed\'',
+      replacement: '          if (false) throw error(\'resume_environment_changed\'',
+      test: /not ok \d+ - resume refuses a changed template or authority/ },
   ];
   const observed = [];
   for (const mutant of mutants) {
