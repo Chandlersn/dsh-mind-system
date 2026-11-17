@@ -187,14 +187,19 @@ test('human review, rollback, invalid signatures, expired budgets and unresolved
       unchanged(f, () => f.start(analysisId), 'invalid_repair_state');
       f.db().exec("UPDATE runs SET status = 'waiting_analysis' WHERE task_id = 'task'");
       unchanged(f, () => f.start(analysisId), 'repair_requires_review');
-    } else if (kind === 'rollback_to') unchanged(f, () => f.start(analysisId), 'repair_requires_recovery');
-    else {
+    } else if (kind === 'rollback_to') {
+      // A rollback is now a persistable repair: admitted here, planned by the scheduler against recorded
+      // checkpoints. What must still hold is that starting it consumes the proposal exactly once.
+      const started = f.start(analysisId);
+      assert.equal(started.repair.kind, 'rollback_to');
+      assert.notEqual(f.store.getAnalysis('task', analysisId).consumedAt, null);
+    } else {
       for (const signature of [undefined, null, '', ' ', 'x'.repeat(1025)]) unchanged(f,
         () => f.store.startRepair('task', analysisId, { ...f.options(), signature }), 'invalid_contract');
       f.setNow(5000);
       unchanged(f, () => f.start(analysisId), 'budget_exceeded');
+      assert.equal(f.store.getAnalysis('task', analysisId).consumedAt, null);
     }
-    assert.equal(f.store.getAnalysis('task', analysisId).consumedAt, null);
   }
   for (const budget of [{ maxAttempts: 0 }, { maxToolCalls: 0 }]) {
     const f = fixture(t, budget);
@@ -297,12 +302,14 @@ test('an older narrower repairs CHECK is widened on reopen and keeps its rows', 
   assert.equal(migrated.getRepair('task', 'legacy-1').kind, 'abort', 'Existing rows survive the rebuild.');
 });
 
-test('rollback_to stays refused until the recovery protocol can dispatch it', (t) => {
+test('a rollback cannot restore a checkpoint that was never recorded for this task', (t) => {
   const f = fixture(t);
-  const analysisId = f.propose(action('rollback_to'));
-  // Refusal must not consume the proposal: a later attempt has to see the same unconsumed state.
-  unchanged(f, () => f.start(analysisId), 'repair_requires_recovery');
-  assert.equal(f.store.getAnalysis('task', analysisId).consumedAt, null);
+  // A freshly created run is running, so the refusal has to come from the missing checkpoint itself.
+  assert.throws(() => f.store.restoreCheckpoint('task', 'never-recorded', f.options()), { code: 'invalid_checkpoint' });
+  // And a checkpoint of another task must not be addressable through this one.
+  f.store.createRun({ ...f.task, taskId: 'other' });
+  assert.throws(() => f.store.restoreCheckpoint('task', 'other', { expectedVersion: f.store.getRun('task').version }),
+    { code: 'invalid_checkpoint' });
 });
 
 test('legacy analyses migration adds consumption and atomically replaces the partial index on reopen', (t) => {

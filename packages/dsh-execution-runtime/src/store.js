@@ -51,8 +51,8 @@ const REPAIRS_COLUMNS = `
         repair_id TEXT PRIMARY KEY NOT NULL,
         analysis_id TEXT NOT NULL UNIQUE REFERENCES analyses(analysis_id),
         task_id TEXT NOT NULL REFERENCES runs(task_id), signature TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('retry_with', 'gather_evidence', 'abort')),
-        status TEXT NOT NULL CHECK(status IN ('reserved', 'settled', 'blocked', 'unknown', 'observed')),
+        kind TEXT NOT NULL CHECK(kind IN ('retry_with', 'gather_evidence', 'abort', 'rollback_to')),
+        status TEXT NOT NULL CHECK(status IN ('reserved', 'settled', 'blocked', 'unknown', 'observed', 'restored')),
         candidate_json TEXT, attempt_id TEXT UNIQUE REFERENCES attempts(attempt_id),
         attempt_floor INTEGER NOT NULL, outcome_json TEXT,
         created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL`;
@@ -116,7 +116,8 @@ export class RuntimeStore {
       CREATE TABLE IF NOT EXISTS checkpoints (
         checkpoint_id TEXT PRIMARY KEY NOT NULL,
         task_id TEXT NOT NULL REFERENCES runs(task_id),
-        step_index INTEGER NOT NULL, state_json TEXT NOT NULL, environment_json TEXT NOT NULL,
+        step_index INTEGER NOT NULL, attempt_floor INTEGER NOT NULL DEFAULT 0,
+        state_json TEXT NOT NULL, environment_json TEXT NOT NULL,
         evidence_ref TEXT NOT NULL, created_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS repair_failures (
@@ -620,9 +621,13 @@ export class RuntimeStore {
     return this.#transaction(() => {
       const row = this.#row(taskId);
       this.#version(row, expectedVersion);
-      this.#db.prepare(`INSERT INTO checkpoints (checkpoint_id, task_id, step_index, state_json,
-        environment_json, evidence_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-        .run(checkpointId, taskId, value.stepIndex, JSON.stringify(value.state),
+      // Remember which attempts existed at this moment. "What happened after the checkpoint" is then a
+      // recorded fact, so a rollback can be refused for effects that cannot be undone instead of trusting
+      // a proposal to declare itself safe.
+      const attemptFloor = this.#db.prepare('SELECT coalesce(max(rowid), 0) AS floor FROM attempts').get().floor;
+      this.#db.prepare(`INSERT INTO checkpoints (checkpoint_id, task_id, step_index, attempt_floor, state_json,
+        environment_json, evidence_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(checkpointId, taskId, value.stepIndex, attemptFloor, JSON.stringify(value.state),
           JSON.stringify(value.environment), value.evidenceRef, this.#now());
       // Checkpoints are metadata about verified progress; they advance the version like any event.
       this.#db.prepare('UPDATE runs SET version = version + 1, updated_at = ? WHERE task_id = ?')
@@ -632,12 +637,56 @@ export class RuntimeStore {
     });
   }
 
+  /**
+   * Restore the business cursor to a recorded checkpoint. This is the write half of rollback: the caller
+   * must already have planned it (environment comparison, effect class) and the store re-checks the facts
+   * it owns — that the run is the same run, that the target checkpoint exists for this task, and that the
+   * run is in a state where restoring is meaningful. It never invents a compensated state.
+   */
+  restoreCheckpoint(taskId, checkpointId, { expectedVersion } = {}) {
+    requireString(checkpointId, 'checkpointId');
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      if (row.status !== 'running') throw error('run_not_running', 'A rollback can only be applied to a running task.');
+      const checkpoint = this.getCheckpoint(taskId, checkpointId);
+      if (!checkpoint) throw error('invalid_checkpoint', 'The rollback target is not a checkpoint of this task.');
+      // Any unresolved attempt means the business reality is unknown; restoring over it would bury that.
+      if (this.listUnresolved(taskId).length) throw error('attempt_unresolved', 'Unknown effects must be reconciled before a rollback.');
+      this.#db.prepare('UPDATE runs SET state_json = ?, version = version + 1, updated_at = ? WHERE task_id = ?')
+        .run(JSON.stringify(checkpoint.state), this.#now(), taskId);
+      this.#event(taskId, null, 'checkpoint_restored', { checkpointId, stepIndex: checkpoint.stepIndex,
+        evidenceRef: checkpoint.evidenceRef });
+      return this.getRun(taskId);
+    });
+  }
+
   getCheckpoint(taskId, checkpointId) {
     this.#row(taskId);
     const row = this.#db.prepare('SELECT * FROM checkpoints WHERE task_id = ? AND checkpoint_id = ?')
       .get(taskId, checkpointId);
-    return row ? { checkpointId: row.checkpoint_id, stepIndex: row.step_index, state: JSON.parse(row.state_json),
+    return row ? { checkpointId: row.checkpoint_id, stepIndex: row.step_index, attemptFloor: row.attempt_floor,
+      state: JSON.parse(row.state_json),
       environment: JSON.parse(row.environment_json), evidenceRef: row.evidence_ref, createdAt: row.created_at } : null;
+  }
+
+  /**
+   * Attempts that ran after a checkpoint was taken. A rollback must be able to see what it is undoing;
+   * deriving that from recorded attempts (with their declared effects) is what keeps the decision honest.
+   */
+  readAttemptsAfter(taskId, checkpointId) {
+    this.#row(taskId);
+    const checkpoint = this.getCheckpoint(taskId, checkpointId);
+    if (!checkpoint) throw error('invalid_checkpoint', 'The rollback target is not a checkpoint of this task.');
+    return this.#db.prepare('SELECT * FROM attempts WHERE task_id = ? AND rowid > ? ORDER BY rowid')
+      .all(taskId, checkpoint.attemptFloor).map((row) => ({
+        attemptId: row.attempt_id,
+        candidate: JSON.parse(row.candidate_json),
+        status: row.status,
+        outcome: row.outcome_json ? JSON.parse(row.outcome_json) : null,
+        verification: row.verification_json ? JSON.parse(row.verification_json) : null,
+        createdAt: row.created_at,
+      }));
   }
 
   /** Most recent checkpoints first; a rollback target is chosen from recorded facts, never from a model claim. */
@@ -963,7 +1012,8 @@ export class RuntimeStore {
       if (this.listUnresolved(taskId).length) throw error('attempt_unresolved', 'Resolve business work before repair.');
       const action = validateRepairAction(analysis.result?.repair, { allowedEvidenceRefs: analysis.evidenceRefs });
       if (action.requiresHumanReview) throw error('repair_requires_review', 'The repair requires human review.');
-      if (action.kind === 'rollback_to') throw error('repair_requires_recovery', 'Rollback requires the recovery protocol.');
+      // A rollback is a state restore, so it is admissible here; the scheduler plans it against recorded
+      // checkpoints and refuses effects that cannot be undone. Persisting it is what makes the branch real.
       const task = JSON.parse(row.task_json);
       if (this.getRepairFailures(taskId, signature) >= 2) throw error('repair_limit', 'This repair signature has failed twice.');
       if (this.#now() >= task.deadlineAt || (action.kind === 'retry_with'
@@ -1020,7 +1070,7 @@ export class RuntimeStore {
 
   finishRepair(taskId, repairId, { attemptId, status, succeeded, reason, expectedVersion } = {}) {
     requireString(repairId, 'repairId');
-    if (!['settled', 'blocked', 'unknown', 'observed'].includes(status) || (succeeded !== undefined && typeof succeeded !== 'boolean')) {
+    if (!['settled', 'blocked', 'unknown', 'observed', 'restored'].includes(status) || (succeeded !== undefined && typeof succeeded !== 'boolean')) {
       throw error('invalid_repair_outcome', 'A valid repair status and optional boolean success are required.');
     }
     if (attemptId !== undefined) requireString(attemptId, 'attemptId');
@@ -1031,12 +1081,18 @@ export class RuntimeStore {
       const repair = this.#db.prepare('SELECT * FROM repairs WHERE task_id = ? AND repair_id = ?').get(taskId, repairId);
       if (!repair || repair.status !== 'reserved') throw error('invalid_repair_state', 'Only a reserved same-task repair may finish.');
       let actualSuccess = false;
-      if (status === 'observed') {
-        // Evidence gathering observes; it neither dispatches business work nor proves success.
+      if (status === 'observed') {        // Evidence gathering observes; it neither dispatches business work nor proves success.
         if (attemptId !== undefined || succeeded !== undefined || row.status !== 'running'
           || this.#db.prepare('SELECT 1 FROM attempts WHERE task_id = ? AND rowid > ?').get(taskId, repair.attempt_floor)) {
           throw error('invalid_repair_outcome', 'Observed repair work must not dispatch or claim an outcome.');
         }
+      } else if (status === 'restored') {
+        // A rollback restores a recorded cursor; it produces no attempt of its own, so it must not be able to
+        // claim a success that only a freshly verified attempt could justify.
+        if (attemptId !== undefined || succeeded === true || row.status !== 'running') {
+          throw error('invalid_repair_outcome', 'A restored repair settles a cursor, not an attempt.');
+        }
+        actualSuccess = true;
       } else if (status === 'blocked') {
         if (attemptId !== undefined || succeeded === true || row.status !== 'running'
           || this.#db.prepare('SELECT 1 FROM attempts WHERE task_id = ? AND rowid > ?').get(taskId, repair.attempt_floor)) {
@@ -1080,9 +1136,11 @@ export class RuntimeStore {
         .run(status, attemptId ?? null, JSON.stringify(metadata), now, repairId);
       const nextStatus = row.status === 'reconciling' ? row.status : limited ? 'waiting_human'
         : status === 'observed' ? 'waiting_analysis'
+        : status === 'restored' ? 'waiting_analysis'
         : status === 'blocked' ? 'failed' : failed && row.status === 'running' ? 'waiting_analysis' : row.status;
       const nextReason = row.status === 'reconciling' ? row.reason : limited ? 'repair_limit'
         : status === 'observed' ? 'evidence_gathered'
+        : status === 'restored' ? 'checkpoint_restored'
         : status === 'blocked' ? reason ?? 'repair_blocked'
           : failed && row.status === 'running' ? 'repair_no_progress' : row.reason;
       this.#db.prepare('UPDATE runs SET status = ?, reason = ?, version = version + 1, updated_at = ? WHERE task_id = ?')

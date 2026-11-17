@@ -7,6 +7,7 @@ import { performance } from 'node:perf_hooks';
 import { admitCandidate } from './admission.js';
 import { selectUniqueRuleFallback } from './decision-client.js';
 import { RuntimeContractError, failureCode, jsonSnapshot, requireString, validateCandidate, validateTask, validateVerification } from './contracts.js';
+import { createCheckpoint, planRollbackTo, settleRollback } from './rollback.js';
 
 const fail = (code, message) => { throw new RuntimeContractError(code, message); };
 const deepFreeze = (value) => {
@@ -150,6 +151,7 @@ export class RuntimeScheduler {
     let repairCandidate = null;
     let repairHistory = Object.freeze([]);
     let probeIds = null;
+    let rollbackTarget = null;
     if (!authority || authority.scopeRef !== task.scopeRef || !Array.isArray(authority.allowedTools)
       || !authority.allowedTools.length || typeof authority.workspaceRoot !== 'string') {
       fail('authority_unavailable', 'Explicit task authority is required before reading task files.');
@@ -223,9 +225,27 @@ export class RuntimeScheduler {
         const analysis = this.#store.getAnalysis(task.taskId, repairAnalysisId);
         if (!analysis?.result || analysis.status !== 'proposed') fail('repair_not_proposed', 'A persisted proposal is required.');
         const proposal = validateRepairAction(analysis.result.repair, { allowedEvidenceRefs: analysis.evidenceRefs });
-        if (!['retry_with', 'abort', 'gather_evidence'].includes(proposal.kind)) fail('repair_branch_unavailable', 'This repair branch requires its dedicated native controller.');
+        if (!['retry_with', 'abort', 'gather_evidence', 'rollback_to'].includes(proposal.kind)) fail('repair_branch_unavailable', 'This repair branch requires its dedicated native controller.');
         probeIds = proposal.kind === 'gather_evidence' ? Object.freeze([...proposal.probeIds]) : null;
         const previousAttempt = this.#store.getLatestAttempt(task.taskId);
+        if (proposal.kind === 'rollback_to') {
+          // Decide from recorded facts, never from the proposal's own claim of safety: the checkpoint must
+          // exist for this task, and every attempt since it must declare an effect we can actually undo.
+          const target = this.#store.getCheckpoint(task.taskId, proposal.checkpointId);
+          if (!target) fail('invalid_rollback', 'The proposals rolled-back-to checkpoint is not recorded for this task.');
+          const since = this.#store.readAttemptsAfter(task.taskId, proposal.checkpointId);
+          // Only settled attempts prove what they did; an unresolved one means the world is unknown.
+          if (since.some((item) => item.status !== 'settled')) {
+            fail('rollback_requires_reconciliation', 'Attempts after the checkpoint must be settled before a rollback.');
+          }
+          const effects = since.map((item) => item.candidate?.effect).filter(Boolean);
+          const blockers = [...new Set(effects.filter((effect) => !['read', 'reversible_write'].includes(effect)))];
+          if (blockers.length) {
+            fail('not_compensable', `Effects recorded after the checkpoint cannot be undone: ${blockers.join(', ')}.`);
+          }
+          rollbackTarget = Object.freeze({ checkpointId: proposal.checkpointId, checkpoint: target,
+            requiresCompensation: effects.includes('reversible_write') });
+        }
         if (proposal.kind === 'retry_with') {
           const policy = baseRecipe.repairPolicy;
           if (!policy || typeof policy.prepare !== 'function') fail('repair_policy_unavailable', 'A native template repair policy must be registered.');
@@ -271,6 +291,47 @@ export class RuntimeScheduler {
           putEvidence: (label, value) => this.#store.putEvidence(task.taskId, label, value, version()) });
         observe('repair_evidence_gathered', jsonSnapshot(outcome));
         this.#store.finishRepair(task.taskId, repairId, { ...version(), status: 'observed' });
+        return this.#store.getRun(task.taskId);
+      }
+      if (rollbackTarget) {
+        // Plan against recorded facts: the plan refuses a drifted environment or an undoable-effect class,
+        // so this call is where the rollback can still legitimately turn into a refusal.
+        const currentEnvironment = { recipeId: task.recipeId, recipeVersion: task.recipeVersion,
+          scopeRef: task.scopeRef, workspaceRoot: root };
+        const plan = planRollbackTo({ checkpoint: createCheckpoint({ taskId: task.taskId,
+          stepIndex: rollbackTarget.checkpoint.stepIndex, state: rollbackTarget.checkpoint.state,
+          environment: rollbackTarget.checkpoint.environment,
+          evidenceRef: rollbackTarget.checkpoint.evidenceRef }), current: currentEnvironment,
+          // A read-only history needs no compensation; a reversible write does, which is why it is refused
+          // here rather than pretended to be restored.
+          effect: rollbackTarget.requiresCompensation ? 'reversible_write' : 'read' });
+        if (!plan.allowed) {
+          this.#store.finishRepair(task.taskId, repairId, { ...version(), status: 'blocked', reason: plan.reason });
+          observe('repair_rollback_refused', { reason: plan.reason });
+          return this.#store.getRun(task.taskId);
+        }
+        // Restore atomically, then re-verify through the registered verifier: a rollback is never reported
+        // complete on the strength of the write alone.
+        // restoreCheckpoint already records the audit event, and the run version it hands back is what the
+        // verification below must be pinned to.
+        const restored = this.#store.restoreCheckpoint(task.taskId, rollbackTarget.checkpointId, version());
+        let verification;
+        try {
+          verification = validateVerification(await recipe.verifier.verify({ task, state: restored.state,
+            candidate: null, io: io('verification'), signal: combinedSignal }));
+        } catch (failure) {
+          verification = unknownVerification(failureCode(failure));
+        }
+        const settled = settleRollback({ plan });
+        check();
+        // A rollback settles as `restored` only when the restored state re-verifies. Anything else is a blocked
+        // repair with the verifier's own reason: an unverified restore must not be reported as completed, and
+        // `unknown` would be a lie here because the run is not reconciling an uncertain effect.
+        this.#store.finishRepair(task.taskId, repairId, verification.status === 'pass' && settled.completed
+          ? { ...version(), status: 'restored' }
+          : { ...version(), status: 'blocked', reason: `rollback_unverified:${verification.reason ?? verification.status}` });
+        observe('repair_rollback_settled', { status: verification.status === 'pass' ? settled.status : 'unverified',
+          verification: verification.status });
         return this.#store.getRun(task.taskId);
       }
       while (current().status === 'running') {

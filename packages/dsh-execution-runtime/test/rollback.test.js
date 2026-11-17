@@ -124,8 +124,7 @@ async function pipeline(t) {
     deadlineAt: Date.now() + 60_000 };
   // Close handles inside the test body: the host fixture removes its temp root in its own teardown.
   const close = async () => { await executor.dispose(); store.close(); };
-  return { host, store, scheduler, task, authority, close };
-}
+  return { host, store, scheduler, task, authority, close };}
 
 test('the running pipeline records a checkpoint for a verified step', async (t) => {
   const env = await pipeline(t);
@@ -178,5 +177,174 @@ test('a checkpoint from a drifted environment is refused as a target in the pipe
       current: { ...row.environment, recipeVersion: '2' }, effect: 'read' });
     assert.equal(plan.allowed, false);
     assert.equal(plan.reason, 'environment_changed:recipeVersion');
+  } finally { await env.close(); }
+});
+
+/**
+ * The dispatch half: a persisted `rollback_to` proposal must actually restore the recorded cursor through
+ * the scheduler. Everything else in this file can be green while this is still a stub, which is exactly
+ * the failure this test exists to prevent.
+ */
+async function rollbackPipeline(t, { effect = 'read', afterRestoreFailure = null } = {}) {
+  const host = await createHost(t);
+  const store = new RuntimeStore(join(host.root, 'rollback.sqlite'));
+  const agent = await host.agent('rollback-caller');
+  const executor = new HostExecutor({ context: host.ctx, tools: host.tools, agent });
+  const { assertObjectJsonSchema, validateJsonSchemaValue } = await import(pathToFileURL(installed['dsh-tools'].entry).href);
+  writeFileSync(join(host.storage, 'source.json'), JSON.stringify([{ id: 'a', name: ' Alpha ' }]));
+  host.tools.register({ name: 'runtime.write_json', description: 'Create the owned fixture artifact.',
+    parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, createOnly: { type: 'boolean', enum: [true] } },
+      required: ['path', 'content', 'createOnly'], additionalProperties: false },
+    output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
+    async execute({ path, content }) { writeFileSync(path, content, { flag: 'wx' }); return { created: true }; } });
+  // A verifier that records each call, so "re-verified after restore" is observable rather than assumed.
+  // `afterRestoreFailure` forces a non-pass verdict so "restored but unverified" can be told apart from
+  // "restored and verified" — without that contrast, reporting success would pass either way.
+  const verified = [];
+  const recipe = { ...jsonNormalizeRecipe, verifier: { ...jsonNormalizeRecipe.verifier,
+    async verify(context) {
+      const result = await jsonNormalizeRecipe.verifier.verify(context);
+      verified.push({ state: structuredClone(context.state), status: result.status });
+      if (afterRestoreFailure && verified.length > 1) {
+        return { ...result, status: afterRestoreFailure, progress: 'unchanged', goalSatisfied: false,
+          evidenceRefs: result.evidenceRefs ?? [], reason: 'forced_verification_failure' };
+      }
+      return result;
+    } } };
+  const scheduler = new RuntimeScheduler({ store, executor, recipes: [recipe], tools: host.tools,
+    validateArguments({ tool, arguments: args }) { assertObjectJsonSchema(tool.parameters); return validateJsonSchemaValue(tool.parameters, args); } });
+  const authority = { scopeRef: 'rb-scope', workspaceRoot: host.storage, allowedTools: ['runtime.write_json'], agent };
+  const task = { taskId: randomUUID(), recipeId: 'json-normalize', recipeVersion: '1', goal: 'Create sorted records.',
+    scopeRef: authority.scopeRef, workspaceRoot: host.storage, inputs: { inputFile: 'source.json', outputFile: 'output.json' },
+    deadlineAt: Date.now() + 60_000 };
+  const close = async () => { await executor.dispose(); store.close(); };
+  return { host, store, scheduler, task, authority, close, verified, effect };
+}
+
+test('a persisted rollback_to proposal restores the recorded cursor through the scheduler', async (t) => {
+  const env = await rollbackPipeline(t);
+  try {
+    // A completed run is a finished run: there is nothing to roll back, and stopRun is a no-op on it.
+    const completed = await env.scheduler.run(env.task, { authority: env.authority });
+    assert.equal(completed.status, 'completed');
+    const [checkpointRow] = env.store.listCheckpoints(env.task.taskId);
+    assert.ok(checkpointRow, 'The completed run must have left a checkpoint.');
+    // Build the rollback scenario on a fresh run whose state the pipeline itself prepared. The pipeline's
+    // prepared state carries the computed input hash, which the verifier needs; a hand-written state would
+    // fail re-verification for reasons unrelated to rollback.
+    const rb = { ...env.task, taskId: randomUUID() };
+    const rbVersion = () => ({ expectedVersion: env.store.getRun(rb.taskId).version });
+    env.store.createRun(rb);
+    // Use the same prepared shape the pipeline writes: {inputs} bound from the task's real files.
+    const preparedInputs = { inputFile: rb.inputs.inputFile, outputFile: rb.inputs.outputFile,
+      inputSha256: createHash('sha256').update(readFileSync(join(env.host.storage, rb.inputs.inputFile))).digest('hex') };
+    const { checkpointId } = env.store.recordCheckpoint(rb.taskId, { stepIndex: 0,
+      state: { step: 0, inputs: preparedInputs },
+      environment: { recipeId: rb.recipeId, recipeVersion: rb.recipeVersion,
+        scopeRef: rb.scopeRef, workspaceRoot: env.host.storage },
+      evidenceRef: 'file:baseline#sha256:' + 'b'.repeat(64) }, rbVersion());
+    env.store.setState(rb.taskId, { step: 1, inputs: preparedInputs }, rbVersion());
+    env.store.stopRun(rb.taskId, 'waiting_analysis', 'repair_proposed', rbVersion());
+    const { analysisId } = env.store.reserveAnalysis(rb.taskId, rbVersion());
+    env.store.recordAnalysis(rb.taskId, analysisId, { status: 'proposed', repair: {
+      kind: 'rollback_to', checkpointId, compensationPlanId: null,
+      diagnosis: { location: 'output', cause: 'wrong_guess', evidenceRefs: [] }, requiresHumanReview: false,
+    } }, rbVersion());
+    // Only a read-only history needs no compensation, so this must be a direct restore.
+    const before = env.verified.length;
+    const result = await env.scheduler.repair(rb.taskId, analysisId, { authority: env.authority });
+    assert.equal(result.state.step, 0, 'The cursor must come back to the checkpoint.');
+    const events = env.store.readEvents(rb.taskId).map((event) => event.kind);
+    assert.ok(events.includes('checkpoint_restored'));
+    assert.equal(env.verified.length, before + 1, 'The restored state must be re-verified exactly once.');
+    const repair = env.store.getRepair(rb.taskId,
+      env.store.readEvents(rb.taskId).findLast((event) => event.kind === 'repair_started').payload.repairId);
+    assert.equal(repair.kind, 'rollback_to');
+    // A rollback settles as `restored`, not `settled`: it restores a cursor and produces no attempt of its own,
+    // so it must not borrow the status that requires a freshly verified attempt.
+    assert.equal(repair.status, 'restored');
+    assert.equal(repair.outcome.succeeded, true);
+  } finally { await env.close(); }
+});
+
+test('a restore whose re-verification fails is not reported as a completed rollback', async (t) => {
+  const env = await rollbackPipeline(t, { afterRestoreFailure: 'fail' });
+  try {
+    const rb = { ...env.task, taskId: randomUUID() };
+    const rbVersion = () => ({ expectedVersion: env.store.getRun(rb.taskId).version });
+    env.store.createRun(rb);
+    const preparedInputs = { inputFile: rb.inputs.inputFile, outputFile: rb.inputs.outputFile,
+      inputSha256: createHash('sha256').update(readFileSync(join(env.host.storage, rb.inputs.inputFile))).digest('hex') };
+    const { checkpointId } = env.store.recordCheckpoint(rb.taskId, { stepIndex: 0,
+      state: { step: 0, inputs: preparedInputs },
+      environment: { recipeId: rb.recipeId, recipeVersion: rb.recipeVersion,
+        scopeRef: rb.scopeRef, workspaceRoot: env.host.storage },
+      evidenceRef: 'file:baseline#sha256:' + 'b'.repeat(64) }, rbVersion());
+    // Produce one verified step so the forced failure applies to the verification that follows the restore.
+    const first = await env.store.reserveAttempt(rb.taskId, { candidateId: 'warmup',
+      toolName: 'runtime.write_json', arguments: { path: join(env.host.storage, 'output.json'),
+        content: '[]', createOnly: true },
+      preconditionIds: [...jsonNormalizeRecipe.requiredPreconditionIds],
+      postconditionIds: [...jsonNormalizeRecipe.postconditionIds], progressKey: 'cursor', effect: 'read',
+      source: { recipeId: rb.recipeId, version: rb.recipeVersion } }, rbVersion());
+    env.store.markStarted(rb.taskId, first.attemptId, rbVersion());
+    env.store.recordOutcome(rb.taskId, first.attemptId, { status: 'succeeded' },
+      { status: 'pass', progress: 'advanced', goalSatisfied: false, verifierId: 'json-source-output',
+        verifierVersion: '1', evidenceRefs: ['file:x.json#sha256:' + 'a'.repeat(64)] }, rbVersion());
+    env.store.setState(rb.taskId, { step: 1, inputs: preparedInputs }, rbVersion());
+    env.store.stopRun(rb.taskId, 'waiting_analysis', 'repair_proposed', rbVersion());
+    const { analysisId } = env.store.reserveAnalysis(rb.taskId, rbVersion());
+    env.store.recordAnalysis(rb.taskId, analysisId, { status: 'proposed', repair: {
+      kind: 'rollback_to', checkpointId, compensationPlanId: null,
+      diagnosis: { location: 'output', cause: 'wrong_guess', evidenceRefs: [] }, requiresHumanReview: false,
+    } }, rbVersion());
+    const result = await env.scheduler.repair(rb.taskId, analysisId, { authority: env.authority });
+    // The cursor is restored (the write happened), but a failed re-verification must not be sold as success.
+    assert.equal(result.state.step, 0);
+    const repair = env.store.getRepair(rb.taskId,
+      env.store.readEvents(rb.taskId).findLast((event) => event.kind === 'repair_started').payload.repairId);
+    assert.notEqual(repair.status, 'restored', 'An unverified restore must not borrow the restored status.');
+    assert.equal(repair.status, 'blocked');
+    assert.match(repair.outcome.reason, /^rollback_unverified:/);
+    assert.equal(env.verified.at(-1).status, 'fail', 'The forced failure must be the verdict that decided this.');
+  } finally { await env.close(); }
+});
+
+test('an irreversible effect recorded after the checkpoint refuses the rollback', async (t) => {
+  const env = await rollbackPipeline(t, { effect: 'irreversible' });
+  try {
+    // Build the scenario entirely through public store APIs on a fresh running run, so the "irreversible
+    // fact after the checkpoint" is ordinary recorded state rather than a fabricated row.
+    env.store.createRun(env.task);
+    const version = () => ({ expectedVersion: env.store.getRun(env.task.taskId).version });
+    const { checkpointId } = env.store.recordCheckpoint(env.task.taskId, { stepIndex: 0, state: { step: 0 },
+      environment: { recipeId: env.task.recipeId, recipeVersion: env.task.recipeVersion,
+        scopeRef: env.task.scopeRef, workspaceRoot: env.host.storage },
+      evidenceRef: 'file:baseline#sha256:' + 'b'.repeat(64) }, version());
+    // An attempt after the checkpoint that no compensation can undo.
+    const attempt = env.store.reserveAttempt(env.task.taskId, { candidateId: 'irreversible-step',
+      toolName: 'runtime.write_json', arguments: { path: join(env.host.storage, 'x.json'), content: '[]', createOnly: true },
+      preconditionIds: [...jsonNormalizeRecipe.requiredPreconditionIds],
+      postconditionIds: [...jsonNormalizeRecipe.postconditionIds], progressKey: 'cursor', effect: 'irreversible',
+      source: { recipeId: env.task.recipeId, version: env.task.recipeVersion } }, version());
+    env.store.markStarted(env.task.taskId, attempt.attemptId, version());
+    env.store.recordOutcome(env.task.taskId, attempt.attemptId, { status: 'succeeded' },
+      { status: 'pass', progress: 'advanced', goalSatisfied: false, verifierId: 'json-source-output',
+        verifierVersion: '1', evidenceRefs: ['file:x.json#sha256:' + 'a'.repeat(64)] }, version());
+    // Precondition: the store really does report the irreversible attempt as "after the checkpoint".
+    const since = env.store.readAttemptsAfter(env.task.taskId, checkpointId);
+    assert.deepEqual(since.map((item) => item.candidate.effect), ['irreversible']);
+    env.store.stopRun(env.task.taskId, 'waiting_analysis', 'repair_proposed', version());
+    const { analysisId } = env.store.reserveAnalysis(env.task.taskId, version());
+    env.store.recordAnalysis(env.task.taskId, analysisId, { status: 'proposed', repair: {
+      kind: 'rollback_to', checkpointId, compensationPlanId: null,
+      diagnosis: { location: 'output', cause: 'wrong_guess', evidenceRefs: [] }, requiresHumanReview: false,
+    } }, version());
+    const before = env.store.getRun(env.task.taskId).state;
+    await assert.rejects(env.scheduler.repair(env.task.taskId, analysisId, { authority: env.authority }),
+      { code: 'not_compensable' });
+    assert.deepEqual(env.store.getRun(env.task.taskId).state, before,
+      'A refused rollback must not partially restore the cursor.');
+    assert.ok(!env.store.readEvents(env.task.taskId).some((event) => event.kind === 'checkpoint_restored'));
   } finally { await env.close(); }
 });

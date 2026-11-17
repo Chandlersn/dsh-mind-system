@@ -7,7 +7,7 @@
 | 节点 | 当前状态 | 本轮证明 |
 | :--- | :--- | :--- |
 | DL-2.1 有界分析包、证据与Analyzer | 隔离已验 | 大字段引用与省略、严格修正联合、分析/取证预算、取消/超时、提议持久化、迟到隔离 |
-| DL-2.2 修正后的再次准入与执行 | 部分已验 | retry/abort/取证经原生策略再准入、公开宿主管线派发与原Verifier；第二次修复可从已核验owned替换延续上下文；回滚只到"检查点记录+规划+结算"契约，`rollback_to`提议尚未接入派发执行 |
+| DL-2.2 修正后的再次准入与执行 | 部分已验 | retry/abort/取证经原生策略再准入、公开宿主管线派发与原Verifier；第二次修复可从已核验owned替换延续上下文；回滚已接入`rollback_to`派发（恢复游标+重新验证+新终态`restored`），不可撤销副作用被拒 |
 | DL-2.3 任务内修正回写与失败上限 | 隔离已验 | 提议消费、意图与新attempt归属、结果记账；同一原生签名两次失败停止；有界修复历史经显式入口进入下一次候选，普通模板见修复记录即拒绝重发原动作；跨任务推广未做 |
 | DL-2.4 CLIS/meta选择性诊断 | 隔离已验 | 自解释错误与首次出现直接修；仅重复无进展才诊断；unknown不接受置信度、不被补成具体结构；每任务限次、坏答案转unavailable；诊断不解锁修复、未知停人工 |
 
@@ -117,10 +117,26 @@ node packages/dsh-execution-runtime/scripts/verify-repair-mutations.mjs
 
 **仍未完成**：`rollback_to`提议的派发执行（按恢复预留走补偿、把游标真正回退并再验证）。这属DL-2.2剩余，也仍是DR-11的最后一环。
 
-## 12. 下一步
+## 12. `rollback_to` 派发执行（DL-2.2 收尾）
 
-本文按轮次累积，§6的计数对应DL-2.1轮（310项）；最新整体口径见§11（419项）。
+上一轮我把DL-2.2写高了：回滚只有"记录+规划+结算"契约，调度器对`rollback_to`仍返回`repair_branch_unavailable`。本轮把派发补上，并让判定建立在**已记录事实**上，而不是提议自称安全。
 
-阶段2现状：DL-2.1/2.3/2.4隔离已验，**DL-2.2为部分已验**（剩`rollback_to`派发执行）。阶段4机制（DL-4.1–4.4）已完成。剩余：DL-5.1–5.3对照实验与部署演练（需真实任务与性能数据）、DL-3.4合成构建与发布守卫（本隔离树因行尾与gitignored运行依赖无法过守卫，需环境前置或用户授权）、真实Jev与推理提供者（需凭据）。
+三项关键设计：
+
+1. **可回滚性看已记录副作用**。检查点记录`attempt_floor`，`readAttemptsAfter`取出其后的尝试；任一未结算即拒绝（世界未知时不能覆盖），出现`irreversible`/`unknown`即拒绝。乐观地"相信提议"是这类功能最容易犯的错。
+2. **恢复是原子写**。`restoreCheckpoint`在单事务里校验同任务、检查点存在、无未结动作，然后写`state_json`并记`checkpoint_restored`事件。
+3. **新终态`restored`**。原`settled`分支强制要求"存在更新的同任务attempt"，而回滚是状态恢复、不产生attempt——直接复用会让结算被`invalid_repair_attempt`拒绝。加`restored`并同步三处（JS白名单、SQL CHECK、结算分支与下一状态），这是本项目已踩过的坑。
+
+过程如实记录：我最初在调度器里又`observe('checkpoint_restored')`一次，导致事件重复——`restoreCheckpoint`已记录。探针发现后删除重复。
+
+**未通过验证的回滚不得报成功**。最初我把验证失败写成`unknown`，但它要求run处于`reconciling`，实际是`running`，于是被拒并落到`blocked`；改为显式`rollback_unverified:<reason>`。这条对照很关键：变异`rollback_reported_without_reverification`第一次**存活**，说明我的测试只验了验证次数、没验"验证失败不得报restored"；补上强制失败对照后该变异被杀死。
+
+执行证据：整包425 tests / 425 pass；rollback套件13项；rollback变异12个全部杀死（8→12，新增`rollback_dispatch_not_wired`、`rollback_restores_without_writing`、`rollback_ignores_irreversible_effects`、`rollback_reported_without_reverification`）；repair6、recovery4、lease7、compensation7杀死数不变。
+
+## 13. 下一步
+
+本文按轮次累积，§6的计数对应DL-2.1轮（310项）；最新整体口径见§12（425项）。
+
+阶段2现状：DL-2.1–2.4**全部隔离已验**（DL-2.2的`rollback_to`派发见§12）。阶段4机制（DL-4.1–4.4）已完成。剩余：DL-5.1–5.3对照实验与部署演练（需真实任务与性能数据）、DL-3.4合成构建与发布守卫（本隔离树因行尾与gitignored运行依赖无法过守卫，需环境前置或用户授权）、真实Jev与推理提供者（需凭据）。
 
 关于DL-3.4的核对结论（本轮实测）：本工作树`core.autocrlf=true`导致签出为CRLF、改写规则按LF匹配；且合成包的一个运行依赖被gitignore、任何checkout都不会有。在LF干净导出下改写规则全部命中，但仍有19个产物文件与已提交指纹不符——原仓库构建时用到的部分输入未入库。**因此`verify-combined`在这份fork的隔离树里本就无法通过，属环境前置条件缺失，不是运行时代码缺陷。**要在隔离树跑通合成构建，需要先决定：统一行尾策略（加`.gitattributes`）并把运行依赖纳入构建管理或明确其来源。

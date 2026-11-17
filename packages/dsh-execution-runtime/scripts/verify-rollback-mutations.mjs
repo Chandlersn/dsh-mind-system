@@ -61,6 +61,23 @@ try {
       old: "        if (verification.status === 'pass' && verification.evidenceRefs.length) {",
       replacement: '        if (true) {',
       test: /not ok \d+ - a failed or unverified step records no checkpoint/ },
+    // The dispatch half: persisting a rollback must actually restore the cursor and re-verify it.
+    { name: 'rollback_dispatch_not_wired', file: 'src/scheduler.js',
+      old: "        if (!['retry_with', 'abort', 'gather_evidence', 'rollback_to'].includes(proposal.kind)) fail('repair_branch_unavailable', 'This repair branch requires its dedicated native controller.');",
+      replacement: "        if (!['retry_with', 'abort', 'gather_evidence'].includes(proposal.kind)) fail('repair_branch_unavailable', 'This repair branch requires its dedicated native controller.');",
+      test: /not ok \d+ - a persisted rollback_to proposal restores the recorded cursor/ },
+    { name: 'rollback_restores_without_writing', file: 'src/store.js',
+      old: '        .run(JSON.stringify(checkpoint.state), this.#now(), taskId);',
+      replacement: '        .run(JSON.stringify(this.getRun(taskId).state), this.#now(), taskId);',
+      test: /not ok \d+ - a persisted rollback_to proposal restores the recorded cursor/ },
+    { name: 'rollback_ignores_irreversible_effects', file: 'src/scheduler.js',
+      old: "          const blockers = [...new Set(effects.filter((effect) => !['read', 'reversible_write'].includes(effect)))];",
+      replacement: '          const blockers = [];',
+      test: /not ok \d+ - an irreversible effect recorded after the checkpoint refuses/ },
+    { name: 'rollback_reported_without_reverification', file: 'src/scheduler.js',
+      old: "        this.#store.finishRepair(task.taskId, repairId, verification.status === 'pass' && settled.completed",
+      replacement: '        this.#store.finishRepair(task.taskId, repairId, settled.completed',
+      test: /not ok \d+ - a restore whose re-verification fails/ },
   ];
   const observed = [];
   for (const mutant of mutants) {
