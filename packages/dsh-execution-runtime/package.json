@@ -16,7 +16,8 @@
     "./scheduler": "./src/scheduler.js",
     "./analyzer": "./src/analyzer.js",
     "./exceptions": "./src/exceptions.js",
-    "./probes": "./src/probes.js"
+    "./probes": "./src/probes.js",
+    "./compensation": "./src/compensation.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
@@ -26,6 +27,7 @@
     "verify:repair": "node scripts/verify-repair-mutations.mjs",
     "verify:recovery": "node scripts/verify-recovery-mutations.mjs",
     "verify:lease": "node scripts/verify-lease-mutations.mjs",
+    "verify:compensation": "node scripts/verify-compensation-mutations.mjs",
     "probe:jev": "node scripts/probe-jev.mjs"
   }
 }

@@ -106,6 +106,13 @@ export class RuntimeStore {
         task_id TEXT NOT NULL REFERENCES runs(task_id), signature TEXT NOT NULL,
         failures INTEGER NOT NULL CHECK(failures >= 0), PRIMARY KEY(task_id, signature)
       );
+      CREATE TABLE IF NOT EXISTS compensations (
+        compensation_id TEXT PRIMARY KEY NOT NULL,
+        task_id TEXT NOT NULL REFERENCES runs(task_id),
+        source_attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+        status TEXT NOT NULL CHECK(status IN ('completed', 'unverified', 'diverged', 'unsupported')),
+        plan_json TEXT NOT NULL, evidence_ref TEXT, created_at INTEGER NOT NULL
+      );
       CREATE TRIGGER IF NOT EXISTS analyses_result_immutable BEFORE UPDATE ON analyses
         WHEN OLD.result_json IS NOT NULL AND
           (NEW.result_json IS NOT OLD.result_json OR NEW.status IS NOT OLD.status)
@@ -503,6 +510,57 @@ export class RuntimeStore {
       this.#event(taskId, null, 'run_resumed', { fence: row.fence + 1 });
       return this.getRun(taskId);
     });
+  }
+
+  /** Record one compensation attempt against a settled business attempt. */
+  recordCompensation(taskId, input, { expectedVersion } = {}) {
+    const plan = storageSnapshot(input?.plan);
+    if (!plan || typeof plan !== 'object' || Array.isArray(plan)) throw error('invalid_compensation', 'A plan is required.');
+    if (!['completed', 'unverified', 'diverged', 'unsupported'].includes(input.status)) {
+      throw error('invalid_compensation', 'Compensation needs an explicit outcome status.');
+    }
+    if (input.status === 'completed' && input.verifiedByTarget !== true) {
+      throw error('invalid_compensation', 'A completed compensation requires an observed target fact.');
+    }
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      const attempt = this.#db.prepare('SELECT * FROM attempts WHERE task_id = ? AND attempt_id = ?')
+        .get(taskId, plan.sourceAttemptId);
+      if (!attempt || attempt.status !== 'settled') {
+        throw error('invalid_compensation', 'Compensation requires a settled source attempt.');
+      }
+      const completed = input.status === 'completed';
+      this.#db.prepare(`INSERT INTO compensations (compensation_id, task_id, source_attempt_id, status,
+        plan_json, evidence_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(plan.compensationId, taskId, plan.sourceAttemptId, input.status, JSON.stringify(plan),
+          input.evidenceRef ?? null, this.#now());
+      // A rollback is only "done" when the target fact says so; anything else stays open for the caller.
+      const nextStatus = completed ? row.status : row.status === 'running' ? 'waiting_human' : row.status;
+      const nextReason = completed ? row.reason : input.status === 'unsupported' ? 'compensation_unsupported' : 'compensation_unresolved';
+      this.#db.prepare('UPDATE runs SET status = ?, reason = ?, version = version + 1, updated_at = ? WHERE task_id = ?')
+        .run(nextStatus, nextReason, this.#now(), taskId);
+      this.#event(taskId, plan.sourceAttemptId, 'compensation_recorded',
+        { compensationId: plan.compensationId, status: input.status, evidenceRef: input.evidenceRef ?? null });
+      return { compensation: this.getCompensation(taskId, plan.compensationId), run: this.getRun(taskId) };
+    });
+  }
+
+  getCompensation(taskId, compensationId) {
+    this.#row(taskId);
+    requireString(compensationId, 'compensationId');
+    const row = this.#db.prepare('SELECT * FROM compensations WHERE task_id = ? AND compensation_id = ?')
+      .get(taskId, compensationId);
+    return row ? { compensationId: row.compensation_id, sourceAttemptId: row.source_attempt_id,
+      status: row.status, plan: JSON.parse(row.plan_json), evidenceRef: row.evidence_ref,
+      createdAt: row.created_at } : null;
+  }
+
+  listCompensations(taskId) {
+    this.#row(taskId);
+    return this.#db.prepare('SELECT * FROM compensations WHERE task_id = ? ORDER BY rowid')
+      .all(taskId).map((row) => ({ compensationId: row.compensation_id, sourceAttemptId: row.source_attempt_id,
+        status: row.status, evidenceRef: row.evidence_ref, createdAt: row.created_at }));
   }
 
   /** Freeze unfinished work; this does not prove the previous owner is dead. */

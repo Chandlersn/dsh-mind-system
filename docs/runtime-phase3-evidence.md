@@ -6,7 +6,7 @@
 
 | 节点 | 当前状态 | 本轮证明 |
 | :--- | :--- | :--- |
-| DL-3.1 恢复、幂等与补偿 | 部分已验 | 未知副作用冻结、逐条外部核对、核对不冒充目标验证、按工具+键的幂等守卫；补偿计划未做 |
+| DL-3.1 恢复、幂等与补偿 | 隔离已验 | 未知副作用冻结、逐条外部核对、核对不冒充目标验证、按工具+键的幂等守卫；补偿计划需目标事实、拒绝不可逆、失败不冒充已回滚 |
 | DL-3.2 pause/resume/cancel与单写者 | 隔离已验 | 租约与fence拦截旧owner的派发与结算；暂停清owner并推进fence；重复resume被拒；越截止拒绝恢复；模板/范围/工作区/工具集变更拒绝盲恢复 |
 | DL-3.3 任务级工具与健康接口 | 未做 | 包仍是`private`库，不是已装载插件 |
 | DL-3.4 合成构建与隔离加载 | 未做 | 未触碰合成成员与活动junction |
@@ -33,7 +33,17 @@
 
 测试写法也有教训：先只断言`idempotencyClaimed`的查询结果，变异"删掉守卫"不会被抓住。改成构造"验证通过但目标未完"的运行态、真正调用`reserveAttempt`并断言`idempotency_conflict`后，该变异才被杀死。**只查辅助函数不证明守卫在链路上生效。**
 
-## 4. 单写者、暂停与恢复
+## 4. 补偿不是回滚标志
+
+补偿契约要求计划恰好声明补偿ID、目标工具与参数、来源动作、`expectedBeforeSha256`、`expectedAfterSha256`与`reason: 'restore_prior_version'`；前后版本必须是**不同**的真实哈希，任何多余字段被拒。`irreversible`与`unknown`效应直接判为不可补偿——不可逆或未知副作用不能被自动"撤回"。只读动作没有需要补偿的状态，注册接口也只接受`reversible_write`。
+
+完成判定不靠布尔值：`assessCompensation`同时要求登记的Verifier通过、带证据引用、且**观察到的目标哈希等于计划中的目标版本**。三者缺一返回`unverified`或`diverged`。存储层再加一道：`recordCompensation`在写库前要求`status:'completed'`必须带`verifiedByTarget`；完成后运行状态保持原样，不因为"补偿完成"就把目标标成达成。失败、分歧、不支持会让`running`进入`waiting_human`，保留未决而不冒充"已回滚"。
+
+字节级用例覆盖：缺目标事实、目标哈希偏离、验证失败、缺证据、重定向到别的工具（同参数形状下仅工具身份不同）、来源动作未结算。变异证明这些闸门都在链路上：删除目标事实比对、允许不可逆补偿、删除工具身份检查、允许无事实写完成、让失败补偿返回完成，五个变异全部被指定断言杀死。
+
+其中两次变异最初没被杀死，原因都是**测试没走到目标分支**：重定向用例先被参数形状检查拦下，失败补偿用例的运行态已不是`running`。补上"同参数形状不同工具"与"验证通过但目标未完"的用例后，变异才被检出——这与上一轮幂等守卫的教训一致：断言必须落在真正执行该分支的路径上。
+
+## 5. 单写者、暂停与恢复
 
 租约每次授予都把`fence`加一，旧持有者即使仍在运行也不再是写者。`reserveAttempt`、`markStarted`、`recordOutcome`在事务内校验fence，不一致即`stale_owner`；因此"以为自己是写者"的旧worker既不能派发也不能结算。同一未过期租约不能重复获取，过期后同owner重取得到更大fence；fence与owner持久化，进程重启不能凭旧状态绕过（重开数据库的用例验证了owner与fence都还在）。
 
@@ -41,10 +51,11 @@
 
 `pauseRun`要求先结清或核对未结动作（未知副作用不允许被暂停悄悄掩盖），暂停时fence加一并清空owner，所以发起暂停的一方随即失去写权；同时记录暂停时的模板与授权快照。暂停只阻止新派发，不宣称杀死在途工具。`resumeRun`只接受`paused`，并要求提交当前快照逐项比对：模板版本、范围、工作区或工具集任一变化即拒绝，不做盲恢复。恢复时fence再加一；对`running`重复resume被拒，因此不能靠重复恢复撑开双写窗口；暂停期间越过截止直接拒绝恢复。
 
-## 5. 执行的检查
+## 6. 执行的检查
 
 ```powershell
 node --test packages/dsh-execution-runtime/test/*.test.js
+node packages/dsh-execution-runtime/scripts/verify-compensation-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-lease-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-recovery-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-repair-mutations.mjs
@@ -53,10 +64,10 @@ node packages/dsh-execution-runtime/scripts/verify-core-mutations.mjs
 node packages/dsh-execution-runtime/scripts/verify-phase1-mutations.mjs
 ```
 
-整包329 tests / 329 pass / 0 fail / 0 skipped，退出码0：阶段1既有171，加Analyzer17、分析存储24、异常协调器13、JSON修复策略47、修复管线19、修复存储12、取证探针7、恢复与幂等7、租约与暂停12。
+整包337 tests / 337 pass / 0 fail / 0 skipped，退出码0：阶段1既有171，加Analyzer17、分析存储24、异常协调器13、JSON修复策略47、修复管线19、修复存储12、取证探针7、恢复与幂等7、租约与暂停12、补偿契约8。
 
-恢复变异4个、租约与暂停变异7个全部由指定断言检出：未知副作用不冻结、核对冒充目标成功、幂等守卫被删、核对缺少外部证据；fence校验被删、租约复用fence、暂停允许未结动作、resume不推进fence、resume忽略截止、调度器忽略fence、resume忽略环境变更。前序6个修复变异、4个分析变异、4个核心变异与阶段1的9个同轮复跑仍全部命中。
+补偿变异5个、恢复变异4个、租约与暂停变异7个全部由指定断言检出：无目标事实仍记完成、允许不可逆补偿、计划重定向工具、无事实写完成、失败补偿返回完成；未知副作用不冻结、核对冒充目标成功、幂等守卫被删、核对缺少外部证据；fence校验被删、租约复用fence、暂停允许未结动作、resume不推进fence、resume忽略截止、调度器忽略fence、resume忽略环境变更。前序6个修复变异、4个分析变异、4个核心变异与阶段1的9个同轮复跑仍全部命中。
 
-## 6. 下一步
+## 7. 下一步
 
-DL-3.1剩余：显式、有界、可审计的补偿契约，而不是自动回滚。之后是DL-3.3插件装载与DL-3.4合成构建；真实Jev、推理提供者、生产装配与跨任务推广均未验收。
+DL-3.3：把运行时注册为真Cordis插件（任务级工具、状态与健康接口），验证原生scope下的执行/拒绝/取消，且关闭插件不影响原有五成员。DL-3.4：接合成构建与隔离加载，源/产物一致与发布守卫通过。真实Jev、推理提供者、生产装配与跨任务推广均未验收。

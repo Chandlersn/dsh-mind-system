@@ -96,6 +96,18 @@ node scripts/verify-recovery-mutations.mjs
 
 `RuntimeScheduler.run`在创建或取得run后立即申请租约，并把fence带入其后所有写入；有反例证明：工具执行中途被新worker接管时，旧调度器的结算会被`stale_owner`拒绝，被接管的attempt保持未结，留给新owner核对。
 
+## 补偿契约
+
+补偿不是"回滚标志"，而是一次有明确前后版本、有目标事实的独立动作。`validateCompensationPlan`要求恰好声明补偿ID、目标工具与参数、来源动作、`expectedBeforeSha256`、`expectedAfterSha256`与`reason: 'restore_prior_version'`；前后版本必须不同且是真实哈希，多余字段一律拒绝。
+
+`assessCompensation`只在同时满足三条时才认可完成：登记的Verifier判定通过、带证据引用、并且观察到的目标哈希等于计划中的`expectedAfterSha256`。任一不满足返回`unverified`或`diverged`，不冒充"已回滚"。
+
+`assertCompensationSupported`对`irreversible`与`unknown`效应直接拒绝：不可逆或未知副作用不能自动补偿。只读动作没有需要补偿的状态，`registerCompensation`也只接受`reversible_write`。
+
+`RuntimeStore.recordCompensation`要求来源动作已结算；`status:'completed'`必须同时给出`verifiedByTarget`，否则在写库前被拒。完成时运行状态保持原样（不因补偿完成就把目标标成完成），失败/分歧/不支持则让`running`进入`waiting_human`。事件`compensation_recorded`只记录计划ID、状态与证据引用。
+
+JSON模板提供`buildJsonCompensation`：从原Verifier观察到的版本与先前版本构造恢复计划，不接受模型自报的前后哈希。
+
 ## 持久化与授权边界
 
 当前使用Node.js内建`node:sqlite`；本机Node v22.23.3仍将该API标记为实验性。原型验证不等于生产驱动选型已完成。事件不可改限制来自SQLite触发器，不能防御拥有数据库文件写权限的外部进程。
