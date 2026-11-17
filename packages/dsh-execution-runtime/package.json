@@ -19,7 +19,9 @@
     "./probes": "./src/probes.js",
     "./compensation": "./src/compensation.js",
     "./plugin": "./src/plugin.js",
-    "./repair-patterns": "./src/repair-patterns.js"
+    "./repair-patterns": "./src/repair-patterns.js",
+    "./pattern-approval": "./src/pattern-approval.js",
+    "./valve-bridge": "./src/valve-bridge.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
@@ -32,6 +34,7 @@
     "verify:compensation": "node scripts/verify-compensation-mutations.mjs",
     "verify:plugin": "node scripts/verify-plugin-mutations.mjs",
     "verify:patterns": "node scripts/verify-pattern-mutations.mjs",
+    "verify:approval": "node scripts/verify-approval-mutations.mjs",
     "probe:jev": "node scripts/probe-jev.mjs"
   }
 }

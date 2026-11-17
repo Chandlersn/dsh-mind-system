@@ -135,6 +135,20 @@ JSON模板提供`buildJsonCompensation`：从原Verifier观察到的版本与先
 
 `buildPatternCandidates`只产出**候选**：`activatable:false`且附注说明"候选不是生效规则"。它不写任何规则库，推广仍需人工评审（DL-4.2）。
 
+## 人工确认与阀门写入
+
+`patternVersionOf`把模式的**含义**哈希成一个版本：身份、陈述、负向类型、关键词集合、范围。改关键词顺序不算改版，换一个关键词就算——这样"评审过的内容"与"真正生效的内容"始终是同一样东西。
+
+流程是三段式，任何一段缺失都不生效：
+
+1. `proposeApproval`只接受`activatable:false`的候选，产出一条`pending`请求，带版本与过期时间。请求本身**不能授权任何事**。
+2. `confirmApproval`要求显式的`human:true`——分析结果、候选字段、`'yes'`字符串都不算；并且必须提交与被评审请求**相同的版本**，版本不符直接拒。
+3. `approvalApplies`在生效时再核一次：状态为`confirmed`、未过期、且当前模式的版本仍等于批准版本。模式被编辑后旧批准自动失效（`pattern_version_changed`），不会"批准一次永远有效"。
+
+`revokeApproval`保留审计痕迹（`reviewTicket`不删），撤销后`approvalApplies`返回`not_confirmed`。`rejectBorrowedTicket`拒绝携带`reviewTicket`/`approvalId`/`permit`/`confirmedBy`的候选——票只能来自人工确认，不能夹带。
+
+`createValveWriter({confirmRule})`把已批准模式交给宿主阀门写入：调用前先验批准有效性，调用时**不传`human`也不传`permit`**，所以运行时无法自己签票；阀门若拒绝或抛错，一律变成失败而不是静默成功。既有阀门的许可只绑定`ruleId`、不绑版本，因此版本绑定由本层补齐，并把`patternVersion`随写入一起交给宿主。
+
 ## 持久化与授权边界
 
 当前使用Node.js内建`node:sqlite`；本机Node v22.23.3仍将该API标记为实验性。原型验证不等于生产驱动选型已完成。事件不可改限制来自SQLite触发器，不能防御拥有数据库文件写权限的外部进程。
