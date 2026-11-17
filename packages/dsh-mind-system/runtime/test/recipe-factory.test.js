@@ -187,6 +187,100 @@ test('a multi-step recipe may not nest steps or hide extra fields', async (t) =>
   } finally { await env.close(); }
 });
 
+test('a declared branch sends the run down the path the workspace state implies', async (t) => {
+  const env = await pipeline(t);
+  try {
+    // Step one writes a marker, then branches: if the marker exists go to "finish", otherwise "retry".
+    // The test drives both arms from the same recipe, so the branch — not the fixture — decides.
+    const build = (recipeId) => env.registry.generate({
+      recipeId, tool: 'runtime.write_text', effect: 'reversible_write',
+      verifier: { primitive: 'line_set', parameters: { expectedLines: ['done'] } },
+      steps: [
+        { id: 'seed', tool: 'runtime.write_text', effect: 'reversible_write',
+          verifier: { primitive: 'line_set', parameters: { expectedLines: ['seed'], targetFile: 'marker.txt' } },
+          arguments: { path: '{{workspaceRoot}}/marker.txt', content: 'seed\n', createOnly: true },
+          next: [{ when: { kind: 'file_exists', parameters: { file: 'marker.txt' } }, goto: 'finish' },
+            { goto: 'unused' }] },
+        { id: 'unused', tool: 'runtime.write_text', effect: 'reversible_write',
+          verifier: { primitive: 'line_set', parameters: { expectedLines: ['never'], targetFile: 'unused.txt' } },
+          arguments: { path: '{{workspaceRoot}}/unused.txt', content: 'never\n', createOnly: true } },
+        { id: 'finish', tool: 'runtime.write_text', effect: 'reversible_write',
+          verifier: { primitive: 'line_set', parameters: { expectedLines: ['done'], targetFile: 'output.txt' } },
+          arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'done\n', createOnly: true } },
+      ],
+    }, { toolEffects: env.toolEffects });
+    build('gen-branch');
+    const task = { taskId: randomUUID(), recipeId: 'gen-branch', recipeVersion: '1',
+      goal: 'Write the marker then finish through the branch.', scopeRef: env.authority.scopeRef,
+      workspaceRoot: env.host.storage, inputs: { inputFile: 'input.txt', outputFile: 'output.txt' },
+      deadlineAt: Date.now() + 60_000 };
+    const run = await schedulerFor(env).run(task, { authority: env.authority });
+    assert.equal(run.status, 'completed', JSON.stringify({ status: run.status, reason: run.reason }));
+    // The branch was taken: only two attempts, and the skipped step never wrote its file.
+    assert.equal(run.budgetUsage.attempts, 2);
+    // The persisted trail shows the hop, which is how a later review can tell why it went that way.
+    assert.deepEqual(run.state.branchTrail.map((hop) => `${hop.from}->${hop.to}`), ['seed->finish', 'finish->null']);
+    assert.equal(readFileSync(join(env.host.storage, 'output.txt'), 'utf8'), 'done\n');
+    assert.throws(() => readFileSync(join(env.host.storage, 'unused.txt')), { code: 'ENOENT' },
+      'The branch that was not taken must not have run.');
+  } finally { await env.close(); }
+});
+
+test('a branch to a step that was never declared is refused at registration', async (t) => {
+  const env = await pipeline(t);
+  try {
+    assert.throws(() => env.registry.generate({
+      recipeId: 'gen-dangling', tool: 'runtime.write_text', effect: 'reversible_write',
+      verifier: { primitive: 'line_set', parameters: { expectedLines: ['a'] } },
+      steps: [{ id: 'only', tool: 'runtime.write_text', effect: 'reversible_write',
+        verifier: { primitive: 'line_set', parameters: { expectedLines: ['a'] } },
+        arguments: {}, next: [{ goto: 'nowhere' }] }],
+    }, { toolEffects: env.toolEffects }), { code: 'invalid_recipe_spec' });
+    // An unknown condition kind must also fail here, not mid-run.
+    assert.throws(() => env.registry.generate({
+      recipeId: 'gen-unknown-condition', tool: 'runtime.write_text', effect: 'reversible_write',
+      verifier: { primitive: 'line_set', parameters: { expectedLines: ['a'] } },
+      steps: [{ id: 'only', tool: 'runtime.write_text', effect: 'reversible_write',
+        verifier: { primitive: 'line_set', parameters: { expectedLines: ['a'] } },
+        arguments: {}, next: [{ when: { kind: 'invented' }, goto: 'only' }] }],
+    }, { toolEffects: env.toolEffects }), { code: 'invalid_condition' });
+  } finally { await env.close(); }
+});
+
+test('a branch whose condition is false takes the fallback instead', async (t) => {
+  const env = await pipeline(t);
+  try {
+    // The condition watches a file that never exists, so a correct run must fall through to `other`.
+    // Without this contrast, a matcher that assumed every condition true would pass the positive test too.
+    env.registry.generate({
+      recipeId: 'gen-false-branch', tool: 'runtime.write_text', effect: 'reversible_write',
+      verifier: { primitive: 'line_set', parameters: { expectedLines: ['other'], targetFile: 'other.txt' } },
+      steps: [
+        { id: 'seed', tool: 'runtime.write_text', effect: 'reversible_write',
+          verifier: { primitive: 'line_set', parameters: { expectedLines: ['seed'], targetFile: 'marker.txt' } },
+          arguments: { path: '{{workspaceRoot}}/marker.txt', content: 'seed\n', createOnly: true },
+          next: [{ when: { kind: 'file_exists', parameters: { file: 'absent.txt' } }, goto: 'never' },
+            { goto: 'other' }] },
+        { id: 'never', tool: 'runtime.write_text', effect: 'reversible_write',
+          verifier: { primitive: 'line_set', parameters: { expectedLines: ['never'], targetFile: 'never.txt' } },
+          arguments: { path: '{{workspaceRoot}}/never.txt', content: 'never\n', createOnly: true } },
+        { id: 'other', tool: 'runtime.write_text', effect: 'reversible_write',
+          verifier: { primitive: 'line_set', parameters: { expectedLines: ['other'], targetFile: 'other.txt' } },
+          arguments: { path: '{{workspaceRoot}}/other.txt', content: 'other\n', createOnly: true } },
+      ],
+    }, { toolEffects: env.toolEffects });
+    const task = { taskId: randomUUID(), recipeId: 'gen-false-branch', recipeVersion: '1',
+      goal: 'Follow the fallback path.', scopeRef: env.authority.scopeRef,
+      workspaceRoot: env.host.storage, inputs: { inputFile: 'input.txt', outputFile: 'output.txt' },
+      deadlineAt: Date.now() + 60_000 };
+    const run = await schedulerFor(env).run(task, { authority: env.authority });
+    assert.equal(run.status, 'completed', JSON.stringify({ status: run.status, reason: run.reason }));
+    assert.equal(run.state.branchTrail[0].to, 'other', 'A false condition must not select its target.');
+    assert.equal(readFileSync(join(env.host.storage, 'other.txt'), 'utf8'), 'other\n');
+    assert.throws(() => readFileSync(join(env.host.storage, 'never.txt')), { code: 'ENOENT' });
+  } finally { await env.close(); }
+});
+
 test('two different tasks can share one generated recipe with different placeholders', async (t) => {
   const env = await pipeline(t);
   try {

@@ -127,5 +127,40 @@ test('the verifier vocabulary is discoverable before a task is described', async
     const names = result.value.primitives.map((item) => item.name);
     assert.deepEqual(names, ['exact_bytes', 'line_set', 'structure']);
     assert.ok(result.value.primitives.every((item) => typeof item.describe === 'string'));
+    // Branching is part of the same closed vocabulary, so it must be discoverable too.
+    assert.deepEqual(result.value.conditions.map((item) => item.kind),
+      ['file_exists', 'file_sha256', 'step_less_than', 'always']);
+    assert.match(result.value.steps, /steps\[\]/);
+  });
+});
+
+test('a multi-step task with a branch runs through the dynamic tool', async (t) => {
+  await withRuntime(t, async (host) => {
+    const agent = await host.agent('dynamic-caller');
+    const result = await host.execute('runtime_execute', { agent, arguments: {
+      taskId: randomUUID(),
+      goal: 'Write a marker, then follow whichever branch the workspace implies.',
+      recipe: { recipeId: 'branching-task', tool: 'runtime.write_text', effect: 'reversible_write',
+        verifier: { primitive: 'line_set', parameters: { expectedLines: ['final'], targetFile: 'output.txt' } },
+        steps: [
+          { id: 'seed', tool: 'runtime.write_text', effect: 'reversible_write',
+            verifier: { primitive: 'line_set', parameters: { expectedLines: ['seed'], targetFile: 'marker.txt' } },
+            arguments: { path: '{{workspaceRoot}}/marker.txt', content: 'seed\n', createOnly: true },
+            next: [{ when: { kind: 'file_exists', parameters: { file: 'marker.txt' } }, goto: 'final' }] },
+          { id: 'skipped', tool: 'runtime.write_text', effect: 'reversible_write',
+            verifier: { primitive: 'line_set', parameters: { expectedLines: ['skipped'], targetFile: 'skipped.txt' } },
+            arguments: { path: '{{workspaceRoot}}/skipped.txt', content: 'skipped\n', createOnly: true } },
+          { id: 'final', tool: 'runtime.write_text', effect: 'reversible_write',
+            verifier: { primitive: 'line_set', parameters: { expectedLines: ['final'], targetFile: 'output.txt' } },
+            arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'final\n', createOnly: true } },
+        ] },
+      inputs: { inputFile: 'input.txt', outputFile: 'output.txt' },
+    } });
+    assert.equal(result.isError, false, JSON.stringify(result.content));
+    assert.equal(result.value.status, 'completed', JSON.stringify(result.value));
+    // The branch skipped a step: two attempts, and the skipped artifact is absent.
+    assert.equal(result.value.budgetUsage.attempts, 2);
+    assert.equal(readFileSync(join(host.storage, 'output.txt'), 'utf8'), 'final\n');
+    assert.throws(() => readFileSync(join(host.storage, 'skipped.txt')), { code: 'ENOENT' });
   });
 });

@@ -63,8 +63,8 @@ try {
       test: /not ok \d+ - a generated recipe whose output does not satisfy/ },
     // The primitives must be discoverable, since a caller is expected to choose one.
     { name: 'primitives_not_listed', file: 'src/dynamic-tools.js',
-      old: '  async execute() { return { primitives: describePrimitives() }; },',
-      replacement: '  async execute() { return { primitives: [] }; },',
+      old: '    return { primitives: describePrimitives(), conditions: describeConditions(),',
+      replacement: '    return { primitives: [], conditions: [],',
       test: /not ok \d+ - the verifier vocabulary is discoverable/ },
     // An intermediate step satisfying itself is not the task being done; claiming the goal would end the
     // run after step one.
@@ -77,6 +77,20 @@ try {
       old: '      const paths = resolvePaths(task, state, parameters?.targetFile ?? null);',
       replacement: '      const paths = resolvePaths(task, state, null);',
       test: /not ok \d+ - a multi-step recipe advances through its steps/ },
+    // A declared branch must actually change the path taken; ignoring it silently runs every step.
+    { name: 'branch_target_ignored', file: 'src/recipe-factory.js',
+      old: '        const nextIndex = chosen === null ? cursor + 1 : indexOfStep(chosen);',
+      replacement: '        const nextIndex = cursor + 1;',
+      test: /not ok \d+ - a declared branch sends the run down the path/ },
+    // Conditions must be evaluated, not assumed true.
+    { name: 'condition_always_true', file: 'src/recipe-factory.js',
+      old: '    if (rule.when.evaluate(context)) return rule.goto;',
+      replacement: '    if (true) return rule.goto;',
+      test: /not ok \d+ - a branch whose condition is false/ },
+    { name: 'dangling_branch_accepted', file: 'src/recipe-factory.js',
+      old: '        if (!ids.includes(rule.goto)) {',
+      replacement: '        if (false) {',
+      test: /not ok \d+ - a branch to a step that was never declared/ },
   ];
   const observed = [];
   for (const mutant of mutants) {

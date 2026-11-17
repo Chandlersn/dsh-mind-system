@@ -32,7 +32,8 @@
     "./host-plugin": "./src/host-plugin.js",
     "./recipe-factory": "./src/recipe-factory.js",
     "./verifier-primitives": "./src/verifier-primitives.js",
-    "./dynamic-tools": "./src/dynamic-tools.js"
+    "./dynamic-tools": "./src/dynamic-tools.js",
+    "./condition-primitives": "./src/condition-primitives.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",

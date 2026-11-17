@@ -805,7 +805,7 @@
     },
     "runtime/package.json": {
       "source": "dsh-execution-runtime/package.json",
-      "sha256": "99fb0f23ee05a2e0c4df47ef7b06c638509e000f522b6a8608bf67cea6dcd43b"
+      "sha256": "a97af96f7a34744f5d0984f5bbcbea3c437af65c780dfa5d33277bdfc2e96344"
     },
     "runtime/recipes/csv-normalize.js": {
       "source": "dsh-execution-runtime/recipes/csv-normalize.js",
@@ -849,7 +849,7 @@
     },
     "runtime/scripts/verify-dynamic-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-dynamic-mutations.mjs",
-      "sha256": "eeb9886e2b7c27d06dfa408f2b6c9b1477a8b5c80cd7ae8b809229c092afadc9"
+      "sha256": "3ebc0a74549178f761277f2fb9a6fc0b3842629d09b78ac0b8888a7537328dd3"
     },
     "runtime/scripts/verify-hit-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-hit-mutations.mjs",
@@ -903,6 +903,10 @@
       "source": "dsh-execution-runtime/src/compensation.js",
       "sha256": "2e2f3e509ba5587b724633426607389026fd9a3689da519683837741b8187f96"
     },
+    "runtime/src/condition-primitives.js": {
+      "source": "dsh-execution-runtime/src/condition-primitives.js",
+      "sha256": "cab371048624a4279da88aa48922cdb4043e5934bfcc7ab3800dd4d402785e09"
+    },
     "runtime/src/contracts.js": {
       "source": "dsh-execution-runtime/src/contracts.js",
       "sha256": "42b552a3e84ec833d8760899ed23e0859ea966c18c5e66a6d16bbf2368524da6"
@@ -917,7 +921,7 @@
     },
     "runtime/src/dynamic-tools.js": {
       "source": "dsh-execution-runtime/src/dynamic-tools.js",
-      "sha256": "b8cc9de3d50728f7f75a55063fb4c62fd00a85fe054491d62d011d0eeaff9c35"
+      "sha256": "f2dbde52e30d8c0b2335d80ad22ff1599eff6cada6bc595c4d94b73b9a7a5f34"
     },
     "runtime/src/exceptions.js": {
       "source": "dsh-execution-runtime/src/exceptions.js",
@@ -957,7 +961,7 @@
     },
     "runtime/src/recipe-factory.js": {
       "source": "dsh-execution-runtime/src/recipe-factory.js",
-      "sha256": "f3ae8d54b0435690ae773ac72971fac848e2bab09486ca8036b1b73cbe20e814"
+      "sha256": "0b3a50d950f3815129fe40b1b4c03df78aa6a9a204ed35bb4f84874b786c2c26"
     },
     "runtime/src/repair-patterns.js": {
       "source": "dsh-execution-runtime/src/repair-patterns.js",
@@ -1013,7 +1017,7 @@
     },
     "runtime/test/dynamic-task.test.js": {
       "source": "dsh-execution-runtime/test/dynamic-task.test.js",
-      "sha256": "0e244b608f38b2af505a72a3bd6e5296a9af0943b35e5c383d3d003020a5ea91"
+      "sha256": "41887f7ca696520454032bcd8096c8627d33e8a4043a9b830e975bb01486107e"
     },
     "runtime/test/exceptions.test.js": {
       "source": "dsh-execution-runtime/test/exceptions.test.js",
@@ -1085,7 +1089,7 @@
     },
     "runtime/test/recipe-factory.test.js": {
       "source": "dsh-execution-runtime/test/recipe-factory.test.js",
-      "sha256": "b4febe182293123bf551cbd465ef2cc75d01b6b54c8604edd5e8fdabbf8e11e4"
+      "sha256": "5d8dfa3e7ca151153a29f83d95781162e8265ec1c73133b8ec5abea6791bdf30"
     },
     "runtime/test/recovery.test.js": {
       "source": "dsh-execution-runtime/test/recovery.test.js",

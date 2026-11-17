@@ -1,5 +1,8 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { RuntimeContractError, requireString } from './contracts.js';
 import { buildVerifier, VERIFIER_PRIMITIVES } from './verifier-primitives.js';
+import { buildCondition, CONDITION_KINDS } from './condition-primitives.js';
 
 /**
  * Recipe factory: turn a task specification into a runnable recipe.
@@ -74,7 +77,7 @@ function validateSpec(input) {
       if (step.steps !== undefined) {
         fail('invalid_recipe_spec', 'steps may not nest: a step is a single action.');
       }
-      const allowed = ['id', 'tool', 'effect', 'arguments', 'verifier', 'description'];
+      const allowed = ['id', 'tool', 'effect', 'arguments', 'verifier', 'description', 'next'];
       for (const key of Object.keys(step)) {
         if (!allowed.includes(key)) fail('invalid_recipe_spec', `Unknown step field at ${index}: ${key}.`);
       }
@@ -84,6 +87,37 @@ function validateSpec(input) {
       }
       if (!verifierSpecOf(step.verifier)) {
         fail('invalid_recipe_spec', `steps[${index}].verifier must declare a known primitive.`);
+      }
+      // Branching is declared, not coded: a list of { when, goto } tried in order, plus an optional
+      // default. Without `next` the step simply proceeds to the following one.
+      if (step.next !== undefined) {
+        if (!Array.isArray(step.next) || step.next.length === 0 || step.next.length > 8) {
+          fail('invalid_recipe_spec', `steps[${index}].next must be a non-empty array of at most 8 rules.`);
+        }
+        for (const [ruleIndex, rule] of step.next.entries()) {
+          if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
+            fail('invalid_recipe_spec', `steps[${index}].next[${ruleIndex}] must be an object.`);
+          }
+          for (const key of Object.keys(rule)) {
+            if (!['when', 'goto'].includes(key)) {
+              fail('invalid_recipe_spec', `Unknown next rule field at ${index}: ${key}.`);
+            }
+          }
+          if (rule.when !== undefined) buildCondition(rule.when);
+          requireString(rule.goto, `steps[${index}].next[${ruleIndex}].goto`);
+        }
+      }
+    }
+    // Every jump target must be a declared step id, and the id set must be unique: a branch to a missing
+    // step would stall the run with no candidate and look like a plan gap instead of a wiring mistake.
+    const ids = input.steps.map((step, index) => step.id ?? `step-${index}`);
+    if (new Set(ids).size !== ids.length) fail('invalid_recipe_spec', 'Step ids must be unique.');
+    for (const [index, step] of input.steps.entries()) {
+      for (const [ruleIndex, rule] of (step.next ?? []).entries()) {
+        if (!ids.includes(rule.goto)) {
+          fail('invalid_recipe_spec',
+            `steps[${index}].next[${ruleIndex}].goto names ${rule.goto}, which is not a declared step.`);
+        }
       }
     }
   }
@@ -155,8 +189,16 @@ export function buildRecipeFromSpec(spec, { toolEffects } = {}) {
       effect: step.effect,
       arguments: step.arguments ?? {},
       verifier: buildVerifier(step.verifier),
+      // Conditions are built once at registration time, so a bad branch fails while the recipe is created
+      // rather than in the middle of a run.
+      next: Array.isArray(step.next) ? step.next.map((rule) => ({
+        when: rule.when === undefined ? null : buildCondition(rule.when),
+        goto: rule.goto,
+      })) : [],
     }))
     : null;
+  const stepIds = steps ? steps.map((step) => step.id) : [];
+  const indexOfStep = (id) => stepIds.indexOf(id);
   const stepTools = steps ? [...new Set(steps.map((step) => step.tool))] : [checked.tool];
   const tools = [...new Set([...allowedTools, ...stepTools])];
   for (const name of tools) {
@@ -205,7 +247,7 @@ export function buildRecipeFromSpec(spec, { toolEffects } = {}) {
       // would diverge from what the caller declared. Multi-step recipes record a step cursor instead.
       return steps ? { step: 0 } : {};
     },
-    candidates({ task, state }) {
+    candidates({ task, state, io }) {
       if (!steps) {
         return [{
           candidateId: `${checked.recipeId}:main`,
@@ -238,14 +280,69 @@ export function buildRecipeFromSpec(spec, { toolEffects } = {}) {
       }];
     },
     ...(steps ? {
-      advance({ state }) {
+      /**
+       * Advance the cursor, honouring declared branches.
+       *
+       * `advance` receives no I/O capability, so conditions that need file facts read through the same
+       * workspace-scoped helper the verifiers use — but only bare filenames, and only inside the task's
+       * workspace. The chosen target is recorded in state so a run can be inspected afterwards: "why did it
+       * go that way" must be answerable from persisted data, not by re-running the branch.
+       */
+      advance({ task, state, candidate }) {
         const cursor = Number.isSafeInteger(state?.step) ? state.step : 0;
-        return { ...state, step: cursor + 1 };
+        const step = steps[cursor] ?? null;
+        if (step === null) return { ...state, step: cursor + 1 };
+        const chosen = resolveNext(step, { task, state });
+        // A branch target may be the current step, which expresses a retry loop; state records how many
+        // times that happened so a runaway loop is visible rather than silently spinning.
+        const visits = { ...(state?.visits ?? {}) };
+        visits[step.id] = (visits[step.id] ?? 0) + 1;
+        if (visits[step.id] > 64) {
+          fail('branch_loop_exceeded', `Step ${step.id} was entered more than 64 times.`);
+        }
+        const nextIndex = chosen === null ? cursor + 1 : indexOfStep(chosen);
+        // Keep the whole branch trail, not just the last hop: "which path did this run take" must be
+        // answerable from persisted state, and a single field would lose that as soon as a run branches
+        // twice.
+        const trail = [...(Array.isArray(state?.branchTrail) ? state.branchTrail : []),
+          { from: step.id, to: chosen ?? (steps[nextIndex]?.id ?? null) }];
+        return { ...state, step: nextIndex, visits, branchTrail: trail.slice(-32),
+          lastBranch: chosen };
       },
     } : {}),
     preconditions: Object.fromEntries(preconditionIds.map((id) => [id, () => ({ verdict: 'allow' })])),
     verifier: steps ? stepVerifier : verifier,
   });
+}
+
+/**
+ * Choose the next step id for a step, honouring declared branches in order.
+ *
+ * Returns null when no rule matched, which means "proceed to the following step". Conditions read through
+ * a bounded, workspace-scoped reader: bare filenames only, so a branch cannot inspect anything outside the
+ * task's own workspace.
+ */
+function resolveNext(step, { task, state }) {
+  if (!step.next || step.next.length === 0) return null;
+  const workspace = task.workspaceRoot;
+  const context = {
+    state,
+    workspace,
+    digest: (bytes) => createHash('sha256').update(bytes).digest('hex'),
+    readBytes: (path, options) => {
+      try { return readFileSync(path); } catch (error) {
+        if (options?.allowMissing && (error?.code === 'ENOENT' || error?.code === 'ENOTDIR')) return null;
+        throw error;
+      }
+    },
+  };
+  for (const rule of step.next) {
+    // A rule without `when` is the default and matches unconditionally; it should be listed last, and the
+    // validator does not reorder anything, so an early default simply short-circuits the rest.
+    if (rule.when === null) return rule.goto;
+    if (rule.when.evaluate(context)) return rule.goto;
+  }
+  return null;
 }
 
 /**

@@ -1,6 +1,7 @@
 import { RuntimeContractError, requireString } from './contracts.js';
 import { buildRecipeFromSpec, createRecipeRegistry } from './recipe-factory.js';
 import { describePrimitives, VERIFIER_PRIMITIVES } from './verifier-primitives.js';
+import { describeConditions } from './condition-primitives.js';
 
 /**
  * The tool that lets a caller describe a task at runtime instead of naming a pre-registered template.
@@ -111,13 +112,18 @@ export function createExecuteTool({ store, schedulerFor, toolEffects, mount, reg
   };
 }
 
-/** A read-only tool so a caller can discover which acceptance primitives exist before describing a task. */
+/** A read-only tool so a caller can discover which acceptance and branch primitives exist. */
 export const describePrimitivesTool = {
   name: 'runtime_verifiers',
-  description: 'List the built-in verifier primitives that decide whether a generated task succeeded. '
-    + 'Acceptance is a closed vocabulary on purpose: a task may choose how to be judged, never invent it.',
+  description: 'List the built-in verifier primitives that decide whether a generated task succeeded, and '
+    + 'the condition primitives that decide how a multi-step recipe branches. Both are closed vocabularies '
+    + 'on purpose: a task may choose how to be judged and how to branch, never invent either.',
   parameters: { type: 'object', properties: {}, additionalProperties: false },
   output: { schema: { type: 'object' },
     render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] },
-  async execute() { return { primitives: describePrimitives() }; },
+  async execute() {
+    return { primitives: describePrimitives(), conditions: describeConditions(),
+      steps: 'A recipe may declare steps[] instead of a single action; each step takes { id, tool, effect, '
+        + 'arguments, verifier, next? }. next is [{ when?, goto }] tried in order; goto must be a declared id.' };
+  },
 };
