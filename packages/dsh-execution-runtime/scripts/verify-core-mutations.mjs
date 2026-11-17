@@ -21,7 +21,7 @@ function run(args, label) {
 
 try {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
-  for (const relative of ['src/contracts.js', 'src/store.js', 'recipes/json-normalize.js', 'test/store.test.js', 'test/json-recipe.test.js']) {
+  for (const relative of ['src/contracts.js', 'src/store.js', 'src/analyzer.js', 'recipes/json-normalize.js', 'test/store.test.js', 'test/json-recipe.test.js']) {
     mkdirSync(dirname(join(root, relative)), { recursive: true });
     writeFileSync(join(root, relative), readFileSync(join(source, relative)));
   }

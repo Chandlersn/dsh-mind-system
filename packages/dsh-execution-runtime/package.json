@@ -12,12 +12,15 @@
     "./decision-client": "./src/decision-client.js",
     "./admission": "./src/admission.js",
     "./executor": "./src/executor.js",
-    "./scheduler": "./src/scheduler.js"
+    "./scheduler": "./src/scheduler.js",
+    "./analyzer": "./src/analyzer.js",
+    "./exceptions": "./src/exceptions.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
     "verify:core": "node scripts/verify-core-mutations.mjs",
     "verify:phase1": "node scripts/verify-phase1-mutations.mjs",
+    "verify:analysis": "node scripts/verify-analysis-mutations.mjs",
     "probe:jev": "node scripts/probe-jev.mjs"
   }
 }
