@@ -89,6 +89,11 @@ test('stored repair returns through admission and real host execution to fixed i
   assert.equal(final.payload.verification.verifierId, 'json-source-output');
   assert.equal(final.payload.verification.goalSatisfied, true);
   assert.equal(final.attemptId, repair.attemptId);
+  // A verified repair is visible to a later candidate decision, not only in the database.
+  const history = env.scheduler.nextRepairContext(env.task.taskId, { authority: env.authority }).history;
+  assert.equal(history.length, 1);
+  assert.equal(history[0].succeeded, true);
+  assert.equal(history[0].status, 'settled');
 });
 
 for (const [name, alter] of [
@@ -234,6 +239,43 @@ test('caller cancellation during pre-execution settles the repair without a fail
   assert.equal(repairRecord(env).outcome.succeeded, false);
   assert.equal(env.store.getRepairFailures(env.task.taskId, repairRecord(env).signature), 0);
   assert.equal(env.store.listUnresolved(env.task.taskId).length, 0);
+});
+
+test('repeating the original action after a recorded repair failure is refused, not silently retried', async (t) => {
+  const env = await fixture(t, { brokenRepair: true });
+  await env.scheduler.repair(env.task.taskId, env.analysisId, { authority: env.authority });
+  const trace = env.store.readRepairTrace(env.task.taskId);
+  assert.equal(trace.length, 1);
+  assert.equal(trace[0].kind, 'retry_with');
+  assert.equal(trace[0].succeeded, false);
+  assert.deepEqual(Object.keys(trace[0]).sort(),
+    ['analysisId', 'attemptId', 'kind', 'repairId', 'signature', 'status', 'succeeded']);
+  assert.equal(env.host.count('initial_write'), 1);
+  assert.equal(env.host.count('repair_write'), 1);
+  const context = env.scheduler.nextRepairContext(env.task.taskId, { authority: env.authority });
+  assert.deepEqual(context.history, trace);
+  assert.equal(context.status, env.store.getRun(env.task.taskId).status);
+  const other = await env.host.agent('foreign-repair-reader');
+  assert.throws(() => env.scheduler.nextRepairContext(env.task.taskId, { authority: { ...env.authority, agent: other } }),
+    { code: 'authority_agent_mismatch' });
+  const candidate = env.scheduler;
+  assert.equal(candidate.nextRepairContext(env.task.taskId, { authority: env.authority }).history.length, 1);
+  assert.equal(env.host.count('initial_write'), 1);
+  assert.equal(env.host.count('repair_write'), 1);
+});
+
+test('the plain recipe refuses to regenerate its original action once a repair has been recorded', async (t) => {
+  const env = await fixture(t, { brokenRepair: true });
+  await env.scheduler.repair(env.task.taskId, env.analysisId, { authority: env.authority });
+  const run = env.store.getRun(env.task.taskId);
+  const trace = env.store.readRepairTrace(env.task.taskId);
+  assert.throws(() => jsonNormalizeRecipe.candidates({ task: env.task, state: run.state, repairHistory: trace }),
+    { code: 'repair_history_present' });
+  // A non-retry record must not trip the guard: it continues to its own native precondition.
+  for (const kind of ['abort', 'gather_evidence']) {
+    assert.throws(() => jsonNormalizeRecipe.candidates({ task: env.task, state: run.state,
+      repairHistory: [{ ...trace[0], kind }] }), { code: 'output_exists' });
+  }
 });
 
 test('unregistered repair policy cannot authorize an otherwise well-formed proposal', async (t) => {

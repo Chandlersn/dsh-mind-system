@@ -595,6 +595,21 @@ export class RuntimeStore {
       .get(taskId, signature)?.failures ?? 0;
   }
 
+  /** Bounded repair history for the next candidate decision; never includes raw model output. */
+  readRepairTrace(taskId, { limit = 3 } = {}) {
+    this.#row(taskId);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10) {
+      throw error('invalid_repair_trace', 'Repair trace limit must be from 1 to 10.');
+    }
+    return this.#db.prepare(`SELECT repair_id, analysis_id, kind, signature, status, attempt_id, outcome_json
+      FROM repairs WHERE task_id = ? ORDER BY rowid DESC LIMIT ?`).all(taskId, limit).reverse().map((row) => {
+      const outcome = row.outcome_json === null ? null : JSON.parse(row.outcome_json);
+      return { repairId: row.repair_id, analysisId: row.analysis_id, kind: row.kind, signature: row.signature,
+        status: row.status, attemptId: row.attempt_id,
+        succeeded: typeof outcome?.succeeded === 'boolean' ? outcome.succeeded : null };
+    });
+  }
+
   finishRepair(taskId, repairId, { attemptId, status, succeeded, reason, expectedVersion } = {}) {
     requireString(repairId, 'repairId');
     if (!['settled', 'blocked', 'unknown'].includes(status) || (succeeded !== undefined && typeof succeeded !== 'boolean')) {

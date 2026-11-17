@@ -95,6 +95,17 @@ export class RuntimeScheduler {
     return this.#run(this.#store.getRun(taskId).task, options, analysisId);
   }
 
+  /** Bounded persisted repair state for the next candidate decision; does not start or resume work. */
+  nextRepairContext(taskId, { authority } = {}) {
+    const run = this.#store.getRun(taskId);
+    if (!authority || authority.scopeRef !== run.task.scopeRef || !authority.agent
+      || authority.agent !== this.#executor.agent) {
+      fail('authority_agent_mismatch', 'Persisted repair state requires the explicit task caller.');
+    }
+    return Object.freeze({ taskId, status: run.status, reason: run.reason,
+      history: Object.freeze(this.#store.readRepairTrace(taskId).map((item) => Object.freeze(item))) });
+  }
+
   async #run(input, { authority, signal = new AbortController().signal, decisionMode = 'rules' } = {}, repairAnalysisId = null) {
     const task = snapshot(validateTask(input));
     const baseRecipe = this.#recipes.get(`${task.recipeId}:${task.recipeVersion}`);
@@ -103,6 +114,7 @@ export class RuntimeScheduler {
     let repairId = null;
     let repairContext = null;
     let repairCandidate = null;
+    let repairHistory = Object.freeze([]);
     if (!authority || authority.scopeRef !== task.scopeRef || !Array.isArray(authority.allowedTools)
       || !authority.allowedTools.length || typeof authority.workspaceRoot !== 'string') {
       fail('authority_unavailable', 'Explicit task authority is required before reading task files.');
@@ -209,11 +221,12 @@ export class RuntimeScheduler {
         this.#store.setState(task.taskId, snapshot(initialState), version());
       }
       let noProgress = 0;
+      repairHistory = Object.freeze(this.#store.readRepairTrace(task.taskId).map((item) => Object.freeze(item)));
       while (current().status === 'running') {
         check();
         const state = snapshot(current().state);
         const generated = repairId !== null ? [repairCandidate]
-          : await recipe.candidates({ task, state, io: io('candidate'), signal: combinedSignal });
+          : await recipe.candidates({ task, state, repairHistory, io: io('candidate'), signal: combinedSignal });
         check();
         if (!Array.isArray(generated) || generated.length === 0) { stop('waiting_analysis', 'plan_gap'); break; }
         const candidates = generated.map((item) => snapshot(validateCandidate(item)));
@@ -343,6 +356,7 @@ export class RuntimeScheduler {
           repairCandidate = null;
           repairContext = null;
           recipe = baseRecipe;
+          repairHistory = Object.freeze(this.#store.readRepairTrace(task.taskId).map((item) => Object.freeze(item)));
         }
         attemptId = null;
         if (current().status !== 'running') break;

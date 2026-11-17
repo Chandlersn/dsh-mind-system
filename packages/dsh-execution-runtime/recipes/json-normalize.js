@@ -153,7 +153,15 @@ export const jsonNormalizeRecipe = Object.freeze({
       budget: task.budget, deadlineAt: task.deadlineAt }, io);
     return { inputs: prepared.inputs };
   },
-  candidates({ task, state, io }) { return [buildJsonCandidate(boundTask(task, state), io)]; },
+  candidates({ task, state, io, repairHistory }) {
+    const previous = Array.isArray(repairHistory) ? repairHistory.filter((item) => item?.kind === 'retry_with') : [];
+    // A recorded repair failure on this task means the plain create-only action is already known insufficient.
+    if (previous.length) {
+      throw new RuntimeContractError('repair_history_present',
+        'The recipe must run its native repair controller instead of repeating the original action.');
+    }
+    return [buildJsonCandidate(boundTask(task, state), io)];
+  },
   preconditions: {
     'source-hash-unchanged'({ task, state, io }) {
       const prepared = boundTask(task, state);

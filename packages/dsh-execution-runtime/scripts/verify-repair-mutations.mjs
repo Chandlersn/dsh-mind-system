@@ -39,6 +39,9 @@ try {
     { name: 'stale_artifact_enters_repair_body', file: 'recipes/json-repair.js',
       old: 'return digest(io.readFileSync(context.outputPath)) === context.observedSha256;', replacement: 'return true;',
       test: /not ok \d+ - changed artifact after analysis is not overwritten/ },
+    { name: 'repair_history_ignored_by_next_choice', file: 'recipes/json-normalize.js',
+      old: '    if (previous.length) {', replacement: '    if (false) {',
+      test: /not ok \d+ - the plain recipe refuses to regenerate its original action/ },
   ];
   const observed = [];
   for (const mutant of mutants) {
