@@ -805,7 +805,7 @@
     },
     "runtime/package.json": {
       "source": "dsh-execution-runtime/package.json",
-      "sha256": "a97af96f7a34744f5d0984f5bbcbea3c437af65c780dfa5d33277bdfc2e96344"
+      "sha256": "1c5bcc55ff873f757119c65ab61265592bb44ef793c626163dc72a70b76e6c1a"
     },
     "runtime/recipes/csv-normalize.js": {
       "source": "dsh-execution-runtime/recipes/csv-normalize.js",
@@ -862,6 +862,10 @@
     "runtime/scripts/verify-lease-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-lease-mutations.mjs",
       "sha256": "571447e61375ac9771af610293898899cd77d6820c5ab6e1a3f1526b2497606a"
+    },
+    "runtime/scripts/verify-live-run.mjs": {
+      "source": "dsh-execution-runtime/scripts/verify-live-run.mjs",
+      "sha256": "c0ac65a529c00750ec988dfc6245fd0f748340bda83d1d72c67ab1cf37b84826"
     },
     "runtime/scripts/verify-loop-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-loop-mutations.mjs",
