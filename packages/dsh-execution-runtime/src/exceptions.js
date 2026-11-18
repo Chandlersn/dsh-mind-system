@@ -216,6 +216,8 @@ export class AnalysisCoordinator {
           message: 'Analysis did not produce an accepted repair proposal.' } };
       }
     } catch (failure) {
+      // The reason code is kept, the message is not: this record may be shown to a caller, and a raw
+      // exception message can carry paths or task content.
       result = { status: 'analysis_package_failed', error: { code: failureCode(failure, 'analysis_package_failed'),
         message: 'The exception could not be safely packaged or accepted.' } };
     } finally { clearTimeout(timer); }

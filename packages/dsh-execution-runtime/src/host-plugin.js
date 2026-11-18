@@ -31,6 +31,7 @@ import { createPatternResolver } from './pattern-resolver.js';
 import { createRecipeRegistry } from './recipe-factory.js';
 import { createExecuteTool, createLibraryTool, describePrimitivesTool } from './dynamic-tools.js';
 import { createRecipeLibrary } from './recipe-library.js';
+import { Analyzer } from './analyzer.js';
 import { jsonNormalizeRecipe } from '../recipes/json-normalize.js';
 import { csvNormalizeRecipe } from '../recipes/csv-normalize.js';
 import { validateTask } from './contracts.js';
@@ -108,6 +109,34 @@ function makeExecutor(ctx, agent) {
   return executor;
 }
 
+/**
+ * Build an analyzer from explicit host configuration, or return null.
+ *
+ * The transport is HTTP-and-key based rather than "whatever client happens to be around": analysis sends a
+ * task's exception package to a remote model, and that has to be a deliberate, visible configuration
+ * decision. A missing endpoint or key means analysis is off — not degraded into a guess.
+ */
+function makeAnalyzer(config) {
+  if (!config || typeof config !== 'object') return null;
+  const endpoint = typeof config.endpoint === 'string' ? config.endpoint.trim() : '';
+  const model = typeof config.model === 'string' ? config.model.trim() : '';
+  const apiKey = typeof config.apiKey === 'string' ? config.apiKey.trim() : '';
+  if (!endpoint || !model || !apiKey) return null;
+  const timeoutMs = Number.isSafeInteger(config.timeoutMs) && config.timeoutMs > 0
+    ? Math.min(config.timeoutMs, 120_000) : 30_000;
+  return new Analyzer({
+    timeoutMs,
+    // The analyzer passes a quoted, untrusted data blob; the transport must not add instructions of its own.
+    invoke: async (packageJson, { signal } = {}) => {
+      const response = await fetch(endpoint, { method: 'POST', signal,
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: packageJson }] }) });
+      if (!response.ok) throw new Error(`analysis transport failed: ${response.status}`);
+      return response.text();
+    },
+  });
+}
+
 export async function apply(ctx, config = {}) {
   const logger = optional(ctx, 'logger')?.('execution-runtime') ?? null;
   const base = { enabled: config?.enabled === true, loadError: null, recipes: [], tasks: 0, patterns: false };
@@ -163,8 +192,14 @@ export async function apply(ctx, config = {}) {
       automation: config?.automation ?? null });
     base.patterns = true;
 
+    // Analysis needs a reasoning transport. It stays off unless the host explicitly supplies one, because
+    // a coordinator without a provider would only manufacture "unavailable" records. The deterministic
+    // path keeps working either way.
+    const analyzer = makeAnalyzer(config?.analysis);
+    base.analysis = analyzer === null ? 'disabled' : 'configured';
+
     const inner = createExecutionRuntimePlugin({ store, recipes, tasks,
-      validateArguments: supplied ?? (() => true), owner: ctx, resolvePattern });
+      validateArguments: supplied ?? (() => true), owner: ctx, resolvePattern, analyzer });
     // Delegate with the host ctx: that is the ctx whose `tools` service must receive the registrations.
     const innerDispose = inner.apply(ctx);
 

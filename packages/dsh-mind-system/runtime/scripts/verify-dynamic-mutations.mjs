@@ -27,7 +27,7 @@ function run(args, label) {
 try {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
   const testsInOrder = ['test/recipe-factory.test.js', 'test/dynamic-task.test.js',
-    'test/verifier-primitives.test.js', 'test/recipe-library.test.js'];
+    'test/verifier-primitives.test.js', 'test/recipe-library.test.js', 'test/analysis-wiring.test.js'];
   for (const file of collectModuleClosure(source, testsInOrder)) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
     writeFileSync(join(root, file), readFileSync(join(source, file)));
@@ -131,6 +131,22 @@ try {
       old: '      db.prepare(`UPDATE recipe_library SET\n        verified_runs = verified_runs + ?, failed_runs = failed_runs + ?, last_task_id = ?, updated_at = ?\n        WHERE recipe_key = ?`).run(succeeded ? 1 : 0, succeeded ? 0 : 1, taskId, now(), recipeKey);',
       replacement: '      db.prepare(`UPDATE recipe_library SET\n        verified_runs = ?, failed_runs = ?, last_task_id = ?, updated_at = ?\n        WHERE recipe_key = ?`).run(succeeded ? 1 : 0, succeeded ? 0 : 1, taskId, now(), recipeKey);',
       test: /not ok \d+ - only verified completion counts as success/ },
+    // The analysis loop must actually run for a stopped run. Removing the call is the exact regression this
+    // wiring change exists to prevent: the module would keep passing its own tests while never being reached.
+    { name: 'stopped_run_not_analyzed', file: 'src/plugin.js',
+      old: '      const analysis = await maybeAnalyze(exec.agent, run.task.taskId, prepared.authority, exec.signal);',
+      replacement: '      const analysis = null;',
+      test: /not ok \d+ - a run that stops for analysis actually gets analyzed/ },
+    // Analysis must be conditional on the run stopping, not attempted for every caller.
+    { name: 'analysis_runs_without_waiting', file: 'src/plugin.js',
+      old: "    if (current.status !== 'waiting_analysis') return null;",
+      replacement: '    if (false) return null;',
+      test: /not ok \d+ - a completed run is never analyzed/ },
+    // A missing provider must mean "no analysis", not a component that manufactures unavailable records.
+    { name: 'absent_analyzer_still_analyzes', file: 'src/plugin.js',
+      old: '    if (analyzer === null) return null;',
+      replacement: '    if (analyzer === null) return { analyze: async () => ({ status: \'analysis_unavailable\' }) };',
+      test: /not ok \d+ - without an analyzer the plugin behaves exactly as before/ },
   ];
   const observed = [];
   for (const mutant of mutants) {

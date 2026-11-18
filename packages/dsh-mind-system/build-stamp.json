@@ -849,7 +849,7 @@
     },
     "runtime/scripts/verify-dynamic-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-dynamic-mutations.mjs",
-      "sha256": "a0467077158b1051961bf2116ec21ad8961bc1d34519b46448a7347d06cf840c"
+      "sha256": "e32835f06026ef3a529be6d048944e864bbefc5814f47129f345ca4a720841da"
     },
     "runtime/scripts/verify-hit-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-hit-mutations.mjs",
@@ -929,7 +929,7 @@
     },
     "runtime/src/exceptions.js": {
       "source": "dsh-execution-runtime/src/exceptions.js",
-      "sha256": "d30711a29fbca83722c8acd135cdf7decbe3d4a7a40bfbd7cb3378af52d94dcd"
+      "sha256": "cbda123a69cc52baa53c171771cbf5e96914df5d254a895d469d260aafef0dd0"
     },
     "runtime/src/executor.js": {
       "source": "dsh-execution-runtime/src/executor.js",
@@ -937,7 +937,7 @@
     },
     "runtime/src/host-plugin.js": {
       "source": "dsh-execution-runtime/src/host-plugin.js",
-      "sha256": "f3016f9baa5d5c259dcdf9930371ffa5b1797030d23fd7fb64e47d52969aec62"
+      "sha256": "dd4bfef958464b5c079691c0ba2f8270fd1d17d7b11b04a44f2c88fc874eaf98"
     },
     "runtime/src/knowledge.js": {
       "source": "dsh-execution-runtime/src/knowledge.js",
@@ -957,7 +957,7 @@
     },
     "runtime/src/plugin.js": {
       "source": "dsh-execution-runtime/src/plugin.js",
-      "sha256": "b4b5d0cd4c123609c89f354b95dcf61adc237e853e3b0a24284228f6f1595559"
+      "sha256": "3da95f59d9368e564b8963ef6c9e0888dd8491e09e01ef79eaa2e2844f3c72dd"
     },
     "runtime/src/probes.js": {
       "source": "dsh-execution-runtime/src/probes.js",
@@ -998,6 +998,10 @@
     "runtime/test/admission.test.js": {
       "source": "dsh-execution-runtime/test/admission.test.js",
       "sha256": "e69fdaacc94483ec7dc0f830505ea8f9eaf39bbf5b1e8b283a3a41f983ad0534"
+    },
+    "runtime/test/analysis-wiring.test.js": {
+      "source": "dsh-execution-runtime/test/analysis-wiring.test.js",
+      "sha256": "a610130c209312a5bebf129d599312f1a5a24a82efe300f63a54e1a88b6f9d2b"
     },
     "runtime/test/analyzer.test.js": {
       "source": "dsh-execution-runtime/test/analyzer.test.js",

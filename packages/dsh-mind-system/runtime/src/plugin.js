@@ -1,6 +1,7 @@
 import { RuntimeContractError, requireString } from './contracts.js';
 import { HostExecutor } from './executor.js';
 import { RuntimeScheduler } from './scheduler.js';
+import { AnalysisCoordinator } from './exceptions.js';
 
 const fail = (code, message) => { throw new RuntimeContractError(code, message); };
 
@@ -9,12 +10,23 @@ const describe = (error) => (error instanceof Error ? error.message : String(err
 /**
  * Wrap the isolated runtime as a real Cordis plugin. The plugin never accepts an executable callback,
  * workspace, goal, or verifier from the model: a tool call may only name a task that native code registered.
+ *
+ * `resolvePattern` and `analyzer` are optional. When both are absent the plugin behaves exactly as it did
+ * before they existed — no analysis is attempted, so a host without a reasoning provider keeps the
+ * deterministic path rather than failing on a capability it was never given.
  */
 export function createExecutionRuntimePlugin({ store, recipes, tasks, validateArguments, probes = [], owner,
-  decisionClient = null, decisionPolicy = null }) {
+  decisionClient = null, decisionPolicy = null, resolvePattern = null, analyzer = null,
+  analysisMaxBytes = 16_384 }) {
   if (!store || !Array.isArray(recipes) || !tasks || typeof tasks !== 'object'
     || typeof validateArguments !== 'function') {
     fail('invalid_runtime_plugin', 'A store, registered recipes, native tasks and argument validation are required.');
+  }
+  if (resolvePattern !== null && typeof resolvePattern !== 'function') {
+    fail('invalid_runtime_plugin', 'An optional pattern resolver must be a function.');
+  }
+  if (analyzer !== null && typeof analyzer?.analyze !== 'function') {
+    fail('invalid_runtime_plugin', 'An optional analyzer must expose analyze().');
   }
   const executors = new Map();
   const schedulers = new Map();
@@ -37,6 +49,20 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
     return scheduler;
   };
 
+  /**
+   * Build the analysis coordinator for one caller, or null when the host configured no analyzer.
+   *
+   * Without an analyzer there is nothing to ask, so a coordinator would only manufacture "unavailable"
+   * records. Returning null keeps that absence explicit at the call site instead of hiding it behind a
+   * component that looks wired.
+   */
+  const coordinatorFor = (agent, extraResolvePattern = null) => {
+    if (analyzer === null) return null;
+    const resolver = extraResolvePattern ?? resolvePattern;
+    return new AnalysisCoordinator({ store, analyzer, agent, maxBytes: analysisMaxBytes,
+      ...(resolver === null ? {} : { resolvePattern: resolver }) });
+  };
+
   const statusTool = {
     name: 'runtime_status',
     description: 'Report the isolated execution runtime: which task templates are registered and, for a named task, '
@@ -55,6 +81,28 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
       return { templates: registered, run: { taskId: args.taskId, status: run.status, reason: run.reason,
         budgetUsage: run.budgetUsage, fence: run.fence, owner: run.owner } };
     },
+  };
+
+  /**
+   * Analyze a run that stopped for analysis, and only such a run.
+   *
+   * The coordinator already refuses anything that is not `waiting_analysis`, but checking here keeps the
+   * common path free of a component that would do nothing. Any failure is reported alongside the run rather
+   * than thrown: the task's own outcome is already settled, and turning a bookkeeping problem into a task
+   * failure would be a false negative.
+   */
+  const maybeAnalyze = async (agent, taskId, authority, signal) => {
+    const coordinator = coordinatorFor(agent);
+    if (coordinator === null) return null;
+    const current = store.getRun(taskId);
+    if (current.status !== 'waiting_analysis') return null;
+    try {
+      const result = await coordinator.analyze(taskId, { authority, signal });
+      return { status: result.status, analysisId: result.analysisId ?? null,
+        route: coordinator.lastRoute?.route ?? null };
+    } catch (error) {
+      return { status: 'analysis_unavailable', error: error?.code ?? describe(error), detail: describe(error) };
+    }
   };
 
   const runTool = {
@@ -81,7 +129,11 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
       active.add(work);
       work.finally(() => active.delete(work)).catch(() => {});
       const run = await work;
-      return { taskId: run.task.taskId, status: run.status, reason: run.reason, budgetUsage: run.budgetUsage };
+      // A run that stopped for analysis gets one. The analysis records a proposal only — it never
+      // dispatches anything, and a caller still has to act on it through `runtime.status`.
+      const analysis = await maybeAnalyze(exec.agent, run.task.taskId, prepared.authority, exec.signal);
+      return { taskId: run.task.taskId, status: run.status, reason: run.reason,
+        budgetUsage: run.budgetUsage, ...(analysis === null ? {} : { analysis }) };
     },
   };
 

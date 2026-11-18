@@ -154,6 +154,8 @@ execution-runtime 提供四个工具：`runtime_run` / `runtime_status` 只认�
 
 两条边界值得注意：**未知副作用冻结**（不可逆或效应未知的动作不自动执行，停下核对）；**检查点带环境**（产生时的模板版本、范围、工作区任一项变化就不是合法回滚点）。
 
+异常分析需要宿主显式配置推理传输（endpoint / model / key）。**未配置时分析整个关闭**，而不是降级成一个只会记录 `unavailable` 的组件——确定性路径照常工作，返回里也不会出现 `analysis` 字段。诊断原因走闭合词汇（`wrong_guess` / `environment_changed` / `wrong_expectation` / `unknown`），不接受自由文本：诊断要能被归类才能指导修复，散文不能。分析结果只是**提议**，不会自行派发任何动作。
+
 真实运行状态在宿主工作目录下的 `.execution-runtime/`（`runtime.sqlite`），不是 `~/.dsh`。探针报 `disabled` / `no-tasks` / `load-failed` 时不要当成可用。
 
 **配方库（`runtime_recipes`）**把用过的配方规格存进同一个数据库，让后续任务可以按目标找回来而不是重新描述。它存的是**规格数据不是配方对象**——配方带可执行回调，把回调存进数据库意味着从库里加载代码，信任面远大于加载数据。三条边界：
