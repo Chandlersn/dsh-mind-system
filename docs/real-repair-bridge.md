@@ -67,6 +67,19 @@ Proven: the bridge really spawns the installed headless CLI, treats the packet a
 
 Not proven: that this real model can produce a schema-valid RepairAction for this packet. The first call timed out before answer. No repair was fabricated and no file under `docs/first-repair-csv-observed/workspace` was modified by this work.
 
+## Provider liveness gate (do this before any retry)
+
+`scripts/provider-liveness.mjs` is the bounded control probe. It sends one one-line task (`{"ok":true}`), no Analyzer and no exception packet, with a strict pass criterion: a `final` event **and** positive `step_end` output tokens before the deadline.
+
+```sh
+node scripts/provider-liveness.mjs          # DSH_PROBE_BUDGET_MS overrides the 25s default
+# exit 0 = healthy (final + positive output tokens) -> diagnosis may be retried
+# exit 2 = stalled (no final / no tokens)           -> DO NOT retry diagnosis
+# exit 1 = harness/config error
+```
+
+Latest run (`DSH_PROBE_BUDGET_MS=25000`): `{"kind":"timeout","sawSession":true,"stepEnds":0,"outputTokens":0,"finalText":null,"healthy":false}`, exit 2. The provider is still stalling at `step_start`; **the diagnostic action was deliberately not re-sent**. This is the fourth same-mode external failure (three diagnosis/control attempts plus this gate) and confirms the stall is upstream, not in the bridge.
+
 ## Next step for the lead
 
-Do not re-run the same headless transport against the currently stalled provider; identical input has repeatedly produced the same stall. Re-check provider health with the minimal control probe first. Only when that probe completes with a `final` and positive output tokens should the real diagnostic be retried, then — and only on `status === 'proposed'` — should the native repair loop be entered with `scheduler.repair` and the original verifier unchanged. Product-side wiring is independently covered by the stub-model tests in `native-repair-entry.test.js` and does not depend on provider recovery.
+Do not re-run the same headless transport while `provider-liveness.mjs` exits 2. Only after it exits 0 (provider returns a `final` and tokens) should the real diagnostic be retried, then — and only on `status === 'proposed'` — should the native repair loop be entered with `scheduler.repair` and the original verifier unchanged. Product-side wiring is independently covered by the stub-model tests in `native-repair-entry.test.js` and does not depend on provider recovery.
