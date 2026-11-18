@@ -72,17 +72,24 @@ Not proven: that this real model can produce a schema-valid RepairAction for thi
 `scripts/provider-liveness.mjs` is the bounded control probe. It sends one one-line task (`{"ok":true}`), no Analyzer and no exception packet, with a strict pass criterion: a `final` event **and** positive `step_end` output tokens before the deadline.
 
 ```sh
-node scripts/provider-liveness.mjs          # DSH_PROBE_BUDGET_MS overrides the 60s default
+node scripts/provider-liveness.mjs          # DSH_PROBE_BUDGET_MS / DSH_PROBE_CWD override defaults
 # exit 0 = healthy (final + positive output tokens) -> diagnosis may be retried
 # exit 2 = stalled (no final / no tokens)           -> DO NOT retry diagnosis
 # exit 1 = harness/config error
 
-The default was raised from 25s to 60s after noticing that 25s is shorter than this host's
-historical model p95 (33.8s, max 34.1s) and could mislabel a slow provider as stalled. A
-discriminating run at 60s with the verified `--profile headless` launcher form still returned
-exit 2 (`stepEnds:0, outputTokens:0, finalText:null`). That separates three hypotheses:
-the old launcher form is not the cause (form corrected, still stalled), the budget was not
-too short (60s > 1.8x historical max), and the provider is genuinely not returning.
+Four hypotheses were separated, each by a control that changed exactly one variable:
+
+| Hypothesis | Control | Result |
+| :--- | :--- | :--- |
+| Old launcher form | switched to verified `--profile headless` | eliminated: still stalled |
+| Budget too short (25s) | raised to 60s (>1.8x historical max 34.1s) | eliminated: still stalled |
+| Wrong working directory | ran from a fresh temp cwd, same as 24 successful DR-18 cases | eliminated: still stalled |
+| Provider not returning | all above excluded | supported |
+
+Every run returned `stepEnds:0, outputTokens:0, finalText:null` with `sawSession:true` — the
+session opens but the model never produces a step_end. The 25s default was also raised to 60s
+because it was shorter than this host's historical p95 (33.8s) and could mislabel slow as dead.
+Diagnosis is not re-sent while this gate exits 2.
 ```
 
 Latest run (`DSH_PROBE_BUDGET_MS=25000`): `{"kind":"timeout","sawSession":true,"stepEnds":0,"outputTokens":0,"finalText":null,"healthy":false}`, exit 2. The provider is still stalling at `step_start`; **the diagnostic action was deliberately not re-sent**. This is the fourth same-mode external failure (three diagnosis/control attempts plus this gate) and confirms the stall is upstream, not in the bridge.

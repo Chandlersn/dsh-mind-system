@@ -10,6 +10,9 @@ const CLI = 'D:/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js';
 // Historical model baseline on this host: p50=23.6s, p95=33.8s, max=34.1s. A budget below
 // that range can mistake a merely-slow provider for a stalled one, so the default clears the max.
 const BUDGET_MS = Number(process.env.DSH_PROBE_BUDGET_MS ?? 60_000);
+// The DR-18 model baseline succeeded from a fresh per-case temp cwd; diagnosis stalled from
+// the repo root. Allow overriding cwd so that variable can be isolated by a control experiment.
+const PROBE_CWD = process.env.DSH_PROBE_CWD?.trim() || process.cwd();
 const TASK = 'Reply with exactly the JSON object {"ok":true} and nothing else.';
 
 let finalText = null;
@@ -18,7 +21,7 @@ let stepEnds = 0;
 let sawSession = false;
 
 const child = spawn(process.execPath, [CLI, '--profile', 'headless', '--json', TASK], {
-  cwd: process.cwd(), windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
+  cwd: PROBE_CWD, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
 });
 let buf = '';
 let settled = false;
@@ -29,7 +32,7 @@ function finish(kind) {
   clearTimeout(timer);
   try { child.kill(); } catch { /* already gone */ }
   const healthy = finalText !== null && outputTokens > 0;
-  console.log(JSON.stringify({ kind, sawSession, stepEnds, outputTokens,
+  console.log(JSON.stringify({ kind, cwd: PROBE_CWD, budgetMs: BUDGET_MS, sawSession, stepEnds, outputTokens,
     finalText: finalText === null ? null : finalText.slice(0, 200), healthy }));
   if (healthy) process.exitCode = 0;
   else if (kind === 'timeout' || kind === 'close') process.exitCode = 2;
