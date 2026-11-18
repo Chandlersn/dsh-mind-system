@@ -235,19 +235,40 @@ function installIntervention(ctx, policy, base) {
   }
 }
 
-/** Whether a tool result reports failure, read the way the host reports it. */
+/**
+ * Whether a tool result reports failure.
+ *
+ * There are two shapes, and missing either one makes the runtime blind to a whole class of failures:
+ *
+ * 1. `isError: true` — the tool itself failed; the reason is in `error.message` or the content text.
+ * 2. `isError: false` with a non-zero `value.exitCode` — the tool ran fine and the *command* failed. This is
+ *    how a shell tool reports a failing command, and it is the common case in practice.
+ *
+ * Only checking the first shape looks correct and never intervenes on shell failures. That was the actual
+ * behaviour before this fix: CLIS spoke on a repeated pwsh failure while this runtime stayed silent on the
+ * same event, in the same session — which is how the gap was found.
+ */
 function outcomeFailed(result) {
   if (!result || typeof result !== 'object') return false;
   if (result.isError === true) return true;
-  // The tool runtime reports policy denials through a decision kind rather than isError.
-  return result.kind === 'deny' || result.kind === 'error';
+  if (result.kind === 'deny' || result.kind === 'error') return true;
+  // A command failed although the tool succeeded. A signalled process counts as cancelled, not failed.
+  const exitCode = result.value?.exitCode;
+  if (typeof exitCode === 'number' && Number.isFinite(exitCode) && exitCode !== 0
+    && (result.value?.signal === undefined || result.value?.signal === null)) return true;
+  return false;
 }
 
 /** The most specific failure text available, bounded so one huge error cannot flood the policy. */
 function failureText(result) {
   const parts = [];
   if (typeof result?.error?.message === 'string') parts.push(result.error.message);
+  if (typeof result?.error?.info?.message === 'string') parts.push(result.error.info.message);
   if (typeof result?.error?.code === 'string') parts.push(result.error.code);
+  // A non-zero exit carries no message of its own; the command's own output is the reason.
+  const exitCode = result?.value?.exitCode;
+  if (typeof exitCode === 'number' && exitCode !== 0) parts.push(`exit code ${exitCode}`);
+  if (typeof result?.value?.stderr?.text === 'string') parts.push(result.value.stderr.text);
   if (Array.isArray(result?.content)) {
     for (const part of result.content) if (typeof part?.text === 'string') parts.push(part.text);
   }

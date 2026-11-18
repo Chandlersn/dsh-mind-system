@@ -207,6 +207,18 @@ try {
       old: '    metrics.skipped += 1;',
       replacement: '    void metrics.skipped;',
       test: /not ok \d+ - the counters are reported with their denominator/ },
+    // Ignoring a non-zero exit makes the runtime blind to shell failures — the common case. This is the
+    // exact gap the live session exposed: CLIS spoke on a repeated pwsh failure, this runtime was silent.
+    { name: 'shell_exit_failure_ignored', file: 'src/host-plugin.js',
+      old: "  if (typeof exitCode === 'number' && Number.isFinite(exitCode) && exitCode !== 0\n    && (result.value?.signal === undefined || result.value?.signal === null)) return true;",
+      replacement: '  void exitCode;',
+      test: /not ok \d+ - a failing shell command is a failure/ },
+    // A killed process must not be reported as a failure to act on. Removing the signal guard flips this:
+    // any non-zero exit becomes a failure, so a timeout kill would be treated as something to comment on.
+    { name: 'signalled_process_counts_as_failure', file: 'src/host-plugin.js',
+      old: '  if (typeof exitCode === \'number\' && Number.isFinite(exitCode) && exitCode !== 0\n    && (result.value?.signal === undefined || result.value?.signal === null)) return true;',
+      replacement: "  if (typeof exitCode === 'number' && Number.isFinite(exitCode) && exitCode !== 0) return true;",
+      test: /not ok \d+ - a signalled process is not treated as a command failure/ },
   ];
   const observed = [];
   for (const mutant of mutants) {

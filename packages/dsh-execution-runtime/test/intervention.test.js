@@ -94,3 +94,106 @@ test('one agent cannot grow the tracked set without bound', () => {
   assert.equal(policy.metrics().evaluated, 5);
   assert.equal(policy.metrics().hinted, 5);
 });
+
+test('a failing shell command is a failure even when the tool itself succeeded', async (t) => {
+  // This is the shape a shell tool reports: `isError: false` (the tool ran) with the command's non-zero exit
+  // in `value.exitCode`. Treating only `isError` as failure made the runtime blind to every shell failure —
+  // observed live as silence on the same repeated event where CLIS spoke.
+  const { createRequire } = await import('node:module');
+  const { pathToFileURL } = await import('node:url');
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  let cordis;
+  for (const root of ['D:/dsh', process.env.DSH_INSTALL_DIR].filter(Boolean)) {
+    try {
+      const require = createRequire(pathToFileURL(join(root, 'package.json')));
+      cordis = await import(pathToFileURL(require.resolve('@deepseek-ai/cordis')).href);
+      break;
+    } catch { /* try the next root */ }
+  }
+  if (!cordis) return t.skip('cordis unavailable');
+
+  const app = new cordis.Context();
+  const registered = new Map();
+  app.provide?.('tools');
+  app.set('tools', {
+    register(tool) { registered.set(tool.name, tool); return () => registered.delete(tool.name); },
+    get(name) { return registered.get(name) ?? null; },
+    list() { return [...registered.keys()]; },
+    async execute() { return { isError: false, content: [] }; },
+  });
+
+  const entry = new URL('../src/host-plugin.js', import.meta.url).href;
+  const pluginModule = await import(entry);
+  const plugin = pluginModule.default ?? pluginModule.plugin ?? pluginModule;
+  const stateDir = mkdtempSync(join(tmpdir(), 'shell-fail-'));
+  const fiber = app.plugin(plugin, { enabled: true, stateDir, workspaceRoot: stateDir, scopeRef: 's' });
+  await fiber.await?.();
+  try {
+    const fire = () => app.waterfall('tools/post-execute',
+      { name: 'pwsh', agent: { id: 'shell-agent' } },
+      { isError: false, value: { exitCode: 1, stderr: { text: 'verification failed: mismatch' } },
+        content: [{ type: 'text', text: 'exit code 1' }] },
+      () => Promise.resolve({ additionalContexts: [] }));
+    const first = await fire();
+    const second = await fire();
+    assert.equal((first?.additionalContexts ?? []).length, 0, 'The first failure must stay silent.');
+    assert.equal((second?.additionalContexts ?? []).length, 1,
+      'A repeated shell failure must produce a hint; before the fix it produced none.');
+  } finally {
+    await fiber?.dispose?.();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('a signalled process is not treated as a command failure', async (t) => {
+  // A killed process also exits non-zero. Counting that as failure would hint on every timeout kill, which
+  // is exactly the kind of noise that gets a component ignored.
+  const { createRequire } = await import('node:module');
+  const { pathToFileURL } = await import('node:url');
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  let cordis;
+  for (const root of ['D:/dsh', process.env.DSH_INSTALL_DIR].filter(Boolean)) {
+    try {
+      const require = createRequire(pathToFileURL(join(root, 'package.json')));
+      cordis = await import(pathToFileURL(require.resolve('@deepseek-ai/cordis')).href);
+      break;
+    } catch { /* try the next root */ }
+  }
+  if (!cordis) return t.skip('cordis unavailable');
+
+  const app = new cordis.Context();
+  app.provide?.('tools');
+  app.set('tools', {
+    register() { return () => {}; }, get() { return null; }, list() { return []; },
+    async execute() { return { isError: false, content: [] }; },
+  });
+  const pluginModule = await import(new URL('../src/host-plugin.js', import.meta.url).href);
+  const plugin = pluginModule.default ?? pluginModule.plugin ?? pluginModule;
+  const stateDir = mkdtempSync(join(tmpdir(), 'signal-case-'));
+  const fiber = app.plugin(plugin, { enabled: true, stateDir, workspaceRoot: stateDir, scopeRef: 's' });
+  await fiber.await?.();
+  try {
+    const fire = () => app.waterfall('tools/post-execute',
+      { name: 'pwsh', agent: { id: 'killed-agent' } },
+      // The text must contain a relevant word, otherwise the policy stops at `not_relevant` and this test
+      // never reaches the signal predicate it is meant to exercise.
+      { isError: false, value: { exitCode: 143, signal: 'SIGTERM',
+        stderr: { text: 'timeout: killed after the deadline' } },
+        content: [{ type: 'text', text: 'exit code 143' }] },
+      () => Promise.resolve({ additionalContexts: [] }));
+    await fire();
+    const second = await fire();
+    // Even repeated, a cancelled process produces no hint.
+    assert.equal((second?.additionalContexts ?? []).length, 0,
+      'A signalled process is a cancellation, not a failure to comment on.');
+  } finally {
+    await fiber?.dispose?.();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
