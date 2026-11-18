@@ -1,0 +1,12 @@
+{
+  "attempt": {
+    "attempt_id": "2a2e67cf-6358-4294-9c53-f76bba3b8c28",
+    "task_id": "empty-csv-eebd1363-5f9b-45ef-8434-545b9de22256",
+    "candidate_json": "{\"candidateId\":\"create-normalized-csv\",\"toolName\":\"runtime_write_text\",\"arguments\":{\"path\":\"C:\\\\Users\\\\lyq\\\\Documents\\\\deepseek-harness\\\\default-workspace\\\\dsh-mind-system-repo\\\\docs\\\\first-repair-csv-observed\\\\workspace\\\\output.csv\",\"content\":\"id,name\\n\\n\",\"createOnly\":true},\"preconditionIds\":[\"csv-source-hash-unchanged\",\"csv-output-absent\",\"csv-workspace-scope\"],\"postconditionIds\":[\"csv-rows-match-source\",\"csv-source-hash-unchanged\"],\"inputVersion\":\"40d6bfdc74eae2ed68a97137ce414fa4ca6de1b3831cfd9a73c4622d8a8942c1\",\"progressKey\":\"verified-normalized-csv\",\"effect\":\"reversible_write\",\"idempotencyKey\":\"empty-csv-eebd1363-5f9b-45ef-8434-545b9de22256:create-normalized-csv\",\"recoveryContractId\":\"inspect-output-before-retry\",\"source\":{\"recipeId\":\"csv-normalize\",\"version\":\"1\"}}",
+    "status": "settled",
+    "outcome_json": "{\"callId\":\"2a2e67cf-6358-4294-9c53-f76bba3b8c28\",\"hostCallId\":\"2a2e67cf-6358-4294-9c53-f76bba3b8c28:a27ef03f-2a0f-4747-98ce-ae0a32ceae59\",\"dispatchEntered\":true,\"cancelled\":false,\"status\":\"succeeded\",\"output\":{\"path\":\"C:\\\\Users\\\\lyq\\\\Documents\\\\deepseek-harness\\\\default-workspace\\\\dsh-mind-system-repo\\\\docs\\\\first-repair-csv-observed\\\\workspace\\\\output.csv\",\"bytes\":9,\"created\":true}}",
+    "verification_json": "{\"status\":\"fail\",\"progress\":\"unchanged\",\"goalSatisfied\":false,\"verifierId\":\"csv-source-output\",\"verifierVersion\":\"1\",\"evidenceRefs\":[\"file:C:\\\\Users\\\\lyq\\\\Documents\\\\deepseek-harness\\\\default-workspace\\\\dsh-mind-system-repo\\\\docs\\\\first-repair-csv-observed\\\\workspace\\\\input.csv#sha256:40d6bfdc74eae2ed68a97137ce414fa4ca6de1b3831cfd9a73c4622d8a8942c1\",\"file:C:\\\\Users\\\\lyq\\\\Documents\\\\deepseek-harness\\\\default-workspace\\\\dsh-mind-system-repo\\\\docs\\\\first-repair-csv-observed\\\\workspace\\\\output.csv#sha256:fa56df87ab9e2f6d3ca95af902aa7f4cf8f1a6a1f22cb56997da95990f4fc290\"],\"reason\":\"output_invalid_csv\"}",
+    "created_at": 1794997110173
+  },
+  "outputHex": "69642c6e616d650a0a"
+}

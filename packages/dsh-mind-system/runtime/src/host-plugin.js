@@ -38,6 +38,7 @@ import { createWriteTools } from './write-tools.js';
 import { createRecipeLibrary } from './recipe-library.js';
 import { Analyzer } from './analyzer.js';
 import { jsonNormalizeRecipe } from '../recipes/json-normalize.js';
+import { jsonNormalizeRepairPolicy } from '../recipes/json-repair.js';
 import { csvNormalizeRecipe } from '../recipes/csv-normalize.js';
 import { validateTask } from './contracts.js';
 
@@ -132,12 +133,18 @@ function makeAnalyzer(config) {
   return new Analyzer({
     timeoutMs,
     // The analyzer passes a quoted, untrusted data blob; the transport must not add instructions of its own.
-    invoke: async (packageJson, { signal } = {}) => {
+    invoke: async ({ instructions, input, signal }) => {
       const response = await fetch(endpoint, { method: 'POST', signal,
         headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model, messages: [{ role: 'user', content: packageJson }] }) });
+        body: JSON.stringify({ model, messages: [{ role: 'system', content: instructions },
+          { role: 'user', content: JSON.stringify(input) }] }) });
       if (!response.ok) throw new Error(`analysis transport failed: ${response.status}`);
-      return response.text();
+      const raw = await response.text();
+      // Preserve raw proposal bytes for strict validation, including duplicate-key detection.
+      let envelope;
+      try { envelope = JSON.parse(raw); } catch { return raw; }
+      return typeof envelope?.choices?.[0]?.message?.content === 'string'
+        ? envelope.choices[0].message.content : raw;
     },
   });
 }
@@ -317,11 +324,12 @@ export async function apply(ctx, config = {}) {
     for (const entry of Array.isArray(config?.tasks) ? config.tasks : []) {
       try {
         const template = validateTask(entry);
+        const autoRepair = entry.autoRepair === true;
         tasks[entry.taskId] = async ({ agent }) => {
           // A fresh executor per call: the caller identity is the one the host handed to this invocation.
           const scoped = new HostExecutor({ context: ctx, tools: ctx.tools, agent });
           executors.push(scoped);
-          return { task: template, authority: { scopeRef: template.scopeRef, workspaceRoot: template.workspaceRoot,
+          return { task: template, autoRepair, authority: { scopeRef: template.scopeRef, workspaceRoot: template.workspaceRoot,
             allowedTools: Array.isArray(entry.allowedTools) ? entry.allowedTools : [],
             agent } };
         };
@@ -343,7 +351,10 @@ export async function apply(ctx, config = {}) {
     const analyzer = makeAnalyzer(config?.analysis);
     base.analysis = analyzer === null ? 'disabled' : 'configured';
 
-    const inner = createExecutionRuntimePlugin({ store, recipes, tasks,
+    // Only native tasks can use the existing replacement policy. The host owns the replacement tool.
+    const nativeRecipes = recipes.map((recipe) => recipe === jsonNormalizeRecipe
+      ? { ...recipe, repairPolicy: jsonNormalizeRepairPolicy } : recipe);
+    const inner = createExecutionRuntimePlugin({ store, recipes: nativeRecipes, tasks,
       validateArguments: supplied ?? (() => true), owner: ctx, resolvePattern, analyzer });
     // Delegate with the host ctx: that is the ctx whose `tools` service must receive the registrations.
     const innerDispose = inner.apply(ctx);

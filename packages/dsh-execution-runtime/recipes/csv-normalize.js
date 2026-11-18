@@ -124,7 +124,8 @@ export function buildCsvCandidate(task, io = LOCAL_IO) {
   const rows = rowsFrom(bytes)
     .map(({ id, name }) => ({ id, name: name.trim() }))
     .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
-  const content = `id,name\n${rows.map((row) => `${encodeField(row.id)},${encodeField(row.name)}`).join('\n')}\n`;
+  const lines = ['id,name', ...rows.map((row) => `${encodeField(row.id)},${encodeField(row.name)}`)];
+  const content = `${lines.join('\n')}\n`;
   return validateCandidate({
     candidateId: 'create-normalized-csv', toolName: 'runtime_write_text',
     arguments: { path: output, content, createOnly: true },

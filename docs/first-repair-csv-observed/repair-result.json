@@ -1,0 +1,58 @@
+{
+  "task": {
+    "taskId": "empty-csv-eebd1363-5f9b-45ef-8434-545b9de22256",
+    "recipeId": "csv-normalize",
+    "recipeVersion": "1",
+    "goal": "Normalize the empty CSV, preserving its header and source bytes.",
+    "scopeRef": "empty-csv-eebd1363-5f9b-45ef-8434-545b9de22256",
+    "workspaceRoot": "C:\\Users\\lyq\\Documents\\deepseek-harness\\default-workspace\\dsh-mind-system-repo\\docs\\first-repair-csv-observed\\workspace",
+    "inputs": {
+      "inputFile": "input.csv",
+      "outputFile": "output.csv"
+    },
+    "deadlineAt": 1794998909951,
+    "budget": {
+      "maxAttempts": 50,
+      "maxToolCalls": 20,
+      "maxIoOperations": 100,
+      "maxDecisionRequests": 100,
+      "maxAnalysisCalls": 5,
+      "maxRecoveryReads": 3,
+      "maxCompensations": 1,
+      "recoveryTimeoutMs": 60000
+    }
+  },
+  "status": "completed",
+  "version": 88,
+  "usage": {
+    "attempts": 2,
+    "toolCalls": 2
+  },
+  "budgetUsage": {
+    "attempts": 2,
+    "toolCalls": 2,
+    "ioOperations": 37,
+    "decisionRequests": 0,
+    "analysisCalls": 1,
+    "recovery": {
+      "reads": 0,
+      "compensations": 0,
+      "startedAt": null
+    }
+  },
+  "state": {
+    "inputs": {
+      "inputFile": "input.csv",
+      "outputFile": "output.csv",
+      "inputSha256": "40d6bfdc74eae2ed68a97137ce414fa4ca6de1b3831cfd9a73c4622d8a8942c1"
+    }
+  },
+  "reason": null,
+  "fence": 2,
+  "owner": {
+    "ownerId": "scheduler:2923d915d1744ca2",
+    "expiresAt": 1794997240765
+  },
+  "createdAt": 1794997110064,
+  "updatedAt": 1794997210882
+}

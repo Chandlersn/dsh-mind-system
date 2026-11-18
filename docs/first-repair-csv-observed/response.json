@@ -1,0 +1,39 @@
+{
+  "kind": "retry_with",
+  "diagnosis": {
+    "location": "The CSV encoder appended two LF bytes to the header for zero rows. The native verifier parsed the blank data line and returned output_invalid_csv.",
+    "cause": "wrong_expectation",
+    "evidenceRefs": [
+      "file:C:\\Users\\lyq\\Documents\\deepseek-harness\\default-workspace\\dsh-mind-system-repo\\docs\\first-repair-csv-observed\\workspace\\input.csv#sha256:40d6bfdc74eae2ed68a97137ce414fa4ca6de1b3831cfd9a73c4622d8a8942c1",
+      "file:C:\\Users\\lyq\\Documents\\deepseek-harness\\default-workspace\\dsh-mind-system-repo\\docs\\first-repair-csv-observed\\workspace\\output.csv#sha256:fa56df87ab9e2f6d3ca95af902aa7f4cf8f1a6a1f22cb56997da95990f4fc290"
+    ]
+  },
+  "requiresHumanReview": false,
+  "candidate": {
+    "candidateId": "repair-header-only",
+    "toolName": "runtime_replace_owned_csv",
+    "arguments": {
+      "path": "C:\\Users\\lyq\\Documents\\deepseek-harness\\default-workspace\\dsh-mind-system-repo\\docs\\first-repair-csv-observed\\workspace\\output.csv",
+      "expectedSha256": "fa56df87ab9e2f6d3ca95af902aa7f4cf8f1a6a1f22cb56997da95990f4fc290",
+      "content": "id,name\n"
+    },
+    "preconditionIds": [
+      "csv-source-hash-unchanged",
+      "csv-owned-output-unchanged",
+      "csv-workspace-scope"
+    ],
+    "postconditionIds": [
+      "csv-rows-match-source",
+      "csv-source-hash-unchanged"
+    ],
+    "inputVersion": "40d6bfdc74eae2ed68a97137ce414fa4ca6de1b3831cfd9a73c4622d8a8942c1",
+    "progressKey": "verified-normalized-csv",
+    "effect": "reversible_write",
+    "idempotencyKey": "empty-csv-eebd1363-5f9b-45ef-8434-545b9de22256:create-normalized-csv",
+    "recoveryContractId": "inspect-output-before-retry",
+    "source": {
+      "recipeId": "csv-normalize",
+      "version": "1"
+    }
+  }
+}

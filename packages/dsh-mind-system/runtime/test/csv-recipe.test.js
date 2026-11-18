@@ -56,6 +56,17 @@ test('a second recipe runs through the unchanged engine to verified completion',
   } finally { await env.close(); }
 });
 
+test('a header-only source completes with exactly one newline', async (t) => {
+  const header = 'id,name\n';
+  const env = await pipeline(t, { source: header });
+  try {
+    const run = await env.scheduler.run(env.task, { authority: env.authority });
+    assert.equal(run.status, 'completed');
+    assert.equal(readFileSync(join(env.host.storage, 'output.csv'), 'utf8'), header);
+    assert.equal(readFileSync(join(env.host.storage, 'source.csv'), 'utf8'), header);
+  } finally { await env.close(); }
+});
+
 test('quoting is parsed rather than taken literally, and output stays minimal', async (t) => {
   const env = await pipeline(t, { source: 'id,name\n"a,1"," Alpha "\n"b""2", Beta \n' });
   try {

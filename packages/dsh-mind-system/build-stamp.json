@@ -809,7 +809,7 @@
     },
     "runtime/recipes/csv-normalize.js": {
       "source": "dsh-execution-runtime/recipes/csv-normalize.js",
-      "sha256": "c08bd6665d27de22e0c819769bbc241783eeb59055415afb38a8a6cc40882096"
+      "sha256": "6ff55cceecf8231d3f1bfde1c0583cece15906d6eae420555397b9079e83825d"
     },
     "runtime/recipes/json-normalize.js": {
       "source": "dsh-execution-runtime/recipes/json-normalize.js",
@@ -965,7 +965,7 @@
     },
     "runtime/src/host-plugin.js": {
       "source": "dsh-execution-runtime/src/host-plugin.js",
-      "sha256": "006928044b58da76b839b23c3010d4146598578bf605b87b214cb4aa28006429"
+      "sha256": "d81851c56f1106f2189f10b681836a0de3addde2eae4d5f613055ba4640eb787"
     },
     "runtime/src/intervention.js": {
       "source": "dsh-execution-runtime/src/intervention.js",
@@ -993,7 +993,7 @@
     },
     "runtime/src/plugin.js": {
       "source": "dsh-execution-runtime/src/plugin.js",
-      "sha256": "3da95f59d9368e564b8963ef6c9e0888dd8491e09e01ef79eaa2e2844f3c72dd"
+      "sha256": "9e42fa4e96039059d91edda5e3250924795f3d37ad5f793d19a02274eefbd4e1"
     },
     "runtime/src/probes.js": {
       "source": "dsh-execution-runtime/src/probes.js",
@@ -1053,7 +1053,7 @@
     },
     "runtime/test/csv-recipe.test.js": {
       "source": "dsh-execution-runtime/test/csv-recipe.test.js",
-      "sha256": "021be74d7366843c6dcfef45b48bd94688299ee7556853863463909ce3033b3e"
+      "sha256": "abad70368b0fe28ae373f270799f738f77adaceb3c5122da018cd582f82e47ae"
     },
     "runtime/test/decision-client.test.js": {
       "source": "dsh-execution-runtime/test/decision-client.test.js",
@@ -1122,6 +1122,10 @@
     "runtime/test/lease.test.js": {
       "source": "dsh-execution-runtime/test/lease.test.js",
       "sha256": "6de75fde1827db35ed6f0c98b3d47a936f7c3c1a3c97447afdcf99d3d212f3fb"
+    },
+    "runtime/test/native-repair-entry.test.js": {
+      "source": "dsh-execution-runtime/test/native-repair-entry.test.js",
+      "sha256": "086ad7a7f7bc37654bc8606ac488d6e73146535a29fab2f1aef2533bc6f22667"
     },
     "runtime/test/pattern-approval.test.js": {
       "source": "dsh-execution-runtime/test/pattern-approval.test.js",

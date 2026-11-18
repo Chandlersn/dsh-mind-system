@@ -1,0 +1,63 @@
+{
+  "task": {
+    "taskId": "empty-csv-eebd1363-5f9b-45ef-8434-545b9de22256",
+    "recipeId": "csv-normalize",
+    "recipeVersion": "1",
+    "scopeRef": "empty-csv-eebd1363-5f9b-45ef-8434-545b9de22256",
+    "workspaceRoot": "C:\\Users\\lyq\\Documents\\deepseek-harness\\default-workspace\\dsh-mind-system-repo\\docs\\first-repair-csv-observed\\workspace",
+    "goal": "Normalize the empty CSV, preserving its header and source bytes.",
+    "inputs": {
+      "inputFile": "input.csv",
+      "outputFile": "output.csv"
+    },
+    "allowedTools": [
+      "runtime_write_text",
+      "runtime_replace_owned_csv"
+    ],
+    "deadlineAt": 1794998909951
+  },
+  "installedHost": "D:\\dsh\\node_modules\\@deepseek-ai\\dsh-tools\\lib\\index.js",
+  "runtime": "C:\\Users\\lyq\\.dsh\\profiles\\web\\node_modules\\dsh-mind-system\\runtime",
+  "probe": {
+    "plugin": "execution-runtime",
+    "status": "ok",
+    "findings": [],
+    "facts": {
+      "enabled": true,
+      "loadError": null,
+      "recipes": [
+        "json-normalize@1",
+        "csv-normalize@1"
+      ],
+      "tasks": 1,
+      "patterns": true,
+      "storePath": "C:\\Users\\lyq\\Documents\\deepseek-harness\\default-workspace\\dsh-mind-system-repo\\docs\\first-repair-csv-observed\\runtime.sqlite",
+      "validator": "host",
+      "analysis": "configured",
+      "recipeLibrary": true,
+      "knowledge": "disabled",
+      "valves": "disabled",
+      "intervention": "enabled",
+      "writeTools": [
+        "runtime_write_json",
+        "runtime_write_text"
+      ],
+      "dynamicTools": [
+        "runtime_execute",
+        "runtime_recipes",
+        "runtime_knowledge",
+        "runtime_pattern",
+        "runtime_verifiers"
+      ],
+      "mount": {
+        "scopeRef": "execution-runtime",
+        "workspaceRoot": "C:\\Users\\lyq\\Documents\\deepseek-harness\\default-workspace\\dsh-mind-system-repo\\docs\\first-repair-csv-observed\\workspace",
+        "allowedTools": [
+          "runtime_write_json",
+          "runtime_write_text"
+        ]
+      },
+      "state": "ready"
+    }
+  }
+}

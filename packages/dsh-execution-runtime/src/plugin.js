@@ -125,15 +125,36 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
       const prepared = await factory({ agent: exec.agent });
       if (!prepared || typeof prepared !== 'object') fail('task_not_registered', 'The native task factory returned no task.');
       const scheduler = schedulerFor(exec.agent);
-      const work = scheduler.run(prepared.task, { authority: prepared.authority, signal: exec.signal });
+      const authority = { ...prepared.authority, allowedTools: prepared.authority?.allowedTools?.slice() };
+      const options = { authority, signal: exec.signal };
+      const autoRepair = prepared.autoRepair === true;
+      const work = (async () => {
+        let run = await scheduler.run(prepared.task, options);
+        const { taskId, recipeId, recipeVersion } = run.task;
+        const analysis = await maybeAnalyze(exec.agent, taskId, authority, exec.signal);
+        let repairError;
+        if (autoRepair && analysis !== null) {
+          run = store.getRun(taskId);
+          if (!disposed && run.status === 'waiting_analysis' && analysis.status === 'proposed'
+            && analysis.route === 'repair_directly') {
+            const record = store.getAnalysis(taskId, analysis.analysisId);
+            const action = record?.result?.repair;
+            const policy = recipes.find((r) => r.id === recipeId && r.version === recipeVersion)?.repairPolicy;
+            if (record?.status === 'proposed' && record.consumedAt === null && action?.kind === 'retry_with'
+              && action.requiresHumanReview === false && action.candidate.source.recipeId === recipeId
+              && action.candidate.source.version === recipeVersion && policy?.allowedTools.includes(action.candidate.toolName)
+              && authority.allowedTools.includes(action.candidate.toolName)) {
+              // The scheduler owns admission, single-use reservation, dispatch and the original verifier.
+              try { run = await scheduler.repair(taskId, analysis.analysisId, options); }
+              catch (error) { repairError = error?.code ?? 'repair_unavailable'; run = store.getRun(taskId); }
+            }
+          }
+        }
+        return { taskId, status: run.status, reason: run.reason, budgetUsage: run.budgetUsage,
+          ...(analysis === null ? {} : { analysis }), ...(repairError ? { repairError } : {}) };
+      })();
       active.add(work);
-      work.finally(() => active.delete(work)).catch(() => {});
-      const run = await work;
-      // A run that stopped for analysis gets one. The analysis records a proposal only — it never
-      // dispatches anything, and a caller still has to act on it through `runtime.status`.
-      const analysis = await maybeAnalyze(exec.agent, run.task.taskId, prepared.authority, exec.signal);
-      return { taskId: run.task.taskId, status: run.status, reason: run.reason,
-        budgetUsage: run.budgetUsage, ...(analysis === null ? {} : { analysis }) };
+      try { return await work; } finally { active.delete(work); }
     },
   };
 

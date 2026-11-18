@@ -1,0 +1,31 @@
+{
+  "isError": false,
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"taskId\": \"empty-csv-eebd1363-5f9b-45ef-8434-545b9de22256\",\n  \"status\": \"waiting_analysis\",\n  \"reason\": \"output_invalid_csv\",\n  \"budgetUsage\": {\n    \"attempts\": 1,\n    \"toolCalls\": 1,\n    \"ioOperations\": 24,\n    \"decisionRequests\": 0,\n    \"analysisCalls\": 0,\n    \"recovery\": {\n      \"reads\": 0,\n      \"compensations\": 0,\n      \"startedAt\": null\n    }\n  },\n  \"analysis\": {\n    \"status\": \"proposed\",\n    \"analysisId\": \"521c2a84-ddf8-45be-b28c-889c43c8a0b9\",\n    \"route\": \"repair_directly\"\n  }\n}"
+    }
+  ],
+  "value": {
+    "taskId": "empty-csv-eebd1363-5f9b-45ef-8434-545b9de22256",
+    "status": "waiting_analysis",
+    "reason": "output_invalid_csv",
+    "budgetUsage": {
+      "attempts": 1,
+      "toolCalls": 1,
+      "ioOperations": 24,
+      "decisionRequests": 0,
+      "analysisCalls": 0,
+      "recovery": {
+        "reads": 0,
+        "compensations": 0,
+        "startedAt": null
+      }
+    },
+    "analysis": {
+      "status": "proposed",
+      "analysisId": "521c2a84-ddf8-45be-b28c-889c43c8a0b9",
+      "route": "repair_directly"
+    }
+  }
+}
