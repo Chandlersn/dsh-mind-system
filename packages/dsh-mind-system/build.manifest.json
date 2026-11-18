@@ -45,6 +45,13 @@
       "exclude": [
         { "path": "cordis.patch.yml", "why": "装配统一由合成包根 patch 表达" }
       ]
+    },
+    {
+      "package": "dsh-execution-runtime",
+      "dir": "runtime",
+      "exclude": [
+        { "path": "README.md", "why": "独立包的工作文档；合成包根有自己的 README" }
+      ]
     }
   ],
   "stamp": "build-stamp.json"

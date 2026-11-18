@@ -35,6 +35,17 @@
     - id: mind
       name: 'dsh-mind-system/agent-mind'
       config: {}
+    # 6. Dual-loop execution runtime: requires tools and the calling agent to be in place
+    #    (each invocation takes its caller identity from exec.agent).
+    #    Enabled here so real tasks start flowing through it and cross-task evidence can accumulate.
+    #    Registers runtime_status / runtime_run (declared templates only) and runtime_execute /
+    #    runtime_verifiers (tasks described at runtime). Acceptance and branching are closed
+    #    vocabularies, so the actor being judged never authors its own acceptance rule.
+    - id: execution-runtime
+      name: 'dsh-mind-system/runtime'
+      config:
+        enabled: true
+        tasks: []
     - id: mind-system
       name: 'dsh-mind-system'
       config: {}

@@ -1,0 +1,162 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { RuntimeContractError, jsonSnapshot, requireString } from './contracts.js';
+
+const fail = (code, message) => { throw new RuntimeContractError(code, message); };
+const HASH = /^[a-f0-9]{64}$/;
+
+/** A pattern version covers everything that would change its meaning, so a later edit invalidates approval. */
+export function patternVersionOf(pattern) {
+  const value = jsonSnapshot(pattern);
+  for (const key of ['patternId', 'statement', 'negativeType', 'keywords', 'scopeRef']) {
+    if (key === 'keywords') {
+      if (!Array.isArray(value?.keywords) || value.keywords.some((item) => typeof item !== 'string')) {
+        fail('invalid_pattern_version', 'A pattern version requires a keyword list.');
+      }
+      continue;
+    }
+    requireString(value?.[key], key);
+  }
+  return createHash('sha256').update(JSON.stringify({ patternId: value.patternId, statement: value.statement,
+    negativeType: value.negativeType, keywords: [...value.keywords].sort(), scopeRef: value.scopeRef })).digest('hex');
+}
+
+/**
+ * A pending approval is a request, not a decision. It is produced only from a candidate that already
+ * passed evidence aggregation, and it carries the exact pattern version it was raised against.
+ */
+export function proposeApproval(candidate, { requestedBy, ttlMs = 86_400_000, now = Date.now } = {}) {
+  const value = jsonSnapshot(candidate);
+  requireString(requestedBy, 'requestedBy');
+  if (value?.activatable !== false) {
+    fail('invalid_approval_request', 'Only a non-activatable candidate may be proposed for approval.');
+  }
+  if (!Number.isSafeInteger(ttlMs) || ttlMs < 1 || ttlMs > 2_592_000_000) {
+    fail('invalid_approval_request', 'An approval request needs a bounded lifetime.');
+  }
+  const version = patternVersionOf({ patternId: value.patternId, statement: value.statement,
+    negativeType: value.negativeType ?? 'out_of_scope_scenario', keywords: value.keywords ?? [],
+    scopeRef: value.scopeRef ?? 'global' });
+  return Object.freeze({ approvalId: `approval:${randomUUID()}`, patternId: value.patternId,
+    patternVersion: version, requestedBy, requestedAt: now(), expiresAt: now() + ttlMs,
+    // A review requirement must survive into the request: if it were dropped here, an automatic policy
+    // could not see it and would happily confirm something a person was supposed to look at.
+    ...(value.requiresHumanReview === true ? { requiresHumanReview: true } : {}),
+    // A pending request is deliberately unable to authorize anything by itself.
+    status: 'pending' });
+}
+
+/**
+ * Record a human decision. The confirmation is bound to the pending request AND to the pattern version
+ * that was reviewed, so a ticket cannot be replayed against a different version or a different pattern.
+ */
+export function confirmApproval(pending, { confirmedBy, human = false, patternVersion, now = Date.now } = {}) {
+  const value = jsonSnapshot(pending);
+  requireString(value?.approvalId, 'approvalId');
+  requireString(value.patternId, 'patternId');
+  requireString(value.patternVersion, 'patternVersion');
+  requireString(confirmedBy, 'confirmedBy');
+  // The human gate is explicit: nothing else may sign a ticket, including an analysis result.
+  if (human !== true) fail('not_human_confirmed', 'Only an explicit human confirmation may approve a pattern.');
+  if (value.status !== 'pending') fail('invalid_approval_state', 'Only a pending request may be confirmed.');
+  if (!HASH.test(patternVersion ?? '') || patternVersion !== value.patternVersion) {
+    fail('approval_version_mismatch', 'The reviewed pattern version does not match this request.');
+  }
+  if (now() >= value.expiresAt) fail('approval_expired', 'The approval request expired before confirmation.');
+  return Object.freeze({ ...value, status: 'confirmed', confirmedBy, confirmedAt: now(),
+    reviewTicket: createHash('sha256').update(`${value.approvalId}:${patternVersion}:${confirmedBy}:${now()}`).digest('hex') });
+}
+
+/** Revocation keeps the record for audit instead of deleting the approval. */
+export function revokeApproval(approval, { revokedBy, reason, now = Date.now } = {}) {
+  const value = jsonSnapshot(approval);
+  requireString(revokedBy, 'revokedBy');
+  requireString(reason, 'reason');
+  if (value?.status !== 'confirmed') fail('invalid_approval_state', 'Only a confirmed approval may be revoked.');
+  return Object.freeze({ ...value, status: 'revoked', revokedBy, revokeReason: reason, revokedAt: now() });
+}
+
+/**
+ * Effective only while confirmed, unexpired, and matched on the exact pattern version. Any edit to the
+ * pattern changes its version and silently disables an old approval instead of keeping it alive.
+ */
+export function approvalApplies(approval, pattern, { now = Date.now } = {}) {
+  if (!approval || approval.status !== 'confirmed') return { applies: false, reason: 'not_confirmed' };
+  if (now() >= approval.expiresAt) return { applies: false, reason: 'expired' };
+  const version = patternVersionOf(pattern);
+  if (version !== approval.patternVersion) return { applies: false, reason: 'pattern_version_changed' };
+  if (pattern.patternId !== approval.patternId) return { applies: false, reason: 'pattern_mismatch' };
+  return { applies: true, reason: 'approved_for_version' };
+}
+
+/** An analysis result or a candidate is never a ticket, whatever fields it happens to carry. */
+export function rejectBorrowedTicket(candidate) {
+  for (const field of ['reviewTicket', 'approvalId', 'permit', 'confirmedBy']) {
+    if (candidate && Object.hasOwn(candidate, field)) {
+      fail('approval_cannot_be_borrowed', `A candidate may not carry ${field}; approval comes only from human confirmation.`);
+    }
+  }
+  return true;
+}
+
+/**
+ * A deliberately narrow, explicitly opt-in auto-confirmation policy.
+ *
+ * Why it exists: with no confirmed approvals at all, the reuse loop can never turn over once — evidence
+ * accumulates and nothing is ever reused. This lets the loop run for observation, but it is not a removal
+ * of the human gate; it is a bounded delegation with every condition checkable:
+ *
+ * - Opt-in only. The caller must pass an object; there is no default that silently enables it.
+ * - Never on the first evidence: the requirement is strictly above the resolver's own threshold, so a
+ *   pattern only auto-confirms after it already cleared the normal bar.
+ * - Never for out-of-scope or review-required patterns: those still need a person.
+ * - Short-lived, and bound to a distinct pattern version, so any edit to the pattern disables it.
+ * - The ticket records that it was machine-issued, so an audit can always tell the two apart.
+ *
+ * An auto ticket is a real confirmed approval: `approvalApplies` accepts it, and revocation still works.
+ */
+export function confirmApprovalAutomatically(pending, { automation = null, evidence, pattern, now = Date.now } = {}) {
+  if (automation === null || typeof automation !== 'object' || Array.isArray(automation)) {
+    fail('automation_disabled', 'Automatic confirmation must be explicitly enabled by the caller.');
+  }
+  if (automation.allowAutomatic !== true) {
+    fail('automation_disabled', 'Automatic confirmation requires allowAutomatic: true.');
+  }
+  requireString(automation.operator, 'automation.operator');
+  const value = jsonSnapshot(pending);
+  if (value?.status !== 'pending') fail('invalid_approval_state', 'Only a pending request may be confirmed.');
+  if (value.requiresHumanReview === true) {
+    fail('automation_not_permitted', 'A pattern requiring human review cannot be auto-confirmed.');
+  }
+  const minRuns = automation.minIndependentRuns;
+  if (!Number.isSafeInteger(minRuns) || minRuns < 2) {
+    fail('automation_not_permitted', 'Automatic confirmation needs a declared independent-run requirement.');
+  }
+  const independentRuns = evidence?.independentRuns ?? 0;
+  if (independentRuns < minRuns) {
+    fail('automation_evidence_insufficient', `Automatic confirmation needs ${minRuns} independent runs, saw ${independentRuns}.`);
+  }
+  const checked = validateVerificationLike(evidence);
+  if (checked.successRate < (automation.minSuccessRate ?? 0.8)) {
+    fail('automation_success_rate_too_low', 'Automatic confirmation requires a high success rate.');
+  }
+  if (now() >= value.expiresAt) fail('approval_expired', 'The approval request expired before confirmation.');
+  // The ticket is bound to the version that was reviewed, exactly like a human confirmation.
+  if (patternVersionOf(pattern) !== value.patternVersion) {
+    fail('approval_version_mismatch', 'The reviewed pattern version does not match this request.');
+  }
+  const ttlMs = Math.min(automation.ttlMs ?? 3_600_000, 86_400_000);
+  return Object.freeze({ ...value, status: 'confirmed', confirmedBy: `automation:${automation.operator}`,
+    confirmedAt: now(), expiresAt: Math.min(value.expiresAt, now() + ttlMs),
+    automation: Object.freeze({ operator: automation.operator, independentRuns, successRate: checked.successRate }),
+    reviewTicket: createHash('sha256')
+      .update(`${value.approvalId}:${value.patternVersion}:automation:${now()}`).digest('hex') });
+}
+
+/** Narrow validation for the evidence fields auto-confirmation actually relies on. */
+function validateVerificationLike(evidence) {
+  const rate = evidence?.successRate;
+  if (typeof rate !== 'number' || !(rate >= 0 && rate <= 1)) {
+    fail('automation_evidence_insufficient', 'Automatic confirmation needs an observed success rate.');
+  }
+  return { successRate: rate };
+}

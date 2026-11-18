@@ -29,7 +29,8 @@
     "./valves": "./valves/index.js",
     "./memory-manager": "./memory/server.js",
     "./client": "./memory/client.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./runtime": "./runtime/src/host-plugin.js"
   },
   "files": [
     "index.js",
