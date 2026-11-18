@@ -29,7 +29,9 @@ import { RuntimeScheduler } from './scheduler.js';
 import { createExecutionRuntimePlugin } from './plugin.js';
 import { createPatternResolver } from './pattern-resolver.js';
 import { createRecipeRegistry } from './recipe-factory.js';
-import { createExecuteTool, createLibraryTool, describePrimitivesTool } from './dynamic-tools.js';
+import { createExecuteTool, createLibraryTool, createKnowledgeTool, describePrimitivesTool }
+  from './dynamic-tools.js';
+import { createSagAdapter, resolveSagKey } from './knowledge-sag.js';
 import { createRecipeLibrary } from './recipe-library.js';
 import { Analyzer } from './analyzer.js';
 import { jsonNormalizeRecipe } from '../recipes/json-normalize.js';
@@ -137,6 +139,27 @@ function makeAnalyzer(config) {
   });
 }
 
+/**
+ * Build the knowledge channel from explicit configuration, or report it as unavailable.
+ *
+ * Unlike the analyzer, a missing key is still worth surfacing: the caller learns "not configured" from a
+ * refusal that names the reason, rather than from a tool that silently does not exist. `enabled: false`
+ * keeps it off entirely.
+ */
+function makeKnowledgeChannel(config) {
+  if (!config || typeof config !== 'object' || config.enabled !== true) {
+    return { adapter: null, endpoint: config?.endpoint ?? null };
+  }
+  const endpoint = typeof config.endpoint === 'string' && config.endpoint
+    ? config.endpoint : 'http://127.0.0.1:24681';
+  const resolved = typeof config.apiKey === 'string' && config.apiKey.trim()
+    ? { key: config.apiKey.trim(), source: 'config' }
+    : resolveSagKey();
+  const adapter = createSagAdapter({ endpoint, apiKey: resolved.key,
+    sagCmd: typeof config.sagCmd === 'string' && config.sagCmd ? config.sagCmd : 'sag' });
+  return { adapter, endpoint };
+}
+
 export async function apply(ctx, config = {}) {
   const logger = optional(ctx, 'logger')?.('execution-runtime') ?? null;
   const base = { enabled: config?.enabled === true, loadError: null, recipes: [], tasks: 0, patterns: false };
@@ -220,11 +243,19 @@ export async function apply(ctx, config = {}) {
     // was learned. It is created through the store's scoped accessor rather than holding the handle.
     const library = store?.withDatabase ? store.withDatabase((db) => createRecipeLibrary({ db })) : null;
     base.recipeLibrary = library !== null;
+
+    // The knowledge channel is opt-in: it reaches outside the runtime into the SAG index, which is a
+    // deployment decision, not a default. When it is not configured the tool still registers but refuses
+    // with a reason, so a caller learns why instead of seeing an empty result.
+    const knowledge = makeKnowledgeChannel(config?.knowledge);
+    base.knowledge = knowledge.adapter === null ? 'disabled' : 'configured';
+
     const dynamicDisposers = [];
     const dynamicTools = [
       createExecuteTool({ store, schedulerFor: schedulerFactory, toolEffects, mount,
         registry: dynamicRegistry, library }),
       createLibraryTool({ library }),
+      createKnowledgeTool({ adapter: knowledge.adapter, endpoint: knowledge.endpoint }),
       describePrimitivesTool,
     ];
     for (const tool of dynamicTools) {
@@ -233,7 +264,7 @@ export async function apply(ctx, config = {}) {
       else base.dynamicToolsError = 'the host did not accept a dynamic tool';
     }
     base.dynamicTools = Array.isArray(base.dynamicTools) ? base.dynamicTools : [];
-    base.dynamicTools = ['runtime_execute', 'runtime_recipes', 'runtime_verifiers']
+    base.dynamicTools = ['runtime_execute', 'runtime_recipes', 'runtime_knowledge', 'runtime_verifiers']
       .filter((name) => !base.dynamicToolsError);
     base.mount = { scopeRef: mount.scopeRef, workspaceRoot: mount.workspaceRoot,
       allowedTools: mount.allowedTools };

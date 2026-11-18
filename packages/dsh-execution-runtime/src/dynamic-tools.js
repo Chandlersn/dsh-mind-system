@@ -2,6 +2,7 @@ import { RuntimeContractError, requireString } from './contracts.js';
 import { buildRecipeFromSpec, createRecipeRegistry } from './recipe-factory.js';
 import { describePrimitives, VERIFIER_PRIMITIVES } from './verifier-primitives.js';
 import { describeConditions } from './condition-primitives.js';
+import { readKnowledge, writeKnowledge } from './knowledge.js';
 
 /**
  * The tool that lets a caller describe a task at runtime instead of naming a pre-registered template.
@@ -161,6 +162,60 @@ export function createLibraryTool({ library }) {
           ? Math.max(0, args.minVerifiedRuns) : 1, limit });
       return { available: true, matched: typeof args?.goal === 'string' && Boolean(args.goal.trim()),
         count: entries.length, entries };
+    },
+  };
+}
+
+/** A read/write knowledge channel, backed by whatever adapter the host configured. */
+export function createKnowledgeTool({ adapter = null, endpoint = null } = {}) {
+  return {
+    name: 'runtime_knowledge',
+    description: 'Read or write the knowledge base through its owning domain. Reading returns content with '
+      + 'its domain identity attached, so scratch notes are never relabelled as formal. Writing reports '
+      + '"stored" and "indexed" as separate facts: content that was written but not made searchable is '
+      + 'reported as such, never as a success. Without a configured adapter both directions refuse rather '
+      + 'than returning an empty result that would read like "nothing found".',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['read', 'write'], description: 'Which direction to use.' },
+        domain: { type: 'string', enum: ['formal', 'workspace', 'scratch'],
+          description: 'Owning domain; it decides how much the content is trusted.' },
+        id: { type: 'string', description: 'Knowledge id, e.g. a note name or topic.' },
+        version: { type: 'string', description: 'Knowledge version.' },
+        content: { type: 'object', description: 'For write: { path } of the file to index.',
+          additionalProperties: true },
+        origin: { type: 'string', description: 'For write: who produced this content; defaults to runtime.' },
+      },
+      required: ['action', 'domain', 'id', 'version'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] },
+    async execute(args, exec) {
+      if (adapter === null) {
+        return { available: false, reason: 'The knowledge channel is not configured.', endpoint };
+      }
+      const reference = { domain: args?.domain, id: args?.id, version: args?.version };
+      try {
+        if (args?.action === 'read') {
+          const result = await readKnowledge({ adapter, reference, signal: exec?.signal });
+          return { available: true, action: 'read', ref: result.ref, trust: result.trust,
+            verified: result.verified, itemCount: result.content?.length ?? 0, content: result.content };
+        }
+        if (args?.action === 'write') {
+          const result = await writeKnowledge({ adapter, reference, content: args?.content,
+            origin: args?.origin ?? 'runtime', signal: exec?.signal });
+          return { available: true, action: 'write', ref: result.ref, state: result.state,
+            stored: result.stored, indexed: result.indexed, indexError: result.indexError };
+        }
+        return { available: true, action: 'refused', reason: 'action must be read or write' };
+      } catch (error) {
+        // A failure carries its reason code. Returning an empty list instead would read like "the knowledge
+        // base has nothing", which is a different and misleading claim.
+        return { available: true, action: args?.action, error: error?.code ?? 'knowledge_failed',
+          message: String(error?.message ?? error).slice(0, 200) };
+      }
     },
   };
 }

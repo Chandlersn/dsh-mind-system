@@ -27,7 +27,8 @@ function run(args, label) {
 try {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
   const testsInOrder = ['test/recipe-factory.test.js', 'test/dynamic-task.test.js',
-    'test/verifier-primitives.test.js', 'test/recipe-library.test.js', 'test/analysis-wiring.test.js'];
+    'test/verifier-primitives.test.js', 'test/recipe-library.test.js', 'test/analysis-wiring.test.js',
+    'test/knowledge-wiring.test.js'];
   for (const file of collectModuleClosure(source, testsInOrder)) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
     writeFileSync(join(root, file), readFileSync(join(source, file)));
@@ -147,6 +148,27 @@ try {
       old: '    if (analyzer === null) return null;',
       replacement: '    if (analyzer === null) return { analyze: async () => ({ status: \'analysis_unavailable\' }) };',
       test: /not ok \d+ - without an analyzer the plugin behaves exactly as before/ },
+    // An unavailable channel must refuse with a reason. Answering with an empty result instead would read as
+    // "the knowledge base has nothing", which is a different and misleading claim.
+    { name: 'unconfigured_channel_returns_empty', file: 'src/dynamic-tools.js',
+      old: "        return { available: false, reason: 'The knowledge channel is not configured.', endpoint };",
+      replacement: '        return { available: true, action: args?.action, itemCount: 0, content: [] };',
+      test: /not ok \d+ - the tool refuses with a reason/ },
+    // A failure must carry its code, not be swallowed into a result shape that looks like content.
+    { name: 'knowledge_failure_swallowed', file: 'src/dynamic-tools.js',
+      old: "        return { available: true, action: args?.action, error: error?.code ?? 'knowledge_failed',",
+      replacement: '        return { available: true, action: args?.action, itemCount: 0, content: [],',
+      test: /not ok \d+ - an adapter failure is reported with its code/ },
+    // Stored and indexed are different facts; collapsing them hides a write nobody can find.
+    { name: 'stored_counts_as_indexed', file: 'src/knowledge.js',
+      old: '  const indexed = stored && outcome.indexed === true;',
+      replacement: '  const indexed = stored;',
+      test: /not ok \d+ - a write reports stored and indexed as separate facts/ },
+    // The domain decides trust; a scratch note must never be upgraded to verified.
+    { name: 'scratch_upgraded_to_verified', file: 'src/knowledge.js',
+      old: "    verified: ref.domain === 'formal' ? result.verified === true : false });",
+      replacement: '    verified: result.verified === true });',
+      test: /not ok \d+ - reading keeps the domain identity/ },
   ];
   const observed = [];
   for (const mutant of mutants) {
