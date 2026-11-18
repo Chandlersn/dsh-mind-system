@@ -83,7 +83,7 @@ export function buildJsonCandidate(task, io = LOCAL_IO) {
     .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
   const content = `${JSON.stringify(normalized, null, 2)}\n`;
   return validateCandidate({
-    candidateId: 'create-normalized-json', toolName: 'runtime.write_json',
+    candidateId: 'create-normalized-json', toolName: 'runtime_write_json',
     arguments: { path: output, content, createOnly: true },
     preconditionIds: ['source-hash-unchanged', 'output-absent', 'workspace-scope'],
     postconditionIds: ['normalized-records-match-source', 'source-hash-unchanged'],
@@ -143,7 +143,7 @@ const boundTask = (task, state) => ({ ...task, inputs: state.inputs });
 
 export const jsonNormalizeRecipe = Object.freeze({
   id: RECIPE_ID, version: RECIPE_VERSION, ruleVersion: 'json-normalize-single-action-v1',
-  allowedTools: ['runtime.write_json'], toolEffects: { 'runtime.write_json': 'reversible_write' },
+  allowedTools: ['runtime_write_json'], toolEffects: { 'runtime_write_json': 'reversible_write' },
   requiredPreconditionIds: ['source-hash-unchanged', 'output-absent', 'workspace-scope'],
   postconditionIds: ['normalized-records-match-source', 'source-hash-unchanged'],
   verificationIoReserve: 5,

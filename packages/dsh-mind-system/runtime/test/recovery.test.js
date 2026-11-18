@@ -20,7 +20,7 @@ async function fixture(t, { postFailure = false, idempotencyKey } = {}) {
   store = new RuntimeStore(join(host.root, 'recovery.sqlite'));
   executor = new HostExecutor({ context: host.ctx, tools: host.tools, agent });
   writeFileSync(join(host.storage, 'source.json'), JSON.stringify([{ id: 'a', name: ' Alpha ' }]));
-  host.tools.register({ name: 'runtime.write_json', description: 'Create an owned fixture artifact.',
+  host.tools.register({ name: 'runtime_write_json', description: 'Create an owned fixture artifact.',
     parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, createOnly: { type: 'boolean', enum: [true] } },
       required: ['path', 'content', 'createOnly'], additionalProperties: false },
     output: { schema: {}, render: () => [{ type: 'text', text: '{"created":true}' }] },
@@ -30,7 +30,7 @@ async function fixture(t, { postFailure = false, idempotencyKey } = {}) {
       return { created: true };
     } });
   if (postFailure) host.ctx.on('tools/post-execute', async () => ({ kind: 'block', feedback: [{ type: 'text', text: 'Post failure after the file exists.' }] }));
-  const authority = { scopeRef: `recovery-${randomUUID()}`, workspaceRoot: host.storage, allowedTools: ['runtime.write_json'], agent };
+  const authority = { scopeRef: `recovery-${randomUUID()}`, workspaceRoot: host.storage, allowedTools: ['runtime_write_json'], agent };
   const task = { taskId: randomUUID(), recipeId: 'json-normalize', recipeVersion: '1', goal: 'Create normalized sorted records.',
     scopeRef: authority.scopeRef, workspaceRoot: host.storage, inputs: { inputFile: 'source.json', outputFile: 'output.json' },
     deadlineAt: Date.now() + 60_000 };
@@ -39,8 +39,8 @@ async function fixture(t, { postFailure = false, idempotencyKey } = {}) {
   return { host, store, executor, scheduler, task, authority, agent, idempotencyKey };
 }
 
-const recipe = (candidate) => ({ ...jsonNormalizeRecipe, allowedTools: ['runtime.write_json'],
-  toolEffects: { 'runtime.write_json': 'reversible_write' },
+const recipe = (candidate) => ({ ...jsonNormalizeRecipe, allowedTools: ['runtime_write_json'],
+  toolEffects: { 'runtime_write_json': 'reversible_write' },
   requiredPreconditionIds: ['workspace-scope'],
   candidates: () => [{ ...candidate, preconditionIds: ['workspace-scope'], postconditionIds: jsonNormalizeRecipe.postconditionIds,
     source: { recipeId: 'json-normalize', version: '1' } }],
@@ -89,7 +89,7 @@ test('reconciliation cannot invent success, skip frozen attempts or replay work'
 
 test('an unknown write stays claimed until reconciliation resolves it', async (t) => {
   const env = await fixture(t, { postFailure: true });
-  const candidate = { candidateId: 'write-once', toolName: 'runtime.write_json', progressKey: 'created',
+  const candidate = { candidateId: 'write-once', toolName: 'runtime_write_json', progressKey: 'created',
     arguments: { path: join(env.host.storage, 'output.json'), content: '[]', createOnly: true },
     preconditionIds: ['workspace-scope'], postconditionIds: jsonNormalizeRecipe.postconditionIds,
     effect: 'reversible_write', source: { recipeId: 'json-normalize', version: '1' }, idempotencyKey: 'write-unique-1' };
@@ -99,19 +99,19 @@ test('an unknown write stays claimed until reconciliation resolves it', async (t
   const run = await scheduler.run(env.task, { authority: env.authority });
   assert.equal(run.status, 'reconciling');
   // The effect is unknown, so it is not yet claimed as applied; the frozen attempt already blocks new work.
-  assert.equal(env.store.idempotencyClaimed(env.task.taskId, 'write-unique-1', 'runtime.write_json'), false);
+  assert.equal(env.store.idempotencyClaimed(env.task.taskId, 'write-unique-1', 'runtime_write_json'), false);
   const { attemptId } = env.store.listUnresolved(env.task.taskId)[0];
   env.scheduler.reconcile(env.task.taskId, { authority: env.authority,
     resolutions: [{ attemptId, resolution: 'applied', evidenceRef: 'file:output.json#sha256:fixture' }] });
   // Once reconciled as applied, the key is permanently claimed even though the goal was never verified.
-  assert.equal(env.store.idempotencyClaimed(env.task.taskId, 'write-unique-1', 'runtime.write_json'), true);
+  assert.equal(env.store.idempotencyClaimed(env.task.taskId, 'write-unique-1', 'runtime_write_json'), true);
   assert.equal(env.store.getLatestAttempt(env.task.taskId).status, 'reconciled_applied');
   assert.equal(env.host.count('business_write'), 1, 'Reconciliation must not replay the effect.');
 });
 
 test('reserving a verified applied effect again is refused by the guard itself', async (t) => {
   const env = await fixture(t);
-  const candidate = { candidateId: 'dup', toolName: 'runtime.write_json', progressKey: 'created',
+  const candidate = { candidateId: 'dup', toolName: 'runtime_write_json', progressKey: 'created',
     arguments: { path: join(env.host.storage, 'output.json'), content: '[]', createOnly: true },
     preconditionIds: ['workspace-scope'], postconditionIds: jsonNormalizeRecipe.postconditionIds,
     effect: 'reversible_write', source: { recipeId: 'json-normalize', version: '1' }, idempotencyKey: 'write-dup' };
@@ -130,7 +130,7 @@ test('reserving a verified applied effect again is refused by the guard itself',
 });
 test('the same key on another tool is a different business effect', async (t) => {
   const env = await fixture(t);
-  const candidate = { candidateId: 'write-once', toolName: 'runtime.write_json', progressKey: 'created',
+  const candidate = { candidateId: 'write-once', toolName: 'runtime_write_json', progressKey: 'created',
     arguments: { path: join(env.host.storage, 'output.json'), content: '[]', createOnly: true },
     preconditionIds: ['workspace-scope'], postconditionIds: jsonNormalizeRecipe.postconditionIds,
     effect: 'reversible_write', source: { recipeId: 'json-normalize', version: '1' }, idempotencyKey: 'write-shared' };
@@ -141,13 +141,13 @@ test('the same key on another tool is a different business effect', async (t) =>
   env.store.recordOutcome(task.taskId, first.attemptId, { status: 'succeeded' },
     { status: 'pass', progress: 'advanced', goalSatisfied: false, verifierId: 'fixture', verifierVersion: '1',
       evidenceRefs: ['file:output.json#sha256:fixture'] }, { expectedVersion: env.store.getRun(task.taskId).version });
-  assert.equal(env.store.idempotencyClaimed(task.taskId, 'write-shared', 'runtime.write_json'), true);
-  assert.equal(env.store.idempotencyClaimed(task.taskId, 'write-shared', 'runtime.replace_json'), false);
+  assert.equal(env.store.idempotencyClaimed(task.taskId, 'write-shared', 'runtime_write_json'), true);
+  assert.equal(env.store.idempotencyClaimed(task.taskId, 'write-shared', 'runtime_replace_json'), false);
 });
 
 test('a known-bad effect keeps the same key correctable', async (t) => {
   const env = await fixture(t);
-  const candidate = { candidateId: 'write-once', toolName: 'runtime.write_json', progressKey: 'created',
+  const candidate = { candidateId: 'write-once', toolName: 'runtime_write_json', progressKey: 'created',
     arguments: { path: join(env.host.storage, 'output.json'), content: '[]', createOnly: true },
     preconditionIds: ['workspace-scope'], postconditionIds: jsonNormalizeRecipe.postconditionIds,
     effect: 'reversible_write', source: { recipeId: 'json-normalize', version: '1' }, idempotencyKey: 'write-correctable' };
@@ -159,7 +159,7 @@ test('a known-bad effect keeps the same key correctable', async (t) => {
     { status: 'fail', progress: 'unchanged', goalSatisfied: false, verifierId: 'fixture', verifierVersion: '1',
       evidenceRefs: ['file:output.json#sha256:fixture'] }, { expectedVersion: env.store.getRun(task.taskId).version });
   // A verified failure is not an applied effect, so the same intent may still be repaired.
-  assert.equal(env.store.idempotencyClaimed(task.taskId, 'write-correctable', 'runtime.write_json'), false);
+  assert.equal(env.store.idempotencyClaimed(task.taskId, 'write-correctable', 'runtime_write_json'), false);
 });
 test('ordinary runs without an idempotency key are unaffected', async (t) => {
   const env = await fixture(t);

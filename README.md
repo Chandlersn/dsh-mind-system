@@ -138,7 +138,9 @@ valves 将候选输入与判据裁决分开：`valve_check` 检查下行、上�
 
 ### 5. 任务执行与自修复
 
-execution-runtime 提供四个工具：`runtime_run` / `runtime_status` 只认宿主原生声明过的任务模板（调用方无法影响目标、范围与验收）；`runtime_execute` 接受**运行时描述的任务**并由配方工厂生成可执行配方；`runtime_verifiers` 列出可用的验收与分支原语。
+execution-runtime 的任务入口包括：`runtime_run` 执行宿主原生声明的任务模板；`runtime_status` 查询模板和已持久化的任务状态；`runtime_execute` 接受**运行时描述的任务**并由配方工厂生成可执行配方；`runtime_verifiers` 列出可用的验收与分支原语。配方复用、知识通道与模式提交分别使用 `runtime_recipes`、`runtime_knowledge`、`runtime_pattern`。
+
+宿主同时注册 `runtime_write_json` 和 `runtime_write_text`，使生成配方可以实际写入产物。工具名使用下划线，以兼容严格模型 API。两个工具只能在挂载工作区内**新建**文件：现有目标及 `createOnly:false` 都拒绝；完整内容通过临时文件与硬链接发布，并发出现的目标也不会被替换。文件系统不支持硬链接时明确失败，不回退到覆盖写入。此机制不承诺断电持久性，也不防御同权限进程并发替换父目录。覆盖和补偿需要另行提供带所有权与版本约束的工具。
 
 **三层结构：两层动态，一层守死。**
 
@@ -160,7 +162,7 @@ execution-runtime 提供四个工具：`runtime_run` / `runtime_status` 只认�
 
 异常分析需要宿主显式配置推理传输（endpoint / model / key）。**未配置时分析整个关闭**，而不是降级成一个只会记录 `unavailable` 的组件——确定性路径照常工作，返回里也不会出现 `analysis` 字段。诊断原因走闭合词汇（`wrong_guess` / `environment_changed` / `wrong_expectation` / `unknown`），不接受自由文本：诊断要能被归类才能指导修复，散文不能。分析结果只是**提议**，不会自行派发任何动作。
 
-真实运行状态在宿主工作目录下的 `.execution-runtime/`（`runtime.sqlite`），不是 `~/.dsh`。探针报 `disabled` / `no-tasks` / `load-failed` 时不要当成可用。
+真实运行状态在宿主工作目录下的 `.execution-runtime/`（`runtime.sqlite`），不是 `~/.dsh`。探针报 `disabled` / `load-failed` 时不可用；`no-tasks` 只表示 `runtime_run` 没有预注册模板，`runtime_execute` 仍可处理运行时描述的任务。
 
 **配方库（`runtime_recipes`）**把用过的配方规格存进同一个数据库，让后续任务可以按目标找回来而不是重新描述。它存的是**规格数据不是配方对象**——配方带可执行回调，把回调存进数据库意味着从库里加载代码，信任面远大于加载数据。三条边界：
 

@@ -26,14 +26,14 @@ async function pipeline(t, { source = 'id,name\nb, Beta \na, Alpha \n' } = {}) {
   const executor = new HostExecutor({ context: host.ctx, tools: host.tools, agent });
   const { assertObjectJsonSchema, validateJsonSchemaValue } = await import(pathToFileURL(installed['dsh-tools'].entry).href);
   writeFileSync(join(host.storage, 'source.csv'), source);
-  host.tools.register({ name: 'runtime.write_text', description: 'Create the owned text artifact.',
+  host.tools.register({ name: 'runtime_write_text', description: 'Create the owned text artifact.',
     parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, createOnly: { type: 'boolean', enum: [true] } },
       required: ['path', 'content', 'createOnly'], additionalProperties: false },
     output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
     async execute({ path, content }) { writeFileSync(path, content, { flag: 'wx' }); return { created: true }; } });
   const scheduler = new RuntimeScheduler({ store, executor, recipes: [csvNormalizeRecipe], tools: host.tools,
     validateArguments({ tool, arguments: args }) { assertObjectJsonSchema(tool.parameters); return validateJsonSchemaValue(tool.parameters, args); } });
-  const authority = { scopeRef: 'csv-scope', workspaceRoot: host.storage, allowedTools: ['runtime.write_text'], agent };
+  const authority = { scopeRef: 'csv-scope', workspaceRoot: host.storage, allowedTools: ['runtime_write_text'], agent };
   const task = { taskId: randomUUID(), recipeId: RECIPE_ID, recipeVersion: '1', goal: 'Normalize the CSV.',
     scopeRef: authority.scopeRef, workspaceRoot: host.storage, inputs: { inputFile: 'source.csv', outputFile: 'output.csv' },
     deadlineAt: Date.now() + 60_000 };
@@ -71,7 +71,7 @@ test('an output that parses but does not match is rejected by verification, not 
   const env = await pipeline(t);
   try {
     // Write a valid CSV that is wrong in content: verification must catch it even though the file parses.
-    env.host.tools.get('runtime.write_text').execute = async ({ path }) => {
+    env.host.tools.get('runtime_write_text').execute = async ({ path }) => {
       writeFileSync(path, 'id,name\na,Wrong\nb,Beta\n', { flag: 'wx' });
       return { created: true };
     };

@@ -92,7 +92,7 @@ function fixture(t, { analyzer = null, succeeds = false } = {}) {
   owner.tools = tools;
 
   tools.register({
-    name: 'runtime.write_text',
+    name: 'runtime_write_text',
     parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' },
       createOnly: { type: 'boolean', enum: [true] } },
       required: ['path', 'content', 'createOnly'], additionalProperties: false },
@@ -102,8 +102,8 @@ function fixture(t, { analyzer = null, succeeds = false } = {}) {
 
   const recipe = {
     id: 'never-matches', version: '1', ruleVersion: '1',
-    allowedTools: ['runtime.write_text'],
-    toolEffects: { 'runtime.write_text': 'reversible_write' },
+    allowedTools: ['runtime_write_text'],
+    toolEffects: { 'runtime_write_text': 'reversible_write' },
     // Both condition lists must be non-empty: the contract refuses a candidate that declares neither, so an
     // empty array here would fail at candidate generation and never reach the analysis this file tests.
     requiredPreconditionIds: ['workspace'],
@@ -112,7 +112,7 @@ function fixture(t, { analyzer = null, succeeds = false } = {}) {
     prepare: () => ({}),
     // Deliberately unsatisfiable: the run must stop for analysis, which is what this whole file exercises.
     candidates: ({ task }) => [{
-      candidateId: `${task.taskId}:main`, toolName: 'runtime.write_text',
+      candidateId: `${task.taskId}:main`, toolName: 'runtime_write_text',
       arguments: { path: join(root, 'out.txt'), content: 'x', createOnly: true },
       preconditionIds: ['workspace'], postconditionIds: ['goal'], inputVersion: null,
       progressKey: 'p', effect: 'reversible_write', idempotencyKey: `${task.taskId}:main`,
@@ -136,7 +136,7 @@ function fixture(t, { analyzer = null, succeeds = false } = {}) {
 
   const plugin = createExecutionRuntimePlugin({ store, recipes: [recipe],
     tasks: { run: async ({ agent }) => ({ task, authority: { scopeRef: 'scope-a', workspaceRoot: root,
-      allowedTools: ['runtime.write_text'], agent } }) },
+      allowedTools: ['runtime_write_text'], agent } }) },
     // An empty violation list means "the arguments are acceptable"; anything else would block dispatch.
     validateArguments: () => [], owner, analyzer });
   const dispose = plugin.apply(owner);

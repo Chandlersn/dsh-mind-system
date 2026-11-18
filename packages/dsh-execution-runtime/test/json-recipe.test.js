@@ -22,7 +22,7 @@ test('the fixture recipe creates a complete action and independently verifies ex
   const fixtureState = fixture(t);
   const task = fixtureState.task();
   const candidate = buildJsonCandidate(task);
-  assert.equal(candidate.toolName, 'runtime.write_json');
+  assert.equal(candidate.toolName, 'runtime_write_json');
   assert.equal(candidate.arguments.createOnly, true);
   assert.equal(verifyJsonOutput(task).status, 'fail');
   writeFileSync(candidate.arguments.path, candidate.arguments.content, { flag: 'wx' });

@@ -173,7 +173,7 @@ test('a superseded scheduler cannot settle its own in-flight attempt', async (t)
   executor = new HostExecutor({ context: host.ctx, tools: host.tools, agent });
   writeFileSync(join(host.storage, 'source.json'), JSON.stringify([{ id: 'a', name: ' Alpha ' }]));
   let hijacked = false;
-  host.tools.register({ name: 'runtime.write_json', description: 'Create the fixture artifact.',
+  host.tools.register({ name: 'runtime_write_json', description: 'Create the fixture artifact.',
     parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, createOnly: { type: 'boolean', enum: [true] } },
       required: ['path', 'content', 'createOnly'], additionalProperties: false },
     output: { schema: {}, render: () => [{ type: 'text', text: '{"created":true}' }] },
@@ -194,7 +194,7 @@ test('a superseded scheduler cannot settle its own in-flight attempt', async (t)
       assertObjectJsonSchema(tool.parameters);
       return validateJsonSchemaValue(tool.parameters, args);
     } });
-  const authority = { scopeRef: input.scopeRef, workspaceRoot: host.storage, allowedTools: ['runtime.write_json'], agent };
+  const authority = { scopeRef: input.scopeRef, workspaceRoot: host.storage, allowedTools: ['runtime_write_json'], agent };
   await assert.rejects(async () => scheduler.run(input, { authority }), (failure) => {
     assert.equal(failure.code, 'stale_owner', 'The superseded worker must not settle the attempt.');
     return true;

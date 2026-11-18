@@ -4,7 +4,7 @@ import { patternIdentity, classifyRepairEvidence, summarizePatternEvidence, buil
 
 const constraint = (overrides = {}) => ({ recipeId: 'json-normalize', recipeVersion: '1', scopeRef: 'scope-a',
   verifierId: 'json-source-output', verifierVersion: '1', trigger: 'verification_failed',
-  toolName: 'runtime.replace_json', ...overrides });
+  toolName: 'runtime_replace_json', ...overrides });
 
 const pattern = (overrides) => patternIdentity({ ...constraint(), ...overrides }).patternId;
 

@@ -7,13 +7,16 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createHost } from './helpers/host.js';
 import * as hostEntry from '../src/host-plugin.js';
 
-const patchPath = join(process.cwd(), 'packages', 'dsh-mind-system', 'cordis.patch.yml');
+const patchPath = [
+  join(import.meta.dirname, '..', '..', 'cordis.patch.yml'),
+  join(import.meta.dirname, '..', '..', 'dsh-mind-system', 'cordis.patch.yml'),
+].find(existsSync);
 
 /** Read the runtime entry out of the shipped patch without a YAML dependency. */
 function runtimeEntryFromPatch() {
@@ -44,18 +47,12 @@ test('the enabled configuration runs a task end to end in a real host', async (t
   const host = await createHost(t);
   const stateDir = mkdtempSync(join(host.root, 'state-'));
   writeFileSync(join(host.storage, 'source.csv'), 'id,name\nb, Beta \na, Alpha \n');
-  host.tools.register({ name: 'runtime.write_text', description: 'Create the owned text artifact.',
-    parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' },
-      createOnly: { type: 'boolean', enum: [true] } },
-      required: ['path', 'content', 'createOnly'], additionalProperties: false },
-    output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
-    async execute({ path, content }) { writeFileSync(path, content, { flag: 'wx' }); return { created: true }; } });
   const taskId = randomUUID();
-  const fiber = await host.ctx.plugin(hostEntry.plugin, { enabled: true, stateDir,
+  const fiber = await host.ctx.plugin(hostEntry.plugin, { enabled: true, stateDir, workspaceRoot: host.storage,
     tasks: [{ taskId, recipeId: 'csv-normalize', recipeVersion: '1', goal: 'Normalize the CSV.',
       scopeRef: 'host-scope', workspaceRoot: host.storage,
       inputs: { inputFile: 'source.csv', outputFile: 'output.csv' }, deadlineAt: Date.now() + 60_000,
-      allowedTools: ['runtime.write_text'] }] });
+      allowedTools: ['runtime_write_text'] }] });
   await fiber.await();
   try {
     const agent = await host.agent('enablement-caller');

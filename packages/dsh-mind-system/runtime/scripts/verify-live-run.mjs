@@ -76,16 +76,6 @@ const toolsService = {
   },
 };
 
-toolsService.register({
-  name: 'runtime.write_text',
-  description: 'Create an owned text artifact.',
-  parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' },
-    createOnly: { type: 'boolean', enum: [true] } },
-    required: ['path', 'content', 'createOnly'], additionalProperties: false },
-  output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
-  async execute({ path, content }) { writeFileSync(path, content, { flag: 'wx' }); return { created: true }; },
-});
-
 app.provide?.('tools');
 app.set('tools', toolsService);
 
@@ -100,7 +90,7 @@ try {
   const agent = { id: 'live-caller', name: 'live-caller' };
   const run = await registered.get('runtime_execute').execute({
     goal: 'Write the input lines in alphabetical order.',
-    recipe: { recipeId: 'live-sort', tool: 'runtime.write_text', effect: 'reversible_write',
+    recipe: { recipeId: 'live-sort', tool: 'runtime_write_text', effect: 'reversible_write',
       verifier: { primitive: 'sorted_lines', parameters: { expectAscending: true } },
       arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'apple\nbanana\ncherry\n',
         createOnly: true } },
@@ -119,7 +109,7 @@ try {
   // A run whose artifact misses its own declared primitive must not report success.
   const bad = await registered.get('runtime_execute').execute({
     goal: 'Claim an ordering the artifact does not have.',
-    recipe: { recipeId: 'live-wrong', tool: 'runtime.write_text', effect: 'reversible_write',
+    recipe: { recipeId: 'live-wrong', tool: 'runtime_write_text', effect: 'reversible_write',
       verifier: { primitive: 'line_set', parameters: { expectedLines: ['zzz'] } },
       arguments: { path: '{{workspaceRoot}}/wrong.txt', content: 'apple\n', createOnly: true } },
     inputs: { inputFile: 'input.txt', outputFile: 'wrong.txt' },

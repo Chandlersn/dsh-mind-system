@@ -5,11 +5,11 @@ import { matchPattern, recordPatternHit, planRollback, applyRollback } from '../
 
 const pattern = (overrides = {}) => ({ patternId: 'pattern:abc', statement: 'Replace only the owned artifact.',
   negativeType: 'out_of_scope_scenario', keywords: ['foreign path'], scopeRef: 'scope-a',
-  trigger: 'verification_failed', toolName: 'runtime.replace_json', recipeId: 'json-normalize',
+  trigger: 'verification_failed', toolName: 'runtime_replace_json', recipeId: 'json-normalize',
   recipeVersion: '1', ...overrides });
 
 const context = (overrides = {}) => ({ scopeRef: 'scope-a', trigger: 'verification_failed',
-  toolName: 'runtime.replace_json', recipeId: 'json-normalize', recipeVersion: '1', ...overrides });
+  toolName: 'runtime_replace_json', recipeId: 'json-normalize', recipeVersion: '1', ...overrides });
 
 const evidence = (overrides = {}) => ({ eligible: true, independentRuns: 5, minRuns: 3, successRate: 0.8, ...overrides });
 
@@ -41,7 +41,7 @@ test('an unapproved, pending or revoked pattern abstains instead of acting', () 
 
 test('a different scope, trigger or tool is out of scope even with a valid approval', () => {
   const approval = approved();
-  for (const [key, value] of [['scopeRef', 'scope-b'], ['trigger', 'execution_error'], ['toolName', 'runtime.write_json']]) {
+  for (const [key, value] of [['scopeRef', 'scope-b'], ['trigger', 'execution_error'], ['toolName', 'runtime_write_json']]) {
     const hit = matchPattern({ approval, pattern: pattern(), context: context({ [key]: value }), evidence: evidence(), now: () => 3000 });
     assert.equal(hit.hit, false, key);
     assert.equal(hit.reason, `out_of_scope:${key}`, key);

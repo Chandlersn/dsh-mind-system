@@ -51,7 +51,7 @@ function binding({ task, state, candidate, repairContext }) {
     || !isDeepStrictEqual(task, repairContext.task) || !isDeepStrictEqual(state, repairContext.state)) {
     fail('A native original ownership context and unchanged task/state are required.');
   }
-  if (candidate?.toolName !== 'runtime.replace_json' || candidate.effect !== 'reversible_write'
+  if (candidate?.toolName !== 'runtime_replace_json' || candidate.effect !== 'reversible_write'
     || candidate.source?.recipeId !== 'json-normalize' || candidate.source?.version !== '1'
     || candidate.inputVersion !== repairContext.inputSha256
     || !sameIds(candidate.preconditionIds, REQUIRED) || !sameIds(candidate.postconditionIds, POSTCONDITIONS)) {
@@ -88,15 +88,15 @@ function predicate(check) {
 }
 
 /**
- * Native authority for a host-owned runtime.replace_json tool; this policy performs no writes.
+ * Native authority for a host-owned runtime_replace_json tool; this policy performs no writes.
  * prepare accepts only the original create-only attempt from trusted runtime storage. Preserve
  * the returned object's identity outside model output. A subsequent replace attempt cannot
  * establish ownership; the controller must retain the original context separately for retries.
  * Admission must additionally validate the concrete arguments with the strict host schema.
  */
 export const jsonNormalizeRepairPolicy = freeze({
-  allowedTools: ['runtime.replace_json'],
-  toolEffects: { 'runtime.replace_json': 'reversible_write' },
+  allowedTools: ['runtime_replace_json'],
+  toolEffects: { 'runtime_replace_json': 'reversible_write' },
   requiredPreconditionIds: REQUIRED,
   postconditionIds: POSTCONDITIONS,
   verificationIoReserve: 5,
@@ -111,8 +111,8 @@ export const jsonNormalizeRepairPolicy = freeze({
     const original = validateCandidate(previous.candidate);
     // A previous repair may re-establish context only when it was itself an owned replacement of the same
     // artifact; the ownership still traces back to the original create-only action recorded in the task.
-    const viaRepair = original.toolName === 'runtime.replace_json';
-    if (!viaRepair && (original.toolName !== 'runtime.write_json' || original.arguments.createOnly !== true)) {
+    const viaRepair = original.toolName === 'runtime_replace_json';
+    if (!viaRepair && (original.toolName !== 'runtime_write_json' || original.arguments.createOnly !== true)) {
       fail('Ownership must come from the original scoped create-only recipe action.');
     }
     if (original.arguments.path !== prepared.outputPath || typeof original.arguments.content !== 'string'

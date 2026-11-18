@@ -22,7 +22,7 @@ async function fixture(t, { withTask = true, slow = false } = {}) {
   let release;
   let gate = null;
   if (slow) gate = new Promise((resolve) => { release = resolve; });
-  host.tools.register({ name: 'runtime.write_json', description: 'Create an owned fixture artifact.',
+  host.tools.register({ name: 'runtime_write_json', description: 'Create an owned fixture artifact.',
     parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, createOnly: { type: 'boolean', enum: [true] } },
       required: ['path', 'content', 'createOnly'], additionalProperties: false },
     output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
@@ -38,7 +38,7 @@ async function fixture(t, { withTask = true, slow = false } = {}) {
       task: { taskId: randomUUID(), recipeId: 'json-normalize', recipeVersion: '1',
         goal: 'Create sorted normalized records.', scopeRef: 'plugin-scope', workspaceRoot: host.storage,
         inputs: { inputFile: 'source.json', outputFile: 'output.json' }, deadlineAt: Date.now() + 60_000 },
-      authority: { scopeRef: 'plugin-scope', workspaceRoot: host.storage, allowedTools: ['runtime.write_json'], agent },
+      authority: { scopeRef: 'plugin-scope', workspaceRoot: host.storage, allowedTools: ['runtime_write_json'], agent },
     });
     // Remember which run ids the native factory produced so tests can inspect persisted state.
     const factory = tasks['fixture-normalize'];
@@ -200,7 +200,7 @@ test('a caller cancellation through the plugin tool converges instead of leaving
     // Abort while the business tool is running: the public pipeline must converge and persist a state.
     const controller = new AbortController();
     env.host.ctx.on('tools/pre-execute', async (exec, next) => {
-      if (exec.name === 'runtime.write_json') controller.abort('caller cancelled');
+      if (exec.name === 'runtime_write_json') controller.abort('caller cancelled');
       return next();
     });
     const result = await env.host.execute('runtime_run', {

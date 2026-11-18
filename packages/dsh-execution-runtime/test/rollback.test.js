@@ -22,7 +22,7 @@ const checkpoint = (overrides = {}) => createCheckpoint({ taskId: 'task-1', step
   state: { inputs: { inputFile: 'source.json' } }, environment: environment(),
   evidenceRef: 'file:state.json#sha256:' + BEFORE, now: () => 1000, ...overrides });
 
-const compensation = () => ({ compensationId: 'restore:1', targetTool: 'runtime.replace_json',
+const compensation = () => ({ compensationId: 'restore:1', targetTool: 'runtime_replace_json',
   targetArguments: { path: 'C:/work/output.json', content: 'old', expectedSha256: AFTER },
   expectedBeforeSha256: AFTER, expectedAfterSha256: BEFORE, reason: 'restore_prior_version',
   sourceAttemptId: 'attempt-1' });
@@ -111,14 +111,14 @@ async function pipeline(t) {
   const executor = new HostExecutor({ context: host.ctx, tools: host.tools, agent });
   const { assertObjectJsonSchema, validateJsonSchemaValue } = await import(pathToFileURL(installed['dsh-tools'].entry).href);
   writeFileSync(join(host.storage, 'source.json'), JSON.stringify([{ id: 'a', name: ' Alpha ' }]));
-  host.tools.register({ name: 'runtime.write_json', description: 'Create the owned fixture artifact.',
+  host.tools.register({ name: 'runtime_write_json', description: 'Create the owned fixture artifact.',
     parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, createOnly: { type: 'boolean', enum: [true] } },
       required: ['path', 'content', 'createOnly'], additionalProperties: false },
     output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
     async execute({ path, content }) { writeFileSync(path, content, { flag: 'wx' }); return { created: true }; } });
   const scheduler = new RuntimeScheduler({ store, executor, recipes: [jsonNormalizeRecipe], tools: host.tools,
     validateArguments({ tool, arguments: args }) { assertObjectJsonSchema(tool.parameters); return validateJsonSchemaValue(tool.parameters, args); } });
-  const authority = { scopeRef: 'cp-scope', workspaceRoot: host.storage, allowedTools: ['runtime.write_json'], agent };
+  const authority = { scopeRef: 'cp-scope', workspaceRoot: host.storage, allowedTools: ['runtime_write_json'], agent };
   const task = { taskId: randomUUID(), recipeId: 'json-normalize', recipeVersion: '1', goal: 'Create sorted records.',
     scopeRef: authority.scopeRef, workspaceRoot: host.storage, inputs: { inputFile: 'source.json', outputFile: 'output.json' },
     deadlineAt: Date.now() + 60_000 };
@@ -153,7 +153,7 @@ test('a failed or unverified step records no checkpoint', async (t) => {
   const env = await pipeline(t);
   try {
     // The recipe writes an empty artifact through a tool that ignores its content argument.
-    env.host.tools.get('runtime.write_json').execute = async ({ path }) => {
+    env.host.tools.get('runtime_write_json').execute = async ({ path }) => {
       writeFileSync(path, '[]', { flag: 'wx' });
       return { created: true };
     };
@@ -192,7 +192,7 @@ async function rollbackPipeline(t, { effect = 'read', afterRestoreFailure = null
   const executor = new HostExecutor({ context: host.ctx, tools: host.tools, agent });
   const { assertObjectJsonSchema, validateJsonSchemaValue } = await import(pathToFileURL(installed['dsh-tools'].entry).href);
   writeFileSync(join(host.storage, 'source.json'), JSON.stringify([{ id: 'a', name: ' Alpha ' }]));
-  host.tools.register({ name: 'runtime.write_json', description: 'Create the owned fixture artifact.',
+  host.tools.register({ name: 'runtime_write_json', description: 'Create the owned fixture artifact.',
     parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, createOnly: { type: 'boolean', enum: [true] } },
       required: ['path', 'content', 'createOnly'], additionalProperties: false },
     output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
@@ -213,7 +213,7 @@ async function rollbackPipeline(t, { effect = 'read', afterRestoreFailure = null
     } } };
   const scheduler = new RuntimeScheduler({ store, executor, recipes: [recipe], tools: host.tools,
     validateArguments({ tool, arguments: args }) { assertObjectJsonSchema(tool.parameters); return validateJsonSchemaValue(tool.parameters, args); } });
-  const authority = { scopeRef: 'rb-scope', workspaceRoot: host.storage, allowedTools: ['runtime.write_json'], agent };
+  const authority = { scopeRef: 'rb-scope', workspaceRoot: host.storage, allowedTools: ['runtime_write_json'], agent };
   const task = { taskId: randomUUID(), recipeId: 'json-normalize', recipeVersion: '1', goal: 'Create sorted records.',
     scopeRef: authority.scopeRef, workspaceRoot: host.storage, inputs: { inputFile: 'source.json', outputFile: 'output.json' },
     deadlineAt: Date.now() + 60_000 };
@@ -282,7 +282,7 @@ test('a restore whose re-verification fails is not reported as a completed rollb
       evidenceRef: 'file:baseline#sha256:' + 'b'.repeat(64) }, rbVersion());
     // Produce one verified step so the forced failure applies to the verification that follows the restore.
     const first = await env.store.reserveAttempt(rb.taskId, { candidateId: 'warmup',
-      toolName: 'runtime.write_json', arguments: { path: join(env.host.storage, 'output.json'),
+      toolName: 'runtime_write_json', arguments: { path: join(env.host.storage, 'output.json'),
         content: '[]', createOnly: true },
       preconditionIds: [...jsonNormalizeRecipe.requiredPreconditionIds],
       postconditionIds: [...jsonNormalizeRecipe.postconditionIds], progressKey: 'cursor', effect: 'read',
@@ -323,7 +323,7 @@ test('an irreversible effect recorded after the checkpoint refuses the rollback'
       evidenceRef: 'file:baseline#sha256:' + 'b'.repeat(64) }, version());
     // An attempt after the checkpoint that no compensation can undo.
     const attempt = env.store.reserveAttempt(env.task.taskId, { candidateId: 'irreversible-step',
-      toolName: 'runtime.write_json', arguments: { path: join(env.host.storage, 'x.json'), content: '[]', createOnly: true },
+      toolName: 'runtime_write_json', arguments: { path: join(env.host.storage, 'x.json'), content: '[]', createOnly: true },
       preconditionIds: [...jsonNormalizeRecipe.requiredPreconditionIds],
       postconditionIds: [...jsonNormalizeRecipe.postconditionIds], progressKey: 'cursor', effect: 'irreversible',
       source: { recipeId: env.task.recipeId, version: env.task.recipeVersion } }, version());

@@ -9,7 +9,7 @@ const hash = (text) => createHash('sha256').update(text).digest('hex');
 const A = hash('before');
 const B = hash('after');
 
-const plan = (overrides = {}) => ({ compensationId: 'restore:1', targetTool: 'runtime.replace_json',
+const plan = (overrides = {}) => ({ compensationId: 'restore:1', targetTool: 'runtime_replace_json',
   targetArguments: { path: '/w/out.json', content: 'old', expectedSha256: B },
   expectedBeforeSha256: B, expectedAfterSha256: A, reason: 'restore_prior_version',
   sourceAttemptId: 'attempt-1', ...overrides });
@@ -25,7 +25,7 @@ function fixture(t, { keepRunning = false, maxCompensations } = {}) {
     // Recovery attempts draw on their own reserve, declared per task.
     ...(maxCompensations === undefined ? {} : { budget: { maxCompensations } }) };
   store.createRun(task);
-  const candidate = { candidateId: 'c', toolName: 'runtime.write_json', progressKey: 'p',
+  const candidate = { candidateId: 'c', toolName: 'runtime_write_json', progressKey: 'p',
     arguments: { path: '/w/out.json', content: 'new', createOnly: true }, preconditionIds: ['ready'],
     postconditionIds: ['read'], effect: 'reversible_write', source: { recipeId: 'json-normalize', version: '1' } };
   const reserved = store.reserveAttempt(task.taskId, candidate, { expectedVersion: store.getRun(task.taskId).version });
@@ -77,7 +77,7 @@ test('irreversible and unknown effects are refused as uncompensable', () => {
 });
 
 test('a plan cannot retarget another tool or source attempt', () => {
-  const candidate = { attemptId: 'attempt-1', candidateId: 'c', toolName: 'runtime.write_json', progressKey: 'p',
+  const candidate = { attemptId: 'attempt-1', candidateId: 'c', toolName: 'runtime_write_json', progressKey: 'p',
     arguments: { path: '/w/out.json', content: 'new', createOnly: true }, preconditionIds: ['ready'],
     postconditionIds: ['read'], effect: 'reversible_write', source: { recipeId: 'json-normalize', version: '1' } };
   assert.throws(() => bindCompensationToAttempt(plan({ sourceAttemptId: 'other' }), candidate),
@@ -90,7 +90,7 @@ test('a plan cannot retarget another tool or source attempt', () => {
   { code: 'compensation_binding_mismatch' });
   assert.throws(() => bindCompensationToAttempt(plan({ targetArguments: { path: '/w/out.json' } }), candidate),
     { code: 'compensation_binding_mismatch' });
-  assert.doesNotThrow(() => bindCompensationToAttempt(plan({ targetTool: 'runtime.write_json',
+  assert.doesNotThrow(() => bindCompensationToAttempt(plan({ targetTool: 'runtime_write_json',
     targetArguments: { path: '/w/out.json', content: 'old', createOnly: true } }), candidate));
 });
 

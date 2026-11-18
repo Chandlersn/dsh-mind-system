@@ -63,8 +63,8 @@ try {
       test: /not ok \d+ - a compensation cannot be built from a different template/ },
     // And it must not be possible to name one verifier while observing another.
     { name: 'json_wrapper_ignores_its_own_binding', file: 'src/compensation.js',
-      old: "  return buildCompensation({ ...input, verifierId: 'json-source-output', targetTool: 'runtime.replace_json' });",
-      replacement: "  return buildCompensation({ ...input, verifierId: input.verifierId ?? 'json-source-output', targetTool: 'runtime.replace_json' });",
+      old: "  return buildCompensation({ ...input, verifierId: 'json-source-output', targetTool: 'runtime_replace_json' });",
+      replacement: "  return buildCompensation({ ...input, verifierId: input.verifierId ?? 'json-source-output', targetTool: 'runtime_replace_json' });",
       test: /not ok \d+ - the JSON wrapper cannot be talked out of its own verifier binding/ },
   ];
   const observed = [];

@@ -63,7 +63,7 @@ export function buildCompensation({ task, sourceAttempt, verifierId, targetTool,
 
 /** The JSON template's plan: a thin wrapper so the template keeps its tool name out of generic code. */
 export function buildJsonCompensation(input) {
-  return buildCompensation({ ...input, verifierId: 'json-source-output', targetTool: 'runtime.replace_json' });
+  return buildCompensation({ ...input, verifierId: 'json-source-output', targetTool: 'runtime_replace_json' });
 }
 
 /**

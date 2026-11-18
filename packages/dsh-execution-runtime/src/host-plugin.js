@@ -34,6 +34,7 @@ import { createExecuteTool, createLibraryTool, createKnowledgeTool, createPatter
 import { createSagAdapter, resolveSagKey } from './knowledge-sag.js';
 import { createValveWriter } from './valve-bridge.js';
 import { createInterventionPolicy } from './intervention.js';
+import { createWriteTools } from './write-tools.js';
 import { createRecipeLibrary } from './recipe-library.js';
 import { Analyzer } from './analyzer.js';
 import { jsonNormalizeRecipe } from '../recipes/json-normalize.js';
@@ -290,6 +291,12 @@ export async function apply(ctx, config = {}) {
 
   let store = null;
   let executor = null;
+  const mountedDisposers = [];
+  disposeInner = async () => {
+    for (const dispose of mountedDisposers.splice(0).reverse()) {
+      try { await dispose(); } catch { /* Drain every owned registration even after a partial mount. */ }
+    }
+  };
   try {
     const root = stateRoot(config);
     mkdirSync(root, { recursive: true });
@@ -340,6 +347,7 @@ export async function apply(ctx, config = {}) {
       validateArguments: supplied ?? (() => true), owner: ctx, resolvePattern, analyzer });
     // Delegate with the host ctx: that is the ctx whose `tools` service must receive the registrations.
     const innerDispose = inner.apply(ctx);
+    if (typeof innerDispose === 'function') mountedDisposers.push(innerDispose);
 
     // The general path: a caller may describe a task at runtime instead of naming a declared template.
     // It shares the same store and mount authority, so nothing about scope or effects widens.
@@ -378,8 +386,21 @@ export async function apply(ctx, config = {}) {
     base.intervention = config?.intervention?.enabled === false ? 'disabled' : 'enabled';
     const interventionDispose = config?.intervention?.enabled === false
       ? null : installIntervention(ctx, intervention, base);
+    if (typeof interventionDispose === 'function') mountedDisposers.push(interventionDispose);
 
-    const dynamicDisposers = [];
+    // A recipe's candidate names a tool (`runtime_write_json`). Admission resolves that name
+    // through the host registry and fails closed at `tool_not_visible` when nothing registered
+    // it -- which is what happened until now: every generated task was denied before it could
+    // run, so the runtime never produced a single successful sample. Registering the write
+    // tools closes that half of the contract. They stay inside the same mount scope.
+    const writeTools = createWriteTools({ root: mount.workspaceRoot });
+    for (const tool of writeTools) {
+      const disposeTool = ctx.tools?.register?.(tool);
+      if (typeof disposeTool !== 'function') throw new Error(`The host did not accept ${tool.name}.`);
+      mountedDisposers.push(disposeTool);
+    }
+    base.writeTools = writeTools.map((tool) => tool.name).filter(() => base.writeToolsError === undefined);
+
     const dynamicTools = [
       createExecuteTool({ store, schedulerFor: schedulerFactory, toolEffects, mount,
         registry: dynamicRegistry, library }),
@@ -391,23 +412,14 @@ export async function apply(ctx, config = {}) {
     ];
     for (const tool of dynamicTools) {
       const disposeTool = ctx.tools?.register?.(tool);
-      if (typeof disposeTool === 'function') dynamicDisposers.push(disposeTool);
-      else base.dynamicToolsError = 'the host did not accept a dynamic tool';
+      if (typeof disposeTool !== 'function') throw new Error(`The host did not accept ${tool.name}.`);
+      mountedDisposers.push(disposeTool);
     }
     base.dynamicTools = Array.isArray(base.dynamicTools) ? base.dynamicTools : [];
     base.dynamicTools = ['runtime_execute', 'runtime_recipes', 'runtime_knowledge', 'runtime_pattern', 'runtime_verifiers']
       .filter((name) => !base.dynamicToolsError);
     base.mount = { scopeRef: mount.scopeRef, workspaceRoot: mount.workspaceRoot,
       allowedTools: mount.allowedTools };
-    disposeInner = async () => {
-      for (const disposeTool of dynamicDisposers.splice(0)) {
-        try { disposeTool(); } catch { /* a failed tool removal must not block unload */ }
-      }
-      // The post-execute subscription must also go: a listener left behind after unload would keep hinting
-      // for a runtime that no longer exists.
-      try { interventionDispose?.(); } catch { /* same reasoning as above */ }
-      await innerDispose?.();
-    };
     base.state = 'ready';
     logger?.info?.(`execution runtime ready: ${base.recipes.join(', ')}; tasks=${base.tasks}`
       + `; dynamic tools=${base.dynamicTools.join(',') || 'none'}; intervention=${base.intervention}`);
@@ -416,6 +428,7 @@ export async function apply(ctx, config = {}) {
     base.state = 'failed';
     base.loadError = error?.code ?? error?.message ?? String(error);
     logger?.error?.(`execution runtime assembly failed: ${base.loadError}`);
+    await disposeInner?.();
     disposeInner = null;
   }
 

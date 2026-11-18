@@ -1,4 +1,4 @@
-﻿import test from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -27,6 +27,25 @@ async function withMount(t, makeConfig, body) {
   await fiber.await();
   try { await body(host); } finally { await fiber.dispose(); }
 }
+
+test('a writer name collision fails closed and removes partial runtime registrations', async (t) => {
+  await withMount(t, async (host) => {
+    host.tools.register({ name: 'runtime_write_text', description: 'An existing host tool.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      output: { schema: { type: 'object' }, render: () => [] },
+      async execute() { return { existing: true }; } });
+    return { enabled: true, workspaceRoot: host.storage, stateDir: mkdtempSync(join(host.root, 'state-')) };
+  }, async (host) => {
+    assert.equal(hostEntry.healthProbe.probe().facts.state, 'failed');
+    for (const name of ['runtime_status', 'runtime_run', 'runtime_write_json', 'runtime_execute']) {
+      const result = await host.execute(name, { arguments: {} });
+      assert.equal(result.isError, true, `${name} must be removed after failed assembly.`);
+      assert.match(JSON.stringify(result.content), /unknown tool/);
+    }
+    const existing = await host.execute('runtime_write_text', { arguments: {} });
+    assert.equal(existing.value.existing, true, 'A collision must not dispose the host-owned registration.');
+  });
+});
 
 test('a disabled mount activates but exposes no runtime tool', async (t) => {
   await withMount(t, () => ({ enabled: false }), async (host) => {
@@ -91,17 +110,11 @@ test('an enabled runtime actually dispatches a declared task through the host to
   const taskId = randomUUID();
   await withMount(t, async (host) => {
     writeFileSync(join(host.storage, 'source.csv'), 'id,name\nb, Beta \na, Alpha \n');
-    host.tools.register({ name: 'runtime.write_text', description: 'Create the owned text artifact.',
-      parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' },
-        createOnly: { type: 'boolean', enum: [true] } },
-        required: ['path', 'content', 'createOnly'], additionalProperties: false },
-      output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
-      async execute({ path, content }) { writeFileSync(path, content, { flag: 'wx' }); return { created: true }; } });
-    return { enabled: true, stateDir: mkdtempSync(join(host.root, 'state-')),
+    return { enabled: true, stateDir: mkdtempSync(join(host.root, 'state-')), workspaceRoot: host.storage,
       tasks: [{ taskId, recipeId: 'csv-normalize', recipeVersion: '1', goal: 'Normalize the CSV.',
         scopeRef: 'host-scope', workspaceRoot: host.storage,
         inputs: { inputFile: 'source.csv', outputFile: 'output.csv' }, deadlineAt: Date.now() + 60_000,
-        allowedTools: ['runtime.write_text'] }] };
+        allowedTools: ['runtime_write_text'] }] };
   }, async (host) => {
     // The caller identity comes from the host invocation, so this is a real dispatch, not a stub.
     const agent = await host.agent('runtime-caller');
@@ -126,17 +139,11 @@ test('a declared task is reported by id but has no run until it is dispatched', 
   const taskId = randomUUID();
   await withMount(t, async (host) => {
     writeFileSync(join(host.storage, 'source.csv'), 'id,name\nb, Beta \na, Alpha \n');
-    host.tools.register({ name: 'runtime.write_text', description: 'Create the owned text artifact.',
-      parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' },
-        createOnly: { type: 'boolean', enum: [true] } },
-        required: ['path', 'content', 'createOnly'], additionalProperties: false },
-      output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
-      async execute({ path, content }) { writeFileSync(path, content, { flag: 'wx' }); return { created: true }; } });
-    return { enabled: true, stateDir: mkdtempSync(join(host.root, 'state-')),
+    return { enabled: true, stateDir: mkdtempSync(join(host.root, 'state-')), workspaceRoot: host.storage,
       tasks: [{ taskId, recipeId: 'csv-normalize', recipeVersion: '1', goal: 'Normalize the CSV.',
         scopeRef: 'host-scope', workspaceRoot: host.storage,
         inputs: { inputFile: 'source.csv', outputFile: 'output.csv' }, deadlineAt: Date.now() + 60_000,
-        allowedTools: ['runtime.write_text'] }] };
+        allowedTools: ['runtime_write_text'] }] };
   }, async (host) => {
     const probe = hostEntry.healthProbe.probe();
     assert.equal(probe.facts.tasks, 1);

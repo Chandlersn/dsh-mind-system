@@ -136,13 +136,13 @@ const resolverSamples = (runs) => Array.from({ length: runs }, (_, index) => ({
 
 const resolverStore = (entries) => ({ readRepairTrace() { return []; },
   listPatternEvidence() { return entries; },
-  getLatestAttempt() { return { candidate: { toolName: 'runtime.write_text' } }; } });
+  getLatestAttempt() { return { candidate: { toolName: 'runtime_write_text' } }; } });
 
 test('with automation enabled the loop reuses a proven pattern without a human ticket', async () => {
   const { createPatternResolver } = await import('../src/pattern-resolver.js');
   const body = { patternId: 'p1', scopeRef: 's', recipeId: 'csv-normalize', recipeVersion: '1',
     verifierId: 'csv-source-output', verifierVersion: '1', trigger: 'verification_failed',
-    toolName: 'runtime.write_text', statement: 'The verified output differs from the source projection.',
+    toolName: 'runtime_write_text', statement: 'The verified output differs from the source projection.',
     negativeType: 'out_of_scope_scenario', keywords: ['output', 'mismatch'] };
   const resolve = createPatternResolver({ store: resolverStore(resolverSamples(4)), patterns: [body],
     automation: automation(), now: () => 1000 });
@@ -158,7 +158,7 @@ test('the same evidence reuses nothing when automation stays off', async () => {
   const { createPatternResolver } = await import('../src/pattern-resolver.js');
   const body = { patternId: 'p1', scopeRef: 's', recipeId: 'csv-normalize', recipeVersion: '1',
     verifierId: 'csv-source-output', verifierVersion: '1', trigger: 'verification_failed',
-    toolName: 'runtime.write_text', statement: 'The verified output differs from the source projection.',
+    toolName: 'runtime_write_text', statement: 'The verified output differs from the source projection.',
     negativeType: 'out_of_scope_scenario', keywords: ['output', 'mismatch'] };
   const resolve = createPatternResolver({ store: resolverStore(resolverSamples(4)), patterns: [body],
     now: () => 1000 });

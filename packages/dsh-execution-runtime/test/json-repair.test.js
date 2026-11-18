@@ -29,7 +29,7 @@ function fixture(t) {
   const io = Object.fromEntries(Object.entries({ lstatSync, readFileSync, realpathSync })
     .map(([name, fn]) => [name, (...args) => { calls.push({ name, path: args[0] }); return fn(...args); }]));
   const context = policy.prepare({ task, state, previousAttempt });
-  const candidate = { ...clone(original), candidateId: 'repair-output', toolName: 'runtime.replace_json',
+  const candidate = { ...clone(original), candidateId: 'repair-output', toolName: 'runtime_replace_json',
     arguments: { path: join(root, 'output.json'), content: original.arguments.content, expectedSha256: context.observedSha256 },
     preconditionIds: [...policy.requiredPreconditionIds], postconditionIds: [...policy.postconditionIds] };
   const args = { task, state, candidate, io, repairContext: context };
@@ -43,8 +43,8 @@ function denied(env, overrides = {}) {
 
 test('native policy exposes fixed authority and immutable JSON ownership context', (t) => {
   const env = fixture(t);
-  assert.deepEqual(policy.allowedTools, ['runtime.replace_json']);
-  assert.deepEqual(policy.toolEffects, { 'runtime.replace_json': 'reversible_write' });
+  assert.deepEqual(policy.allowedTools, ['runtime_replace_json']);
+  assert.deepEqual(policy.toolEffects, { 'runtime_replace_json': 'reversible_write' });
   assert.deepEqual(policy.requiredPreconditionIds, ['source-hash-unchanged', 'owned-output-unchanged', 'workspace-scope']);
   assert.deepEqual(policy.postconditionIds, ['normalized-records-match-source', 'source-hash-unchanged']);
   assert.equal(policy.verificationIoReserve, 5);
@@ -84,7 +84,7 @@ for (const [name, mutate] of [
   ['unknown original effect', (p) => { p.candidate.effect = 'unknown'; }],
   ['read original effect', (p) => { p.candidate.effect = 'read'; }],
   ['non-create origin', (p) => { p.candidate.arguments.createOnly = false; }],
-  ['replacement origin', (p) => { p.candidate.toolName = 'runtime.replace_json'; }],
+  ['replacement origin', (p) => { p.candidate.toolName = 'runtime_replace_json'; }],
   ['wrong origin recipe', (p) => { p.candidate.source.recipeId = 'other'; }],
   ['wrong origin version', (p) => { p.candidate.source.version = '2'; }],
   ['wrong origin input hash', (p) => { p.candidate.inputVersion = '0'.repeat(64); }],
@@ -114,7 +114,7 @@ for (const [name, mutate] of [
   ['non-string content', (c) => { c.arguments.content = []; }],
   ['create-only switch', (c) => { c.arguments.createOnly = true; }],
   ['overwrite switch', (c) => { c.arguments.overwrite = true; }],
-  ['foreign tool', (c) => { c.toolName = 'runtime.write_json'; }],
+  ['foreign tool', (c) => { c.toolName = 'runtime_write_json'; }],
   ['unknown effect', (c) => { c.effect = 'unknown'; }],
   ['incorrect effect', (c) => { c.effect = 'read'; }],
   ['foreign recipe', (c) => { c.source.recipeId = 'model-policy'; }],
@@ -151,7 +151,7 @@ test('a second repair re-establishes ownership from the previous owned replaceme
   const env = fixture(t);
   // The first repair replaced the artifact; a second failure arrives with that replacement as its predecessor.
   const repairCandidate = { ...clone(env.previousAttempt.candidate), candidateId: 'repair-1',
-    toolName: 'runtime.replace_json',
+    toolName: 'runtime_replace_json',
     arguments: { path: join(env.root, 'output.json'), content: env.previousAttempt.candidate.arguments.content,
       expectedSha256: env.context.observedSha256 },
     preconditionIds: [...policy.requiredPreconditionIds] };

@@ -10,7 +10,7 @@ import { confirmApproval, proposeApproval, revokeApproval } from '../src/pattern
  */
 
 const identity = { recipeId: 'csv-normalize', recipeVersion: '1', scopeRef: 's', verifierId: 'csv-source-output',
-  verifierVersion: '1', trigger: 'verification_failed', toolName: 'runtime.write_text' };
+  verifierVersion: '1', trigger: 'verification_failed', toolName: 'runtime_write_text' };
 
 /**
  * A real pattern body. Identity fields are mandatory here: `matchPattern` only checks a constraint the
@@ -36,7 +36,7 @@ function approved(patternBodyValue, now = () => 1000) {
 /** A store stub whose evidence we control; the resolver must not invent samples of its own. */
 function stubStore(entries) {
   return { readRepairTrace() { return []; }, listPatternEvidence() { return entries; },
-    getLatestAttempt() { return { candidate: { toolName: 'runtime.write_text' } }; } };
+    getLatestAttempt() { return { candidate: { toolName: 'runtime_write_text' } }; } };
 }
 
 const run = (overrides = {}) => ({ status: 'waiting_analysis', reason: 'verification_failed',
@@ -125,7 +125,7 @@ test('the resolver reports candidates but never activates them', () => {
 
 test('a store without cross-task evidence abstains rather than scanning unrelated runs', () => {
   const resolve = createPatternResolver({ store: { readRepairTrace() { return []; },
-    getLatestAttempt() { return { candidate: { toolName: 'runtime.write_text' } }; } },
+    getLatestAttempt() { return { candidate: { toolName: 'runtime_write_text' } }; } },
     ...approved(patternBody()), now: () => 1000 });
   assert.equal(resolve('t1', run()), null);
 });

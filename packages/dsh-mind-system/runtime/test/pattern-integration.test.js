@@ -18,7 +18,7 @@ const { assertObjectJsonSchema, validateJsonSchemaValue } = await import(pathToF
 
 const pattern = { patternId: 'pattern:abc', statement: 'Replace only the owned artifact.',
   negativeType: 'out_of_scope_scenario', keywords: ['foreign path'], scopeRef: 'pattern-scope',
-  trigger: 'verification_failed', toolName: 'runtime.write_json', recipeId: 'json-normalize', recipeVersion: '1' };
+  trigger: 'verification_failed', toolName: 'runtime_write_json', recipeId: 'json-normalize', recipeVersion: '1' };
 
 const approval = (() => {
   const request = proposeApproval({ ...pattern, activatable: false }, { requestedBy: 'runtime', now: () => 1000 });
@@ -38,7 +38,7 @@ async function fixture(t, { patterns = null } = {}) {
       evidenceRefs: [] }, requiresHumanReview: false, reason: 'Fixture abstains.' });
   } });
   writeFileSync(join(host.storage, 'source.json'), JSON.stringify([{ id: 'a', name: ' Alpha ' }]));
-  host.tools.register({ name: 'runtime.write_json', description: 'Create an owned fixture artifact.',
+  host.tools.register({ name: 'runtime_write_json', description: 'Create an owned fixture artifact.',
     parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, createOnly: { type: 'boolean', enum: [true] } },
       required: ['path', 'content', 'createOnly'], additionalProperties: false },
     output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
@@ -46,7 +46,7 @@ async function fixture(t, { patterns = null } = {}) {
   const scheduler = new RuntimeScheduler({ store, executor, recipes: [jsonNormalizeRecipe], tools: host.tools,
     validateArguments({ tool, arguments: args }) { assertObjectJsonSchema(tool.parameters); return validateJsonSchemaValue(tool.parameters, args); } });
   const coordinator = new AnalysisCoordinator({ store, analyzer, agent, patterns });
-  const authority = { scopeRef: 'pattern-scope', workspaceRoot: host.storage, allowedTools: ['runtime.write_json'], agent };
+  const authority = { scopeRef: 'pattern-scope', workspaceRoot: host.storage, allowedTools: ['runtime_write_json'], agent };
   const task = { taskId: randomUUID(), recipeId: 'json-normalize', recipeVersion: '1',
     goal: 'Create sorted normalized records.', scopeRef: authority.scopeRef, workspaceRoot: host.storage,
     inputs: { inputFile: 'source.json', outputFile: 'output.json' }, deadlineAt: Date.now() + 60_000 };
@@ -59,7 +59,7 @@ async function fixture(t, { patterns = null } = {}) {
 
 const hitting = () => matchPattern({ approval, pattern,
   evidence: { eligible: true, independentRuns: 6, minRuns: 3 },
-  context: { scopeRef: 'pattern-scope', trigger: 'verification_failed', toolName: 'runtime.write_json',
+  context: { scopeRef: 'pattern-scope', trigger: 'verification_failed', toolName: 'runtime_write_json',
     recipeId: 'json-normalize', recipeVersion: '1' }, now: () => 3000 });
 
 test('an approved pattern answers the sixth case without calling the analyzer', async (t) => {

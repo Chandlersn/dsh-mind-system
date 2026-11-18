@@ -809,15 +809,15 @@
     },
     "runtime/recipes/csv-normalize.js": {
       "source": "dsh-execution-runtime/recipes/csv-normalize.js",
-      "sha256": "4c5b2992568634b09abbc348958bc0318c074dd3354079524a20576826e3cb58"
+      "sha256": "c08bd6665d27de22e0c819769bbc241783eeb59055415afb38a8a6cc40882096"
     },
     "runtime/recipes/json-normalize.js": {
       "source": "dsh-execution-runtime/recipes/json-normalize.js",
-      "sha256": "062ec4b8568fb71d85073fc03a3e0f8f9bd3acee21d30d16f3c79b62e11391f6"
+      "sha256": "796f9142cd4027251826636d7709361badd7f146194daee540279b581ad77def"
     },
     "runtime/recipes/json-repair.js": {
       "source": "dsh-execution-runtime/recipes/json-repair.js",
-      "sha256": "8d259e5a23d11bf4eab2b39dc12e16e7518f1b47ebbe91ce35a1fce20455f572"
+      "sha256": "6ec1e8efe16e6868f206f0addcc1aeb6d6f72985bbeb48309a0c8960ae88aa9f"
     },
     "runtime/scripts/build/module-closure.mjs": {
       "source": "dsh-execution-runtime/scripts/build/module-closure.mjs",
@@ -849,7 +849,7 @@
     },
     "runtime/scripts/verify-compensation-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-compensation-mutations.mjs",
-      "sha256": "d2ffeb23732ac9ec49aec3f37d5f503586eb6f9d7703f5ce9ac3312db6aba426"
+      "sha256": "777084f23c01ebece584c393cf9d7a963acf5a9ba6ac9f2a7827760ded37dd7b"
     },
     "runtime/scripts/verify-core-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-core-mutations.mjs",
@@ -889,7 +889,7 @@
     },
     "runtime/scripts/verify-live-run.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-live-run.mjs",
-      "sha256": "c0ac65a529c00750ec988dfc6245fd0f748340bda83d1d72c67ab1cf37b84826"
+      "sha256": "4bb83fc4d921b980e5da82be11e52995296f75cd53eb85d9c0d2192f344fa420"
     },
     "runtime/scripts/verify-loop-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-loop-mutations.mjs",
@@ -929,7 +929,7 @@
     },
     "runtime/src/compensation.js": {
       "source": "dsh-execution-runtime/src/compensation.js",
-      "sha256": "2e2f3e509ba5587b724633426607389026fd9a3689da519683837741b8187f96"
+      "sha256": "456f67165f38810283c107c48d5c5e115c5f068799c4425396cdeebffdabf4d5"
     },
     "runtime/src/condition-primitives.js": {
       "source": "dsh-execution-runtime/src/condition-primitives.js",
@@ -961,7 +961,7 @@
     },
     "runtime/src/host-plugin.js": {
       "source": "dsh-execution-runtime/src/host-plugin.js",
-      "sha256": "81c503f7c7509f5b5924d9a5dd92036860bb05b346f740a70541822d99cb2147"
+      "sha256": "006928044b58da76b839b23c3010d4146598578bf605b87b214cb4aa28006429"
     },
     "runtime/src/intervention.js": {
       "source": "dsh-execution-runtime/src/intervention.js",
@@ -1027,13 +1027,17 @@
       "source": "dsh-execution-runtime/src/verifier-primitives.js",
       "sha256": "4fe2ebb2bc6be6eec07241505d05d9539f69d0ec3a8468363cbdad53b27d9884"
     },
+    "runtime/src/write-tools.js": {
+      "source": "dsh-execution-runtime/src/write-tools.js",
+      "sha256": "268080da97b3eda5dcd276223a8afeea4097b8da5a25a7f32cd522ee969ec08d"
+    },
     "runtime/test/admission.test.js": {
       "source": "dsh-execution-runtime/test/admission.test.js",
       "sha256": "e69fdaacc94483ec7dc0f830505ea8f9eaf39bbf5b1e8b283a3a41f983ad0534"
     },
     "runtime/test/analysis-wiring.test.js": {
       "source": "dsh-execution-runtime/test/analysis-wiring.test.js",
-      "sha256": "a610130c209312a5bebf129d599312f1a5a24a82efe300f63a54e1a88b6f9d2b"
+      "sha256": "b0726e25998041530705fd0cfa17cb7e1bd2aae891de18c965088af181b2a3b2"
     },
     "runtime/test/analyzer.test.js": {
       "source": "dsh-execution-runtime/test/analyzer.test.js",
@@ -1041,11 +1045,11 @@
     },
     "runtime/test/compensation.test.js": {
       "source": "dsh-execution-runtime/test/compensation.test.js",
-      "sha256": "058250396213a17efe9516f24ee7f446a3e49f47880b87609d08cccd856ffefc"
+      "sha256": "522234f0cc4f3f3d43eef50d09fb5e9433b658be0d5c4e5aeb9abcfba299dbcb"
     },
     "runtime/test/csv-recipe.test.js": {
       "source": "dsh-execution-runtime/test/csv-recipe.test.js",
-      "sha256": "3eeda8f507303fac373a79c5d1b833c20041e8e4fbe1f10f101707e2efef3e57"
+      "sha256": "021be74d7366843c6dcfef45b48bd94688299ee7556853863463909ce3033b3e"
     },
     "runtime/test/decision-client.test.js": {
       "source": "dsh-execution-runtime/test/decision-client.test.js",
@@ -1053,7 +1057,7 @@
     },
     "runtime/test/diagnosis-route.test.js": {
       "source": "dsh-execution-runtime/test/diagnosis-route.test.js",
-      "sha256": "5340c417c98e83d6427ed408aa9955882dfcf54aa59e8f338c8fd3cef9731681"
+      "sha256": "e588e5ed27a9d5e9031ec44b83da784f424273b3a3460f2ec76aaae068ffcc4b"
     },
     "runtime/test/diagnosis.test.js": {
       "source": "dsh-execution-runtime/test/diagnosis.test.js",
@@ -1061,11 +1065,11 @@
     },
     "runtime/test/dynamic-task.test.js": {
       "source": "dsh-execution-runtime/test/dynamic-task.test.js",
-      "sha256": "31724cbfadb7f45d449b463cc1b84b0138daa7f1066ccb274414287fd3b2cf84"
+      "sha256": "677e881c14b38acdea57ca2e0ef78dba9ed8d1ed25848d9109d5140f384f0413"
     },
     "runtime/test/exceptions.test.js": {
       "source": "dsh-execution-runtime/test/exceptions.test.js",
-      "sha256": "6b39d5888e049e2558c6808fb26ce36af5dd75a266e3e059685404e902c162db"
+      "sha256": "6e6fa17cc4aa14abc43917d7b655cd119c5c2b824868422c95724dfb9c66a8f3"
     },
     "runtime/test/executor.test.js": {
       "source": "dsh-execution-runtime/test/executor.test.js",
@@ -1077,7 +1081,7 @@
     },
     "runtime/test/host-enablement.test.js": {
       "source": "dsh-execution-runtime/test/host-enablement.test.js",
-      "sha256": "9761881b46c7d91171e6ba567b589b0ced433bfd7e265c2056794a3d440ac4d8"
+      "sha256": "8b9524959f1a6c8faefb20b00a956a9ba24aa189d3e296f2c2c8062e78eca9e4"
     },
     "runtime/test/host-pipeline.test.js": {
       "source": "dsh-execution-runtime/test/host-pipeline.test.js",
@@ -1085,7 +1089,7 @@
     },
     "runtime/test/host-plugin.test.js": {
       "source": "dsh-execution-runtime/test/host-plugin.test.js",
-      "sha256": "fe0dfe4564b3da4cf3a9640b98d8fab813f29068256689dcba77ba35047f87f0"
+      "sha256": "d4d4f319bb99b2e0db31c5605fe1b7701011767fcbe95cc566f3146774800aab"
     },
     "runtime/test/intervention.test.js": {
       "source": "dsh-execution-runtime/test/intervention.test.js",
@@ -1093,11 +1097,11 @@
     },
     "runtime/test/json-recipe.test.js": {
       "source": "dsh-execution-runtime/test/json-recipe.test.js",
-      "sha256": "9b2ffa540b052f6d288290bbeca2011c926a4214adb678af7878c06f68aa6287"
+      "sha256": "63bcf3712ef50db8ff4554724dab67eafaa74d1994f707342f1c49e8f2ecb72c"
     },
     "runtime/test/json-repair.test.js": {
       "source": "dsh-execution-runtime/test/json-repair.test.js",
-      "sha256": "b249a0c4ef5620e296c9e63f5b233ac24696d7e2cc6bb4e50524f2f21c0134af"
+      "sha256": "f4cbba3763f114573b7d85c8288a8130595daeb9b0b8fd4a4c46b821bd858c5e"
     },
     "runtime/test/knowledge-wiring.test.js": {
       "source": "dsh-execution-runtime/test/knowledge-wiring.test.js",
@@ -1109,7 +1113,7 @@
     },
     "runtime/test/lease.test.js": {
       "source": "dsh-execution-runtime/test/lease.test.js",
-      "sha256": "de983d79d4f0b1b2f3da24e89664852b1c2ab2e3304f5ce946b14242f1cbf8d1"
+      "sha256": "6de75fde1827db35ed6f0c98b3d47a936f7c3c1a3c97447afdcf99d3d212f3fb"
     },
     "runtime/test/pattern-approval.test.js": {
       "source": "dsh-execution-runtime/test/pattern-approval.test.js",
@@ -1117,19 +1121,19 @@
     },
     "runtime/test/pattern-automation.test.js": {
       "source": "dsh-execution-runtime/test/pattern-automation.test.js",
-      "sha256": "c405316b5e77bedae160fd5309ef5409398f730ec58f44d47749e0de1174b29a"
+      "sha256": "73d687ce115b1597c4eaa925625fb455f2d8a6baa5e54bf472743bd84ee6402f"
     },
     "runtime/test/pattern-integration.test.js": {
       "source": "dsh-execution-runtime/test/pattern-integration.test.js",
-      "sha256": "f1dd73f2dc8ef471d3b3c58ca95432708b76b5ef15bfc19aadb2f2d561a8625c"
+      "sha256": "4e38a9c4b4685f457edd9582d6a785d619c042db6caa2aa797fe04b99ae6342d"
     },
     "runtime/test/pattern-resolver.test.js": {
       "source": "dsh-execution-runtime/test/pattern-resolver.test.js",
-      "sha256": "37f69a7d889aacec12c1fa057a9e3820d0665927860537168d9c8539eae16973"
+      "sha256": "0437f392c4b652688085a0060072f02707a3a27b7162a6774e9f21f3fc520e02"
     },
     "runtime/test/pattern-runtime.test.js": {
       "source": "dsh-execution-runtime/test/pattern-runtime.test.js",
-      "sha256": "0899c5f686bb3ca8b52f4c0bc1bea9511f8a55e1728280fe16a633d29c84deb7"
+      "sha256": "76930877acbe16c928ac5b10240e6afa7eccd983b027842742324f232d86ee29"
     },
     "runtime/test/pattern-tool.test.js": {
       "source": "dsh-execution-runtime/test/pattern-tool.test.js",
@@ -1137,39 +1141,39 @@
     },
     "runtime/test/plugin.test.js": {
       "source": "dsh-execution-runtime/test/plugin.test.js",
-      "sha256": "b8e461ad4be474d835fd49bae9e024a73321b7b8788a5addec3efffe20cd7dc8"
+      "sha256": "f9079265f54d0f25c876909b75595f67220f95a942c9e5fa6d694b70d97ac636"
     },
     "runtime/test/probes.test.js": {
       "source": "dsh-execution-runtime/test/probes.test.js",
-      "sha256": "44932005756f085c3f2a478532c141825c53e0c5e725cfee845566aa05d4b73a"
+      "sha256": "ca6ee0b503200963f61eec8f4c5804b1e2df165bf69c685e563c8e1d19e31300"
     },
     "runtime/test/recipe-factory.test.js": {
       "source": "dsh-execution-runtime/test/recipe-factory.test.js",
-      "sha256": "5d8dfa3e7ca151153a29f83d95781162e8265ec1c73133b8ec5abea6791bdf30"
+      "sha256": "ccc256aeb716a531b211755aa7d72046e4aa8c5119b927ec7fce63fa4815a5d2"
     },
     "runtime/test/recipe-library.test.js": {
       "source": "dsh-execution-runtime/test/recipe-library.test.js",
-      "sha256": "c1de0db2737e53781337ad2685f143d5c3d3a8cdf55ce4a37e65d6d7948dfb75"
+      "sha256": "7bb4d9049411b47e2da4bc67fb8081522044bfc12dcf08a2ca356e25f13a911b"
     },
     "runtime/test/recovery.test.js": {
       "source": "dsh-execution-runtime/test/recovery.test.js",
-      "sha256": "d61c6cb6b17a33f0d8a625fcf8c545b43e9e09a5f780f194faf4f9f1eb194794"
+      "sha256": "17a5356c609628e87d51577a0c467b09b53599f7f11ef7a3e595d958b4529cce"
     },
     "runtime/test/repair-patterns.test.js": {
       "source": "dsh-execution-runtime/test/repair-patterns.test.js",
-      "sha256": "2399798870f5242ff1dca9b25135b85f8da50114c2421b391bd0b97018b38be6"
+      "sha256": "46f53f2adf085e6f18251a95bd1b51adff429719fb77cfbfdb9fb616441528f0"
     },
     "runtime/test/repair.test.js": {
       "source": "dsh-execution-runtime/test/repair.test.js",
-      "sha256": "51a8da85454da75533d498dab138bbb63559d428f01f55253f86d3f1a43fe6e8"
+      "sha256": "4d09cb0b9342d440ddd0f699a57ec358bb7dd1a2550b844d7e10b23fdd8ee72c"
     },
     "runtime/test/rollback.test.js": {
       "source": "dsh-execution-runtime/test/rollback.test.js",
-      "sha256": "465609610e1284050170cc37c0255bf67fce4242fc6409fd33fdaa0e73a54cc8"
+      "sha256": "efb41e19679355b5b76b766634d4c5bb81150023f6a7a2bfc49939ed3c95901e"
     },
     "runtime/test/scheduler.test.js": {
       "source": "dsh-execution-runtime/test/scheduler.test.js",
-      "sha256": "f12d323f56c1fd005a0c8a1ab6f3e677a8ab058cca5824a761c1aa810f935829"
+      "sha256": "3ee464d49afaffa09ece5c76683d9b1c6626b37313f22f6af995e77d8448b3bf"
     },
     "runtime/test/store-analysis.test.js": {
       "source": "dsh-execution-runtime/test/store-analysis.test.js",
@@ -1194,6 +1198,10 @@
     "runtime/test/verifier-primitives.test.js": {
       "source": "dsh-execution-runtime/test/verifier-primitives.test.js",
       "sha256": "aa9a3554ffa0dea0f1ed89ef0aa367c36898e7b64d767dedca19644cfb79908f"
+    },
+    "runtime/test/write-tools.test.js": {
+      "source": "dsh-execution-runtime/test/write-tools.test.js",
+      "sha256": "4556f8bfb5ca98f98a967a22facacaccca158071eb6aa7addc733561dafd3937"
     },
     "valves/README.md": {
       "source": "dsh-valves/README.md",

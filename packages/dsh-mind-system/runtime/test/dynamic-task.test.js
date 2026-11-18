@@ -18,12 +18,6 @@ import { VERIFIER_PRIMITIVES } from '../src/verifier-primitives.js';
 async function withRuntime(t, body) {
   const host = await createHost(t);
   writeFileSync(join(host.storage, 'input.txt'), 'c\na\nb\n');
-  host.tools.register({ name: 'runtime.write_text', description: 'Create the owned text artifact.',
-    parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' },
-      createOnly: { type: 'boolean', enum: [true] } },
-      required: ['path', 'content', 'createOnly'], additionalProperties: false },
-    output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
-    async execute({ path, content }) { writeFileSync(path, content, { flag: 'wx' }); return { created: true }; } });
   const fiber = await host.ctx.plugin(hostEntry.plugin, { enabled: true,
     stateDir: mkdtempSync(join(host.root, 'state-')), workspaceRoot: host.storage,
     scopeRef: 'dynamic-scope' });
@@ -38,7 +32,7 @@ test('a task described at runtime runs and is judged by a built-in primitive', a
     const result = await host.execute('runtime_execute', { agent, arguments: {
       taskId,
       goal: 'Write the three lines in sorted order.',
-      recipe: { recipeId: 'sorted-lines', tool: 'runtime.write_text', effect: 'reversible_write',
+      recipe: { recipeId: 'sorted-lines', tool: 'runtime_write_text', effect: 'reversible_write',
         verifier: { primitive: 'line_set', parameters: { expectedLines: ['a', 'b', 'c'] } },
         arguments: { path: '{{workspaceRoot}}/output.txt', content: 'a\nb\nc\n', createOnly: true } },
       inputs: { inputFile: 'input.txt', outputFile: 'output.txt' },
@@ -54,7 +48,7 @@ test('a task described at runtime runs and is judged by a built-in primitive', a
 test('the same specification is reusable across different tasks', async (t) => {
   await withRuntime(t, async (host) => {
     const agent = await host.agent('dynamic-caller');
-    const spec = { recipeId: 'sorted-lines', tool: 'runtime.write_text', effect: 'reversible_write',
+    const spec = { recipeId: 'sorted-lines', tool: 'runtime_write_text', effect: 'reversible_write',
       verifier: { primitive: 'line_set', parameters: { expectedLines: ['a', 'b', 'c'] } },
       arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'a\nb\nc\n', createOnly: true } };
     const first = await host.execute('runtime_execute', { agent, arguments: {
@@ -76,7 +70,7 @@ test('a runtime task whose output misses its declared primitive does not report 
     const result = await host.execute('runtime_execute', { agent, arguments: {
       taskId: randomUUID(),
       goal: 'Claim sorted output that is not sorted.',
-      recipe: { recipeId: 'wrong-lines', tool: 'runtime.write_text', effect: 'reversible_write',
+      recipe: { recipeId: 'wrong-lines', tool: 'runtime_write_text', effect: 'reversible_write',
         verifier: { primitive: 'line_set', parameters: { expectedLines: ['x', 'y', 'z'] } },
         arguments: { path: '{{workspaceRoot}}/output.txt', content: 'a\nb\nc\n', createOnly: true } },
       inputs: { inputFile: 'input.txt', outputFile: 'output.txt' },
@@ -111,7 +105,7 @@ test('an unknown verifier primitive is refused at the tool boundary', async (t) 
     const agent = await host.agent('dynamic-caller');
     const result = await host.execute('runtime_execute', { agent, arguments: {
       taskId: randomUUID(), goal: 'Ask for a verifier that does not exist.',
-      recipe: { recipeId: 'no-such-verifier', tool: 'runtime.write_text', effect: 'reversible_write',
+      recipe: { recipeId: 'no-such-verifier', tool: 'runtime_write_text', effect: 'reversible_write',
         verifier: { primitive: 'always_pass' },
         arguments: { path: '{{workspaceRoot}}/output.txt', content: 'x', createOnly: true } },
       inputs: { inputFile: 'input.txt', outputFile: 'output.txt' },
@@ -123,7 +117,7 @@ test('an unknown verifier primitive is refused at the tool boundary', async (t) 
 test('a verified run is remembered and can be found again', async (t) => {
   await withRuntime(t, async (host) => {
     const agent = await host.agent('dynamic-caller');
-    const recipeSpec = { recipeId: 'remembered-sort', tool: 'runtime.write_text', effect: 'reversible_write',
+    const recipeSpec = { recipeId: 'remembered-sort', tool: 'runtime_write_text', effect: 'reversible_write',
       verifier: { primitive: 'line_set', parameters: { expectedLines: ['a', 'b', 'c'] } },
       arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'a\nb\nc\n', createOnly: true } };
     const first = await host.execute('runtime_execute', { agent, arguments: {
@@ -161,7 +155,7 @@ test('a failed run is recorded as a failure, not as a remembered success', async
     const agent = await host.agent('dynamic-caller');
     const result = await host.execute('runtime_execute', { agent, arguments: {
       taskId: randomUUID(), goal: 'Claim a sort that never happened.',
-      recipe: { recipeId: 'remembered-wrong', tool: 'runtime.write_text', effect: 'reversible_write',
+      recipe: { recipeId: 'remembered-wrong', tool: 'runtime_write_text', effect: 'reversible_write',
         verifier: { primitive: 'line_set', parameters: { expectedLines: ['x', 'y'] } },
         arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'a\nb\n', createOnly: true } },
       inputs: { inputFile: 'input.txt', outputFile: 'bad.txt' } } });
@@ -199,17 +193,17 @@ test('a multi-step task with a branch runs through the dynamic tool', async (t) 
     const result = await host.execute('runtime_execute', { agent, arguments: {
       taskId: randomUUID(),
       goal: 'Write a marker, then follow whichever branch the workspace implies.',
-      recipe: { recipeId: 'branching-task', tool: 'runtime.write_text', effect: 'reversible_write',
+      recipe: { recipeId: 'branching-task', tool: 'runtime_write_text', effect: 'reversible_write',
         verifier: { primitive: 'line_set', parameters: { expectedLines: ['final'], targetFile: 'output.txt' } },
         steps: [
-          { id: 'seed', tool: 'runtime.write_text', effect: 'reversible_write',
+          { id: 'seed', tool: 'runtime_write_text', effect: 'reversible_write',
             verifier: { primitive: 'line_set', parameters: { expectedLines: ['seed'], targetFile: 'marker.txt' } },
             arguments: { path: '{{workspaceRoot}}/marker.txt', content: 'seed\n', createOnly: true },
             next: [{ when: { kind: 'file_exists', parameters: { file: 'marker.txt' } }, goto: 'final' }] },
-          { id: 'skipped', tool: 'runtime.write_text', effect: 'reversible_write',
+          { id: 'skipped', tool: 'runtime_write_text', effect: 'reversible_write',
             verifier: { primitive: 'line_set', parameters: { expectedLines: ['skipped'], targetFile: 'skipped.txt' } },
             arguments: { path: '{{workspaceRoot}}/skipped.txt', content: 'skipped\n', createOnly: true } },
-          { id: 'final', tool: 'runtime.write_text', effect: 'reversible_write',
+          { id: 'final', tool: 'runtime_write_text', effect: 'reversible_write',
             verifier: { primitive: 'line_set', parameters: { expectedLines: ['final'], targetFile: 'output.txt' } },
             arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'final\n', createOnly: true } },
         ] },

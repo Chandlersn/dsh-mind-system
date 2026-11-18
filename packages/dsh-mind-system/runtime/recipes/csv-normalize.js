@@ -126,7 +126,7 @@ export function buildCsvCandidate(task, io = LOCAL_IO) {
     .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
   const content = `id,name\n${rows.map((row) => `${encodeField(row.id)},${encodeField(row.name)}`).join('\n')}\n`;
   return validateCandidate({
-    candidateId: 'create-normalized-csv', toolName: 'runtime.write_text',
+    candidateId: 'create-normalized-csv', toolName: 'runtime_write_text',
     arguments: { path: output, content, createOnly: true },
     preconditionIds: ['csv-source-hash-unchanged', 'csv-output-absent', 'csv-workspace-scope'],
     postconditionIds: ['csv-rows-match-source', 'csv-source-hash-unchanged'],
@@ -177,7 +177,7 @@ const boundTask = (task, state) => ({ ...task, inputs: state.inputs });
 
 export const csvNormalizeRecipe = Object.freeze({
   id: RECIPE_ID, version: RECIPE_VERSION, ruleVersion: 'csv-normalize-single-action-v1',
-  allowedTools: ['runtime.write_text'], toolEffects: { 'runtime.write_text': 'reversible_write' },
+  allowedTools: ['runtime_write_text'], toolEffects: { 'runtime_write_text': 'reversible_write' },
   requiredPreconditionIds: ['csv-source-hash-unchanged', 'csv-output-absent', 'csv-workspace-scope'],
   postconditionIds: ['csv-rows-match-source', 'csv-source-hash-unchanged'],
   verificationIoReserve: 5,

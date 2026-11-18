@@ -15,10 +15,10 @@ import { buildRecipeFromSpec } from '../src/recipe-factory.js';
  * counters only move on verified completion.
  */
 
-const toolEffects = { 'runtime.write_text': 'reversible_write' };
+const toolEffects = { 'runtime_write_text': 'reversible_write' };
 
 const spec = (overrides = {}) => ({
-  recipeId: 'sorted-lines', version: '1', tool: 'runtime.write_text', effect: 'reversible_write',
+  recipeId: 'sorted-lines', version: '1', tool: 'runtime_write_text', effect: 'reversible_write',
   verifier: { primitive: 'line_set', parameters: { expectedLines: ['a', 'b'] } },
   arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'a\nb\n', createOnly: true },
   ...overrides,

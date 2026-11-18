@@ -28,7 +28,7 @@ async function setup(t, options = {}) {
   executor = new HostExecutor({ context: host.ctx, tools: host.tools, agent });
   writeFileSync(join(host.storage, 'source.json'), JSON.stringify([{ id: 'b', name: ' Beta ' }, { id: 'a', name: ' Alpha ' }]));
   host.tools.register({
-    name: 'runtime.write_json', description: 'Create a fixture JSON output inside the authorized workspace.',
+    name: 'runtime_write_json', description: 'Create a fixture JSON output inside the authorized workspace.',
     parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' },
       createOnly: { type: 'boolean', enum: [true] } }, required: ['path', 'content', 'createOnly'], additionalProperties: false },
     output: { schema: {}, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
@@ -41,7 +41,7 @@ async function setup(t, options = {}) {
     },
   });
   const authority = { scopeRef: 'fixture-workspace', workspaceRoot: host.storage,
-    allowedTools: ['runtime.write_json'], agent };
+    allowedTools: ['runtime_write_json'], agent };
   const task = { taskId: randomUUID(), recipeId: 'json-normalize', recipeVersion: '1', goal: 'Normalize fixture records.',
     scopeRef: authority.scopeRef, workspaceRoot: host.storage, inputs: { inputFile: 'source.json', outputFile: 'output.json' },
     deadlineAt: Date.now() + 60_000, ...options.task };

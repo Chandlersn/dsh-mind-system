@@ -25,11 +25,11 @@ async function fixture(t, { alterProposal, brokenRepair = false, budget, omitPol
   executor = new HostExecutor({ context: host.ctx, tools: host.tools, agent });
   writeFileSync(join(host.storage, 'source.json'), JSON.stringify([{ id: 'b', name: ' Beta ' }, { id: 'a', name: ' Alpha ' }]));
   const render = (_args, value) => [{ type: 'text', text: JSON.stringify(value) }];
-  host.tools.register({ name: 'runtime.write_json', description: 'Create an owned fixture artifact.',
+  host.tools.register({ name: 'runtime_write_json', description: 'Create an owned fixture artifact.',
     parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, createOnly: { type: 'boolean', enum: [true] } },
       required: ['path', 'content', 'createOnly'], additionalProperties: false }, output: { schema: {}, render },
     async execute({ path }) { assert.equal(path, join(host.storage, 'output.json')); host.ledger('initial_write'); writeFileSync(path, '[]', { flag: 'wx' }); return { created: true }; } });
-  host.tools.register({ name: 'runtime.replace_json', description: 'Replace only the unchanged owned fixture output.',
+  host.tools.register({ name: 'runtime_replace_json', description: 'Replace only the unchanged owned fixture output.',
     parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, expectedSha256: { type: 'string' } },
       required: ['path', 'content', 'expectedSha256'], additionalProperties: false }, output: { schema: {}, render },
     async execute({ path, content, expectedSha256 }) {
@@ -41,14 +41,14 @@ async function fixture(t, { alterProposal, brokenRepair = false, budget, omitPol
       return { success: true, verification: { status: 'pass', goalSatisfied: true } };
     } });
   const authority = { scopeRef: 'owned-repair-fixture', workspaceRoot: host.storage,
-    allowedTools: ['runtime.write_json', 'runtime.replace_json'], agent };
+    allowedTools: ['runtime_write_json', 'runtime_replace_json'], agent };
   const task = { taskId: randomUUID(), recipeId: 'json-normalize', recipeVersion: '1', goal: 'Create normalized sorted records.',
     scopeRef: authority.scopeRef, workspaceRoot: host.storage, inputs: { inputFile: 'source.json', outputFile: 'output.json' },
     deadlineAt: now() + 60_000, ...(budget ? { budget } : {}) };
   analyzer = new Analyzer({ async invoke({ input }) {
     const path = input.candidate.arguments.path;
     const outputRef = input.verification.evidenceRefs.find((ref) => ref.startsWith(`file:${path}#sha256:`));
-    const candidate = { ...input.candidate, candidateId: 'replace-owned-json', toolName: 'runtime.replace_json',
+    const candidate = { ...input.candidate, candidateId: 'replace-owned-json', toolName: 'runtime_replace_json',
       arguments: { path, content: input.candidate.arguments.content, expectedSha256: outputRef.slice(-64) },
       preconditionIds: [...jsonNormalizeRepairPolicy.requiredPreconditionIds] };
     const repair = { kind: 'retry_with', candidate, diagnosis: { location: 'output', cause: 'wrong_guess', evidenceRefs: [outputRef] },
@@ -150,7 +150,7 @@ test('changed artifact after analysis is not overwritten by its stale proposal',
 test('dispatch-time repair recheck catches a change while host policy waits', async (t) => {
   const env = await fixture(t);
   env.host.ctx.on('tools/pre-execute', async (exec, next) => {
-    if (exec.name === 'runtime.replace_json') writeFileSync(join(env.host.storage, 'output.json'), 'policy-time change');
+    if (exec.name === 'runtime_replace_json') writeFileSync(join(env.host.storage, 'output.json'), 'policy-time change');
     return next();
   });
   const result = await env.scheduler.repair(env.task.taskId, env.analysisId, { authority: env.authority });
@@ -161,7 +161,7 @@ test('dispatch-time repair recheck catches a change while host policy waits', as
 
 test('post failure after actual repair freezes the unknown attempt and cannot credit repair success', async (t) => {
   const env = await fixture(t);
-  env.host.ctx.on('tools/post-execute', async (exec, _result, next) => exec.name === 'runtime.replace_json'
+  env.host.ctx.on('tools/post-execute', async (exec, _result, next) => exec.name === 'runtime_replace_json'
     ? { kind: 'block', feedback: [{ type: 'text', text: 'Fixture post failure.' }] } : next());
   const result = await env.scheduler.repair(env.task.taskId, env.analysisId, { authority: env.authority });
   assert.equal(result.status, 'reconciling');
@@ -229,7 +229,7 @@ test('caller cancellation during pre-execution settles the repair without a fail
   const env = await fixture(t);
   const controller = new AbortController();
   env.host.ctx.on('tools/pre-execute', async (exec, next) => {
-    if (exec.name === 'runtime.replace_json') controller.abort('Fixture cancellation.');
+    if (exec.name === 'runtime_replace_json') controller.abort('Fixture cancellation.');
     return next();
   });
   const result = await env.scheduler.repair(env.task.taskId, env.analysisId, { authority: env.authority, signal: controller.signal });

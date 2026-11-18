@@ -28,17 +28,17 @@ async function pipeline(t, { sourceText = 'b\nc\na\n' } = {}) {
   const executor = new HostExecutor({ context: host.ctx, tools: host.tools, agent });
   const { assertObjectJsonSchema, validateJsonSchemaValue } = await import(pathToFileURL(installed['dsh-tools'].entry).href);
   writeFileSync(join(host.storage, 'input.txt'), sourceText);
-  host.tools.register({ name: 'runtime.write_text', description: 'Create the owned text artifact.',
+  host.tools.register({ name: 'runtime_write_text', description: 'Create the owned text artifact.',
     parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' },
       createOnly: { type: 'boolean', enum: [true] } },
       required: ['path', 'content', 'createOnly'], additionalProperties: false },
     output: { schema: { type: 'object' }, render: () => [{ type: 'text', text: '{"created":true}' }] },
     async execute({ path, content }) { writeFileSync(path, content, { flag: 'wx' }); return { created: true }; } });
   const registry = createRecipeRegistry();
-  const toolEffects = { 'runtime.write_text': 'reversible_write' };
+  const toolEffects = { 'runtime_write_text': 'reversible_write' };
   const validateArguments = ({ tool, arguments: args }) => validateJsonSchemaValue(tool.parameters, args);
-  assertObjectJsonSchema(host.tools.get('runtime.write_text').parameters);
-  const authority = { scopeRef: 'gen-scope', workspaceRoot: host.storage, allowedTools: ['runtime.write_text'], agent };
+  assertObjectJsonSchema(host.tools.get('runtime_write_text').parameters);
+  const authority = { scopeRef: 'gen-scope', workspaceRoot: host.storage, allowedTools: ['runtime_write_text'], agent };
   const close = async () => { await executor.dispose(); store.close(); };
   return { host, store, executor, registry, toolEffects, validateArguments, authority, agent, close };
 }
@@ -57,7 +57,7 @@ test('a task with no pre-registered recipe runs from a generated one', async (t)
     const recipe = env.registry.generate({
       recipeId: 'gen-sorted-lines', version: '1',
       description: 'Write the input lines in sorted order.',
-      tool: 'runtime.write_text', effect: 'reversible_write',
+      tool: 'runtime_write_text', effect: 'reversible_write',
       verifier: { primitive: 'line_set', parameters: { expectedLines: ['a', 'b', 'c'] } },
       arguments: { path: '{{workspaceRoot}}/output.txt', content: 'a\nb\nc\n', createOnly: true },
     }, { toolEffects: env.toolEffects });
@@ -79,7 +79,7 @@ test('a generated recipe whose output does not satisfy its own primitive fails',
   const env = await pipeline(t);
   try {
     env.registry.generate({
-      recipeId: 'gen-wrong', tool: 'runtime.write_text', effect: 'reversible_write',
+      recipeId: 'gen-wrong', tool: 'runtime_write_text', effect: 'reversible_write',
       // Declares a set the written content does not match: the write succeeds, verification must not.
       verifier: { primitive: 'line_set', parameters: { expectedLines: ['x', 'y'] } },
       arguments: { path: '{{workspaceRoot}}/output.txt', content: 'a\nb\n', createOnly: true },
@@ -102,7 +102,7 @@ test('an unknown verifier primitive is refused rather than downgraded', async (t
   const env = await pipeline(t);
   try {
     assert.throws(() => env.registry.generate({
-      recipeId: 'gen-bogus', tool: 'runtime.write_text', effect: 'reversible_write',
+      recipeId: 'gen-bogus', tool: 'runtime_write_text', effect: 'reversible_write',
       verifier: { primitive: 'always_pass' },
       arguments: { path: '{{workspaceRoot}}/output.txt', content: 'x', createOnly: true },
     }, { toolEffects: env.toolEffects }), { code: 'invalid_recipe_spec' });
@@ -114,9 +114,9 @@ test('a specification cannot smuggle in behaviour or effects', async (t) => {
   try {
     // An undeclared field must be refused: otherwise a spec could carry executable intent.
     assert.throws(() => env.registry.generate({
-      recipeId: 'gen-extra', tool: 'runtime.write_text', effect: 'reversible_write',
+      recipeId: 'gen-extra', tool: 'runtime_write_text', effect: 'reversible_write',
       verifier: { primitive: 'structure', parameters: { rule: { type: 'string' } } },
-      arguments: {}, candidates: () => [], toolEffects: { 'runtime.write_text': 'read' },
+      arguments: {}, candidates: () => [], toolEffects: { 'runtime_write_text': 'read' },
     }, { toolEffects: env.toolEffects }), { code: 'invalid_recipe_spec' });
     // The effect table is trusted host input, never spec input.
     assert.throws(() => env.registry.generate({
@@ -139,14 +139,14 @@ test('a multi-step recipe advances through its steps and stops on its own', asyn
     // Two writes in order: the second step's argument references its own output file, so a run that
     // skipped a step or repeated one would not produce the expected artifacts.
     env.registry.generate({
-      recipeId: 'gen-two-steps', tool: 'runtime.write_text', effect: 'reversible_write',
+      recipeId: 'gen-two-steps', tool: 'runtime_write_text', effect: 'reversible_write',
       // The step verifier judges each intermediate artifact; the top-level verifier judges the final state.
       verifier: { primitive: 'line_set', parameters: { expectedLines: ['a', 'b', 'c'] } },
       steps: [
-        { id: 'first', tool: 'runtime.write_text', effect: 'reversible_write',
+        { id: 'first', tool: 'runtime_write_text', effect: 'reversible_write',
           verifier: { primitive: 'line_set', parameters: { expectedLines: ['a', 'b', 'c'] } },
           arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'a\nb\nc\n', createOnly: true } },
-        { id: 'second', tool: 'runtime.write_text', effect: 'reversible_write',
+        { id: 'second', tool: 'runtime_write_text', effect: 'reversible_write',
           // A step may judge its own artifact: without targetFile every step would have to write to the
           // declared outputFile, so a two-step run could never verify its intermediate result.
           verifier: { primitive: 'line_set', parameters: { expectedLines: ['done'], targetFile: 'second.txt' } },
@@ -170,15 +170,15 @@ test('a multi-step recipe advances through its steps and stops on its own', asyn
 test('a multi-step recipe may not nest steps or hide extra fields', async (t) => {
   const env = await pipeline(t);
   try {
-    const base = { recipeId: 'gen-bad-steps', tool: 'runtime.write_text', effect: 'reversible_write',
+    const base = { recipeId: 'gen-bad-steps', tool: 'runtime_write_text', effect: 'reversible_write',
       verifier: { primitive: 'structure', parameters: { rule: { type: 'string' } } } };
     assert.throws(() => env.registry.generate({ ...base,
-      steps: [{ tool: 'runtime.write_text', effect: 'reversible_write', arguments: {},
+      steps: [{ tool: 'runtime_write_text', effect: 'reversible_write', arguments: {},
         verifier: { primitive: 'structure', parameters: { rule: { type: 'string' } } },
         steps: [] }] }, { toolEffects: env.toolEffects }),
     { code: 'invalid_recipe_spec' });
     assert.throws(() => env.registry.generate({ ...base,
-      steps: [{ tool: 'runtime.write_text', effect: 'reversible_write', arguments: {},
+      steps: [{ tool: 'runtime_write_text', effect: 'reversible_write', arguments: {},
         verifier: { primitive: 'structure', parameters: { rule: { type: 'string' } } },
         candidates: () => [] }] }, { toolEffects: env.toolEffects }),
     { code: 'invalid_recipe_spec' });
@@ -193,18 +193,18 @@ test('a declared branch sends the run down the path the workspace state implies'
     // Step one writes a marker, then branches: if the marker exists go to "finish", otherwise "retry".
     // The test drives both arms from the same recipe, so the branch — not the fixture — decides.
     const build = (recipeId) => env.registry.generate({
-      recipeId, tool: 'runtime.write_text', effect: 'reversible_write',
+      recipeId, tool: 'runtime_write_text', effect: 'reversible_write',
       verifier: { primitive: 'line_set', parameters: { expectedLines: ['done'] } },
       steps: [
-        { id: 'seed', tool: 'runtime.write_text', effect: 'reversible_write',
+        { id: 'seed', tool: 'runtime_write_text', effect: 'reversible_write',
           verifier: { primitive: 'line_set', parameters: { expectedLines: ['seed'], targetFile: 'marker.txt' } },
           arguments: { path: '{{workspaceRoot}}/marker.txt', content: 'seed\n', createOnly: true },
           next: [{ when: { kind: 'file_exists', parameters: { file: 'marker.txt' } }, goto: 'finish' },
             { goto: 'unused' }] },
-        { id: 'unused', tool: 'runtime.write_text', effect: 'reversible_write',
+        { id: 'unused', tool: 'runtime_write_text', effect: 'reversible_write',
           verifier: { primitive: 'line_set', parameters: { expectedLines: ['never'], targetFile: 'unused.txt' } },
           arguments: { path: '{{workspaceRoot}}/unused.txt', content: 'never\n', createOnly: true } },
-        { id: 'finish', tool: 'runtime.write_text', effect: 'reversible_write',
+        { id: 'finish', tool: 'runtime_write_text', effect: 'reversible_write',
           verifier: { primitive: 'line_set', parameters: { expectedLines: ['done'], targetFile: 'output.txt' } },
           arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'done\n', createOnly: true } },
       ],
@@ -230,17 +230,17 @@ test('a branch to a step that was never declared is refused at registration', as
   const env = await pipeline(t);
   try {
     assert.throws(() => env.registry.generate({
-      recipeId: 'gen-dangling', tool: 'runtime.write_text', effect: 'reversible_write',
+      recipeId: 'gen-dangling', tool: 'runtime_write_text', effect: 'reversible_write',
       verifier: { primitive: 'line_set', parameters: { expectedLines: ['a'] } },
-      steps: [{ id: 'only', tool: 'runtime.write_text', effect: 'reversible_write',
+      steps: [{ id: 'only', tool: 'runtime_write_text', effect: 'reversible_write',
         verifier: { primitive: 'line_set', parameters: { expectedLines: ['a'] } },
         arguments: {}, next: [{ goto: 'nowhere' }] }],
     }, { toolEffects: env.toolEffects }), { code: 'invalid_recipe_spec' });
     // An unknown condition kind must also fail here, not mid-run.
     assert.throws(() => env.registry.generate({
-      recipeId: 'gen-unknown-condition', tool: 'runtime.write_text', effect: 'reversible_write',
+      recipeId: 'gen-unknown-condition', tool: 'runtime_write_text', effect: 'reversible_write',
       verifier: { primitive: 'line_set', parameters: { expectedLines: ['a'] } },
-      steps: [{ id: 'only', tool: 'runtime.write_text', effect: 'reversible_write',
+      steps: [{ id: 'only', tool: 'runtime_write_text', effect: 'reversible_write',
         verifier: { primitive: 'line_set', parameters: { expectedLines: ['a'] } },
         arguments: {}, next: [{ when: { kind: 'invented' }, goto: 'only' }] }],
     }, { toolEffects: env.toolEffects }), { code: 'invalid_condition' });
@@ -253,18 +253,18 @@ test('a branch whose condition is false takes the fallback instead', async (t) =
     // The condition watches a file that never exists, so a correct run must fall through to `other`.
     // Without this contrast, a matcher that assumed every condition true would pass the positive test too.
     env.registry.generate({
-      recipeId: 'gen-false-branch', tool: 'runtime.write_text', effect: 'reversible_write',
+      recipeId: 'gen-false-branch', tool: 'runtime_write_text', effect: 'reversible_write',
       verifier: { primitive: 'line_set', parameters: { expectedLines: ['other'], targetFile: 'other.txt' } },
       steps: [
-        { id: 'seed', tool: 'runtime.write_text', effect: 'reversible_write',
+        { id: 'seed', tool: 'runtime_write_text', effect: 'reversible_write',
           verifier: { primitive: 'line_set', parameters: { expectedLines: ['seed'], targetFile: 'marker.txt' } },
           arguments: { path: '{{workspaceRoot}}/marker.txt', content: 'seed\n', createOnly: true },
           next: [{ when: { kind: 'file_exists', parameters: { file: 'absent.txt' } }, goto: 'never' },
             { goto: 'other' }] },
-        { id: 'never', tool: 'runtime.write_text', effect: 'reversible_write',
+        { id: 'never', tool: 'runtime_write_text', effect: 'reversible_write',
           verifier: { primitive: 'line_set', parameters: { expectedLines: ['never'], targetFile: 'never.txt' } },
           arguments: { path: '{{workspaceRoot}}/never.txt', content: 'never\n', createOnly: true } },
-        { id: 'other', tool: 'runtime.write_text', effect: 'reversible_write',
+        { id: 'other', tool: 'runtime_write_text', effect: 'reversible_write',
           verifier: { primitive: 'line_set', parameters: { expectedLines: ['other'], targetFile: 'other.txt' } },
           arguments: { path: '{{workspaceRoot}}/other.txt', content: 'other\n', createOnly: true } },
       ],
@@ -285,7 +285,7 @@ test('two different tasks can share one generated recipe with different placehol
   const env = await pipeline(t);
   try {
     env.registry.generate({
-      recipeId: 'gen-shared', tool: 'runtime.write_text', effect: 'reversible_write',
+      recipeId: 'gen-shared', tool: 'runtime_write_text', effect: 'reversible_write',
       verifier: { primitive: 'line_set', parameters: { expectedLines: ['a', 'b', 'c'] } },
       arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'a\nb\nc\n', createOnly: true },
     }, { toolEffects: env.toolEffects });
