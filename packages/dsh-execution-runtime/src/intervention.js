@@ -21,10 +21,60 @@ import { RuntimeContractError } from './contracts.js';
 
 const fail = (code, message) => { throw new RuntimeContractError(code, message); };
 
-/** Failures that are worth offering help for. A typo or a path mistake is not a candidate. */
-const RELEVANT_WORDS = Object.freeze(['budget_exceeded', 'deadline', 'timeout', 'verification',
-  'outcome_unknown', 'not_observed', 'reconciling', 'partial', 'atomic', 'half_', 'inconsistent',
-  'resume', 'rollback', 'retry']);
+/**
+ * Failures worth offering help for — phrased the way failures are actually phrased.
+ *
+ * ## Why this list changed
+ *
+ * The first version held the runtime's own error codes: `budget_exceeded`, `half_`,
+ * `reconciling`. Measured against real failure text it matched 3.0% of 2021 recorded failures,
+ * and missed 11 of 12 cases that genuinely needed help, because a caller never writes
+ * "reconciling" — it writes "the write landed on disk but no ledger row was recorded for it".
+ * The vocabulary was describing the runtime to itself instead of recognising the caller's
+ * situation.
+ *
+ * The list is now built from the shapes the runtime can act on, each written the way a failure
+ * message writes it. Both directions are measured (scripts/tune-detector-vocab.mjs): the
+ * labelled case set goes from 91.7% missed to 0%, and the ordinary noise the design must ignore
+ * (typos, parse errors, missing arguments) stays where it was — 3.0% to 3.5% of real failures.
+ *
+ * ## The boundary this does not cross
+ *
+ * A widened list still cannot tell "timeout waiting for the language server" (a configuration
+ * problem) from "killed after the deadline" (a step that can be resumed). Those four case-set
+ * false alarms are the known cost of matching on text, and they are left visible in the report
+ * rather than papered over with more words.
+ */
+const RELEVANT_WORDS = Object.freeze([
+  // the runtime's own vocabulary: still valid when a caller quotes a contract error back
+  'budget_exceeded', 'deadline', 'timeout', 'verification', 'outcome_unknown', 'not_observed',
+  'reconciling', 'partial', 'atomic', 'half_', 'inconsistent', 'resume', 'rollback', 'retry',
+  // an artifact that does not satisfy what the task declared
+  'does not match', 'mismatch', 'differs', 'not satisfy', 'violated', 'unexpected content',
+  // work that half-landed or is in an unknown state
+  'half written', 'half-written', 'only half', 'not settle', 'did not settle',
+  'no ledger row', 'not recorded', 'unrecorded', 'orphan',
+  'in an unknown state', 'outcome is unknown', 'unknown outcome',
+  // progress that cannot continue without undo or recovery
+  'must be undone', 'cannot proceed', 'cannot continue', 'no longer matches',
+  'stale', 'out of date', 'cursor', 'checkpoint', 'journal',
+  // caps and repeated identical failure
+  'reached the', 'cap', 'exhausted', 'no further attempt',
+  'failed twice', 'identically', 'repeatedly failed',
+  // competing ownership / lost dispatch
+  'same fence', 'claim the same', 'two attempts', 'no executor',
+  // a process that died partway through its writes
+  'died with', 'process died', 'crashed', 'was killed mid',
+]);
+
+/**
+ * The vocabulary, exposed read-only for the vocabulary diagnostic.
+ *
+ * Exported because the question "which of the failures that actually happen here does this list
+ * even consider?" can only be answered against the list itself. A probe that re-declared the
+ * words would drift from the real ones the first time this file is edited.
+ */
+export const RELEVANT_WORDS_DEV = RELEVANT_WORDS;
 
 /** A failure is relevant when its text mentions one of the shapes the runtime can actually help with. */
 function isRelevant(text) {

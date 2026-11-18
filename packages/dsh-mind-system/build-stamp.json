@@ -805,7 +805,7 @@
     },
     "runtime/package.json": {
       "source": "dsh-execution-runtime/package.json",
-      "sha256": "f71f4229f9ef55823c89cbd151779f0bccea0f8745386f19b850ac85c89a7af1"
+      "sha256": "745f2b510811fda052a5cf4d6195d1f3d6eb7eb1ae6e9950bd388aa312e249b3"
     },
     "runtime/recipes/csv-normalize.js": {
       "source": "dsh-execution-runtime/recipes/csv-normalize.js",
@@ -823,9 +823,21 @@
       "source": "dsh-execution-runtime/scripts/build/module-closure.mjs",
       "sha256": "d5fd3b0c1bca23b3c1187684760234379abf830aa8ea251e602c3003e0df923a"
     },
+    "runtime/scripts/diagnose-detector-vocab.mjs": {
+      "source": "dsh-execution-runtime/scripts/diagnose-detector-vocab.mjs",
+      "sha256": "06a8887d7395a3641e31a436d65590431de04800ae3b0e8ce220379e697a2897"
+    },
+    "runtime/scripts/dr17-cases.mjs": {
+      "source": "dsh-execution-runtime/scripts/dr17-cases.mjs",
+      "sha256": "7f229c0b6067c0ab9d6fa5de661407254da6e2df3be2cd1f71109938a6433d87"
+    },
     "runtime/scripts/probe-jev.mjs": {
       "source": "dsh-execution-runtime/scripts/probe-jev.mjs",
       "sha256": "8131018a2741bfd086882275cc410b56cb9acfa55f65a33312ac24bff068edf4"
+    },
+    "runtime/scripts/tune-detector-vocab.mjs": {
+      "source": "dsh-execution-runtime/scripts/tune-detector-vocab.mjs",
+      "sha256": "8d0252e841dbf080ba624ec73eb311315ea6a8a61f04d381208009f2ba9cd871"
     },
     "runtime/scripts/verify-analysis-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-analysis-mutations.mjs",
@@ -849,7 +861,7 @@
     },
     "runtime/scripts/verify-dr17-labelled.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-dr17-labelled.mjs",
-      "sha256": "e063ab5ed63a1d13985b295ea7a58ca73811f799eb5bbb7c94b640f7af86d517"
+      "sha256": "e95bfcd1c1bf437f3ce613639742b9547bcf8440e0772d66fafa77e9bf572e88"
     },
     "runtime/scripts/verify-dr18-arms.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-dr18-arms.mjs",
@@ -953,7 +965,7 @@
     },
     "runtime/src/intervention.js": {
       "source": "dsh-execution-runtime/src/intervention.js",
-      "sha256": "7d153dec0faf2f9a290b0608158882d1857b89d92e0641a1f2d13d8955f5a329"
+      "sha256": "0702e909db2e587e191c462b16951cdc01c78597a259cace3a6958705d13e720"
     },
     "runtime/src/knowledge-sag.js": {
       "source": "dsh-execution-runtime/src/knowledge-sag.js",
@@ -1077,7 +1089,7 @@
     },
     "runtime/test/intervention.test.js": {
       "source": "dsh-execution-runtime/test/intervention.test.js",
-      "sha256": "f0039ffcf3760d775f6aefa8554eb2ea21be77361abc9d3c828f81b0f20bd66e"
+      "sha256": "54b7cc2ac3e048495ff77ba4360bd1e72f768484e64b4c88b8bfdff90c6697d5"
     },
     "runtime/test/json-recipe.test.js": {
       "source": "dsh-execution-runtime/test/json-recipe.test.js",

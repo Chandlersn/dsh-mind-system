@@ -39,6 +39,44 @@ test('failures the runtime could not help with are ignored outright', () => {
   assert.equal(metrics.skipped, 3);
 });
 
+test('a failure described in the caller\'s words is recognised, not just one quoting an error code', () => {
+  // The vocabulary was once the runtime's own error codes only (`budget_exceeded`, `half_`,
+  // `reconciling`). Measured against real failures that matched 3.0% of them and missed 11 of 12
+  // cases that genuinely needed help: a caller writes what happened, not the internal code name.
+  // This test pins the caller's phrasing so the list cannot quietly narrow back to self-description.
+  for (const message of [
+    'the produced artifact does not match what the task declared',
+    'the write landed on disk but no ledger row was recorded for it',
+    'the checkpoint cursor no longer matches the journal entries',
+    'the process died with 3 of 7 files written',
+    'the compensation step did not settle the target fact',
+    'two attempts claim the same fence token',
+  ]) {
+    const policy = createInterventionPolicy({ threshold: 1, now: () => NOW });
+    const verdict = policy.evaluate({ agentId: 'a', tool: 't', message });
+    assert.notEqual(verdict.skipped, 'not_relevant', `caller-style failure not recognised: ${message}`);
+    assert.ok(verdict.hint !== undefined, `should have offered help: ${message}`);
+  }
+});
+
+test('widening the vocabulary did not make ordinary mistakes look actionable', () => {
+  // The trade-off is real: a longer list buys recall and risks matching noise. The design
+  // requirement is that a typo, a parse error or a missing argument stays invisible, so that is
+  // asserted directly rather than trusted to the shape of the word list.
+  for (const message of [
+    'SyntaxError: Unexpected token } in the module body',
+    'EACCES: permission denied writing to the profile directory',
+    'invalid arguments: missing required property "file_path"',
+    'old_string was not found in the target file',
+    'command not found: ffprobe is not on PATH',
+    'rg: no matches found for the pattern in the tree',
+  ]) {
+    const policy = createInterventionPolicy({ threshold: 1, now: () => NOW });
+    const verdict = policy.evaluate({ agentId: 'a', tool: 't', message });
+    assert.equal(verdict.skipped, 'not_relevant', `ordinary mistake became actionable: ${message}`);
+  }
+});
+
 test('the cooldown is per agent and expires', () => {
   const now = clock();
   const policy = createInterventionPolicy({ threshold: 1, cooldownMs: 60_000, now });
