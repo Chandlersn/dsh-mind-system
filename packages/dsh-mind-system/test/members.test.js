@@ -133,6 +133,59 @@ test('成员子目录缺失时探针必须报 failing', () => {
   }
 });
 
+test('成员目录、装载点、exports 三者同源（加成员不能只改一处）', () => {
+  // 这一条拦的是真实发生过的事：第六个成员进了 patch 和 manifest、
+  // 根 README 写了"六个成员"，但 MEMBERS 与 MEMBER_PACKAGES 还是五条，
+  // 探针的入口判定也只认 index.js / server.js。
+  //
+  // 注意段名与目录名**不是**一一对应：四个 CLIS 组件都落在 clis/ 下。
+  // 所以判据走 exports，而不是字符串拆段。
+  const pkg = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'));
+  const targetOf = (member) => pkg.exports['.' + member.slice('dsh-mind-system'.length)];
+
+  /** 一个 exports 目标属于哪个成员目录。 */
+  const dirOf = (target) =>
+    MEMBER_PACKAGES.find((dir) => target.startsWith(`./${dir}/`));
+
+  // 正向：每个成员目录都必须有装载点能到达它，否则目录在、patch 不装。
+  const reachable = new Set(
+    MEMBERS.map(targetOf)
+      .filter((t) => typeof t === 'string')
+      .map(dirOf)
+      .filter(Boolean),
+  );
+  for (const dir of MEMBER_PACKAGES) {
+    assert.ok(reachable.has(dir), `成员目录 ${dir}/ 必须有一个 MEMBERS 装载点指向它`);
+  }
+
+  // 反向：exports 里指向成员目录的入口不能是孤儿（patch 永远装不到它）。
+  const declared = new Set(MEMBERS.map(targetOf));
+  for (const [sub, target] of Object.entries(pkg.exports)) {
+    if (sub === '.' || sub === './package.json' || sub === './client') continue;
+    if (typeof target !== 'string' || dirOf(target) === undefined) continue;
+    assert.ok(
+      declared.has(target),
+      `exports['${sub}'] → ${target} 没有被任何 MEMBERS 装载点引用（孤儿入口：代码在、patch 不装）`,
+    );
+  }
+});
+
+test('成员入口从 exports 推导，不另维护一份入口清单', () => {
+  // 探针此前写死 ['index.js','server.js']，runtime 的入口是 src/host-plugin.js，
+  // 于是真实存在的成员被判成 missing。入口只允许有一个声明处：package.json。
+  const pkg = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'));
+  for (const dir of MEMBER_PACKAGES) {
+    const entry = Object.values(pkg.exports).find(
+      (target) => typeof target === 'string' && target.startsWith(`./${dir}/`),
+    );
+    assert.ok(entry !== undefined, `exports 必须声明 ${dir}/ 的入口`);
+    assert.ok(
+      existsSync(join(pkgRoot, entry.replace('./', ''))),
+      `${dir}/ 的 exports 目标必须真实存在：${entry}`,
+    );
+  }
+});
+
 test('探针代号稳定（会被按名字检索）', () => {
   assert.equal(PROBE_CODES.memberMissing, 'mind-system.member-missing');
   assert.equal(PROBE_CODES.ok, 'mind-system.ok');

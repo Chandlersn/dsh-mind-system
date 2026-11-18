@@ -112,18 +112,29 @@ ok(
 );
 
 console.log('\n--- 5. 成员子目录齐全 ---');
-const MEMBER_ENTRY = {
-  clis: ['index.js', 'clis-classifier.js', 'clis-strategy.js', 'clis-feedback.js', 'clis-orchestrator.js'],
-  meta: ['index.js', join('src', 'tools.js')],
-  memory: ['server.js', 'health-inbox.js', 'client.js'],
-  mind: ['index.js', join('src', 'orchestrate.js')],
-  valves: ['index.js', join('src', 'predicates.js'), join('src', 'store.js'), join('src', 'thresholds.js')],
-};
+// 这里不维护第二份入口清单。此前写死过一份 {clis, meta, memory, mind, valves}，
+// 第六个成员（runtime，入口在 src/host-plugin.js）加入后那份表里没有它 ——
+// 于是第 5 节对这个成员一个断言都没跑，却照样全绿。
+// 判定改由 MEMBER_PACKAGES + exports 推导，加成员只需改 index.js。
 for (const dir of MEMBER_PACKAGES) {
   ok(existsSync(join(pkgRoot, dir)), `成员子目录 ${dir}/ 在包内`);
-  for (const f of MEMBER_ENTRY[dir] ?? []) {
-    ok(existsSync(join(pkgRoot, dir, f)), `${dir}/${f} 存在`);
+  const entry = Object.values(exportsMap).find(
+    (target) => typeof target === 'string' && target.startsWith(`./${dir}/`),
+  );
+  ok(entry !== undefined, `${dir}/ 在 exports 里有入口声明`);
+  if (entry !== undefined) {
+    ok(existsSync(join(pkgRoot, entry.replace('./', ''))), `${dir}/ 的 exports 入口文件存在：${entry}`);
   }
+}
+
+console.log('\n--- 5b. 成员目录会被真的发布出去（files 覆盖）---');
+// `files` 少一个目录时，exports 目标在**源码树里**存在、本地全绿，
+// 但装到别人机器上就是缺文件 —— 发布前的检查必须模拟"哪些文件出门"。
+const filesField = pkg.files ?? [];
+ok(filesField.length > 0, 'package.json 有 files 字段（缺了会把整个仓库按默认规则打包）');
+for (const dir of MEMBER_PACKAGES) {
+  const covered = filesField.some((item) => item === dir || item === `${dir}/` || item === '*');
+  ok(covered, `files 覆盖成员目录 ${dir}/（否则发布包里没有它）`);
 }
 
 console.log('\n--- 6. 客户端声明 ---');

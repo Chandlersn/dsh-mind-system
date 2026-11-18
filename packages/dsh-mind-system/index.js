@@ -3,9 +3,10 @@
  *
  * ## 这个包做什么（以及不做什么）
  *
- * 它**是唯一的装载点**：四家成员（clis / meta-framework / memory-manager /
- * agent-mind）的**源码物理并入本包**（clis/ mind/ meta/ memory/ 四个子目录），
- * 由 `cordis.patch.yml` 里八条 insert 行按顺序装载。
+ * 它**是唯一的装载点**：六个源包（clis / meta-framework / memory-manager /
+ * agent-mind / valves / execution-runtime）的**源码物理并入本包**
+ * （clis/ mind/ meta/ memory/ valves/ runtime/ 六个子目录），
+ * 由 `cordis.patch.yml` 里按顺序装载。
  *
  * 能力归成员，本文件只承载：
  *
@@ -23,9 +24,28 @@
  * @module dsh-mind-system
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+/** 本包所在目录。@type {string} */
+export const packageDir = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * 本包 `package.json` 的只读快照。
+ *
+ * 探针和发布自检都要问"成员入口在哪"，答案唯一存在于 exports。
+ * 读一次存下来：探针必须零参数、永不抛错，不能每调用一次就读盘。
+ *
+ * @type {{exports?: Record<string, unknown>}}
+ */
+const pkgManifest = (() => {
+  try {
+    return JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'));
+  } catch {
+    return {};
+  }
+})();
 
 /** 合成包名（宿主据此把本包当普通 bundle 处理）。 */
 export const name = 'dsh-mind-system';
@@ -40,7 +60,9 @@ export const inject = [];
  * clis 四组件 → clis 工具包（inject 依赖那四服务）→
  * meta-framework（依赖 clis 分类器）→ valves（发布 'valves' 服务）→
  * memory-manager（经 ctx.get 可选探测 valves，晚装也能命中但不依赖顺序）→
- * mind（需要 tools 与 systemPrompt 都已就位）→ 本包最后收口。
+ * mind（需要 tools 与 systemPrompt 都已就位）→
+ * execution-runtime（每次调用从 exec.agent 取调用者身份，需要 tools 与 agent 就位）→
+ * 本包最后收口。
  */
 export const MEMBERS = [
   'dsh-mind-system/clis-classifier',
@@ -52,13 +74,14 @@ export const MEMBERS = [
   'dsh-mind-system/valves',
   'dsh-mind-system/memory-manager',
   'dsh-mind-system/agent-mind',
+  'dsh-mind-system/runtime',
 ];
 
 /**
- * 五个成员的**子目录名**（包内，与 MEMBERS 一一对应去重）。
+ * 成员的**子目录名**（包内，与 MEMBERS 一一对应去重）。
  * 用于探针的磁盘检查：目录在 = 源码并入完成。
  */
-export const MEMBER_PACKAGES = ['clis', 'meta', 'memory', 'mind', 'valves'];
+export const MEMBER_PACKAGES = ['clis', 'meta', 'memory', 'mind', 'valves', 'runtime'];
 
 /** clis 的四个子组件（装载点形态，缺一工具包不激活）。 */
 export const CLIS_COMPONENTS = [
@@ -76,18 +99,41 @@ export const PROBE_CODES = {
   ok: 'mind-system.ok',
 };
 
-/** 本包所在目录。@type {string} */
-export const packageDir = dirname(fileURLToPath(import.meta.url));
+/**
+ * 成员子目录的**入口文件**，从本包 `exports` 推导。
+ *
+ * 为什么不再写死 `index.js` / `server.js`：
+ * 那个写死清单只覆盖了前五个成员。第六个成员（runtime）的入口是
+ * `src/host-plugin.js`，于是"清单加了成员、探针判定没跟上"——
+ * 探针会对一个真实存在的成员报 missing。判定必须从**唯一的声明处**
+ * （package.json 的 exports）来，否则每加一个成员就要记得改两处。
+ *
+ * @param {string} memberDir — 成员子目录名。
+ * @returns {string|undefined} 包内相对路径；exports 里没有该目录则 undefined。
+ */
+function memberEntryRel(memberDir) {
+  const exportsMap = pkgManifest.exports ?? {};
+  const prefix = `./${memberDir}/`;
+  return Object.values(exportsMap).find(
+    (target) => typeof target === 'string' && target.startsWith(prefix),
+  );
+}
 
 /**
  * 找一个成员在**包内**的目录。
  *
- * @param {string} memberDir — 成员子目录名（clis / meta / memory / mind）。
- * @returns {string|undefined} 绝对路径；不存在则 undefined。
+ * 目录在、且 exports 声明的入口文件也在 —— 两项都成立才算成员齐全。
+ * 只看目录会把"目录空壳"当成已完成；只看 exports 会把"映射指向不存在的
+ * 文件"当成已完成（发布时漏掉 files 条目正是这种形状）。
+ *
+ * @param {string} memberDir — 成员子目录名（clis / meta / memory / mind / valves / runtime）。
+ * @returns {string|undefined} 绝对路径；任一条件不成立则 undefined。
  */
 export function memberPackageDir(memberDir) {
+  const rel = memberEntryRel(memberDir);
+  if (rel === undefined) return undefined;
   const dir = join(packageDir, memberDir);
-  return existsSync(join(dir, 'index.js')) || existsSync(join(dir, 'server.js')) ? dir : undefined;
+  return existsSync(join(packageDir, rel)) ? dir : undefined;
 }
 
 /**
@@ -170,7 +216,7 @@ export function deriveStatus(findings) {
 export const healthProbe = { probe };
 
 /**
- * 装载：不做事。能力在四个成员子目录里，本入口只是可识别的包根。
+ * 装载：不做事。能力在成员子目录里，本入口只是可识别的包根。
  *
  * @param {unknown} ctx Cordis 上下文（本包不用它）。
  */
