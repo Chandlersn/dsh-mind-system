@@ -220,6 +220,49 @@ export function createKnowledgeTool({ adapter = null, endpoint = null } = {}) {
   };
 }
 
+/** Submit an approved repair pattern to the valve rule store, or report why it cannot. */
+export function createPatternTool({ valveWriter = null, patterns = [], reason = null } = {}) {
+  return {
+    name: 'runtime_pattern',
+    description: 'Submit an approved repair pattern to the valve rule store. The runtime does not decide that '
+      + 'a pattern is approved: it requires a confirmed, unexpired, version-matched approval, and it never '
+      + 'passes a human flag or a permit of its own. Note that whether the write is truly human-gated depends '
+      + 'on which writer the host supplied — this tool cannot tell an autonomous writer from a gated one.',
+    parameters: {
+      type: 'object',
+      properties: {
+        patternId: { type: 'string', description: 'The pattern to submit.' },
+        approval: { type: 'object', description: 'The approval ticket, as issued by the approval channel.',
+          additionalProperties: true },
+      },
+      required: ['patternId'],
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] },
+    async execute(args) {
+      if (valveWriter === null) {
+        return { available: false, reason: reason ?? 'The valve write path is not configured.' };
+      }
+      const pattern = patterns.find((item) => item?.patternId === args?.patternId) ?? null;
+      if (pattern === null) {
+        // The body comes from the host's registry, never from the request: a caller may name a pattern, but
+        // it may not describe one.
+        return { available: true, written: false, reason: 'pattern_not_registered' };
+      }
+      try {
+        const result = await valveWriter({ approval: args?.approval ?? null, pattern });
+        return { available: true, written: result.written, ruleId: result.ruleId,
+          patternVersion: result.patternVersion };
+      } catch (error) {
+        // An ineffective approval or a refusing store is a refusal, not a silent success.
+        return { available: true, written: false, error: error?.code ?? 'valve_write_failed',
+          message: String(error?.message ?? error).slice(0, 200) };
+      }
+    },
+  };
+}
+
 /** A read-only tool so a caller can discover which acceptance and branch primitives exist. */
 export const describePrimitivesTool = {
   name: 'runtime_verifiers',

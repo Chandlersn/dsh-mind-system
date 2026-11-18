@@ -1,10 +1,10 @@
-/**
+﻿/**
  * Host entry: assembles the runtime's native dependencies and mounts it as a Cordis plugin.
  *
  * ## What this file is, and is not
  *
  * `src/plugin.js` already returns a complete Cordis plugin (`name`/`inject`/`apply`/`drain`/`healthProbe`/
- * `describe`). What it cannot do is build its own dependencies — a store, an executor bound to the host
+ * `describe`). What it cannot do is build its own dependencies 鈥?a store, an executor bound to the host
  * context, registered recipes, declared tasks. Those come from the embedding application, so this module
  * wires them and then delegates `apply(ctx)` to that plugin with the *host's* ctx, because that is the ctx
  * whose `tools` service must receive the registrations. No second plugin layer is introduced: a parallel
@@ -14,7 +14,7 @@
  *
  * - Named exports only. `export default` would swallow the named family: the loader takes
  *   `default ?? exports`, so `inject` would silently disappear and the plugin would never activate.
- * - `apply` must not throw at top level — a throw there makes the plugin vanish with no trace. Assembly
+ * - `apply` must not throw at top level 鈥?a throw there makes the plugin vanish with no trace. Assembly
  *   failures are caught and reported through the probe instead.
  * - The probe reports only what was actually wired. `disabled` and `not_configured` are states, not
  *   failures to hide, and a green probe never implies that work is possible.
@@ -29,9 +29,10 @@ import { RuntimeScheduler } from './scheduler.js';
 import { createExecutionRuntimePlugin } from './plugin.js';
 import { createPatternResolver } from './pattern-resolver.js';
 import { createRecipeRegistry } from './recipe-factory.js';
-import { createExecuteTool, createLibraryTool, createKnowledgeTool, describePrimitivesTool }
+import { createExecuteTool, createLibraryTool, createKnowledgeTool, createPatternTool, describePrimitivesTool }
   from './dynamic-tools.js';
 import { createSagAdapter, resolveSagKey } from './knowledge-sag.js';
+import { createValveWriter } from './valve-bridge.js';
 import { createRecipeLibrary } from './recipe-library.js';
 import { Analyzer } from './analyzer.js';
 import { jsonNormalizeRecipe } from '../recipes/json-normalize.js';
@@ -58,7 +59,7 @@ function stateRoot(config) {
 
 /**
  * Optional services are read through `ctx.get`. Reading them as properties throws "cannot get property
- * ... without inject", which fails activation for the whole plugin — one missing optional service would
+ * ... without inject", which fails activation for the whole plugin 鈥?one missing optional service would
  * take the required ones down with it.
  */
 const optional = (ctx, key) => {
@@ -71,7 +72,7 @@ const optional = (ctx, key) => {
  * host provides is normalized into that contract here.
  *
  * The host does not always expose a validator on `ctx`. In that case the host's own
- * `@deepseek-ai/dsh-tools` is loaded — preloaded during `apply`, so the value is available synchronously
+ * `@deepseek-ai/dsh-tools` is loaded 鈥?preloaded during `apply`, so the value is available synchronously
  * when admission calls it later. Reimplementing schema checks here would drift from the host's schema
  * dialect, which is a known source of silent divergence.
  */
@@ -116,7 +117,7 @@ function makeExecutor(ctx, agent) {
  *
  * The transport is HTTP-and-key based rather than "whatever client happens to be around": analysis sends a
  * task's exception package to a remote model, and that has to be a deliberate, visible configuration
- * decision. A missing endpoint or key means analysis is off — not degraded into a guess.
+ * decision. A missing endpoint or key means analysis is off 鈥?not degraded into a guess.
  */
 function makeAnalyzer(config) {
   if (!config || typeof config !== 'object') return null;
@@ -158,6 +159,39 @@ function makeKnowledgeChannel(config) {
   const adapter = createSagAdapter({ endpoint, apiKey: resolved.key,
     sagCmd: typeof config.sagCmd === 'string' && config.sagCmd ? config.sagCmd : 'sag' });
   return { adapter, endpoint };
+}
+
+/**
+ * Build the valve write path, or report it as unavailable.
+ *
+ * ## Where the human gate actually is
+ *
+ * `valve-bridge.js` calls the host writer without a `human` flag and without a permit, and its comment reads
+ * as though that proves the runtime cannot self-confirm. It does not. In this codebase `valves.confirm()` is
+ * itself a human channel: it issues its own permit internally, so anything allowed to call it can write.
+ * The defence is therefore in *which function the host passes in*, not in the call shape.
+ *
+ * This is why the writer is opt-in and must be given a function that has already decided how much autonomy
+ * to grant. Passing `valves.confirm` wholesale hands the runtime the same authority a person has; passing a
+ * wrapper that refuses when no human is present keeps the gate where the comment claims it is. The runtime
+ * cannot tell the difference, so this note is the only place that distinction is recorded.
+ */
+function makeValveChannel(ctx, config) {
+  if (!config || typeof config !== 'object' || config.enabled !== true) {
+    return { writer: null, reason: 'disabled' };
+  }
+  // `confirmRule` may be supplied directly by the host, or taken from the mounted valves service.
+  let confirmRule = typeof config.confirmRule === 'function' ? config.confirmRule : null;
+  if (confirmRule === null) {
+    const valves = optional(ctx, 'valves');
+    confirmRule = typeof valves?.confirm === 'function' ? valves.confirm.bind(valves) : null;
+  }
+  if (confirmRule === null) return { writer: null, reason: 'no_valve_writer' };
+  try {
+    return { writer: createValveWriter({ confirmRule }), reason: null };
+  } catch (error) {
+    return { writer: null, reason: error?.code ?? 'invalid_valve_writer' };
+  }
 }
 
 export async function apply(ctx, config = {}) {
@@ -250,12 +284,19 @@ export async function apply(ctx, config = {}) {
     const knowledge = makeKnowledgeChannel(config?.knowledge);
     base.knowledge = knowledge.adapter === null ? 'disabled' : 'configured';
 
+    // The valve write path is opt-in for the reason spelled out on makeValveChannel: the runtime cannot tell
+    // an autonomous writer from a human-gated one, so the host has to decide which it is handing over.
+    const valve = makeValveChannel(ctx, config?.valves);
+    base.valves = valve.writer === null ? valve.reason : 'configured';
+
     const dynamicDisposers = [];
     const dynamicTools = [
       createExecuteTool({ store, schedulerFor: schedulerFactory, toolEffects, mount,
         registry: dynamicRegistry, library }),
       createLibraryTool({ library }),
       createKnowledgeTool({ adapter: knowledge.adapter, endpoint: knowledge.endpoint }),
+      createPatternTool({ valveWriter: valve.writer, patterns: Array.isArray(config?.patterns) ? config.patterns : [],
+        reason: valve.reason }),
       describePrimitivesTool,
     ];
     for (const tool of dynamicTools) {
@@ -264,7 +305,7 @@ export async function apply(ctx, config = {}) {
       else base.dynamicToolsError = 'the host did not accept a dynamic tool';
     }
     base.dynamicTools = Array.isArray(base.dynamicTools) ? base.dynamicTools : [];
-    base.dynamicTools = ['runtime_execute', 'runtime_recipes', 'runtime_knowledge', 'runtime_verifiers']
+    base.dynamicTools = ['runtime_execute', 'runtime_recipes', 'runtime_knowledge', 'runtime_pattern', 'runtime_verifiers']
       .filter((name) => !base.dynamicToolsError);
     base.mount = { scopeRef: mount.scopeRef, workspaceRoot: mount.workspaceRoot,
       allowedTools: mount.allowedTools };

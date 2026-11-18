@@ -28,7 +28,7 @@ try {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
   const testsInOrder = ['test/recipe-factory.test.js', 'test/dynamic-task.test.js',
     'test/verifier-primitives.test.js', 'test/recipe-library.test.js', 'test/analysis-wiring.test.js',
-    'test/knowledge-wiring.test.js'];
+    'test/knowledge-wiring.test.js', 'test/pattern-tool.test.js'];
   for (const file of collectModuleClosure(source, testsInOrder)) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
     writeFileSync(join(root, file), readFileSync(join(source, file)));
@@ -99,8 +99,8 @@ try {
       old: "    if (!sameMultiset) {\n      return { ...base, status: 'fail', progress: 'unchanged', goalSatisfied: false, reason: 'line_multiset_differs' };\n    }",
       replacement: '    void sameMultiset;',
       test: /not ok \d+ - sorted_lines accepts a true reordering/ },
-    // Duplicates must be counted, not collapsed. Dropping only the length check is not enough — the
-    // multiset comparison catches the loss by itself — so the mutant must defeat the counting itself,
+    // Duplicates must be counted, not collapsed. Dropping only the length check is not enough 鈥?the
+    // multiset comparison catches the loss by itself 鈥?so the mutant must defeat the counting itself,
     // which is what a set-based implementation would have done.
     { name: 'sorted_lines_ignores_duplicates', file: 'src/verifier-primitives.js',
       old: '      for (const line of lines) counts.set(line, (counts.get(line) ?? 0) + 1);',
@@ -169,6 +169,23 @@ try {
       old: "    verified: ref.domain === 'formal' ? result.verified === true : false });",
       replacement: '    verified: result.verified === true });',
       test: /not ok \d+ - reading keeps the domain identity/ },
+    // An unregistered pattern must never reach the store: the runtime takes the body from the host registry,
+    // never from the request, so a caller cannot describe the rule it wants written.
+    { name: 'unregistered_pattern_written', file: 'src/dynamic-tools.js',
+      old: "        return { available: true, written: false, reason: 'pattern_not_registered' };",
+      replacement: '        return { available: true, written: true, reason: null };',
+      test: /not ok \d+ - the runtime never takes a pattern body from the request/ },
+    // An approval that does not apply must not reach the store.
+    { name: 'ineffective_approval_written', file: 'src/valve-bridge.js',
+      old: '    if (!decision.applies) {',
+      replacement: '    if (false) {',
+      test: /not ok \d+ - an absent or stale approval is refused/ },
+    // The version hash is what binds an approval to the reviewed body. Skipping it lets an edited pattern
+    // reuse an old ticket — the exact bypass the version hash exists to prevent.
+    { name: 'approval_ignores_pattern_version', file: 'src/pattern-approval.js',
+      old: "  if (version !== approval.patternVersion) return { applies: false, reason: 'pattern_version_changed' };",
+      replacement: '  void version;',
+      test: /not ok \d+ - an approval for a different pattern version does not carry over/ },
   ];
   const observed = [];
   for (const mutant of mutants) {

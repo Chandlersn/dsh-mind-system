@@ -849,7 +849,7 @@
     },
     "runtime/scripts/verify-dynamic-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-dynamic-mutations.mjs",
-      "sha256": "840bed969d58403ab2b9cb30495a4585ddaf06d3388af0517de5650f5654cc74"
+      "sha256": "b730c9f321b2ddb476e6fa37cfe957b4f3613864e481f2454a981aae022ea993"
     },
     "runtime/scripts/verify-hit-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-hit-mutations.mjs",
@@ -925,7 +925,7 @@
     },
     "runtime/src/dynamic-tools.js": {
       "source": "dsh-execution-runtime/src/dynamic-tools.js",
-      "sha256": "3a9b7e777d3d871940da9719423910b7dd2bb27fd3a34aa00a1021433c677a4b"
+      "sha256": "9be5d3e9d52984f90d89cbf4571aaf9ec9ed7cbb527d0d5286176905148b42be"
     },
     "runtime/src/exceptions.js": {
       "source": "dsh-execution-runtime/src/exceptions.js",
@@ -937,7 +937,7 @@
     },
     "runtime/src/host-plugin.js": {
       "source": "dsh-execution-runtime/src/host-plugin.js",
-      "sha256": "f8cfe72ff1ff8030760c72aed66b4b8c58dc796c1a690d1ba719ff18104581bf"
+      "sha256": "2d134e94c9079f3b57c42e6068de90b33f7b04c8da3862b56f16964b4e503756"
     },
     "runtime/src/knowledge-sag.js": {
       "source": "dsh-execution-runtime/src/knowledge-sag.js",
@@ -1098,6 +1098,10 @@
     "runtime/test/pattern-runtime.test.js": {
       "source": "dsh-execution-runtime/test/pattern-runtime.test.js",
       "sha256": "0899c5f686bb3ca8b52f4c0bc1bea9511f8a55e1728280fe16a633d29c84deb7"
+    },
+    "runtime/test/pattern-tool.test.js": {
+      "source": "dsh-execution-runtime/test/pattern-tool.test.js",
+      "sha256": "3b1f5adad6d5e06bc7d721e1389798c2d607c2d30f0f80b74e164432dfcc7ced"
     },
     "runtime/test/plugin.test.js": {
       "source": "dsh-execution-runtime/test/plugin.test.js",
