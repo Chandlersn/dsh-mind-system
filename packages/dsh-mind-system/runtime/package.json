@@ -60,6 +60,7 @@
     "verify:intervention": "node scripts/verify-intervention.mjs",
     "verify:dr17": "node scripts/verify-dr17-labelled.mjs",
     "verify:dr18": "node scripts/verify-dr18-arms.mjs",
+    "verify:dr18:mutations": "node scripts/verify-dr18-mutations.mjs",
     "diagnose:vocab": "node scripts/diagnose-detector-vocab.mjs",
     "tune:vocab": "node scripts/tune-detector-vocab.mjs"
   }
