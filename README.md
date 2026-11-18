@@ -13,10 +13,11 @@ DSH 心智系统是一组供 [DeepSeek Harness](https://github.com/deepseek-ai) 
 | **meta-framework** | [`packages/dsh-meta-framework/`](packages/dsh-meta-framework/) | 重定义问题、说明适用边界；可接入 CLIS 分类结果。 |
 | **memory-manager** | [`packages/dsh-memory-manager/`](packages/dsh-memory-manager/) | 读写和检索长期记忆，执行层级写入判据、体检、问题收件箱和记忆面板。 |
 | **valves** | [`packages/dsh-valves/`](packages/dsh-valves/) | 对上行、下行候选作准入判断，维护决策账本、负向规则及巡检。 |
+| **execution-runtime** | [`packages/dsh-execution-runtime/`](packages/dsh-execution-runtime/) | 双循环任务执行：运行时描述任务、生成配方、逐步验收，失败走修复分支。 |
 
 [`packages/dsh-mind-system/`](packages/dsh-mind-system/) 是包含上述源码的**合成包**。它的 [`cordis.patch.yml`](packages/dsh-mind-system/cordis.patch.yml) 负责注册成员；包根入口主要提供清单和健康探针，具体能力在各成员中。合成包探针检查成员文件是否存在，**不等于**验证各成员已在真实宿主成功装载。
 
-五个成员不是每次任务都依次运行的流水线。它们通过宿主服务、事件、工具调用和持久化数据协作；实际调用取决于宿主配置、用户请求及 agent 的判断。
+六个成员不是每次任务都依次运行的流水线。它们通过宿主服务、事件、工具调用和持久化数据协作；实际调用取决于宿主配置、用户请求及 agent 的判断。
 
 ```mermaid
 flowchart LR
@@ -26,6 +27,7 @@ flowchart LR
     A --> F[meta-framework<br/>问题重审]
     A --> R[memory-manager<br/>检索、写入与体检]
     A --> V[valves<br/>提名、准入与治理]
+    A --> X[execution-runtime<br/>任务执行与自修复]
     A -. 双通道召回（fast 档） .-> K
     C -. 可选分类服务 .-> F
     R -. 可选阀门桥 .-> V
@@ -34,6 +36,8 @@ flowchart LR
     R --> I[记忆文件与问题收件箱]
     V --> L[决策账本与巡检报告<br/>含召回边界段]
     V -. 可选召回探针 .-> K
+    X -. 经宿主管线派发 .-> T[宿主工具]
+    X --> S[运行库<br/>runs/attempts/evidence/checkpoints]
     K[外部知识库 SAG-Wiki<br/>实验层 · 只读召回]
 ```
 
@@ -53,7 +57,7 @@ flowchart LR
 dsh plugin --profile web add dsh-mind-system
 ```
 
-安装后按宿主的插件加载方式重新加载或重启，并实际调用工具核对。合成包已注册五个成员；不要同时启用同一成员的独立 bundle，否则可能重复注册。有关 DSH 命令，以本机 `dsh plugin --help` 为准。
+安装后按宿主的插件加载方式重新加载或重启，并实际调用工具核对。合成包已注册六个成员；不要同时启用同一成员的独立 bundle，否则可能重复注册。有关 DSH 命令，以本机 `dsh plugin --help` 为准。
 
 在对话中可以从具体问题出发，例如：
 
@@ -61,6 +65,7 @@ dsh plugin --profile web add dsh-mind-system
 - 想重新审视问题时，使用 `meta_reframe`；它是诊断工具，不代替用户决策或自动执行方案。
 - 修改涉及既有约定的系统前，使用 `memory_read` 或 `memory_search` 查找记忆和来源。
 - 想了解调度词与最近一次判断时，使用 `mind_signals`；想了解阀门账本时使用 `valve_metrics`。
+- 想让 agent 执行一个有明确验收标准的任务时，直接描述任务与判据，由 `runtime_execute` 生成配方并逐步验收；先看 `runtime_verifiers` 了解可用的验收原语。
 
 各成员的完整工具名、参数和限制分别维护在对应子包的 README 中；以运行中宿主实际暴露的工具定义为准。
 
@@ -127,7 +132,29 @@ valves 将候选输入与判据裁决分开：`valve_check` 检查下行、上�
 
 **灰度放量（IV-1）**：新确认的规则以 `rollout: staged` 生效，**拦截力与 full 完全相同**，累积 `negativeRuleStagedHits`（默认 3）次真实命中后转 `full` 并记 `promoted_at`。转正只发生在真实命中路径（`matchNegative`），定时器与人工批量都不转正——那等于绕开证据；沉底优先，转正不复活已 `sunk` 的规则；读不到触发流水则一律不转正。放量进度是**正交字段**，不写进 `status`：`status` 是生命周期（active/sunk），被沉底、回滚和探针共同依赖，挪作灰度语义会连带改掉那些判断。
 
-### 5. 从反馈到迭代
+### 5. 任务执行与自修复
+
+execution-runtime 提供四个工具：`runtime_run` / `runtime_status` 只认宿主原生声明过的任务模板（调用方无法影响目标、范围与验收）；`runtime_execute` 接受**运行时描述的任务**并由配方工厂生成可执行配方；`runtime_verifiers` 列出可用的验收与分支原语。
+
+**三层结构：两层动态，一层守死。**
+
+| 层 | 谁决定 | 动态程度 |
+|---|---|---|
+| 任务（目标、输入、截止） | 调用方运行时传入 | 完全动态 |
+| 配方（怎么做这类活） | 从规格生成，支持单步、多步 `steps[]`、分支 `next[]` | 完全动态 |
+| 验收（怎么算成功） | 从**闭合原语库**里选并参数化 | 词汇固定，参数动态 |
+
+验收原语只有 `exact_bytes` / `line_set` / `structure`，分支条件只有 `file_exists` / `file_sha256` / `step_less_than` / `always`。**这一层刻意不放开**：若生成器能自行发明验收方式，它就能把失败重新描述成成功，自循环会退化成自证循环。未知原语在注册时报错，不静默降级。
+
+单次运行内模型可以决定**怎么做**，不能决定**什么算成功**。任务本身从来不必预先注册——预注册是 `runtime_run` 那条受限路径的选择，不是引擎的限制。
+
+失败时进入异常闭环：组装有界异常包 → 分析 → 四条分支之一（`retry_with` / `gather_evidence` / `rollback_to` / `abort`）→ 再次准入 → 由原验证器复核。修复记录按**独立任务数**聚合，同一任务反复自修不能堆出"经验"；候选模式恒为 `activatable:false`，不是生效规则。
+
+两条边界值得注意：**未知副作用冻结**（不可逆或效应未知的动作不自动执行，停下核对）；**检查点带环境**（产生时的模板版本、范围、工作区任一项变化就不是合法回滚点）。
+
+真实运行状态在宿主工作目录下的 `.execution-runtime/`（`runtime.sqlite`），不是 `~/.dsh`。探针报 `disabled` / `no-tasks` / `load-failed` 时不要当成可用。
+
+### 6. 从反馈到迭代
 
 当前代码提供以下环节，但不是一个无条件自动完成的自进化系统：
 
@@ -148,6 +175,7 @@ packages/
   dsh-meta-framework/   重审工具与适配
   dsh-memory-manager/   记忆服务、面板与测试
   dsh-valves/           阀门、账本、巡检
+  dsh-execution-runtime/ 任务执行、配方工厂、验收原语
   dsh-mind-system/      由源包构建的合成包
 scripts/
   build-combined.mjs    构建合成包成员
