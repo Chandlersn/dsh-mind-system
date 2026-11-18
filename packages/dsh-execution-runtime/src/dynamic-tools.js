@@ -56,7 +56,8 @@ const SPEC_PARAMETERS = {
  * @param {object} input.mount Fixed authority: scopeRef, workspaceRoot, allowedTools.
  * @param {object} [input.registry] Optional pre-built registry.
  */
-export function createExecuteTool({ store, schedulerFor, toolEffects, mount, registry = null }) {
+export function createExecuteTool({ store, schedulerFor, toolEffects, mount, registry = null,
+  library = null }) {
   requireString(mount?.scopeRef, 'mount.scopeRef');
   requireString(mount?.workspaceRoot, 'mount.workspaceRoot');
   const recipes = registry ?? createRecipeRegistry();
@@ -105,9 +106,61 @@ export function createExecuteTool({ store, schedulerFor, toolEffects, mount, reg
       const scheduler = schedulerFor(exec.agent, recipes);
       const run = await scheduler.run(task, { authority: { scopeRef: mount.scopeRef,
         workspaceRoot: mount.workspaceRoot, allowedTools: mount.allowedTools, agent: exec.agent } });
+
+      // Record what was learned only *after* the run settled, and only through the same counters the
+      // library uses for everyone. Recording before the outcome would let a failing recipe look proven.
+      let libraryNote = null;
+      if (library) {
+        try {
+          const key = `${recipe.id}:${recipe.version}`;
+          const known = library.read(key);
+          if (known === null) library.record(recipeSpec, { goalPattern: args.goal, toolEffects });
+          library.recordOutcome({ recipeKey: key, status: run.status, taskId: run.task.taskId });
+          libraryNote = { recipeKey: key, reused: known !== null, succeeded: run.status === 'completed' };
+        } catch (error) {
+          // A library problem must not fail a run that already happened: the work is done either way, and
+          // reporting a task failure because bookkeeping failed would be a false negative.
+          libraryNote = { error: error?.code ?? 'library_unavailable' };
+        }
+      }
+
       return { taskId: run.task.taskId, status: run.status, reason: run.reason,
         recipe: `${recipe.id}@${recipe.version}`, verifier: recipe.verifier.id,
-        budgetUsage: run.budgetUsage };
+        budgetUsage: run.budgetUsage, library: libraryNote };
+    },
+  };
+}
+
+/** A read-only tool so a caller can find recipes that already worked instead of re-describing them. */
+export function createLibraryTool({ library }) {
+  return {
+    name: 'runtime_recipes',
+    description: 'List recipe specifications that have been used before, ordered by how often they were '
+      + 'verified. Given a goal, suggests the closest recorded specifications. Everything returned is data '
+      + 'to inspect and pass back to runtime_execute — a recorded specification is never auto-run, and '
+      + '"it worked before" is not an acceptance argument: the same verifier runs again on the next use.',
+    parameters: {
+      type: 'object',
+      properties: {
+        goal: { type: 'string', description: 'Optional goal text; returns the closest recorded recipes.' },
+        minVerifiedRuns: { type: 'number',
+          description: 'Only recipes verified at least this many times; defaults to 1.' },
+        limit: { type: 'number', description: 'Maximum entries returned; defaults to 10.' },
+      },
+      additionalProperties: false,
+    },
+    output: { schema: { type: 'object' },
+      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] },
+    async execute(args) {
+      if (!library) return { available: false, reason: 'The recipe library is not mounted.' };
+      const limit = Number.isSafeInteger(args?.limit) && args.limit > 0 ? Math.min(args.limit, 50) : 10;
+      // A goal asks "what fits this"; without one it is simply "what has worked".
+      const entries = typeof args?.goal === 'string' && args.goal.trim()
+        ? library.suggest(args.goal, { limit })
+        : library.list({ minVerifiedRuns: Number.isSafeInteger(args?.minVerifiedRuns)
+          ? Math.max(0, args.minVerifiedRuns) : 1, limit });
+      return { available: true, matched: typeof args?.goal === 'string' && Boolean(args.goal.trim()),
+        count: entries.length, entries };
     },
   };
 }

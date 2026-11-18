@@ -27,7 +27,7 @@ function run(args, label) {
 try {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
   const testsInOrder = ['test/recipe-factory.test.js', 'test/dynamic-task.test.js',
-    'test/verifier-primitives.test.js'];
+    'test/verifier-primitives.test.js', 'test/recipe-library.test.js'];
   for (const file of collectModuleClosure(source, testsInOrder)) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
     writeFileSync(join(root, file), readFileSync(join(source, file)));
@@ -115,6 +115,22 @@ try {
       old: '      .filter(([key, want]) => JSON.stringify(value[key]) !== JSON.stringify(want))',
       replacement: '      .filter(([key, want]) => String(value[key]) !== String(want))',
       test: /not ok \d+ - json_fields compares values strictly/ },
+    // A recipe that has only ever failed must not be offered as reusable; that would dress an unproven
+    // approach as a proven one, which is the exact failure this library has to avoid.
+    { name: 'suggests_never_verified', file: 'src/recipe-library.js',
+      old: "      const rows = db.prepare('SELECT * FROM recipe_library WHERE verified_runs >= 1 '\n        + 'ORDER BY verified_runs DESC, updated_at DESC').all();",
+      replacement: "      const rows = db.prepare('SELECT * FROM recipe_library '\n        + 'ORDER BY verified_runs DESC, updated_at DESC').all();",
+      test: /not ok \d+ - a failed run is recorded as a failure/ },
+    // Only a verified completion may count as success.
+    { name: 'any_status_counts_as_success', file: 'src/recipe-library.js',
+      old: "      const succeeded = status === 'completed';",
+      replacement: '      const succeeded = true;',
+      test: /not ok \d+ - only verified completion counts as success/ },
+    // Failure history must not be erased by a later success.
+    { name: 'success_clears_failures', file: 'src/recipe-library.js',
+      old: '      db.prepare(`UPDATE recipe_library SET\n        verified_runs = verified_runs + ?, failed_runs = failed_runs + ?, last_task_id = ?, updated_at = ?\n        WHERE recipe_key = ?`).run(succeeded ? 1 : 0, succeeded ? 0 : 1, taskId, now(), recipeKey);',
+      replacement: '      db.prepare(`UPDATE recipe_library SET\n        verified_runs = ?, failed_runs = ?, last_task_id = ?, updated_at = ?\n        WHERE recipe_key = ?`).run(succeeded ? 1 : 0, succeeded ? 0 : 1, taskId, now(), recipeKey);',
+      test: /not ok \d+ - only verified completion counts as success/ },
   ];
   const observed = [];
   for (const mutant of mutants) {

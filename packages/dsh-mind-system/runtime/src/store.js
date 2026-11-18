@@ -184,6 +184,20 @@ export class RuntimeStore {
 
   close() { this.#db.close(); }
 
+  /**
+   * Run a scoped operation against the underlying database handle.
+   *
+   * Exposes the handle to one callback instead of returning it, so an extension (the recipe library) can
+   * keep its tables in this same file — one database, one lifecycle — without any caller holding a handle
+   * that outlives the store or bypasses its invariants.
+   */
+  withDatabase(operation) {
+    if (typeof operation !== 'function') {
+      throw error('invalid_state', 'withDatabase needs a callback.');
+    }
+    return operation(this.#db);
+  }
+
   #transaction(operation) {
     this.#db.exec('BEGIN IMMEDIATE');
     try {

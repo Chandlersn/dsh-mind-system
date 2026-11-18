@@ -29,7 +29,8 @@ import { RuntimeScheduler } from './scheduler.js';
 import { createExecutionRuntimePlugin } from './plugin.js';
 import { createPatternResolver } from './pattern-resolver.js';
 import { createRecipeRegistry } from './recipe-factory.js';
-import { createExecuteTool, describePrimitivesTool } from './dynamic-tools.js';
+import { createExecuteTool, createLibraryTool, describePrimitivesTool } from './dynamic-tools.js';
+import { createRecipeLibrary } from './recipe-library.js';
 import { jsonNormalizeRecipe } from '../recipes/json-normalize.js';
 import { csvNormalizeRecipe } from '../recipes/csv-normalize.js';
 import { validateTask } from './contracts.js';
@@ -180,15 +181,24 @@ export async function apply(ctx, config = {}) {
       executor: makeExecutor(ctx, agent), tools: ctx.tools,
       recipes: registry.list().map((key) => registry.get(key)),
       validateArguments: supplied ?? (() => true) });
+    // The library lives in the same database as the runs, so one file carries both what happened and what
+    // was learned. It is created through the store's scoped accessor rather than holding the handle.
+    const library = store?.withDatabase ? store.withDatabase((db) => createRecipeLibrary({ db })) : null;
+    base.recipeLibrary = library !== null;
     const dynamicDisposers = [];
-    for (const tool of [createExecuteTool({ store, schedulerFor: schedulerFactory, toolEffects, mount,
-      registry: dynamicRegistry }), describePrimitivesTool]) {
+    const dynamicTools = [
+      createExecuteTool({ store, schedulerFor: schedulerFactory, toolEffects, mount,
+        registry: dynamicRegistry, library }),
+      createLibraryTool({ library }),
+      describePrimitivesTool,
+    ];
+    for (const tool of dynamicTools) {
       const disposeTool = ctx.tools?.register?.(tool);
       if (typeof disposeTool === 'function') dynamicDisposers.push(disposeTool);
       else base.dynamicToolsError = 'the host did not accept a dynamic tool';
     }
     base.dynamicTools = Array.isArray(base.dynamicTools) ? base.dynamicTools : [];
-    base.dynamicTools = ['runtime_execute', 'runtime_verifiers']
+    base.dynamicTools = ['runtime_execute', 'runtime_recipes', 'runtime_verifiers']
       .filter((name) => !base.dynamicToolsError);
     base.mount = { scopeRef: mount.scopeRef, workspaceRoot: mount.workspaceRoot,
       allowedTools: mount.allowedTools };

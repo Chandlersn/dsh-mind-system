@@ -849,7 +849,7 @@
     },
     "runtime/scripts/verify-dynamic-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-dynamic-mutations.mjs",
-      "sha256": "445d41f534c77c301a80a8569671754d9c1f57125dbda137b13ff64872cac0ce"
+      "sha256": "a0467077158b1051961bf2116ec21ad8961bc1d34519b46448a7347d06cf840c"
     },
     "runtime/scripts/verify-hit-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-hit-mutations.mjs",
@@ -921,7 +921,7 @@
     },
     "runtime/src/dynamic-tools.js": {
       "source": "dsh-execution-runtime/src/dynamic-tools.js",
-      "sha256": "f2dbde52e30d8c0b2335d80ad22ff1599eff6cada6bc595c4d94b73b9a7a5f34"
+      "sha256": "722590d11d6f5e58e5e89c45088617a9d547391953af154964a315c8ef2215c0"
     },
     "runtime/src/exceptions.js": {
       "source": "dsh-execution-runtime/src/exceptions.js",
@@ -933,7 +933,7 @@
     },
     "runtime/src/host-plugin.js": {
       "source": "dsh-execution-runtime/src/host-plugin.js",
-      "sha256": "cee23db153d5f17208d02525d32da51067cc053e9bce2f7e252cf396b6c287d5"
+      "sha256": "f3016f9baa5d5c259dcdf9930371ffa5b1797030d23fd7fb64e47d52969aec62"
     },
     "runtime/src/knowledge.js": {
       "source": "dsh-execution-runtime/src/knowledge.js",
@@ -963,6 +963,10 @@
       "source": "dsh-execution-runtime/src/recipe-factory.js",
       "sha256": "0b3a50d950f3815129fe40b1b4c03df78aa6a9a204ed35bb4f84874b786c2c26"
     },
+    "runtime/src/recipe-library.js": {
+      "source": "dsh-execution-runtime/src/recipe-library.js",
+      "sha256": "a33ffb435455c2729c857474f8b8c03712311deea91db4d2202a26b28b9573b5"
+    },
     "runtime/src/repair-patterns.js": {
       "source": "dsh-execution-runtime/src/repair-patterns.js",
       "sha256": "3f49172227df1eb21ce7e507b6967a8a5cf64445e6b2e44d5d08a0afef542652"
@@ -977,7 +981,7 @@
     },
     "runtime/src/store.js": {
       "source": "dsh-execution-runtime/src/store.js",
-      "sha256": "3c51789869091c91b43f8f754ff24dec2c23dc246efd25fa7c63940a7540b600"
+      "sha256": "63e18ecbd4347c899ed37560f3461d3e4959c3c94bf938f5b34b04f179aba753"
     },
     "runtime/src/valve-bridge.js": {
       "source": "dsh-execution-runtime/src/valve-bridge.js",
@@ -1017,7 +1021,7 @@
     },
     "runtime/test/dynamic-task.test.js": {
       "source": "dsh-execution-runtime/test/dynamic-task.test.js",
-      "sha256": "ed23fef018b0161bbe67241c9ad46b6597acc3a676ab7d16b6ba7127094aa0a5"
+      "sha256": "31724cbfadb7f45d449b463cc1b84b0138daa7f1066ccb274414287fd3b2cf84"
     },
     "runtime/test/exceptions.test.js": {
       "source": "dsh-execution-runtime/test/exceptions.test.js",
@@ -1090,6 +1094,10 @@
     "runtime/test/recipe-factory.test.js": {
       "source": "dsh-execution-runtime/test/recipe-factory.test.js",
       "sha256": "5d8dfa3e7ca151153a29f83d95781162e8265ec1c73133b8ec5abea6791bdf30"
+    },
+    "runtime/test/recipe-library.test.js": {
+      "source": "dsh-execution-runtime/test/recipe-library.test.js",
+      "sha256": "c1de0db2737e53781337ad2685f143d5c3d3a8cdf55ce4a37e65d6d7948dfb75"
     },
     "runtime/test/recovery.test.js": {
       "source": "dsh-execution-runtime/test/recovery.test.js",

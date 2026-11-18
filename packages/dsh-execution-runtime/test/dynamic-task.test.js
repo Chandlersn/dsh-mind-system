@@ -120,6 +120,61 @@ test('an unknown verifier primitive is refused at the tool boundary', async (t) 
   });
 });
 
+test('a verified run is remembered and can be found again', async (t) => {
+  await withRuntime(t, async (host) => {
+    const agent = await host.agent('dynamic-caller');
+    const recipeSpec = { recipeId: 'remembered-sort', tool: 'runtime.write_text', effect: 'reversible_write',
+      verifier: { primitive: 'line_set', parameters: { expectedLines: ['a', 'b', 'c'] } },
+      arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'a\nb\nc\n', createOnly: true } };
+    const first = await host.execute('runtime_execute', { agent, arguments: {
+      taskId: randomUUID(), goal: 'Write the input lines in sorted order.', recipe: recipeSpec,
+      inputs: { inputFile: 'input.txt', outputFile: 'sorted.txt' } } });
+    assert.equal(first.isError, false, JSON.stringify(first.content));
+    assert.equal(first.value.status, 'completed', JSON.stringify(first.value));
+    // The run is recorded, and only after it settled.
+    assert.equal(first.value.library.succeeded, true, JSON.stringify(first.value.library));
+    assert.equal(first.value.library.reused, false, 'The first use is not a reuse.');
+
+    // A later caller can find it by goal instead of re-describing the recipe from scratch.
+    const found = await host.execute('runtime_recipes', { agent,
+      arguments: { goal: 'sorted order lines', limit: 5 } });
+    assert.equal(found.isError, false, JSON.stringify(found.content));
+    assert.equal(found.value.available, true);
+    assert.ok(found.value.count >= 1, JSON.stringify(found.value));
+    assert.equal(found.value.entries[0].spec.recipeId, 'remembered-sort');
+    assert.equal(found.value.entries[0].verifiedRuns, 1);
+
+    // Reusing it is a normal case, not a duplicate-id error, and the counter advances.
+    const second = await host.execute('runtime_execute', { agent, arguments: {
+      taskId: randomUUID(), goal: 'Write the input lines in sorted order.', recipe: recipeSpec,
+      inputs: { inputFile: 'input.txt', outputFile: 'again.txt' } } });
+    assert.equal(second.isError, false, JSON.stringify(second.content));
+    assert.equal(second.value.status, 'completed', JSON.stringify(second.value));
+    assert.equal(second.value.library.reused, true);
+    const after = await host.execute('runtime_recipes', { agent, arguments: { goal: 'sorted order' } });
+    assert.equal(after.value.entries[0].verifiedRuns, 2, 'Each verified task counts once.');
+  });
+});
+
+test('a failed run is recorded as a failure, not as a remembered success', async (t) => {
+  await withRuntime(t, async (host) => {
+    const agent = await host.agent('dynamic-caller');
+    const result = await host.execute('runtime_execute', { agent, arguments: {
+      taskId: randomUUID(), goal: 'Claim a sort that never happened.',
+      recipe: { recipeId: 'remembered-wrong', tool: 'runtime.write_text', effect: 'reversible_write',
+        verifier: { primitive: 'line_set', parameters: { expectedLines: ['x', 'y'] } },
+        arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'a\nb\n', createOnly: true } },
+      inputs: { inputFile: 'input.txt', outputFile: 'bad.txt' } } });
+    assert.equal(result.isError, false, JSON.stringify(result.content));
+    assert.notEqual(result.value.status, 'completed');
+    assert.equal(result.value.library.succeeded, false);
+    // It stays out of the "has worked" listing, so a caller looking for a proven recipe will not find it.
+    const listed = await host.execute('runtime_recipes', { agent, arguments: { goal: 'sort' } });
+    const entry = listed.value.entries.find((item) => item.spec.recipeId === 'remembered-wrong');
+    assert.equal(entry, undefined, 'A never-successful recipe must not be suggested as usable.');
+  });
+});
+
 test('the verifier vocabulary is discoverable before a task is described', async (t) => {
   await withRuntime(t, async (host) => {
     const agent = await host.agent('dynamic-caller');
