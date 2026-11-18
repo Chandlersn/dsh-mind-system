@@ -107,12 +107,29 @@ Conclusion: the stall is at the **gateway generation layer**, shared by all mode
 to `gpt-6.1-terra` and not in the dsh headless session code. Switching models cannot help while
 this gateway is degraded; the fix is external (gateway recovery or a different generation
 provider). The temporary patch file was removed; no profile configuration was changed.
-`provider-liveness.mjs` supports an optional `DSH_PROBE_PATCH` overlay so a future model switch
-can be tested without editing the profile, but the current evidence says the model id is not
-the variable that matters.
-```
+`provider-liveness.mjs` supports optional `DSH_PROBE_PATCH` and `DSH_PROBE_PROFILE` overlays so a
+future model/provider switch can be tested without editing any profile, but the evidence below
+says neither the model id nor a fresh headless profile is the variable that matters.
 
-Latest run (`DSH_PROBE_BUDGET_MS=25000`): `{"kind":"timeout","sawSession":true,"stepEnds":0,"outputTokens":0,"finalText":null,"healthy":false}`, exit 2. The provider is still stalling at `step_start`; **the diagnostic action was deliberately not re-sent**. This is the fourth same-mode external failure (three diagnosis/control attempts plus this gate) and confirms the stall is upstream, not in the bridge.
+## Switching provider also does not help from a new headless process
+
+The user asked to stop picking within one basket. Available generation channels were inventoried:
+
+| Channel | Test | Result |
+| :--- | :--- | :--- |
+| magpie (headless default) | direct `POST /v1/responses`, 3 models | all stall at generation (see above) |
+| WorkBuddy | patch `agent-default-model` to `provider: workbuddy / hy4flash-free` | `turn_end` error `NO_ADAPTER: no adapter registered for provider "workbuddy"`, empty final, exit 1 in ~2.7s |
+| WorkBuddy + bundle | temporary isolated profile with `dsh-workbuddy-channels` in bundles | bundle appears in `--dump-config`, but runtime still `NO_ADAPTER` |
+| qianwen (OpenAI-compatible) | key `QIANWEN_API_KEY` absent in this shell | not testable |
+
+The WorkBuddy route is usable in the **running web host** (this session runs on it), but a fresh
+headless process cannot register its adapter; adding the bundle and building a temporary profile
+did not change the runtime result. All temporary artifacts were removed and the web profile's
+plugin is intact. Causal reading: the usable model channel lives in an already-running host
+process and is not programmatically reachable from a new CLI process here. Getting a real
+RepairAction therefore requires either restoring magpie generation or exposing a callable
+generation endpoint — not another configuration tweak. The probe gain (`--patch`, `--profile`)
+is kept as a reusable control surface; no diagnosis was re-sent on any of these failures.
 
 ## Next step for the lead
 
