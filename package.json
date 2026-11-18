@@ -18,7 +18,8 @@
     "verify-structure": "node scripts/verify-subpackage-structure.mjs",
     "verify-plan": "node scripts/verify-plan.mjs",
     "publish-check": "node packages/dsh-mind-system/scripts/publish-check.mjs",
-    "test:mind": "node --test \"packages/dsh-agent-mind/test/*.test.js\""
+    "test:mind": "node --test \"packages/dsh-agent-mind/test/*.test.js\"",
+    "verify-isolation-load": "node scripts/verify-isolation-load.mjs"
   },
   "keywords": [
     "dsh",
