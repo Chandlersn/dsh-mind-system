@@ -7,7 +7,9 @@
 import { spawn } from 'node:child_process';
 
 const CLI = 'D:/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js';
-const BUDGET_MS = Number(process.env.DSH_PROBE_BUDGET_MS ?? 25_000);
+// Historical model baseline on this host: p50=23.6s, p95=33.8s, max=34.1s. A budget below
+// that range can mistake a merely-slow provider for a stalled one, so the default clears the max.
+const BUDGET_MS = Number(process.env.DSH_PROBE_BUDGET_MS ?? 60_000);
 const TASK = 'Reply with exactly the JSON object {"ok":true} and nothing else.';
 
 let finalText = null;
