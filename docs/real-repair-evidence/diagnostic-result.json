@@ -1,0 +1,14 @@
+{
+  "phase": "diagnostic-result",
+  "status": "analysis_failed",
+  "error": {
+    "code": "analysis_transport_error",
+    "message": "Analysis transport failed."
+  },
+  "repair": null,
+  "evidencePath": "C:\\Users\\lyq\\Documents\\deepseek-harness\\default-workspace\\dsh-mind-system-repo\\docs\\real-repair-evidence\\mwm0pyij-1-d4l0h7.json",
+  "sessionHash": "605f1526e6f680782305ec0aef755dd51897eaefae01fda062f718f214db522b",
+  "tokenTotals": null,
+  "rawFinal": null,
+  "proseDetected": true
+}

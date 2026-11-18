@@ -96,6 +96,29 @@ test('filtering every recipe still activates instead of vanishing', async (t) =>
   });
 });
 
+test('the replacement tool is absent by default and only registered when explicitly enabled', async (t) => {
+  // Default config: no flag means no tool, and no authority is widened by mere mounting.
+  await withMount(t, async (host) => ({ enabled: true, stateDir: mkdtempSync(join(host.root, 'state-')),
+    workspaceRoot: host.storage }), async (host) => {
+    const probe = hostEntry.healthProbe.probe();
+    assert.equal(probe.facts.replaceTool, 'disabled');
+    const attempt = await host.execute('runtime_replace_json', { arguments: {} });
+    assert.equal(attempt.isError, true, 'the default config must not register runtime_replace_json.');
+  });
+});
+
+test('enabling the replacement flag registers the tool without widening task authority', async (t) => {
+  await withMount(t, async (host) => ({ enabled: true, stateDir: mkdtempSync(join(host.root, 'state-')),
+    workspaceRoot: host.storage, repair: { replaceTool: true } }), async (host) => {
+    const probe = hostEntry.healthProbe.probe();
+    assert.equal(probe.facts.state, 'ready');
+    assert.equal(probe.facts.replaceTool, 'registered');
+    const result = await host.execute('runtime_replace_json', { arguments: {} });
+    // The tool is reachable, but a schema-invalid call is refused by the host validator.
+    assert.equal(result.isError, true, 'a registered tool still enforces its strict schema.');
+  });
+});
+
 test('unloading stops the runtime instead of leaving it in flight', async (t) => {
   const host = await createHost(t);
   const fiber = await host.ctx.plugin(hostEntry.plugin, { enabled: true,

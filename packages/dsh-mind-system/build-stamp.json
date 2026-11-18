@@ -965,7 +965,7 @@
     },
     "runtime/src/host-plugin.js": {
       "source": "dsh-execution-runtime/src/host-plugin.js",
-      "sha256": "d81851c56f1106f2189f10b681836a0de3addde2eae4d5f613055ba4640eb787"
+      "sha256": "74d131b6bbd6123a4387140461e1939638480a2422c4ca0adb8781ab3a3ca554"
     },
     "runtime/src/intervention.js": {
       "source": "dsh-execution-runtime/src/intervention.js",
@@ -1033,7 +1033,7 @@
     },
     "runtime/src/write-tools.js": {
       "source": "dsh-execution-runtime/src/write-tools.js",
-      "sha256": "268080da97b3eda5dcd276223a8afeea4097b8da5a25a7f32cd522ee969ec08d"
+      "sha256": "600e80b34d9880c08210448b95039a9a11a690a616a4e110e5a47ae2f9c4c60b"
     },
     "runtime/test/admission.test.js": {
       "source": "dsh-execution-runtime/test/admission.test.js",
@@ -1097,7 +1097,7 @@
     },
     "runtime/test/host-plugin.test.js": {
       "source": "dsh-execution-runtime/test/host-plugin.test.js",
-      "sha256": "d4d4f319bb99b2e0db31c5605fe1b7701011767fcbe95cc566f3146774800aab"
+      "sha256": "47d2bd56bf95505c864f8b2fc6e9a06f83e2d59ae0833e652fda796829422f7f"
     },
     "runtime/test/intervention.test.js": {
       "source": "dsh-execution-runtime/test/intervention.test.js",
@@ -1179,6 +1179,10 @@
       "source": "dsh-execution-runtime/test/repair.test.js",
       "sha256": "4d09cb0b9342d440ddd0f699a57ec358bb7dd1a2550b844d7e10b23fdd8ee72c"
     },
+    "runtime/test/replace-tool.test.js": {
+      "source": "dsh-execution-runtime/test/replace-tool.test.js",
+      "sha256": "9f950b8a54b21cb9b8cde746f94a82a6b8d268a5b56df13973a185a6fd433c9b"
+    },
     "runtime/test/rollback.test.js": {
       "source": "dsh-execution-runtime/test/rollback.test.js",
       "sha256": "efb41e19679355b5b76b766634d4c5bb81150023f6a7a2bfc49939ed3c95901e"
@@ -1213,7 +1217,7 @@
     },
     "runtime/test/write-tools.test.js": {
       "source": "dsh-execution-runtime/test/write-tools.test.js",
-      "sha256": "4556f8bfb5ca98f98a967a22facacaccca158071eb6aa7addc733561dafd3937"
+      "sha256": "814f86520017b3f4dd1eb87fb4ca2ea0b605a362103c86d32a15b23cb51562cf"
     },
     "valves/README.md": {
       "source": "dsh-valves/README.md",

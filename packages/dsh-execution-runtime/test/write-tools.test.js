@@ -239,3 +239,13 @@ test('both tools expose the shape the host registry expects', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('the bounded replacement tool is opt-in and not part of the default create-only set', () => {
+  const { root, tools } = fresh();
+  try {
+    assert.equal(tools.some((t) => t.name === 'runtime_replace_json'), false,
+      'createWriteTools must not expose the replacement tool by default.');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

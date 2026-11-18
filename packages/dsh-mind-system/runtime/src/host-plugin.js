@@ -34,7 +34,7 @@ import { createExecuteTool, createLibraryTool, createKnowledgeTool, createPatter
 import { createSagAdapter, resolveSagKey } from './knowledge-sag.js';
 import { createValveWriter } from './valve-bridge.js';
 import { createInterventionPolicy } from './intervention.js';
-import { createWriteTools } from './write-tools.js';
+import { createWriteTools, createReplaceTool } from './write-tools.js';
 import { createRecipeLibrary } from './recipe-library.js';
 import { Analyzer } from './analyzer.js';
 import { jsonNormalizeRecipe } from '../recipes/json-normalize.js';
@@ -411,6 +411,20 @@ export async function apply(ctx, config = {}) {
       mountedDisposers.push(disposeTool);
     }
     base.writeTools = writeTools.map((tool) => tool.name).filter(() => base.writeToolsError === undefined);
+
+    // The bounded in-place replacement tool is opt-in: only the host may enable it, and enabling it
+    // registers the tool but grants no authority by itself. Admission still checks the task template's
+    // declared `allowedTools` and the native repair policy's strict schema, so a template that does not
+    // name `runtime_replace_json` cannot use it even after registration. config.repair.replaceTool is a
+    // pure registration flag, never an authority widener.
+    base.replaceTool = 'disabled';
+    if (config?.repair?.replaceTool === true) {
+      const replaceTool = createReplaceTool({ root: mount.workspaceRoot });
+      const disposeReplace = ctx.tools?.register?.(replaceTool);
+      if (typeof disposeReplace !== 'function') throw new Error(`The host did not accept ${replaceTool.name}.`);
+      mountedDisposers.push(disposeReplace);
+      base.replaceTool = 'registered';
+    }
 
     const dynamicTools = [
       createExecuteTool({ store, schedulerFor: schedulerFactory, toolEffects, mount,
