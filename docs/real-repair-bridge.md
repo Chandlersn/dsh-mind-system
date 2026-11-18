@@ -90,6 +90,26 @@ Every run returned `stepEnds:0, outputTokens:0, finalText:null` with `sawSession
 session opens but the model never produces a step_end. The 25s default was also raised to 60s
 because it was shorter than this host's historical p95 (33.8s) and could mislabel slow as dead.
 Diagnosis is not re-sent while this gate exits 2.
+
+## Switching model does not help (gateway generation is down, not one model)
+
+The headless profile's default model is `codex/gpt-6.1-terra` on the magpie local gateway
+(`http://127.0.0.1:3425/v1`). To test whether a different model would unblock the run:
+
+1. `GET /v1/models` returned HTTP 200 and listed ten models — the gateway control plane is up.
+2. A temporary `--patch` overlay switched the agent to `codex/gpt-6.2-astra` (verified via
+   `--dump-config`); the 60s probe still returned exit 2 (`stepEnds:0`, no final).
+3. Bypassing dsh entirely, direct `POST /v1/responses` calls to the gateway were made for
+   three different models: `codex/gpt-6.2-astra` (45s timeout), `codex/gpt-5.6-luna` (20s
+   timeout), `codex/gpt-6.1-sol` (20s timeout). All timed out with no generation.
+
+Conclusion: the stall is at the **gateway generation layer**, shared by all models, not specific
+to `gpt-6.1-terra` and not in the dsh headless session code. Switching models cannot help while
+this gateway is degraded; the fix is external (gateway recovery or a different generation
+provider). The temporary patch file was removed; no profile configuration was changed.
+`provider-liveness.mjs` supports an optional `DSH_PROBE_PATCH` overlay so a future model switch
+can be tested without editing the profile, but the current evidence says the model id is not
+the variable that matters.
 ```
 
 Latest run (`DSH_PROBE_BUDGET_MS=25000`): `{"kind":"timeout","sawSession":true,"stepEnds":0,"outputTokens":0,"finalText":null,"healthy":false}`, exit 2. The provider is still stalling at `step_start`; **the diagnostic action was deliberately not re-sent**. This is the fourth same-mode external failure (three diagnosis/control attempts plus this gate) and confirms the stall is upstream, not in the bridge.

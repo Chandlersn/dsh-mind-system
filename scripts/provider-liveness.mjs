@@ -13,6 +13,8 @@ const BUDGET_MS = Number(process.env.DSH_PROBE_BUDGET_MS ?? 60_000);
 // The DR-18 model baseline succeeded from a fresh per-case temp cwd; diagnosis stalled from
 // the repo root. Allow overriding cwd so that variable can be isolated by a control experiment.
 const PROBE_CWD = process.env.DSH_PROBE_CWD?.trim() || process.cwd();
+// Optional profile overlay, e.g. to switch the model when the default stalls.
+const PROBE_PATCH = process.env.DSH_PROBE_PATCH?.trim();
 const TASK = 'Reply with exactly the JSON object {"ok":true} and nothing else.';
 
 let finalText = null;
@@ -20,7 +22,11 @@ let outputTokens = 0;
 let stepEnds = 0;
 let sawSession = false;
 
-const child = spawn(process.execPath, [CLI, '--profile', 'headless', '--json', TASK], {
+// Launcher flags must precede inner app args; --patch is repeatable and applied after the profile.
+const cliArgs = [CLI, '--profile', 'headless'];
+if (PROBE_PATCH) cliArgs.push('--patch', PROBE_PATCH);
+cliArgs.push('--json', TASK);
+const child = spawn(process.execPath, cliArgs, {
   cwd: PROBE_CWD, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
 });
 let buf = '';
@@ -32,7 +38,7 @@ function finish(kind) {
   clearTimeout(timer);
   try { child.kill(); } catch { /* already gone */ }
   const healthy = finalText !== null && outputTokens > 0;
-  console.log(JSON.stringify({ kind, cwd: PROBE_CWD, budgetMs: BUDGET_MS, sawSession, stepEnds, outputTokens,
+  console.log(JSON.stringify({ kind, cwd: PROBE_CWD, budgetMs: BUDGET_MS, patch: PROBE_PATCH ?? null, sawSession, stepEnds, outputTokens,
     finalText: finalText === null ? null : finalText.slice(0, 200), healthy }));
   if (healthy) process.exitCode = 0;
   else if (kind === 'timeout' || kind === 'close') process.exitCode = 2;
