@@ -39,6 +39,7 @@
  * @module src/write-guard
  */
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { dshHome } from './util.js';
 
 /** 受守卫保护的层目录（相对记忆根第一段）。 */
@@ -88,6 +89,40 @@ export function targetPath(target) {
 }
 
 /**
+ * 本地日期 `YYYY-MM-DD`。用本地时区而非 UTC：用户看到的“今天”是本机日期，
+ * 午夜前后按 UTC 判定会差一天，那正是要拦的错。
+ */
+export function localDay(now = new Date()) {
+	const pad = (value) => String(value).padStart(2, '0');
+	return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/**
+ * 判断一次对顶层日文件的写入是否“写错了日子”。
+ *
+ * ## 只拦“新建一个过去日期的日文件”
+ *
+ * 真实犯过的错是：会话跨过午夜后沿用旧文件名，把一整天的工作**追加进已存在的**昨天文件。
+ * 那种错误无法从路径静态判断——文件名合法、文件存在、写入成功，唯一错的是内容属于今天。
+ * 任何“文件名必须是今天”的规则都会同时挡掉合法操作（修正历史、补写漏记的一天、归档），
+ * 而且依然拦不住它（当时文件就在那儿）。
+ *
+ * 所以这里只拦一个明确且无争议的形态：**创建**一个过去日期的日文件。那必然是补写历史或误建，
+ * 值得让写入者确认一次；已存在的文件一律放行。
+ *
+ * 真正可靠的防线在写入方：写入前取当前日期并与目标文件名比对。路径守卫只能兜住
+ * “凭空造出旧日期文件”这一类。
+ *
+ * @returns {{wrongDay: boolean, today: string, target: string}}
+ */
+export function classifyDailyTarget(top, { exists = false, now = new Date() } = {}) {
+	const today = localDay(now);
+	const target = String(top).replace(/\.md$/u, '');
+	const wrongDay = target !== today && exists !== true;
+	return { wrongDay, today, target };
+}
+
+/**
  * 判定一个绝对路径在记忆根内的归属。
  *
  * @param {string} root 记忆根绝对路径。
@@ -96,7 +131,7 @@ export function targetPath(target) {
  *   `block=true` 时 `key` 是账本口径的相对键，`reason` 说明拦它是因为
  *   索引 / 层目录 / 账本 哪一类。
  */
-export function classifyWrite(root, abs) {
+export function classifyWrite(root, abs, { exists = false, now = new Date() } = {}) {
 	const rootAbs = path.resolve(String(root ?? ''));
 	const target = path.resolve(String(abs ?? ''));
 	const rel = path.relative(rootAbs, target);
@@ -106,8 +141,13 @@ export function classifyWrite(root, abs) {
 	const parts = key.split('/');
 	const top = parts[0];
 
-	// 原始每日记录允许编辑；其他路径和独立技能根仍分别检查。
-	if (parts.length === 1 && DAILY_RE.test(top)) return { block: false, key, reason: 'daily' };
+	// 原始每日记录允许编辑。只拦一个明确形态：**新建**一个过去日期的日文件——那必然是补写历史
+	// 或误建，让写入者确认一次。已存在的文件一律放行，历史修正与补写不受影响。
+	if (parts.length === 1 && DAILY_RE.test(top)) {
+		const day = classifyDailyTarget(top, { exists, now });
+		if (day.wrongDay) return { block: true, key, reason: 'daily-wrong-day', detail: day };
+		return { block: false, key, reason: 'daily' };
+	}
 	// 暂存目录（2026-11-13）：仅插件提交通道使用，编辑工具一律拒绝。
 	if (top === '.stage') return { block: true, key, reason: 'stage' };
 	// 月/周归档（2026-11）：daily/YYYY-MM.md 也是数据文件，放行；daily/ 下
@@ -132,9 +172,12 @@ export function classifyWrite(root, abs) {
  * @param {string} reason 归类。
  * @returns {string}
  */
-export function denialMessage(key, reason) {
+export function denialMessage(key, reason, detail = null) {
 	const hint =
-		reason === 'index'
+		reason === 'daily-wrong-day'
+			? `今天的每日记录是 ${detail?.today ?? '（当前日期）'}.md，而你要新建的是 ${key}`
+				+ '。会话跨过午夜后沿用旧文件名，会把一整天的工作写进昨天的文件：请改写今天的文件'
+			: reason === 'index'
 			? 'MEMORY.md 是索引派生物：请用 memory_index（功能域稳定后收行）'
 			: reason === 'ledger'
 				? '旁路账本只能由插件追加；它被改过，R26 对账就失效了'
@@ -184,15 +227,18 @@ export function createWriteGuard(getRoot, ctx, getSkillRoot = () => path.join(ds
 		if (skillCandidates.some(([r, p]) => typeof r !== 'string' || !path.isAbsolute(r) || typeof p !== 'string' || !path.isAbsolute(p))) {
 			throw new Error('记忆写入守卫无法确认技能根路径归属，拒绝执行');
 		}
-		const deny = (key, reason) => {
-			const err = new Error(denialMessage(key, reason));
+		const deny = (key, reason, detail = null) => {
+			const err = new Error(denialMessage(key, reason, detail));
 			err.name = 'MemoryWriteGuardError';
 			err.code = WRITE_DENIED;
 			throw err;
 		};
+		// Only a file that does not exist yet can be a "new past log"; an existing one is a correction target.
 		for (const [r, p] of candidates) {
-			const verdict = classifyWrite(r, p);
-			if (verdict.block) deny(verdict.key, verdict.reason);
+			let exists = false;
+			try { exists = existsSync(p); } catch { exists = false; }
+			const verdict = classifyWrite(r, p, { exists });
+			if (verdict.block) deny(verdict.key, verdict.reason, verdict.detail);
 		}
 		for (const [r, p] of skillCandidates) {
 			const rel = path.relative(path.resolve(r), path.resolve(p));

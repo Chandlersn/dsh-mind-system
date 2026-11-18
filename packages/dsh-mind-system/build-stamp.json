@@ -277,7 +277,7 @@
     },
     "memory/src/write-guard.js": {
       "source": "dsh-memory-manager/src/write-guard.js",
-      "sha256": "86e0199e47237630f839ba031e160cb8f7f31ea1e3e249248c80866d752b2be0"
+      "sha256": "d5cdd187a539666892d1cde84aa73648386591822edd8ca197ae8a144a7601fb"
     },
     "memory/src/write-ledger.js": {
       "source": "dsh-memory-manager/src/write-ledger.js",
@@ -353,7 +353,7 @@
     },
     "memory/tests/daily-archive-compat.test.js": {
       "source": "dsh-memory-manager/tests/daily-archive-compat.test.js",
-      "sha256": "102ddb1edf30d56782c86cacc4a3ac81e446f21ee09482e63e35d910dee9dab3"
+      "sha256": "3ce16cd5e9865bb8d84a64005ff0b9c926a1f8ca5b6a73a9e28cf98d22c7e0be"
     },
     "memory/tests/daily-archive.test.js": {
       "source": "dsh-memory-manager/tests/daily-archive.test.js",
@@ -373,7 +373,7 @@
     },
     "memory/tests/daily-editor-ledger-boundary.test.js": {
       "source": "dsh-memory-manager/tests/daily-editor-ledger-boundary.test.js",
-      "sha256": "489e03a83622e221ed510f72285d7b7e5650e894410a472a58f3fb23af5e2013"
+      "sha256": "a914749f730d8bfd5cecfa1f70695663b12a091a152b26ca5d81ac431e469d17"
     },
     "memory/tests/daily-ledger-key.test.js": {
       "source": "dsh-memory-manager/tests/daily-ledger-key.test.js",
@@ -621,7 +621,7 @@
     },
     "memory/tests/write-guard.test.js": {
       "source": "dsh-memory-manager/tests/write-guard.test.js",
-      "sha256": "ce1408bb073fb06fac10807c0f7d5308be9a360cc476ee7c30b2f727621cb7c3"
+      "sha256": "64b5c841b78ff3bdfe7414a253ce9bd65f9abdfec427a203e0e788b89f332233"
     },
     "memory/tests/write-intent.test.js": {
       "source": "dsh-memory-manager/tests/write-intent.test.js",

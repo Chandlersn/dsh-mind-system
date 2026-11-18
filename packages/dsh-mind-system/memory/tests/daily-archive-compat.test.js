@@ -121,8 +121,9 @@ test('write-guard：daily/YYYY-MM.md 放行（顶层日期文件放行不回退�
 	for (const file of ['daily/2026-10.md', 'daily/1999-12.md']) {
 		assert.equal(classifyWrite(root, path.join(root, ...file.split('/'))).block, false, file);
 	}
-	// 2026-11-13 已放行的顶层日期文件不得回退。
-	assert.equal(classifyWrite(root, path.join(root, '2026-11-13.md')).block, false, '顶层日期文件');
+	// 2026-11-13 已放行的顶层日期文件不得回退。已存在的日文件仍放行；只有"新建一个过去的日文件"
+	// 会被拦（见 write-guard.test.js 的日期用例），所以这里按已存在的情形断言。
+	assert.equal(classifyWrite(root, path.join(root, '2026-11-13.md'), { exists: true }).block, false, '顶层日期文件');
 	// daily/ 下其他名字一律仍拒（层目录语义不变）。
 	for (const file of ['daily/legacy.md', 'daily/notes.txt', 'daily/2026-13.md', 'daily/sub/2026-10.md', 'daily/2026-10-05.md']) {
 		assert.equal(classifyWrite(root, path.join(root, ...file.split('/'))).block, true, file);

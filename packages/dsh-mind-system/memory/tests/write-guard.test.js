@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, rm, realpath, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createWriteGuard, classifyWrite, denialMessage, WRITE_DENIED } from '../src/write-guard.js';
+import { createWriteGuard, classifyWrite, classifyDailyTarget, localDay, denialMessage, WRITE_DENIED } from '../src/write-guard.js';
 
 // Faithful local-path resolver: display spelling plus physical identity for missing files.
 async function resolveTarget(input, options = {}) {
@@ -86,11 +86,14 @@ test('registered tools/execute wrapper stops actual write and edit before body; 
 			assert.equal(await guard(request('write', safe, agent, signal), async () => { await writeFile(safe, 'safe'); return expected; }), expected);
 			assert.equal(await readFile(safe, 'utf8'), 'safe');
 			assert.equal(await guard(request('memory_write', 'functions/x.md', agent, signal), async () => expected), expected);
-			const daily = path.join(root, '2026-11-10.md');
+			// Today's date, not a fixed one: appending to a past day's log is now refused on purpose, and this
+			// case is about the capability to write a daily log at all.
+			const todayName = `${localDay()}.md`;
+			const daily = path.join(root, todayName);
 			for (const name of ['write', 'edit', 'str_replace_editor']) {
 				const exec = name === 'str_replace_editor'
 					? { name, arguments: { command: 'str_replace', path: daily }, agent, signal }
-					: request(name, '2026-11-10.md', agent, signal);
+					: request(name, todayName, agent, signal);
 				const content = `${name}: PID 123, exit code 0\n`;
 				assert.equal(await guard(exec, async () => { await writeFile(daily, content); return name; }), name);
 				assert.equal(await readFile(daily, 'utf8'), content);
@@ -112,7 +115,8 @@ test('canonical target identity blocks a symlink alias to a protected directory'
 test('resolution errors fail closed and non-agent calls use provider default cwd', async () => {
 	await fixture(async ({ root, signal, ctx }) => {
 		const guard = createWriteGuard(() => root, ctx);
-		assert.equal(await guard(request('write', path.join(root, '2026-11-10.md'), undefined, signal), () => 'allowed'), 'allowed');
+		// Today's log, so this stays a path-resolution test rather than a date test.
+		assert.equal(await guard(request('write', path.join(root, `${localDay()}.md`), undefined, signal), () => 'allowed'), 'allowed');
 		await assert.rejects(guard(request('write', path.join(root, 'functions', 'x.md'), undefined, signal), () => assert.fail('protected body called')), e => e.code === WRITE_DENIED);
 		const bad = createWriteGuard(() => root, { fs: { resolve: async () => { throw new Error('cannot resolve'); } } });
 		await assert.rejects(bad(request('edit', 'x', undefined, signal), () => assert.fail('body called')), /cannot resolve/);
@@ -182,7 +186,38 @@ test('index, layers, ledger and capture metadata remain protected while root dai
 		assert.equal(verdict.reason, 'stage', file);
 	}
 	assert.match(denialMessage('.stage/x.tmp', 'stage'), /暂存目录仅插件提交通道使用|暂存目录（\.stage\/）仅插件/, 'stage 拒绝信息必须可行动');
-	for (const file of ['2026-11-10.md', 'README.md', '../memory-root-other/a']) assert.equal(classifyWrite(root, path.resolve(root, file)).block, false, file);
+	// Today's log is writable. A past one is writable when it already exists (a correction target); only
+	// creating a *new* past log is refused — see the dedicated test below.
+	for (const file of [`${localDay()}.md`, 'README.md', '../memory-root-other/a']) {
+		assert.equal(classifyWrite(root, path.resolve(root, file)).block, false, file);
+	}
+});
+
+test('creating a new past daily log is refused; an existing one stays writable', () => {
+	const root = path.resolve('memory-root');
+	const today = localDay();
+	const yesterday = localDay(new Date(Date.now() - 86_400_000));
+	assert.notEqual(today, yesterday, 'the fixture needs two distinct local days');
+
+	// The refused shape: conjuring a past-dated log that does not exist. That is either back-filling or a
+	// mistake, and either way the writer should confirm once rather than have a second file appear silently.
+	const fresh = classifyWrite(root, path.join(root, `${yesterday}.md`), { exists: false });
+	assert.equal(fresh.block, true);
+	assert.equal(fresh.reason, 'daily-wrong-day');
+	assert.equal(fresh.detail.today, today);
+	assert.equal(fresh.detail.target, yesterday);
+
+	// An existing past log is a correction target and must stay writable: repairing history and appending to
+	// an already-tracked day are both legitimate, and a blanket "must be today" rule would block them.
+	assert.equal(classifyWrite(root, path.join(root, `${yesterday}.md`), { exists: true }).block, false);
+
+	// Today's file is unaffected.
+	assert.equal(classifyWrite(root, path.join(root, `${today}.md`), { exists: false }).block, false);
+
+	// The refusal has to be actionable: it names today's file so the writer can act on it.
+	const message = denialMessage(`${yesterday}.md`, 'daily-wrong-day', { today });
+	assert.match(message, new RegExp(today), 'the refusal must name the correct file');
+	assert.match(message, /今天的文件/, 'the refusal must say what to do instead');
 });
 
 test('daily/YYYY-MM.md archives are writable; other names under daily/ stay denied', () => {
@@ -206,7 +241,7 @@ test('daily-looking display paths cannot bypass canonical layer or independent s
 	await fixture(async ({ tmp, root, signal, agent, ctx }) => {
 		const skillRoot = path.join(tmp, 'independent-skills');
 		await mkdir(skillRoot, { recursive: true });
-		const daily = path.join(root, '2026-11-10.md');
+		const daily = path.join(root, `.md`);
 		for (const physical of [path.join(root, 'functions', 'x.md'), path.join(skillRoot, 'x.md')]) {
 			const aliasCtx = { ...ctx, fs: { resolve: async (input, options) => {
 				const target = await resolveTarget(input, options);
@@ -230,7 +265,7 @@ test('daily-looking display paths cannot bypass canonical layer or independent s
 
 test('unresolved target identities fail closed even for daily-looking paths', async () => {
 	await fixture(async ({ root, signal, agent, ctx }) => {
-		const daily = path.join(root, '2026-11-10.md');
+		const daily = path.join(root, `.md`);
 		for (const badKey of [undefined, 'relative/path']) {
 			const badCtx = { ...ctx, fs: { resolve: async (input, options) => {
 				const target = await resolveTarget(input, options);

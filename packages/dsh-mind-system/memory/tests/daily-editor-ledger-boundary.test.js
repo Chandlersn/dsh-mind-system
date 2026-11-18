@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createWriteGuard, WRITE_DENIED } from '../src/write-guard.js';
+import { createWriteGuard, localDay, WRITE_DENIED } from '../src/write-guard.js';
 import { writeText } from '../src/util.js';
 import { auditBatch, contentHash, LEDGER_REL, readLedger, reconcile } from '../src/write-ledger.js';
 import { verifyCaptureBaseline } from '../src/capture-baseline.js';
@@ -82,7 +82,9 @@ test('允许编辑日记后 R26 对账报 hash_mismatch，采集基线拒绝且�
 
 test('经守卫新增未登记日记报 never_recorded 且基线拒绝采集', async (t) => {
   const { root, editor } = await fixture(t);
-  const key = '2026-11-11.md';
+  // Today's date: creating a *past*-dated log is refused by the guard (see write-guard.test.js), and the
+  // point of this case is what happens to an unrecorded new log, not which day it lands on.
+  const key = `${localDay()}.md`;
   const daily = path.join(root, key);
   const old = path.join(root, '2026-11-09.md');
   await writeText(old, '已登记的旧日记\n', { memoryRoot: root });
