@@ -141,11 +141,110 @@ function structure({ rule }) {
   };
 }
 
+/**
+ * The output must be a line-for-line reordering of the input: same multiset of lines, same count.
+ *
+ * This is the first primitive that judges a *relation to the input* rather than the artifact alone, and it
+ * exists because "sorted the file" is not checkable by any artifact-only predicate: any list of lines that
+ * happens to be sorted would pass. Comparing against the input is what makes the claim falsifiable.
+ *
+ * Duplicates are counted, not collapsed — a sort that silently drops a repeated line is wrong and must fail.
+ */
+function sortedLines({ expectAscending = true } = {}) {
+  if (typeof expectAscending !== 'boolean') {
+    fail('invalid_verifier_primitive', 'sorted_lines expects a boolean ordering flag.');
+  }
+  return ({ input, output, readBytes }) => {
+    const inputBytes = readBytes(input);
+    const outputBytes = readBytes(output, { allowMissing: true });
+    const id = 'builtin:sorted-lines';
+    if (outputBytes === null) {
+      return { ...unknown(id, 'output_absent'), status: 'fail', progress: 'unchanged', goalSatisfied: false };
+    }
+    const decode = (bytes, label) => {
+      try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+      catch { return fail('invalid_verifier_primitive', `${label} is not valid UTF-8.`); }
+    };
+    const linesOf = (text) => {
+      // An empty file has no lines; treating it as one empty line would let an empty output match an empty
+      // input that was actually meant to be "nothing here".
+      if (text === '') return [];
+      return text.replace(/\n$/, '').split('\n');
+    };
+    const inputLines = linesOf(decode(inputBytes, 'input'));
+    const outputLines = linesOf(decode(outputBytes, 'output'));
+    const evidence = evidenceOf(input, output, inputBytes, outputBytes);
+    const base = { verifierId: id, verifierVersion: '1', evidenceRefs: evidence };
+    if (outputLines.length !== inputLines.length) {
+      return { ...base, status: 'fail', progress: 'unchanged', goalSatisfied: false,
+        reason: `line_counts_differ:${inputLines.length}->${outputLines.length}` };
+    }
+    const byCount = (lines) => {
+      const counts = new Map();
+      for (const line of lines) counts.set(line, (counts.get(line) ?? 0) + 1);
+      return counts;
+    };
+    const expected = byCount(inputLines);
+    const actual = byCount(outputLines);
+    const sameMultiset = expected.size === actual.size
+      && [...expected].every(([line, count]) => actual.get(line) === count);
+    if (!sameMultiset) {
+      return { ...base, status: 'fail', progress: 'unchanged', goalSatisfied: false, reason: 'line_multiset_differs' };
+    }
+    // The relation holds; only now does ordering matter, and it is checked against the declared direction.
+    const comparator = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
+    const ordered = outputLines.every((line, index) => index === 0
+      || comparator(outputLines[index - 1], line) * (expectAscending ? 1 : -1) <= 0);
+    if (!ordered) {
+      return { ...base, status: 'fail', progress: 'unchanged', goalSatisfied: false,
+        reason: expectAscending ? 'lines_not_ascending' : 'lines_not_descending' };
+    }
+    return { ...base, status: 'pass', progress: 'advanced', goalSatisfied: true, reason: 'lines_reordered_as_declared' };
+  };
+}
+
+/**
+ * The output must be JSON whose declared fields each match a declared value.
+ *
+ * `structure` answers "is it the right shape"; this answers "does it carry the right values", which is what
+ * most real tasks actually mean. Comparison is strict on type and value, with no coercion: `"1"` is not `1`,
+ * because a verifier that accepts either would pass an artifact the caller never produced.
+ */
+function jsonFields({ expected }) {
+  if (!expected || typeof expected !== 'object' || Array.isArray(expected) || Object.keys(expected).length === 0) {
+    fail('invalid_verifier_primitive', 'json_fields needs a non-empty object of expected field values.');
+  }
+  return ({ input, output, readBytes }) => {
+    const id = 'builtin:json-fields';
+    const outputBytes = readBytes(output, { allowMissing: true });
+    if (outputBytes === null) {
+      return { ...unknown(id, 'output_absent'), status: 'fail', progress: 'unchanged', goalSatisfied: false };
+    }
+    let value;
+    try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(outputBytes)); }
+    catch { return { ...unknown(id, 'output_invalid_json'), status: 'fail', progress: 'unchanged', goalSatisfied: false }; }
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      return { ...unknown(id, 'output_not_an_object'), status: 'fail', progress: 'unchanged', goalSatisfied: false };
+    }
+    const evidence = evidenceOf(input, output, readBytes(input), outputBytes);
+    const mismatched = Object.entries(expected)
+      .filter(([key, want]) => JSON.stringify(value[key]) !== JSON.stringify(want))
+      .map(([key]) => key);
+    const ok = mismatched.length === 0;
+    return { status: ok ? 'pass' : 'fail', progress: ok ? 'advanced' : 'unchanged', goalSatisfied: ok,
+      verifierId: id, verifierVersion: '1', evidenceRefs: evidence,
+      reason: ok ? 'json_fields_match' : `json_fields_differ:${mismatched.join(',')}`.slice(0, 200) };
+  };
+}
+
 /** The closed vocabulary. A generated recipe names one of these; it cannot add to the list. */
 const PRIMITIVES = Object.freeze({
   exact_bytes: { build: exactBytes, describe: 'output bytes equal a declared sha256' },
   line_set: { build: lineSet, describe: 'output line set equals a declared list, order-insensitive' },
   structure: { build: structure, describe: 'output is well-formed and satisfies a declared shape' },
+  sorted_lines: { build: sortedLines,
+    describe: 'output is a reordering of the input lines, in the declared order, with nothing added or lost' },
+  json_fields: { build: jsonFields, describe: 'output JSON carries the declared field values, compared strictly' },
 });
 
 export const VERIFIER_PRIMITIVES = Object.freeze(Object.keys(PRIMITIVES));

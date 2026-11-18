@@ -26,7 +26,8 @@ function run(args, label) {
 }
 try {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
-  const testsInOrder = ['test/recipe-factory.test.js', 'test/dynamic-task.test.js'];
+  const testsInOrder = ['test/recipe-factory.test.js', 'test/dynamic-task.test.js',
+    'test/verifier-primitives.test.js'];
   for (const file of collectModuleClosure(source, testsInOrder)) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
     writeFileSync(join(root, file), readFileSync(join(source, file)));
@@ -91,6 +92,29 @@ try {
       old: '        if (!ids.includes(rule.goto)) {',
       replacement: '        if (false) {',
       test: /not ok \d+ - a branch to a step that was never declared/ },
+    // sorted_lines must compare against the input; checking only that the output is ordered would let any
+    // sorted list pass, which is the whole reason this primitive exists.
+    { name: 'sorted_lines_ignores_input', file: 'src/verifier-primitives.js',
+      old: "    if (!sameMultiset) {\n      return { ...base, status: 'fail', progress: 'unchanged', goalSatisfied: false, reason: 'line_multiset_differs' };\n    }",
+      replacement: '    void sameMultiset;',
+      test: /not ok \d+ - sorted_lines accepts a true reordering/ },
+    // Duplicates must be counted, not collapsed. Dropping only the length check is not enough — the
+    // multiset comparison catches the loss by itself — so the mutant must defeat the counting itself,
+    // which is what a set-based implementation would have done.
+    { name: 'sorted_lines_ignores_duplicates', file: 'src/verifier-primitives.js',
+      old: '      for (const line of lines) counts.set(line, (counts.get(line) ?? 0) + 1);',
+      replacement: '      for (const line of lines) if (!counts.has(line)) counts.set(line, 1);',
+      test: /not ok \d+ - sorted_lines counts duplicates/ },
+    // The declared direction must actually be read.
+    { name: 'sorted_lines_ignores_direction', file: 'src/verifier-primitives.js',
+      old: '      || comparator(outputLines[index - 1], line) * (expectAscending ? 1 : -1) <= 0);',
+      replacement: '      || comparator(outputLines[index - 1], line) <= 0);',
+      test: /not ok \d+ - sorted_lines honours a descending declaration/ },
+    // json_fields must compare with no coercion; "3" is not 3.
+    { name: 'json_fields_coerces_values', file: 'src/verifier-primitives.js',
+      old: '      .filter(([key, want]) => JSON.stringify(value[key]) !== JSON.stringify(want))',
+      replacement: '      .filter(([key, want]) => String(value[key]) !== String(want))',
+      test: /not ok \d+ - json_fields compares values strictly/ },
   ];
   const observed = [];
   for (const mutant of mutants) {

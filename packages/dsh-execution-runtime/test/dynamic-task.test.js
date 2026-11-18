@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createHost } from './helpers/host.js';
 import * as hostEntry from '../src/host-plugin.js';
+import { VERIFIER_PRIMITIVES } from '../src/verifier-primitives.js';
 
 /**
  * The general path, driven through the host: a caller describes a task that was never declared anywhere,
@@ -125,7 +126,10 @@ test('the verifier vocabulary is discoverable before a task is described', async
     const result = await host.execute('runtime_verifiers', { agent, arguments: {} });
     assert.equal(result.isError, false, JSON.stringify(result.content));
     const names = result.value.primitives.map((item) => item.name);
-    assert.deepEqual(names, ['exact_bytes', 'line_set', 'structure']);
+    // Compare against the source list rather than a frozen literal: a hardcoded copy goes stale the moment
+    // a primitive is added, and a stale copy fails for the wrong reason while a widened copy proves nothing.
+    assert.deepEqual(names, [...VERIFIER_PRIMITIVES]);
+    assert.ok(names.length >= 3, 'The vocabulary must stay usable, not shrink to nothing.');
     assert.ok(result.value.primitives.every((item) => typeof item.describe === 'string'));
     // Branching is part of the same closed vocabulary, so it must be discoverable too.
     assert.deepEqual(result.value.conditions.map((item) => item.kind),

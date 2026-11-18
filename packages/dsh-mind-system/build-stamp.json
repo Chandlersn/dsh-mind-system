@@ -849,7 +849,7 @@
     },
     "runtime/scripts/verify-dynamic-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-dynamic-mutations.mjs",
-      "sha256": "3ebc0a74549178f761277f2fb9a6fc0b3842629d09b78ac0b8888a7537328dd3"
+      "sha256": "445d41f534c77c301a80a8569671754d9c1f57125dbda137b13ff64872cac0ce"
     },
     "runtime/scripts/verify-hit-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-hit-mutations.mjs",
@@ -985,7 +985,7 @@
     },
     "runtime/src/verifier-primitives.js": {
       "source": "dsh-execution-runtime/src/verifier-primitives.js",
-      "sha256": "bcc0a6b5b858e383080d300549afea8ff63e5f39e9595a0f457f28c0945ae8cf"
+      "sha256": "4fe2ebb2bc6be6eec07241505d05d9539f69d0ec3a8468363cbdad53b27d9884"
     },
     "runtime/test/admission.test.js": {
       "source": "dsh-execution-runtime/test/admission.test.js",
@@ -1017,7 +1017,7 @@
     },
     "runtime/test/dynamic-task.test.js": {
       "source": "dsh-execution-runtime/test/dynamic-task.test.js",
-      "sha256": "41887f7ca696520454032bcd8096c8627d33e8a4043a9b830e975bb01486107e"
+      "sha256": "ed23fef018b0161bbe67241c9ad46b6597acc3a676ab7d16b6ba7127094aa0a5"
     },
     "runtime/test/exceptions.test.js": {
       "source": "dsh-execution-runtime/test/exceptions.test.js",
@@ -1130,6 +1130,10 @@
     "runtime/test/valve-bridge.test.js": {
       "source": "dsh-execution-runtime/test/valve-bridge.test.js",
       "sha256": "110e051b58885e6e0ca15f5bcb9bb0eac99be88acbeb6b2ae19aab8750fe228c"
+    },
+    "runtime/test/verifier-primitives.test.js": {
+      "source": "dsh-execution-runtime/test/verifier-primitives.test.js",
+      "sha256": "aa9a3554ffa0dea0f1ed89ef0aa367c36898e7b64d767dedca19644cfb79908f"
     },
     "valves/README.md": {
       "source": "dsh-valves/README.md",
