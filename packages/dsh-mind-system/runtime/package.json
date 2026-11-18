@@ -34,7 +34,8 @@
     "./verifier-primitives": "./src/verifier-primitives.js",
     "./dynamic-tools": "./src/dynamic-tools.js",
     "./condition-primitives": "./src/condition-primitives.js",
-    "./recipe-library": "./src/recipe-library.js"
+    "./recipe-library": "./src/recipe-library.js",
+    "./intervention": "./src/intervention.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
@@ -55,6 +56,7 @@
     "probe:jev": "node scripts/probe-jev.mjs",
     "verify:loop": "node scripts/verify-loop-mutations.mjs",
     "verify:dynamic": "node scripts/verify-dynamic-mutations.mjs",
-    "verify:live": "node scripts/verify-live-run.mjs"
+    "verify:live": "node scripts/verify-live-run.mjs",
+    "verify:intervention": "node scripts/verify-intervention.mjs"
   }
 }

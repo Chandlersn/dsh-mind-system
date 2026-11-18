@@ -28,7 +28,7 @@ try {
   writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
   const testsInOrder = ['test/recipe-factory.test.js', 'test/dynamic-task.test.js',
     'test/verifier-primitives.test.js', 'test/recipe-library.test.js', 'test/analysis-wiring.test.js',
-    'test/knowledge-wiring.test.js', 'test/pattern-tool.test.js'];
+    'test/knowledge-wiring.test.js', 'test/pattern-tool.test.js', 'test/intervention.test.js'];
   for (const file of collectModuleClosure(source, testsInOrder)) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
     writeFileSync(join(root, file), readFileSync(join(source, file)));
@@ -186,6 +186,27 @@ try {
       old: "  if (version !== approval.patternVersion) return { applies: false, reason: 'pattern_version_changed' };",
       replacement: '  void version;',
       test: /not ok \d+ - an approval for a different pattern version does not carry over/ },
+    // Speaking on the first failure is the noise failure mode: a component that comments on everything gets
+    // ignored, which leaves it with no capability at all.
+    { name: 'intervenes_on_first_failure', file: 'src/intervention.js',
+      old: '      if (repeated < threshold) { record(\'below_threshold\'); return { skipped: \'below_threshold\', signature }; }',
+      replacement: '      if (false) { record(\'below_threshold\'); return { skipped: \'below_threshold\', signature }; }',
+      test: /not ok \d+ - the same failure has to repeat/ },
+    // Repeating the same hint is the other noise failure mode.
+    { name: 'repeats_the_same_hint', file: 'src/intervention.js',
+      old: '      if (seen.has(signature)) { record(\'already_hinted\'); return { skipped: \'already_hinted\', signature }; }',
+      replacement: '      if (false) { record(\'already_hinted\'); return { skipped: \'already_hinted\', signature }; }',
+      test: /not ok \d+ - the same failure has to repeat/ },
+    // Treating every failure as relevant would make the runtime help with typos.
+    { name: 'intervenes_on_irrelevant_failure', file: 'src/intervention.js',
+      old: '      if (!isRelevant(text)) { record(\'not_relevant\'); return { skipped: \'not_relevant\', signature: null }; }',
+      replacement: '      if (false) { record(\'not_relevant\'); return { skipped: \'not_relevant\', signature: null }; }',
+      test: /not ok \d+ - failures the runtime could not help with/ },
+    // A hint count without skips is a numerator with no denominator: silence and absence look identical.
+    { name: 'skips_not_counted', file: 'src/intervention.js',
+      old: '    metrics.skipped += 1;',
+      replacement: '    void metrics.skipped;',
+      test: /not ok \d+ - the counters are reported with their denominator/ },
   ];
   const observed = [];
   for (const mutant of mutants) {

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Host entry: assembles the runtime's native dependencies and mounts it as a Cordis plugin.
  *
  * ## What this file is, and is not
@@ -33,6 +33,7 @@ import { createExecuteTool, createLibraryTool, createKnowledgeTool, createPatter
   from './dynamic-tools.js';
 import { createSagAdapter, resolveSagKey } from './knowledge-sag.js';
 import { createValveWriter } from './valve-bridge.js';
+import { createInterventionPolicy } from './intervention.js';
 import { createRecipeLibrary } from './recipe-library.js';
 import { Analyzer } from './analyzer.js';
 import { jsonNormalizeRecipe } from '../recipes/json-normalize.js';
@@ -194,6 +195,65 @@ function makeValveChannel(ctx, config) {
   }
 }
 
+/**
+ * Subscribe to tool completions and offer help on a repeated failure.
+ *
+ * The hook mirrors the one this codebase already uses elsewhere: `tools/post-execute` receives
+ * `(exec, result, next)`, and the listener runs `next()` to obtain the host's decision, then may append
+ * `additionalContexts`. Appending is the whole mechanism — the runtime adds a note, never an instruction.
+ *
+ * Errors are swallowed on purpose. An intervention that throws would fail a tool call that already
+ * succeeded, which is a far worse outcome than staying silent.
+ */
+function installIntervention(ctx, policy, base) {
+  if (typeof ctx?.on !== 'function') return null;
+  try {
+    const dispose = ctx.on('tools/post-execute', async (exec, result, next) => {
+      const decision = await next();
+      try {
+        if (outcomeFailed(result) !== true) return decision;
+        const verdict = policy.evaluate({
+          agentId: exec?.agent?.id ?? exec?.agent?.name ?? 'default',
+          tool: typeof exec?.name === 'string' ? exec.name : 'unknown',
+          message: failureText(result),
+        });
+        base.interventionMetrics = policy.metrics();
+        if (verdict.hint === undefined) return decision;
+        // Offer, not instruct: the note is appended as context and the host decides what to do with it.
+        return { ...decision,
+          additionalContexts: [...(decision?.additionalContexts ?? []),
+            { source: { kind: 'plugin:execution-runtime' }, content: [{ type: 'text', text: verdict.hint }] }] };
+      } catch {
+        return decision;
+      }
+    });
+    return typeof dispose === 'function' ? dispose : null;
+  } catch {
+    // A host without a post-execute channel simply does not get intervention; everything else still works.
+    base.intervention = 'unsupported';
+    return null;
+  }
+}
+
+/** Whether a tool result reports failure, read the way the host reports it. */
+function outcomeFailed(result) {
+  if (!result || typeof result !== 'object') return false;
+  if (result.isError === true) return true;
+  // The tool runtime reports policy denials through a decision kind rather than isError.
+  return result.kind === 'deny' || result.kind === 'error';
+}
+
+/** The most specific failure text available, bounded so one huge error cannot flood the policy. */
+function failureText(result) {
+  const parts = [];
+  if (typeof result?.error?.message === 'string') parts.push(result.error.message);
+  if (typeof result?.error?.code === 'string') parts.push(result.error.code);
+  if (Array.isArray(result?.content)) {
+    for (const part of result.content) if (typeof part?.text === 'string') parts.push(part.text);
+  }
+  return parts.join(' ').slice(0, 2_000);
+}
+
 export async function apply(ctx, config = {}) {
   const logger = optional(ctx, 'logger')?.('execution-runtime') ?? null;
   const base = { enabled: config?.enabled === true, loadError: null, recipes: [], tasks: 0, patterns: false };
@@ -289,6 +349,15 @@ export async function apply(ctx, config = {}) {
     const valve = makeValveChannel(ctx, config?.valves);
     base.valves = valve.writer === null ? valve.reason : 'configured';
 
+    // Intervention makes the runtime's existence known at the moment a caller is in trouble. It offers
+    // context and stops there: deciding whether to use the runtime stays with the host.
+    const intervention = createInterventionPolicy({
+      threshold: Number.isSafeInteger(config?.intervention?.threshold) ? config.intervention.threshold : 2,
+    });
+    base.intervention = config?.intervention?.enabled === false ? 'disabled' : 'enabled';
+    const interventionDispose = config?.intervention?.enabled === false
+      ? null : installIntervention(ctx, intervention, base);
+
     const dynamicDisposers = [];
     const dynamicTools = [
       createExecuteTool({ store, schedulerFor: schedulerFactory, toolEffects, mount,
@@ -313,11 +382,14 @@ export async function apply(ctx, config = {}) {
       for (const disposeTool of dynamicDisposers.splice(0)) {
         try { disposeTool(); } catch { /* a failed tool removal must not block unload */ }
       }
+      // The post-execute subscription must also go: a listener left behind after unload would keep hinting
+      // for a runtime that no longer exists.
+      try { interventionDispose?.(); } catch { /* same reasoning as above */ }
       await innerDispose?.();
     };
     base.state = 'ready';
     logger?.info?.(`execution runtime ready: ${base.recipes.join(', ')}; tasks=${base.tasks}`
-      + `; dynamic tools=${base.dynamicTools.join(',') || 'none'}`);
+      + `; dynamic tools=${base.dynamicTools.join(',') || 'none'}; intervention=${base.intervention}`);
   } catch (error) {
     // Never rethrow: an apply() throw makes the plugin disappear with no trace.
     base.state = 'failed';
