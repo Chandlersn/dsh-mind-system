@@ -57,6 +57,8 @@
     "verify:loop": "node scripts/verify-loop-mutations.mjs",
     "verify:dynamic": "node scripts/verify-dynamic-mutations.mjs",
     "verify:live": "node scripts/verify-live-run.mjs",
-    "verify:intervention": "node scripts/verify-intervention.mjs"
+    "verify:intervention": "node scripts/verify-intervention.mjs",
+    "verify:dr17": "node scripts/verify-dr17-labelled.mjs",
+    "verify:dr18": "node scripts/verify-dr18-arms.mjs"
   }
 }

@@ -805,7 +805,7 @@
     },
     "runtime/package.json": {
       "source": "dsh-execution-runtime/package.json",
-      "sha256": "ad63d73f116943de389f2db1a73dd2db531e423032a20de64941a8eddfde8ce1"
+      "sha256": "f71f4229f9ef55823c89cbd151779f0bccea0f8745386f19b850ac85c89a7af1"
     },
     "runtime/recipes/csv-normalize.js": {
       "source": "dsh-execution-runtime/recipes/csv-normalize.js",
@@ -846,6 +846,14 @@
     "runtime/scripts/verify-diagnosis-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-diagnosis-mutations.mjs",
       "sha256": "4720d13d5376d221704520631339cfcf6cfd12f0481011915848a3d6422b65f8"
+    },
+    "runtime/scripts/verify-dr17-labelled.mjs": {
+      "source": "dsh-execution-runtime/scripts/verify-dr17-labelled.mjs",
+      "sha256": "e063ab5ed63a1d13985b295ea7a58ca73811f799eb5bbb7c94b640f7af86d517"
+    },
+    "runtime/scripts/verify-dr18-arms.mjs": {
+      "source": "dsh-execution-runtime/scripts/verify-dr18-arms.mjs",
+      "sha256": "3736bd47847046e1aebbfd68cc60fd36d929adff45233bb8222755fff8ee87e9"
     },
     "runtime/scripts/verify-dynamic-mutations.mjs": {
       "source": "dsh-execution-runtime/scripts/verify-dynamic-mutations.mjs",
