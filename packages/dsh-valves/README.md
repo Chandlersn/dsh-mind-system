@@ -43,6 +43,23 @@
 
 校准原料就是 `valve_metrics` 的分布：missRate 接近 1 = 可能误杀，接近 0 = 可能没在管。改阈值走 config.thresholds（未知键/非法值装载时点名），不改常量。
 
+## 技能快速通道（II-4，2026-11-19）
+
+技能候选量化门达标后**不再一律转人工**：若调用方声明 `confidence >= skillFastTrackConfidence`，直接 `accept`（reason `skill_fast_track`），并按 `skillAuditRate` 抽人回审。
+
+| 阈值 | 默认 | 说明 |
+|---|---|---|
+| `skillFastTrackConfidence` | **1**（满档） | 0 = 关闭快速通道，回到全部转人工 |
+| `skillAuditRate` | **0.3** | 0 = 不抽样（等于完全信任，账本如实记 `audit_disabled`）；1 = 每条都审（等于没开） |
+
+**为什么默认满档而不是"刚好能过"**：实测 2026-11-19，7 次 skill 相关判定**没有一条**走到量化门（4 条 malformed、1 条 success_not_external、2 条 forbidden）。快速通道在当前语料上还没有真实流量——这是诚实的现状。把阈值调到"能产出样本"，等于拿结论去调判据。
+
+**抽样必须可复现**：用 FNV-1a 哈希候选 id 落到 0–1 桶，不用 `Math.random()`。审计轨迹要经得起复核——同一候选重跑落进不同档，"它没被抽中"就无从验证。第一版测试用「单个 id 跑三次」验确定性，`Math.random` 变异**存活**了（三次恰好同档）；改成「8 个 id × 两轮、逐 id 比对」才杀死。
+
+**自动生效必须留痕**：每次走快速通道都写一条独立账本行 `gate: skill_fast_track`，`action` 为 `audit_selected` / `audit_skipped`，并记下当时的 `audit_rate` 与 `confidence`。只写 "admitted" 的话，事后没人分得出哪些条目跳过了人工——那是自动了却没人观测的闸门。
+
+**契约兼容**：量化门达标这个事实仍叫 `skill_thresholds_met`（旧名字不变），"快速通道为何没触发"放新字段 `fast_track_reason`（`skill_confidence_missing` / `skill_confidence_below_fast_track`），另带 `fast_track_bar`。直接改 `reason` 的语义会把依赖它的调用方和测试悄悄打红（层递链用例就会红）。
+
 ## 数据
 
 - `<dshHome>/storages/mind-valves.jsonl` — 追加式判定账本（allow/deny 双侧都记；`kind: 'trace'` 的行是 LayerTrace）

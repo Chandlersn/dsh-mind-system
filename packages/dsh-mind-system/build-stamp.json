@@ -1221,11 +1221,11 @@
     },
     "valves/README.md": {
       "source": "dsh-valves/README.md",
-      "sha256": "032311a7be5867a1819b4f0c0df8197340df6b902e8c3aec5efbb82a900b1653"
+      "sha256": "f9307dd890315286658f7c81352bbae47039c3a8b6c2dedbe6894fbbf977407e"
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
-      "sha256": "a0e17e8027741f53c172e01df76babd88715f348a99f504bdf83a53846a83114"
+      "sha256": "0d12bb420a682249785988c846f1cb00cf37031008d88f2c405140df1b394e7b"
     },
     "valves/package.json": {
       "source": "dsh-valves/package.json",
@@ -1261,7 +1261,7 @@
     },
     "valves/src/predicates.js": {
       "source": "dsh-valves/src/predicates.js",
-      "sha256": "74d8b996f110b28894551c4777eb2c16bf18b89046306b175952c5a484a96340"
+      "sha256": "cdb793429ccdd0dbfab27e0965eaa35f4b6743e440ba27f39c921db9757dc51d"
     },
     "valves/src/ratelimit.js": {
       "source": "dsh-valves/src/ratelimit.js",
@@ -1281,7 +1281,7 @@
     },
     "valves/src/thresholds.js": {
       "source": "dsh-valves/src/thresholds.js",
-      "sha256": "1f2edb4e6f5663566c6c27dca8c38e39b738d6a934a85f5a8b37646ddc123da9"
+      "sha256": "b64c49739cb993c2f47b4bfe7b5d8b0b944b7d12103ebe86a9c7c5d5cec84c3b"
     },
     "valves/src/trace.js": {
       "source": "dsh-valves/src/trace.js",
@@ -1306,6 +1306,10 @@
     "valves/test/entry.test.js": {
       "source": "dsh-valves/test/entry.test.js",
       "sha256": "41ad39fbe6cd29d342728f16bd4a88b877b135c3d154d70e6c5ee90d32bd8b13"
+    },
+    "valves/test/fast-track.test.js": {
+      "source": "dsh-valves/test/fast-track.test.js",
+      "sha256": "6b558393f83e8f6fa8b614a545c7792dd7c878ca3f1624ffbf1763a65230e759"
     },
     "valves/test/full-loop.test.js": {
       "source": "dsh-valves/test/full-loop.test.js",

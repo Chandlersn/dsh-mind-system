@@ -167,6 +167,27 @@ function clearFinding(code) {
 	facts.runtimeFindings.delete(code);
 }
 
+/**
+ * Deterministic 0–1 bucket for one candidate id (II-4 audit sampling).
+ *
+ * WHY NOT Math.random: an audit trail has to be reproducible. If the same
+ * candidate would land in a different bucket on a re-run, then "it was not
+ * sampled" is not checkable — the reviewer cannot tell a legitimate skip from a
+ * botched roll. Hashing the id makes the decision a pure function of the input.
+ *
+ * FNV-1a is used because it is short, stable across Node versions, and needs no
+ * dependency. It is NOT used for anything security-sensitive.
+ */
+function bucketOf(key) {
+	let h = 0x811c9dc5;
+	const s = String(key ?? '');
+	for (let i = 0; i < s.length; i++) {
+		h ^= s.charCodeAt(i);
+		h = Math.imul(h, 0x01000193) >>> 0;
+	}
+	return h / 0x100000000;
+}
+
 /** 供服务消费方与测试读取的运行时句柄。 */
 let runtime;
 
@@ -238,6 +259,43 @@ export function createRuntime(options = {}) {
 		 */
 		async upwardWithAxiomLimit(from, to, candidate, options = {}) {
 			const decision = admitUpward(from, to, candidate, { layers, thresholds });
+			// ---- II-4 fast track: record the audit decision, not just the verdict ----
+			//
+			// A candidate admitted by the fast track never met a human. If the ledger
+			// says only "admitted", nobody can later tell which entries skipped review
+			// — the gate would be automated but unobserved. So the sample decision is
+			// written explicitly: whether this one was drawn for audit, and why not
+			// when it wasn't.
+			//
+			// Sampling uses a deterministic hash of the candidate id rather than
+			// Math.random: an audit trail that cannot be reproduced cannot be checked,
+			// and re-running the same candidate must land in the same bucket.
+			if (decision.action === 'accept' && decision.reason === 'skill_fast_track') {
+				const rate = Number.isFinite(thresholds.skillAuditRate) ? thresholds.skillAuditRate : 0;
+				const key = String(candidate?.rule_id ?? candidate?.candidate_id ?? '');
+				const audited = rate > 0 && bucketOf(key) < rate;
+				const admitted = record(`upward_${from}_${to}`, 'up', decision, {
+					from, to,
+					candidate_id: candidate?.candidate_id ?? candidate?.rule_id,
+					origin: typeof candidate?.origin === 'string' && candidate.origin ? candidate.origin : 'daily',
+					principle_refs: candidate?.principle_refs,
+				});
+				void appendDecision(storageDir, {
+					gate: 'skill_fast_track',
+					direction: 'up',
+					// The entry ADMITTED the candidate; the invariant that matters is
+					// whether a human is scheduled to look at it afterwards.
+					outcome: 'admitted',
+					action: audited ? 'audit_selected' : 'audit_skipped',
+					reason: audited ? 'sampled_for_review' : rate <= 0 ? 'audit_disabled' : 'not_sampled',
+					candidate_id: candidate?.candidate_id ?? candidate?.rule_id,
+					rule_id: candidate?.rule_id,
+					confidence: decision.confidence ?? null,
+					audit_rate: rate,
+					...(audited ? {} : { note: '自动生效但本轮未被抽中回审' }),
+				});
+				return admitted;
+			}
 			// 只有公理类变更受限速约束；其它类型原样返回（不读账本、不增加开销）。
 			const touchesAxiom = candidate?.rule_type === 'axiom' || candidate?.negative_type === 'weakened_axiom';
 			if (!touchesAxiom) {

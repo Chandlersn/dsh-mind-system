@@ -150,9 +150,55 @@ function admitPositiveUpward(c, t) {
 		if (c.success_evidence !== 'external') return reject('success_not_external');
 		if (c.repeats < t.skillMinRepeats) return reject('insufficient_repeats');
 		if (c.success_rate < t.skillMinSuccessRate) return reject('success_rate_below_threshold');
-		// 技能闸门可分级自动（§4.9）——但 v1 保守：全部转人工确认，
-		// 快速通道等真实分布出来再开（先跑起来 ≠ 先放开）。
-		return { action: 'human_gate', reason: 'skill_thresholds_met', coverage: 'sufficient' };
+		// ---- II-4 技能快速通道（2026-11-19）----
+		//
+		// The old behaviour was "always human_gate" with a comment saying the
+		// fast track would open once a real distribution existed. That condition
+		// is now met in the sense the plan required (dailyCount 116/30,
+		// calibration_writable=true), so the gate is opened here — but on the
+		// CONSERVATIVE setting: the caller's declared confidence must reach
+		// skillFastTrackConfidence, which defaults to the full mark.
+		//
+		// Why not lower the bar until samples appear: measured on 2026-11-19,
+		// none of the 7 skill-related decisions ever reached this branch (4
+		// malformed, 1 success_not_external, 2 forbidden). A fast track with no
+		// real traffic is the honest state; manufacturing traffic by relaxing a
+		// threshold would be tuning the criterion to fit the conclusion.
+		//
+		// Every auto-admitted candidate still carries `audit` so the caller can
+		// sample it. An automated gate that leaves no audit trail is just an
+		// unobserved gate.
+		const conf = isRate(c.confidence) ? c.confidence : null;
+		const fastBar = t.skillFastTrackConfidence;
+		if (Number.isFinite(fastBar) && fastBar > 0 && conf !== null && conf >= fastBar) {
+			return {
+				action: 'accept',
+				reason: 'skill_fast_track',
+				coverage: 'sufficient',
+				confidence: conf,
+				// Sampling is decided by the caller (it owns the audit ledger); the
+				// predicate only states the rate in force, never claims an audit ran.
+				audit: { rate: t.skillAuditRate, required: t.skillAuditRate > 0 },
+			};
+		}
+		// Confidence absent or below the bar: a human still has to look.
+		//
+		// REASON COMPATIBILITY (2026-11-19): before the fast track, this branch
+		// always reported `skill_thresholds_met` — the name of the FACT "quantitative
+		// gates passed", which stays true either way. Callers and tests key off that
+		// string, so the new distinction is carried in `fast_track_reason` rather
+		// than by renaming the existing field. Renaming would have silently changed
+		// a contract that other suites assert on (layer-ladder did turn red when the
+		// first draft renamed it).
+		return {
+			action: 'human_gate',
+			reason: 'skill_thresholds_met',
+			// The NEW fact: why the fast track did not fire. null = it did (see above).
+			fast_track_reason: conf === null ? 'skill_confidence_missing' : 'skill_confidence_below_fast_track',
+			coverage: 'sufficient',
+			...(conf === null ? {} : { confidence: conf }),
+			fast_track_bar: Number.isFinite(fastBar) ? fastBar : null,
+		};
 	}
 
 	if (c.rule_type === 'criterion') {
