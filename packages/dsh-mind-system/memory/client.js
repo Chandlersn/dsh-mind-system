@@ -651,11 +651,19 @@ window.__ModuleLoader__.load({
 		/** Per-kind first-open policy: never dump 20KB of history on the reader. */
 		/** Index sections that start expanded: the tables, and the dao list. */
 		const INDEX_OPEN_RE = /^(功能模块索引|创新优化思想索引|道层|能力台账|技能台账)/;
+		/** Sections pinned above the reversed history (see Reader's PIN_TOP). */
+		const PINNED_TOP_RE = /^(当前状态摘要|头部摘要|状态摘要)/;
 		function defaultOpen(kind, sections, text) {
 			const open = {};
 			const small = String(text ?? '').length < 4000;
+			// Which section is the NEWEST block cannot be assumed to be index 0: the
+			// head summary is pinned above the history, so index 0 is the summary
+			// whenever one exists. Pick the last non-pinned section instead — that is
+			// the newest iteration block under the append-only layout.
+			let newest = -1;
+			sections.forEach((s, i) => { if (!PINNED_TOP_RE.test(s.heading)) newest = i; });
 			sections.forEach((s, i) => {
-				if (kind === 'functions') open[i] = small || i === 0; // reversed: index 0 is the newest
+				if (kind === 'functions') open[i] = small || i === newest || PINNED_TOP_RE.test(s.heading);
 				// 精确前缀而非关键字子串：道层标题含「思想」二字，子串匹配会把
 				// 「道层（最抽象的指导思想）」当成思想索引。
 				else if (kind === 'index') open[i] = INDEX_OPEN_RE.test(s.heading);
@@ -1359,8 +1367,28 @@ window.__ModuleLoader__.load({
 			// the reader flips it), so the top card is always the latest state.
 			// Index maps (`open[i]`, `refs`, `jump(i)`) keep the ORIGINAL section
 			// indices — only the render order changes.
-			const shown = sections.map((s, i) => ({ s, i }));
-			if (!view.candidate) shown.reverse();
+			//
+			// EXCEPTION — pinned sections (2026-11-19, reported from the live panel):
+			// a blind reverse moved 「当前状态摘要」 to the BOTTOM of the page, because
+			// it is a `## ` section like any other. That is backwards: the head
+			// summary DESCRIBES the current state and must be read first, while the
+			// iteration blocks below it are history. Same for 「早期演化」, which is the
+			// collapsed remainder and belongs last, not second.
+			//
+			// So: pinned-to-top sections keep their position above the reversed run;
+			// pinned-to-bottom ones stay at the end. Only the iteration history
+			// (everything else) is reversed. Tested in ui-test.
+			const PIN_TOP = /^(当前状态摘要|头部摘要|状态摘要)/;
+			const PIN_BOTTOM = /^(早期演化|历史原貌)/;
+			const top = [];
+			const middle = [];
+			const bottom = [];
+			sections.forEach((s, i) => {
+				if (PIN_TOP.test(s.heading)) top.push({ s, i });
+				else if (PIN_BOTTOM.test(s.heading)) bottom.push({ s, i });
+				else middle.push({ s, i });
+			});
+			const shown = view.candidate ? [...top, ...middle, ...bottom] : [...top, ...middle.reverse(), ...bottom];
 			const chipRows = kind === 'functions' ? shown.map(({ s, i }) => ({ i, label: s.date ? `${s.date}${/补$/.test(s.heading) ? '补' : ''}` : `#${i + 1}` })) : shown.map(({ s, i }) => ({ i, label: s.heading.slice(0, 14) }));
 
 			return h(

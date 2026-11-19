@@ -698,6 +698,46 @@ const fnRead = render({ kind: 'file', zone: 'functions', name: 'alpha.md' });
 ok(count(fnRead, 'data-dmo="section"') === 4, `function file shows 4 iteration blocks (${count(fnRead, 'data-dmo="section"')})`);
 ok(count(fnRead, 'dmo-sec-body') === 1, 'only the newest block is expanded by default');
 ok(fnRead.indexOf('第四次迭代') < fnRead.indexOf('第一次迭代'), 'blocks render newest-first');
+
+// Pinned sections (2026-11-19, reported from the live panel): a blind reverse put
+// 「当前状态摘要」 at the BOTTOM. The head summary describes the CURRENT state and
+// belongs above the history, so it must render before every iteration block, and
+// 「早期演化」 (the collapsed remainder) must render after them.
+//
+// Rendered through the real MemoryPanel by planting the file text in the fixture
+// the panel fetches (render()'s second arg is fixtures, not a text override).
+const pinnedText = [
+	'# 功能域：gamma',
+	'',
+	'## 当前状态摘要（截至 2026-11-19）',
+	'',
+	'当前状态在这里。',
+	'',
+	'## [2026-09-01] 最早的块',
+	'',
+	'旧内容。',
+	'',
+	'## [2026-11-13] 最新的块',
+	'',
+	'新内容。',
+	'',
+	'## 早期演化（25 块已折叠）',
+	'',
+	'折叠内容。',
+].join('\n');
+const pinnedFixtures = {
+	...fixtures,
+	[`/api/memory-org/file?zone=functions&name=gamma.md`]: { data: { name: 'gamma.md', text: pinnedText } },
+};
+const pinnedRead = serialize(
+	FakeReact.createElement(MemoryPanel, {
+		__apiFixtures: pinnedFixtures,
+		initialView: { kind: 'file', zone: 'functions', name: 'gamma.md' },
+	}),
+);
+ok(pinnedRead.indexOf('当前状态在这里') < pinnedRead.indexOf('新内容'), 'head summary renders ABOVE the newest block (it is current state, not history)');
+ok(pinnedRead.indexOf('新内容') < pinnedRead.indexOf('旧内容'), 'iteration blocks still render newest-first');
+ok(pinnedRead.indexOf('旧内容') < pinnedRead.indexOf('折叠内容'), '早期演化 stays at the bottom (it is the collapsed remainder)');
 ok(count(fnRead, 'data-dmo="toc-chip"') === 4, 'jump strip lists every block');
 ok(fnRead.indexOf('2026-10-18') < fnRead.indexOf('2026-09-01'), 'jump strip is newest-first');
 ok(fnRead.includes('当前状态摘要'), 'head summary stays visible above the blocks');
@@ -961,7 +1001,21 @@ ok(T.parseIndexTables('| [孤儿](functions/孤儿.md) | 没有标题的行 |').
 const split = T.splitSections(fnText);
 ok(split.sections.length === 4 && split.sections[3].date === '2026-10-18', 'splitSections extracts dated blocks');
 ok(split.preamble.includes('当前状态摘要'), 'splitSections keeps the head summary as preamble');
-ok(T.defaultOpen('functions', split.sections, fnText)[0] === true && T.defaultOpen('functions', split.sections, fnText)[3] === false, 'fold policy opens the newest block only (reversed order: index 0 is newest)');
+// The newest block is the LAST section index, not index 0. Index 0 was assumed
+// newest only because the render order used to be a blind reverse; once the head
+// summary is pinned above the history, index 0 can be the summary itself. This
+// fixture keeps the summary as a `>` preamble, so the last section (index 3) is
+// the newest block and must be the one that opens.
+ok(T.defaultOpen('functions', split.sections, fnText)[3] === true && T.defaultOpen('functions', split.sections, fnText)[0] === false, 'fold policy opens the newest block (last section, not index 0)');
+
+// Real files put the head summary in a `## 当前状态摘要` SECTION (measured on
+// functions/dsh插件开发.md), where it is not preamble at all. That section must
+// stay expanded and must not be treated as the newest block.
+const withSummary = T.splitSections(['# 功能域：beta', '', '## 当前状态摘要（截至 2026-11-19）', '', '- 状态 A', '', '## [2026-10-01] 旧块', '', longBlock(9)].join('\n'));
+const openWithSummary = T.defaultOpen('functions', withSummary.sections, 'x'.repeat(5000));
+ok(openWithSummary[0] === true, 'a 当前状态摘要 section stays expanded (it IS the current state)');
+ok(openWithSummary[1] === true, 'the newest iteration block also opens');
+ok(withSummary.sections[0].heading.startsWith('当前状态摘要'), 'the summary is a real section, not preamble');
 ok(T.defaultOpen('insights', split.sections, 'short')[0] === true, 'fold policy opens everything in short files');
 const idxSections = T.splitSections(indexText).sections;
 // defaultOpen is still the fold policy for READING a file section-by-section;

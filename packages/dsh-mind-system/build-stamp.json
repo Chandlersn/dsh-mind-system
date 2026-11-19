@@ -145,7 +145,7 @@
     },
     "memory/client.js": {
       "source": "dsh-memory-manager/client.js",
-      "sha256": "4f3bddd4b97e76d220be964a0b16d845e878213ee65a546d0b3d1a71e83a43b8"
+      "sha256": "bcc4d176e9b173fc1a38738f90bd0d08a855776fabf5065f3b1aba74d333e4ac"
     },
     "memory/harness-test.mjs": {
       "source": "dsh-memory-manager/harness-test.mjs",
@@ -649,7 +649,7 @@
     },
     "memory/ui-test.mjs": {
       "source": "dsh-memory-manager/ui-test.mjs",
-      "sha256": "25a2d74d6fc393f2abb385412ec05a617689c2f3dfbe51e057aef76a4833a146"
+      "sha256": "e2094f49d43f4e5335d008642104e5646f01706a39b11bbce0f58b776ee999ae"
     },
     "meta/README.md": {
       "source": "dsh-meta-framework/README.md",
