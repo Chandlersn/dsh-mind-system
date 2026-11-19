@@ -1293,7 +1293,7 @@
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
-      "sha256": "f7558c58e48b728170c92bca538e5494e0256dd5a82bcfdfcf1998a11e57b3a0"
+      "sha256": "ecadd2a592752c3d507939b44a231d020a8e055da13dce4f8774eb3d0eb24a13"
     },
     "valves/package.json": {
       "source": "dsh-valves/package.json",
@@ -1329,7 +1329,7 @@
     },
     "valves/src/patrol.js": {
       "source": "dsh-valves/src/patrol.js",
-      "sha256": "fe1561dde7bf097bd0f38f0b203a286aefb8cf8d1fcec1c845fc9bf41f4e1ba3"
+      "sha256": "bc50f60be1cad5aa5eb1d7889996b9ff84b78d4b2aad48fece50359fea752427"
     },
     "valves/src/predicates.js": {
       "source": "dsh-valves/src/predicates.js",
@@ -1442,6 +1442,10 @@
     "valves/test/ratelimit.test.js": {
       "source": "dsh-valves/test/ratelimit.test.js",
       "sha256": "cc1c50460783c794b53feb41f05611a9bb4f6e5f49666f048f26b21228d61e02"
+    },
+    "valves/test/recall-probe.test.js": {
+      "source": "dsh-valves/test/recall-probe.test.js",
+      "sha256": "0d44f4c9250386ded8809391e81a4a5ebbb19b8e1e9e77d7d0bf48de06978733"
     },
     "valves/test/receipt-json.test.js": {
       "source": "dsh-valves/test/receipt-json.test.js",

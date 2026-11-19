@@ -445,6 +445,107 @@ export function patrolReportPath(storageDir, kind, date = new Date()) {
 	return join(storageDir, PATROL_DIR, `${kind}-${day}.json`);
 }
 
+/** Upper bounds so one probe pass stays cheap and bounded. */
+const MAX_PROBE_SUBJECTS = 5;
+const MAX_PROBE_QUERIES = 10;
+
+/**
+ * Staging / backup artefact markers, anchored to a path segment or the trailing
+ * extension so a legitimate note named `tmp-notes` is not mistaken for one.
+ * Matched against the ORIGINAL file name, before extension stripping.
+ */
+const STAGING_ARTEFACT = /(\.(stage|tmp|bak|swp|orig)([-.][^/\\]*)?$)|(^\.~)/i;
+
+/**
+ * Run the optional recall probe, normalized into the shape the report wants.
+ *
+ * WHY this is only a conductor (and not a SAG client)
+ * ---------------------------------------------------
+ * The probe needs real recall results, but valves must not import the memory
+ * package (N2: valves depends on node built-ins only; memory reaches valves
+ * one-way through `ctx.get`). So the searching is *injected*: the host passes a
+ * function that performs one query and returns either
+ * `{ ok: true, results: [{ path }] }` or `{ ok: false, reason }`.
+ *
+ * Three outcomes stay separate on purpose, because merging them is exactly how a
+ * boundary that was never checked gets reported as clean:
+ *   - no searcher wired         -> `undefined`; caller reports
+ *                                  `no_probe_configured`, violations stays null
+ *   - searcher threw or refused -> `{ ok: false, error }`; violations stays null
+ *   - searcher answered         -> `{ ok: true, hits }`; the ONLY state allowed
+ *                                  to conclude `violations: 0`
+ *
+ * It never throws: weekly patrol is a reporting job, and a broken probe must
+ * degrade to "not verified" rather than take the run down (N4).
+ *
+ * @param {object} [options]
+ * @param {(query: string) => Promise<object>} [options.searcher] Injected recall.
+ * @param {string[]} [options.queries] Explicit queries (default: from subjects).
+ * @param {object[]} [options.subjects] Excluded subjects to build queries from.
+ * @returns {Promise<{ok: true, hits: string[]}|{ok: false, error: string}|undefined>}
+ */
+export async function runRecallProbe(options = {}) {
+	const searcher = options.searcher;
+	if (typeof searcher !== 'function') return undefined;
+
+	const subjects = Array.isArray(options.subjects) ? options.subjects : [];
+	const given = Array.isArray(options.queries) ? options.queries.filter((q) => typeof q === 'string' && q.trim()) : [];
+	const queries = given.length ? given.slice(0, MAX_PROBE_QUERIES) : await subjectQueries(subjects);
+	if (queries.length === 0) return { ok: false, error: 'no_query_available' };
+
+	const hits = [];
+	try {
+		for (const query of queries) {
+			const out = await searcher(query);
+			if (!out || out.ok !== true) {
+				return { ok: false, error: String(out?.reason ?? out?.error ?? 'probe_unavailable') };
+			}
+			for (const r of Array.isArray(out.results) ? out.results : []) {
+				const p = typeof r === 'string' ? r : (typeof r?.path === 'string' ? r.path : '');
+				if (p) hits.push(p);
+			}
+		}
+	} catch (err) {
+		return { ok: false, error: err instanceof Error ? err.message : String(err) };
+	}
+	return { ok: true, hits };
+}
+
+/**
+ * Build probe queries from file names inside the excluded subject folders.
+ *
+ * File name only, extension stripped: an excluded twin shares its NAME with the
+ * canonical note, so that name is the query able to surface the collision.
+ * Staging/temp artefacts are skipped — their random ids would query for noise.
+ *
+ * @param {object[]} subjects `{ root, rel, files }` from scanRecallSubjects.
+ * @returns {Promise<string[]>}
+ */
+async function subjectQueries(subjects) {
+	const out = new Set();
+	for (const s of subjects.slice(0, MAX_PROBE_SUBJECTS)) {
+		let entries;
+		try {
+			entries = await readdir(join(s.root, s.rel), { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const e of entries) {
+			if (!e.isFile()) continue;
+			// Test the RAW name: stripping the extension first turns
+			// `note.md.stage-abc.tmp` into `note.md.stage-abc`, which no longer
+			// looks like a staging artefact and would be queried as content.
+			if (e.name.startsWith('.') || STAGING_ARTEFACT.test(e.name)) continue;
+			const base = e.name.replace(/\.[^.]*$/, '');
+			if (!base) continue;
+			if (out.size >= MAX_PROBE_QUERIES) break;
+			out.add(base);
+		}
+		if (out.size >= MAX_PROBE_QUERIES) break;
+	}
+	return [...out];
+}
+
 /**
  * 读待决策的候选公理（从磁盘，不跨插件调用）。
  *

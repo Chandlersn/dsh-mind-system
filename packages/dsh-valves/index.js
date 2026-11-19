@@ -64,7 +64,7 @@ import {
 	weeklyPrinciplePatrol, quarterlyLayerPatrol,
 	writePatrolReport, readLatestPatrolReport, isPatrolDue, PATROL_PERIODS, clampTimerDelay,
 	readPendingAxiomCandidates, readPrinciplesFromDisk, readLayerCountsFromDisk, MIN_REFS_ROWS,
-	scanRecallSubjects, summarizeRecallBoundary,
+	scanRecallSubjects, summarizeRecallBoundary, runRecallProbe,
 } from './src/patrol.js';
 // IV-5 公理闸门限速：每月最多生效一次 + 显式测试通道（不消耗额度）。
 import { checkAxiomRate, applyAxiomLimit } from './src/ratelimit.js';
@@ -987,9 +987,14 @@ export function apply(ctx, config = {}, overrides = {}) {
 					? patrolConfig.recallRoots
 					: [rootForCandidates];
 				const scan = await scanRecallSubjects(roots);
+				// Two accepted shapes, so a host can wire whichever it has:
+				//   - `recallProbe`: a ready callback taking `{ subjects }` (legacy)
+				//   - `recallSearch`: one query -> { ok, results } (e.g. SAG);
+				//     runRecallProbe derives the queries from the subject file
+				//     names and normalizes the outcome.
 				const probe = typeof patrolConfig.recallProbe === 'function'
 					? await patrolConfig.recallProbe({ subjects: scan.subjects })
-					: undefined;
+					: await runRecallProbe({ searcher: patrolConfig.recallSearch, subjects: scan.subjects });
 				recallBoundary = summarizeRecallBoundary({
 					scan,
 					previousSubjects: last?.recall_boundary?.subjects ?? null,
