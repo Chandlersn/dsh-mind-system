@@ -146,6 +146,93 @@ export function parseValveEvidenceSection(text) {
 	return Object.keys(out).length ? out : undefined;
 }
 
+/**
+ * Collide-note → candidate adapter (VI-5, 2026-11-19).
+ *
+ * ## Why this is a separate function and not just "feed notes to the insights parser"
+ *
+ * A collide note is deliberately FREE-FORM: the user decided on 2026-11-16 that
+ * the experimental layer must not be forced into the distillation template. So it
+ * has no `> 来源：` line and no `## 核心原则` section. Running one through
+ * criterionEvidenceFromInsights yields statement = the title, coverage 0,
+ * evidence [] — measured, and the valve then rejects it with `no_evidence_record`.
+ *
+ * That rejection is CORRECT (an unsupported claim must not reach canon), but it
+ * would mean the experimental layer can never flow back at all. The missing piece
+ * is not a looser gate — it is a translation that carries whatever evidence the
+ * note actually contains, and reports honestly when there is none.
+ *
+ * ## What it refuses to do
+ *
+ * It never invents coverage numbers, anti-example counts or a verifiable_by. If a
+ * note does not contain them, the candidate goes out incomplete and the valve
+ * downgrades or rejects it — which is the honest outcome, and the thing that gets
+ * recorded. Filling those in "so the note can pass" would make the experimental
+ * layer a back door into canon.
+ *
+ * ## What it does extract
+ *
+ * - quantified observations the author actually wrote (`三比零`, `5/5`, `91.7%`)
+ * - a deliberately failing observation ("留一条会失败的观测" — the author's own
+ *   falsification hook, which is the single most valuable thing a note can carry)
+ * - the note's own path as provenance, so the ledger can always say where the
+ *   claim came from
+ */
+export function collideNoteToCandidate(note) {
+	const theme = String(note?.theme ?? '').trim();
+	const text = typeof note?.text === 'string' ? note.text : '';
+	if (!theme) return null;
+	// Superseded material never nominates (same rule as insights).
+	if (text.includes('⚠️ 已被取代')) return null;
+
+	// Quantified observations actually present in the prose. Kept verbatim: a
+	// paraphrase would be the adapter putting words in the author's mouth.
+	//
+	// NARROW ON PURPOSE. A first draft matched any A/B or percentage and counted
+	// "10:00" (a scheduled time in the note about the weekly patrol) as evidence.
+	// A time is not a measurement, and a false observation inflates
+	// skill_coverage — the very number the gate uses. So require either an
+	// explicit ratio form (A比B / A/B) or a percentage, and exclude clock times.
+	const isClock = (s) => /^\d{1,2}[:：]\d{2}$/.test(s);
+	const observations = [...text.matchAll(/(\d+\s*[／/比:：]\s*\d+|\d+(?:\.\d+)?\s*%)/g)]
+		.map((m) => m[0].replace(/\s+/g, ''))
+		.filter((s) => !isClock(s));
+	const uniqueObs = [...new Set(observations)];
+
+	// The author's own falsification hook — the strongest evidence a free-form
+	// note can offer, because it states what would prove the note wrong.
+	//
+	// Tolerates the shapes people actually write. The real note says
+	// "留一条会失败的观测在这儿：" — words sit BETWEEN the phrase and the colon,
+	// and a strict `：`-immediately-after match missed it (measured: verifiable_by
+	// came out undefined on the one note that has this hook).
+	const falsifier = /会失败的观测[^：:\n]{0,12}[：:]\s*([^\n]+)/.exec(text)?.[1]?.trim() ?? null;
+
+	const evidence = [
+		...(note?.source ? [`collide:${note.source}`] : []),
+		...uniqueObs.map((o) => `collide-observation:${o}`),
+	];
+
+	return {
+		candidate_id: `nom-collide-${theme.slice(0, 48)}`,
+		kind: 'positive',
+		rule_type: 'criterion',
+		statement: theme,
+		// Coverage counts only what is demonstrably present. A note that mentions
+		// no quantified observation gets 0, not a guess — the valve then refuses,
+		// and that refusal is the record we want.
+		skill_coverage: uniqueObs.length,
+		scenario_coverage: uniqueObs.length,
+		evidence,
+		// Deliberately omitted (not defaulted): the valve downgrades on missing
+		// verifiable_by / anti_example_count, and that downgrade is the honest账.
+		...(falsifier ? { verifiable_by: falsifier } : {}),
+		// Where the claim came from, so a reviewer can always trace it back.
+		origin: 'nomination',
+		source_layer: 'experimental',
+	};
+}
+
 export function criterionEvidenceFromInsights(insightFiles) {
 	const out = [];
 	for (const { theme, text } of insightFiles ?? []) {

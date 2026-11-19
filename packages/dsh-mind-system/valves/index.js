@@ -71,7 +71,7 @@ import { checkAxiomRate, applyAxiomLimit } from './src/ratelimit.js';
 import { nominateFromDisk } from './src/nominate.js';
 // III-3 预算缰绳：批量执行面（提名/治理/确认）的数量上限。
 import { check as checkBudget, DEFAULT_BUDGET } from './src/budget.js';
-import { readClisHistory, consumeClisHistory, criterionEvidenceFromInsights } from './src/clis-bridge.js';
+import { readClisHistory, consumeClisHistory, criterionEvidenceFromInsights, collideNoteToCandidate } from './src/clis-bridge.js';
 import { governanceRound, referenceCoverage, validateClassification } from './src/governance.js';
 
 export const name = 'valves';
@@ -729,8 +729,13 @@ export function createRuntime(options = {}) {
 		 * II-3：真实 insights 覆盖数据喂 criterion 五门。
 		 * insightFiles 由调用方读盘传入（不反向 import memory）。
 		 */
-		async criteria(insightFiles) {
-			const candidates = criterionEvidenceFromInsights(insightFiles);
+		async criteria(insightFiles, options = {}) {
+			// VI-5：两条来源并成一批，但来源层写在候选上，账本永远分得清
+			// "这条是从正典的 insights 来的"还是"从实验层碰撞笔记来的"。
+			// 混在一起且不标来源，就等于让实验层冒充正典——这正是 VI-5 要防的。
+			const notes = Array.isArray(options?.collideNotes) ? options.collideNotes : [];
+			const fromNotes = notes.map((n) => collideNoteToCandidate(n)).filter(Boolean);
+			const candidates = [...criterionEvidenceFromInsights(insightFiles), ...fromNotes];
 			// III-3：判据五门逐条裁决，同样受预算约束（不静默截断）。
 			const budgetCheck = checkBudget({ items: candidates.length, rows: candidates.length });
 			if (!budgetCheck.ok) {
@@ -743,7 +748,14 @@ export function createRuntime(options = {}) {
 				};
 			}
 			const verdicts = candidates.map((c) => ({ candidate_id: c.candidate_id, ...this.upward('L2', 'L1', c) }));
-			return { candidates, verdicts, budget_used: { items: candidates.length } };
+			return {
+				candidates,
+				verdicts,
+				budget_used: { items: candidates.length },
+				// Report the split instead of only the total: a batch that is all
+				// experimental should not read like a batch from canon.
+				source_split: { canon: candidates.length - fromNotes.length, experimental: fromNotes.length },
+			};
 		},
 		/**
 		 * III-1：治理循环单轮。账本从盘上读（调用方不传 entries），
@@ -1246,14 +1258,31 @@ export function apply(ctx, config = {}, overrides = {}) {
 				},
 				description: 'channel=criteria 时必给：真实 insights 正文，从来源回链数覆盖、喂五门（数不出的字段留空，阀门如实 downgrade）。',
 			},
+			collide_notes: {
+				type: 'array',
+				items: {
+					type: 'object',
+					additionalProperties: false,
+					properties: {
+						theme: { type: 'string', required: true, description: '碰撞笔记标题（不含 .md）。' },
+						text: { type: 'string', required: true, description: '笔记正文（调用方读盘传入；自由文体，不套蒸馏格式）。' },
+						source: { type: 'string', description: '笔记相对路径（留作来源追溯）。' },
+					},
+				},
+				description:
+					'VI-5 实验层回流：碰撞笔记与 insight_files 并批裁决，但候选标 source_layer=experimental。适配器只提取笔记里真实存在的量化观测与"会失败的观测"，缺证据就如实拒/降级——' +
+					'不替笔记编造覆盖数与可检验路径（那会把实验层变成进正典的后门）。',
+			},
 		},
 		output: { schema: { type: 'json' }, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }] },
 		async execute(args) {
 			try {
 				if (args?.channel === 'clis_trace') return await runtime.clisTrace();
 				if (args?.channel === 'criteria') {
-					if (!Array.isArray(args?.insight_files)) return { error: 'channel=criteria 需要 insight_files（经 memory_read 读盘传入）' };
-					return await runtime.criteria(args.insight_files);
+					if (!Array.isArray(args?.insight_files) && !Array.isArray(args?.collide_notes)) {
+						return { error: 'channel=criteria 需要 insight_files（正典）或 collide_notes（实验层），两者可只给其一' };
+					}
+					return await runtime.criteria(args.insight_files ?? [], { collideNotes: args?.collide_notes ?? [] });
 				}
 				return await runtime.nominate(args ?? {});
 			} catch (error) {

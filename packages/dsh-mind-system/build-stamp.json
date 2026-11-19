@@ -1221,11 +1221,11 @@
     },
     "valves/README.md": {
       "source": "dsh-valves/README.md",
-      "sha256": "f9307dd890315286658f7c81352bbae47039c3a8b6c2dedbe6894fbbf977407e"
+      "sha256": "e1cfe3a5502a8d5c6df6961083d80332fa9d5a0eeb8995515c7f4fc22246e467"
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
-      "sha256": "0d12bb420a682249785988c846f1cb00cf37031008d88f2c405140df1b394e7b"
+      "sha256": "0586f0f67595868343f586ce613c6c5c5c2f02beab24a760e43a47a3e4af159a"
     },
     "valves/package.json": {
       "source": "dsh-valves/package.json",
@@ -1237,7 +1237,7 @@
     },
     "valves/src/clis-bridge.js": {
       "source": "dsh-valves/src/clis-bridge.js",
-      "sha256": "11a79d97cf57103a2720eedf3446ab1ea7b097ae95697681366561db87eda5e7"
+      "sha256": "bcb5d869fb3cb0e3013c0ead9062c71be09a5aa74820aa8ef042d4e8958e28e7"
     },
     "valves/src/governance.js": {
       "source": "dsh-valves/src/governance.js",
@@ -1302,6 +1302,10 @@
     "valves/test/clis-bridge.test.js": {
       "source": "dsh-valves/test/clis-bridge.test.js",
       "sha256": "ba7469f8e31086a6746f95e8cf65829b010180ab0c044362eb7fbc66c56b9a77"
+    },
+    "valves/test/collide-flow.test.js": {
+      "source": "dsh-valves/test/collide-flow.test.js",
+      "sha256": "e264fa95cf5bc4533ca0ff7831a8c850eed404ffe9e166481f7ebdb70a616121"
     },
     "valves/test/entry.test.js": {
       "source": "dsh-valves/test/entry.test.js",

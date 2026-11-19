@@ -18,7 +18,7 @@
 | `valve_check` | 提名→代码裁决→留痕：down（具体化+黑名单+禁跳层）/ up（J1 防伪+量化阈值）/ principle（原则失效四判据） | 判定 accept/human_gate **不等于生效** |
 | `valve_confirm` | 人工确认后写负向规则库（唯一生效通道） | 未经用户确认不得调用 |
 | `valve_metrics` | 双侧账本：evaluated/admitted/skipped + missRate + reason/gate/origin 分布 + dailyCount | 不自评"阀门在工作"——分布给读的人判 |
-| `valve_nominate` | 自动提名器（阶段 II）：负向吃 clis 失败账本重复签名、正向吃 memory 使用聚合；check=true 立即送阀落账。channel=clis_trace 消费 clis-history 提名+裁决成对留痕（幂等，账本当游标）；channel=criteria 从真实 insights 来源回链数覆盖喂五门 | 只提名不生效；不编造成功率与反例数（数不出的留空，阀门如实拒/downgrade——那是设计：先人工补外部证据） |
+| `valve_nominate` | 自动提名器（阶段 II）：负向吃 clis 失败账本重复签名、正向吃 memory 使用聚合；check=true 立即送阀落账。channel=clis_trace 消费 clis-history 提名+裁决成对留痕（幂等，账本当游标）；channel=criteria 从真实 insights 来源回链数覆盖喂五门，**也可传 `collide_notes` 让实验层碰撞笔记走同一道闸门**（见下） | 只提名不生效；不编造成功率与反例数（数不出的留空，阀门如实拒/downgrade——那是设计：先人工补外部证据） |
 | `valve_govern` | 治理循环单轮（阶段 III）：账本→受检原则体检（引用覆盖率+反例四判据）→失效出改定义提议；归类提名代码校验（置信度 <0.7 转人工） | 不执行任务、不改规则库——提议生效走人工；不自动枚举全部原则 |
 
 ### 覆盖率口径（III-2，单一真值源 src/governance.js）
@@ -59,6 +59,31 @@
 **自动生效必须留痕**：每次走快速通道都写一条独立账本行 `gate: skill_fast_track`，`action` 为 `audit_selected` / `audit_skipped`，并记下当时的 `audit_rate` 与 `confidence`。只写 "admitted" 的话，事后没人分得出哪些条目跳过了人工——那是自动了却没人观测的闸门。
 
 **契约兼容**：量化门达标这个事实仍叫 `skill_thresholds_met`（旧名字不变），"快速通道为何没触发"放新字段 `fast_track_reason`（`skill_confidence_missing` / `skill_confidence_below_fast_track`），另带 `fast_track_bar`。直接改 `reason` 的语义会把依赖它的调用方和测试悄悄打红（层递链用例就会红）。
+
+## 实验层回流（VI-5，2026-11-19）
+
+碰撞笔记（`SAG-wiki/collide/`）是**自由文体**——2026-11-16 用户定：不套蒸馏格式，有真感触才写。所以它没有 `> 来源：` 行、没有 `## 核心原则` 节。**直接拿 insights 的解析器去喂它不work**（实测：`statement` 只剩标题、`coverage=0`、`evidence=[]`，阀门报 `no_evidence_record`）。
+
+`collideNoteToCandidate()` 是给这种文体写的适配器。它做三件事，**且只做这三件**：
+
+1. **提取笔记里真实存在的量化观测**（`5/5`、`91.7%`、`三比零`）；
+2. **识别作者自己写的"会失败的观测"**——这是自由笔记里最有价值的证据，因为它在说"什么能证明我错了"；
+3. **把笔记路径写进 evidence**，账本永远能回溯来源。
+
+它**绝不做**的事：替笔记编 coverage、编反例数、编 `verifiable_by`。缺什么就留空，让阀门如实 downgrade 或 reject——**那才是要记的账**。给自由文体补一套好看的证据，等于把实验层变成进正典的后门。
+
+**不许被误算的证据**：第一版正则把 `10:00`（周检时间）当成了量化观测。时间不是测量，而假观测会直接抬高 `skill_coverage`——正是闸门要数的那个数。现在时钟形态被显式排除。
+
+**来源必须可区分**：候选带 `source_layer: 'experimental'`，`criteria()` 返回 `source_split{canon, experimental}`。一批全是实验层内容时，结果里一眼就能看出来，不会读成"正典提名"。
+
+**实测结果（2026-11-19，两篇真实笔记）**：
+
+| 笔记 | 裁决 | 理由 |
+|---|---|---|
+| 存在被当成了运行 | `downgrade` | `not_externally_verifiable`（没写可检验路径） |
+| 删掉的东西，还在被我召回 | `reject` | `insufficient_skill_coverage`（1 个量化观测 < 门槛 3） |
+
+两条都被拒，**且拒的理由都成立**——这说明闸门在真干活，不是通道没接通。
 
 ## 数据
 
