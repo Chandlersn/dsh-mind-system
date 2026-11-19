@@ -133,11 +133,11 @@
     },
     "memory/README.en.md": {
       "source": "dsh-memory-manager/README.en.md",
-      "sha256": "fcb4e45b40410b50b8a8c74aa5633ec91cbb83bd187db4f6037c663dbabb94a9"
+      "sha256": "ef46f37b9b4025ef758831dd688811b01d61643cf9daf0d595df883eb82578e4"
     },
     "memory/README.md": {
       "source": "dsh-memory-manager/README.md",
-      "sha256": "340a7d9c094c21b2e9b3883884093af14d36bb5bc89009faec774ab8fdd8feb2"
+      "sha256": "2ec61620cb7a83a0b9a808172dca8de25209351ebccf6f18b7ffdba3d903d0af"
     },
     "memory/api-test.mjs": {
       "source": "dsh-memory-manager/api-test.mjs",
@@ -173,7 +173,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "130b3370c6b0ee982c5035b6f9d244e91240139248a542150b945d307d519887"
+      "sha256": "f8b255985e71a2364e333caa4f5acc7efca5f62c704039b869d42af79fdd5494"
     },
     "memory/src/axiom-candidate.js": {
       "source": "dsh-memory-manager/src/axiom-candidate.js",
@@ -399,6 +399,10 @@
       "source": "dsh-memory-manager/tests/delete-uncertain.test.js",
       "sha256": "cce2e159a6415b43130e02fe3b250e8fdbcd1a448622963a232b23f347587207"
     },
+    "memory/tests/distill-backlog.test.js": {
+      "source": "dsh-memory-manager/tests/distill-backlog.test.js",
+      "sha256": "d03c37f3682d60924b2f3f254a559946d5e35d6a10e160f82f54e3dc096f39da"
+    },
     "memory/tests/downward-write-trace.test.js": {
       "source": "dsh-memory-manager/tests/downward-write-trace.test.js",
       "sha256": "a803208aa6dcad38c19bde325d8bc7b9dfe4079c71217d227767d03a6cb5be55"
@@ -425,7 +429,7 @@
     },
     "memory/tests/health-other-unknown.test.js": {
       "source": "dsh-memory-manager/tests/health-other-unknown.test.js",
-      "sha256": "bb95764236397a9ed3c28796f97895a0c592bc0eec361821145eec7e59507fc1"
+      "sha256": "65af77275e352999009d758d676ec7e839ff61ec36dbfb023a2edd97650d30d5"
     },
     "memory/tests/health-skill-read-unknown.test.js": {
       "source": "dsh-memory-manager/tests/health-skill-read-unknown.test.js",
@@ -497,7 +501,7 @@
     },
     "memory/tests/r10-link-stat-unknown.test.js": {
       "source": "dsh-memory-manager/tests/r10-link-stat-unknown.test.js",
-      "sha256": "b5d629b627d3e8a36d596b3815646c541d703e1e3350dff74c7d49db62f49338"
+      "sha256": "2ab3941be3cd0576b161c619b0e165efc5b89a9927eff462dd89b65cfad8ea43"
     },
     "memory/tests/r16-path-unknown.test.js": {
       "source": "dsh-memory-manager/tests/r16-path-unknown.test.js",
@@ -585,7 +589,7 @@
     },
     "memory/tests/run-all.mjs": {
       "source": "dsh-memory-manager/tests/run-all.mjs",
-      "sha256": "b53b38e5693e4826bc7a8192ce167cac091ba72ba7c5c8fe478b6ad2244e495c"
+      "sha256": "1d0dc099ab94ed1dff0ef1cec87493959c221c2793d67ed32fa741ef317666f1"
     },
     "memory/tests/sag-bridge.test.js": {
       "source": "dsh-memory-manager/tests/sag-bridge.test.js",

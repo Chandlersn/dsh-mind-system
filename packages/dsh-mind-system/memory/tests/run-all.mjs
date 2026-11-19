@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 统一测试入口：先定位 DSH 宿主安装，再以真实环境串行跑全部套件。
  *
  * 为什么需要它：harness-test.mjs / api-test.mjs 在找不到宿主时默认 SKIP，
@@ -74,6 +74,9 @@ const suites = [
 	'tests/usage-health.test.js',
 	// 归档日线索最新在上（2026-11-19 用户要求）。
 	'tests/archive-order.test.js',
+	// R28 蒸馏积压检测（2026-11-19）：流水线停住不许安静——素材攒够 3 天却
+	// 没蒸馏、或素材没有对应功能域，都必须报出来。
+	'tests/distill-backlog.test.js',
 	'tests/layer-selfcheck.test.js',
 	'tests/dao-shape.test.js',
 	'tests/coverage.test.js',

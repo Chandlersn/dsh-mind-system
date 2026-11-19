@@ -142,6 +142,14 @@ test('rename 已完成后的体检抛错返回成功及不完整下界', async (
   const tool = registered.get('memory_rename');
   const target = path.join(root, 'functions', 'target.md');
   const original = fs.promises.readFile;
+  // Fault on the 2nd successful read of the renamed target: rewriteIn reads it
+  // once to rewrite, then verification reads it again.
+  //
+  // This is stable again because the health check no longer scans the distillation
+  // backlog on the rename path (R28 gained a `skipBacklog` flag for that): the
+  // verification pass reads are what they always were. Kept as a count rather than
+  // "first read" because the first read belongs to rewriteIn — faulting there made
+  // the error escape the tool instead of downgrading the result.
   let successfulTargetReads = 0, faulted = false;
   fs.promises.readFile = async function (file, ...args) {
     const result = await original.call(this, file, ...args);

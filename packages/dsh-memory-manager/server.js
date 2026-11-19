@@ -499,6 +499,43 @@ async function runHealthCheck(root, opts) {
 	else if (memSize > opts.maxIndexBytes) add('WARN', 'R5', `MEMORY.md ${memSize}B > 舒适线 ${opts.maxIndexBytes}B`, { subtype: 'index-size', subject: 'MEMORY.md' });
 
 	let emptySummary = 0;
+	// R28 — distillation backlog (2026-11-19).
+	//
+	// WHY THIS RULE EXISTS: measured on a real root, five days produced 86KB of
+	// daily notes and ONE iteration block. Nothing surfaced that: R14 only flags a
+	// block that is too LONG (a block that never got written passes), and R27 only
+	// flags several blocks on one day. A pipeline whose input keeps growing while
+	// its output stops is exactly the "silent stall" this project keeps hitting —
+	// and the only reason it was found is that the user asked.
+	//
+	// WHAT IT MEASURES: for each topic that has material in >= 3 recent daily logs
+	// (the cadence rule), is the newest iteration block older than the newest
+	// material? If so the topic is DUE. Two distinct signals, because they need
+	// different fixes:
+	//   · due            — the area exists and has material ready → distill now
+	//   · orphan-topic   — material with no function area at all → structural gap
+	// Both are reported with the DAYS, not just a count: "3 days" is not actionable,
+	// "11-17, 11-18" tells the next reader exactly which files to open.
+	//
+	// Deliberately silent when nothing is due: a warning that always fires is
+	// indistinguishable from one that never does.
+	const backlog = opts.skipBacklog ? { due: [], orphan: [] } : await detectDistillationBacklog(root, opts);
+	if (backlog.skipped) {
+		// "Could not scan" must not read as "nothing is due".
+		add('WARN', 'R28', backlog.skipped, { subtype: 'distill-unknown' });
+	}
+	if (backlog.readUnknown) {
+		// A partial scan: the listed backlog may be incomplete. Say so rather than
+		// presenting a short list as the whole truth.
+		add('WARN', 'R28', `蒸馏积压检查不完整：${backlog.readUnknown} 个文件读不到，下列判定可能漏项（读不到 ≠ 没有素材）`, { subtype: 'distill-partial' });
+	}
+	for (const b of backlog.due) {
+		add('WARN', 'R28', `该蒸馏未蒸馏：${b.area} 有 ${b.days.length} 天素材（${b.days.join('、')}，约 ${b.bytes}B），但最新迭代块停在 ${b.newestBlock ?? '（无）'}——用 memory_write 跨日蒸馏`, { subtype: 'distill-due', subject: b.area });
+	}
+	for (const b of backlog.orphan) {
+		add('WARN', 'R28', `结构缺口：${b.topic} 有 ${b.days.length} 天素材（${b.days.join('、')}），但没有对应的 functions/ 功能域——素材正在失去归属`, { subtype: 'distill-orphan', subject: b.topic });
+	}
+
 	const longRows = [];
 	for (const raw of memText.split('\n')) {
 		const s = raw.trim();
@@ -2197,6 +2234,189 @@ async function listMdDir(dir) {
  * Skill-name grammar comes from the bridge module (one source with the host
  * provider); the harness drift-guard compares it against the real package.
  */
+
+/**
+ * R28 support: find topics that have enough daily material to distill, and say
+ * whether each has a home.
+ *
+ * ## The failure this exists for
+ *
+ * Measured on the real root 2026-11-19: five days of daily logs (86KB) produced
+ * ONE iteration block, and nothing said a word. R14 only flags a block that is
+ * too long — a block that was never written passes silently. R27 only flags
+ * several blocks in one day. So the pipeline could stop moving and stay quiet,
+ * which is the same class of failure as `insights/失败被伪装成成功`: a stalled
+ * thing that reports nothing looks exactly like a healthy idle one.
+ *
+ * ## What "due" means, and what it deliberately does NOT mean
+ *
+ * The cadence rule says a block synthesizes >= 3 TOPIC-RELATED days. So a topic is
+ * due when it has material in >= 3 daily logs whose newest day is LATER than the
+ * newest iteration block of the area it would belong to. That comparison is the
+ * part that matters: content volume alone says nothing (a huge single day is not
+ * due), and a fresh block means the material was already absorbed.
+ *
+ * ## Topic assignment is keyword-based on purpose
+ *
+ * There is no semantic index here, and inventing one would make the signal
+ * unverifiable. Each area contributes its own name tokens plus a small, explicit
+ * keyword list; a section that matches no area becomes an ORPHAN candidate, which
+ * is itself reported rather than silently dropped — material that belongs nowhere
+ * is a structural gap, not noise.
+ *
+ * @returns {Promise<{due: Array, orphan: Array, skipped?: string}>}
+ */
+export async function detectDistillationBacklog(root, opts = {}, options = {}) {
+	const windowDays = Number.isFinite(options.windowDays) ? options.windowDays : 10;
+	const minDays = Number.isFinite(options.minDays) ? options.minDays : 3;
+	const minBytes = Number.isFinite(options.minBytes) ? options.minBytes : 400;
+	const empty = { due: [], orphan: [] };
+
+	// Which function areas exist, and when each last produced a block.
+	let areaFiles = [];
+	try {
+		areaFiles = (await readdir(path.join(root, 'functions'))).filter((f) => f.endsWith('.md'));
+	} catch (err) {
+		// ENOENT means a brand-new root with no areas yet — that is "nothing is due",
+		// not "cannot tell". Only a real read failure (EACCES/EIO/…) is unknown.
+		// Measured: treating ENOENT as unknown made every fresh install report a
+		// distillation problem it does not have.
+		if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return { due: [], orphan: [] };
+		// Cannot enumerate → cannot claim anything about the backlog. Say so instead
+		// of reporting an empty result, which would read as "nothing is due".
+		return { due: [], orphan: [], skipped: `functions/ 枚举失败（${err?.code ?? 'unknown'}）——积压状态未知` };
+	}
+
+	const areas = [];
+	let readUnknown = 0;
+	for (const f of areaFiles) {
+		const name = f.replace(/\.md$/, '');
+		// A single unreadable function file must NOT abort the whole check: an EIO on
+		// one file says nothing about the others, and aborting would replace "unknown
+		// for this file" with "silently no backlog at all" — the exact confusion this
+		// rule exists to remove. Counted and reported instead.
+		let text = '';
+		try {
+			text = (await readIfExists(path.join(root, 'functions', f))) ?? '';
+		} catch {
+			readUnknown += 1;
+			continue;
+		}
+		const dates = [...text.matchAll(/^##\s*\[(\d{4}-\d{2}-\d{2})/gm)].map((m) => m[1]).sort();
+		areas.push({ name, newestBlock: dates[dates.length - 1] ?? null });
+	}
+
+	// Recent daily logs, newest last.
+	let dailyFiles = [];
+	try {
+		dailyFiles = (await readdir(root))
+			.filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+			.sort()
+			.slice(-windowDays);
+	} catch (err) {
+		return { due: [], orphan: [], skipped: `记忆根枚举失败（${err?.code ?? 'unknown'}）` };
+	}
+
+	// Area detection for one section body.
+	//
+	// Two signals, both explicit — no synonym guessing:
+	//   1. the area's own slug appears in the body ("memory-manager", "心智编排层");
+	//   2. the body names a CODE MODULE that belongs to that area ("memory_write",
+	//      "valve_check", "runtime_run"). Daily logs talk in tool names far more
+	//      than in zone slugs, so without this almost nothing is attributable —
+	//      measured: an exact-slug-only matcher threw 101KB across 9 days into
+	//      "unattributed", which is a number nobody can act on.
+	//
+	// The module lists live here, next to the matcher, because a rule that decides
+	// attribution must be readable in one place. Adding a module there is a
+	// deliberate act; nothing is inferred from similarity.
+	// A `\b` must NOT wrap the whole group: JS word boundaries are ASCII-based, and
+	// a CJK character is a non-word character to `\b`. Wrapping meant "…段落索引行…"
+	// had no boundary between 落 and 索 (both non-word), so the Chinese alternatives
+	// silently never matched — measured: a 3-day case counted only 2 days, and the
+	// rule quietly under-reported the backlog it exists to catch. The boundary now
+	// guards only the ASCII module names, where it is needed to avoid matching
+	// `xmemory_write`.
+	const AREA_MODULES = {
+		'memory-manager': /(?:\bmemory_(?:read|write|index|insight|dao|capability|check|fold|rename|usage|federation|skill|inbox|sag|search)\b|MEMORY\.md|回忆|召回|索引行|蒸馏|体检|面板|usage|漏判)/i,
+		'dsh插件开发': /(cordis|inject|ctx\.get|healthProbe|宿主契约|插件(?:开发|装载)|apply\s*\(|webServer)/i,
+		'心智编排层': /(mind-system|五成员|valve_check|valve_confirm|valve_nominate|valve_govern|候选公理|UPGRADE-PLAN|主线|阶段\s*[IVX]+)/i,
+		'clis因果分层系统': /(\bCLIS\b|clis_classify|clis_run|clis_plan|因果结构|介入)/i,
+		'批印坊工程加固': /(批印坊|printpress)/i,
+		'dsh视频工坊': /(视频工坊|video-studio|openfilm)/i,
+		'宣传片制作': /(宣传片|视频管线|出片|ffmpeg|逐帧渲染|成片)/i,
+		'学习模式插件': /(学习模式|掌握式|课程页)/i,
+		'purrge与系统管理': /(purrge|空间管家)/i,
+		'meta框架契约包': /(meta-framework|契约包)/i,
+	};
+	const matchesArea = (area, body) => {
+		if (body.includes(area.name)) return true;
+		const re = AREA_MODULES[area.name];
+		return re ? re.test(body) : false;
+	};
+
+	const perArea = new Map();   // area -> { days:Set, bytes, sections }
+	const orphanDays = new Map(); // day -> bytes with no area
+
+	for (const file of dailyFiles) {
+		const day = file.replace(/\.md$/, '');
+		// Same discipline as the area loop: one unreadable daily log must not abort
+		// the scan, and it must not be counted as "a day with no material" either.
+		let text = '';
+		try {
+			text = (await readIfExists(path.join(root, file))) ?? '';
+		} catch {
+			readUnknown += 1;
+			continue;
+		}
+		if (!text) continue;
+		// Split into level-2 sections so one day's unrelated parts are not all
+		// credited to whichever area happens to appear once.
+		const marks = [...text.matchAll(/^##\s+.+$/gm)];
+		for (let i = 0; i < marks.length; i++) {
+			const start = marks[i].index;
+			const end = marks[i + 1]?.index ?? text.length;
+			const body = text.slice(start, end);
+			const hit = areas.find((a) => matchesArea(a, body));
+			if (hit) {
+				if (!perArea.has(hit.name)) perArea.set(hit.name, { days: new Set(), bytes: 0, sections: 0 });
+				const g = perArea.get(hit.name);
+				g.days.add(day); g.bytes += body.length; g.sections += 1;
+			} else {
+				orphanDays.set(day, (orphanDays.get(day) ?? 0) + body.length);
+			}
+		}
+	}
+
+	const due = [];
+	for (const [name, g] of perArea) {
+		if (g.days.size < minDays || g.bytes < minBytes) continue;
+		const area = areas.find((a) => a.name === name);
+		const newestDay = [...g.days].sort().pop();
+		// Due only when the newest material is NEWER than the newest block —
+		// otherwise the material has already been absorbed.
+		if (area?.newestBlock && newestDay <= area.newestBlock) continue;
+		due.push({ area: name, days: [...g.days].sort(), bytes: g.bytes, newestBlock: area?.newestBlock ?? null });
+	}
+
+	// TODO(orphan attribution): sections with no area are counted per day but not
+	// yet clustered into topics — doing that well needs either explicit tags in the
+	// daily log or a semantic index, and a keyword guess would be unverifiable.
+	// Until then the orphan signal is reported as a single aggregate so the number
+	// is at least visible.
+	const orphan = [];
+	const orphanTotalDays = orphanDays.size;
+	if (orphanTotalDays >= minDays) {
+		const bytes = [...orphanDays.values()].reduce((a, b) => a + b, 0);
+		if (bytes >= minBytes) {
+			orphan.push({ topic: '未归属素材', days: [...orphanDays.keys()].sort(), bytes });
+		}
+	}
+
+	// Unreadable files are reported, not swallowed: "could not read" is not
+	// "nothing there", and a partial scan must not present itself as complete.
+	return readUnknown ? { due, orphan, readUnknown } : { due, orphan };
+}
 
 /**
  * The usage-href list a skill's own evidence cites: its frontmatter `sources:`
@@ -4140,7 +4360,11 @@ function memoryRenameTool(opts) {
 			// 3) verify: run the real checker and count dangling links
 			let health;
 			try {
-				health = await runHealthCheck(root, opts);
+				// skipBacklog: this is the rename VERIFICATION pass. Distillation backlog
+				// is unrelated to whether a rename left dangling links, and scanning it
+				// here adds cost and an extra read of every file on a write path. The
+				// full check (memory_check / the panel) still reports it.
+				health = await runHealthCheck(root, { ...opts, skipBacklog: true });
 			} catch (err) {
 				// The move and rewrites have already completed; report verification
 				// failure separately instead of presenting the rename as a failure.
@@ -6100,6 +6324,11 @@ export function apply(ctx, config) {
 	// nothing matches or the batch was already served a recall (per-agent
 	// signature dedupe). Registration is global; dispatch is agent-scoped.
 	const recallServed = new Map(); // agentId -> signature of last served batch
+	// R28 promotion cache (2026-11-19): the backlog scan reads recent daily logs,
+	// so it is throttled and shared across steps rather than recomputed per turn.
+	const DISTILL_PROMPT_INTERVAL_MS = 10 * 60 * 1000;
+	let distillPromptAt = 0;
+	let distillPromptCache = { due: [], orphan: [] };
 	// 召回双侧账本（2026-11-09）：有界环形缓冲，记录最近 N 轮召回的
 	// 注入/暂缓/丢弃/预算用量。探针只读汇总，不落盘（曝光数据不是记忆）。
 	const RECALL_LEDGER_CAP = 50;
@@ -6237,7 +6466,35 @@ export function apply(ctx, config) {
 					} catch {
 						negativeLines = [];
 					}
-					if (!rows.length && !negativeLines.length && !archives.length) return null;
+					// R28 SELF-DRIVEN PROMOTION (2026-11-19).
+					//
+					// The health check reports a backlog, but a WARN sitting in a panel
+					// nobody opens changes nothing — measured: five days of material and
+					// one block, and the only reason it was noticed is that the user
+					// asked "is distillation running?". So the same detection runs here,
+					// in the pre-step path, and rides along with recall: the mechanism
+					// raises it itself instead of waiting to be inspected.
+					//
+					// Cost control: the scan reads recent daily logs, so it is throttled
+					// to once per 10 minutes and cached; a step that arrives sooner reuses
+					// the previous answer.
+					const nowMs = Date.now();
+					if (nowMs - distillPromptAt > DISTILL_PROMPT_INTERVAL_MS) {
+						distillPromptAt = nowMs;
+						try {
+							distillPromptCache = await detectDistillationBacklog(resolveRoot(opts));
+						} catch {
+							distillPromptCache = { due: [], orphan: [] };
+						}
+					}
+					const backlogLines = [];
+					for (const b of distillPromptCache?.due ?? []) {
+						backlogLines.push(`⚠ 蒸馏积压：${b.area} 有 ${b.days.length} 天素材（${b.days.join('、')}）但最新迭代块停在 ${b.newestBlock ?? '（无）'}。按纪律用 memory_write 跨日蒸馏；素材不足 3 天同主题时忽略本提示。`);
+					}
+					for (const b of distillPromptCache?.orphan ?? []) {
+						backlogLines.push(`⚠ 结构缺口：${b.days.length} 天共约 ${b.bytes}B 的日记录素材没有对应 functions/ 功能域——核对是否需要新建功能域，否则素材会失去归属。`);
+					}
+					if (!rows.length && !negativeLines.length && !archives.length && !backlogLines.length) return null;
 					let selectedRows = [], selectedArchives = [];
 					let budgetOmitted = { rows: 0, repairs: 0, held: 0, archives: 0 }, optionalBytes = 0, renderFailed = false;
 					let message = { role: 'user', content: [{ type: 'text', text: '' }], source: { kind: 'memory-manager/recall', form: 'recall' } };
@@ -6260,6 +6517,19 @@ export function apply(ctx, config) {
 							'',
 							'以下禁令与本轮输入相关，动手前先核对，命中即换路径：',
 							...negativeLines.map((r) => `- [${r.id}] ${r.statement}`),
+						].join('\n');
+						message.content = [{ type: 'text', text: `${message.content[0]?.text ? message.content[0].text + '\n\n' : ''}${block}` }];
+					}
+					// R28: the pipeline raises its own backlog. Rendered last so it never
+					// displaces a memory row or a negative rule — the prompt is advice about
+					// housekeeping, not a reason to skip the evidence above it.
+					if (backlogLines.length) {
+						const block = [
+							'### ♻ 蒸馏积压（机制自动提示 · 非本轮任务）',
+							'',
+							...backlogLines,
+							'',
+							'处理时机由你判断：本轮任务优先；但如果本次工作正好积累了同主题素材，收尾时一并蒸馏。**不要为了消掉提示而写空块**——块必须是从多日素材提炼的结论。',
 						].join('\n');
 						message.content = [{ type: 'text', text: `${message.content[0]?.text ? message.content[0].text + '\n\n' : ''}${block}` }];
 					}

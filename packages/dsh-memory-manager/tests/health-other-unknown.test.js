@@ -19,7 +19,14 @@ async function fixture(t) {
     assert.match(path.basename(home), /^health-other-unknown-/);
     await rm(home, { recursive: true, force: true });
   });
-  return { root, skills, opts: { ...DEFAULTS, skillRoot: skills } };
+  // skipBacklog: these cases are about how OTHER rules (R27 dup sections, TEMP cold
+  // memory) handle a read failure. They inject EIO on the Nth read of a specific
+  // file, so any unrelated rule that also reads functions/*.md shifts the count and
+  // breaks them for reasons that have nothing to do with what they assert. R28
+  // (distillation backlog, 2026-11-19) is exactly such a reader. Exercising R28 is
+  // distill-backlog.test.js's job; keeping it out here keeps this suite measuring
+  // one thing.
+  return { root, skills, opts: { ...DEFAULTS, skillRoot: skills, skipBacklog: true } };
 }
 
 async function fault({ read, list, stat, order, code = 'EIO' }, run) {
