@@ -135,7 +135,7 @@ test('repair uses only corrections from the last seven days', async (t) => {
   await writeFile(path.join(f.root, '.usage.jsonl'), [row(9), row(8)].join('\n') + '\n');
   const unrelated = { ...f.payload, messages: [{ role: 'user', content: [{ type: 'text', text: 'zzzqv91837' }] }] };
   const result = await f.preStep(unrelated, async () => ({ kind: 'enter', messages: [] }));
-  assert.equal(result.messages.length, 0, 'old corrections must not be described as recent repair');
+  assert.doesNotMatch(result.messages.map((message) => message.content?.map((part) => part.text ?? '').join('') ?? '').join('\n'), /召回测试功能/, 'old corrections must not be described as recent repair');
 });
 
 test('recent repeated corrections do produce the repair reminder', async (t) => {
@@ -160,7 +160,7 @@ test('decision repair cannot inject a candidate skill even after repeated correc
   await writeFile(path.join(f.root, '.usage.jsonl'), [1, 2].map(() => JSON.stringify({ t: now, href: 'skills/candidate.md', kind: 'correction' })).join('\n') + '\n');
   const unrelated = { ...f.payload, messages: [{ role: 'user', content: [{ type: 'text', text: 'zzzqv91837' }] }] };
   const result = await f.preStep(unrelated, async () => ({ kind: 'enter', messages: [] }));
-  assert.equal(result.messages.length, 0);
+  assert.doesNotMatch(result.messages.map((message) => message.content?.map((part) => part.text ?? '').join('') ?? '').join('\n'), /skills\/candidate\.md|候选修复方法/);
 });
 
 test('negative rules still enter when the memory index is missing', async (t) => {

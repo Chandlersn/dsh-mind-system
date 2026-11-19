@@ -1,206 +1,217 @@
-/**
- * R28 蒸馏积压检测（2026-11-19）。
- *
- * ## 这条规则为什么必须存在
- *
- * 实测：五天日记录 86KB，只产出 1 个迭代块，而**没有任何提示**。R14 只查块「太长」
- * ——没写的块永远是合格的；R27 只查「同一天多块」。于是整条流水线可以停住而保持安静，
- * 这正是 `insights/失败被伪装成成功` 说的那类：**停住但不出声的东西，和健康空转长得一样**。
- *
- * 发现它的唯一原因，是用户问了句「蒸馏系统在运行没」。
- *
- * ## 判据的三个要害
- *
- * 1. **due 不是「素材多」**，而是「有 ≥3 天同主题素材，且最新素材日**晚于**该功能域最新迭代块」。
- *    只看体量会把「一天写了 50KB」判成该蒸馏——那不是纪律说的东西。
- * 2. **不能只报计数**。「3 天」不可行动，「11-17、11-18」才能让人去开对的文件。
- * 3. **没有归属的素材必须报，不许悄悄丢**。素材不属于任何功能域是结构缺口，不是噪音。
- *
- * ## 反例也要测
- *
- * 素材已被吸收（最新块晚于素材日）时必须安静——一个永远在叫的警告和一个从不叫的
- * 警告，读起来是一样的。
- *
- * ## 关于体量门槛
- *
- * 默认 minBytes=400（一节素材的实际量级）。早期版本用 30 字节的假数据测，检测器
- * 因门槛未达而返回空——那暴露的是测试不真实，不是代码错。这里用接近真实的体量。
- */
+// R28 is a lexical sampling signal, not proof of distillation or topic coverage.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { detectDistillationBacklog, apply } from '../server.js';
 
-const { detectDistillationBacklog } = await import('../server.js');
-
-/** A section body with realistic bulk (>400B) so the volume bar is exercised. */
-const bulk = (topic) => `## 段落\n${topic} ${'这段内容描述实际发生的工作与判断。'.repeat(28)}\n`;
-
-function makeRoot({ areas = [], days = {} } = {}) {
-	const root = mkdtempSync(path.join(tmpdir(), 'dsh-r28-'));
-	mkdirSync(path.join(root, 'functions'), { recursive: true });
-	for (const a of areas) {
-		const blocks = a.blocks.map((d) => `## [${d}] x\n内容`).join('\n\n');
-		writeFileSync(path.join(root, 'functions', `${a.name}.md`), `# ${a.name}\n\n${blocks}\n`, 'utf8');
-	}
-	for (const [day, text] of Object.entries(days)) {
-		writeFileSync(path.join(root, `${day}.md`), text, 'utf8');
-	}
-	return root;
+const bulk = (topic) => `## Section\n${topic} ${'Detailed material for review. '.repeat(30)}\n`;
+function fixture() {
+  const root = mkdtempSync(path.join(tmpdir(), 'dsh-r28-'));
+  mkdirSync(path.join(root, 'functions'));
+  writeFileSync(path.join(root, 'MEMORY.md'), '# Index\n');
+  return root;
+}
+function addDays(root, texts) {
+  texts.forEach((text, i) => writeFileSync(path.join(root, `2026-11-${10 + i}.md`), bulk(text)));
+}
+async function preStepText(root) {
+  const hooks = new Map();
+  const noop = () => {};
+  const ctx = {
+    tools: { register: () => noop },
+    systemPrompt: { getSectionOrder: () => 2900, section: () => noop },
+    on(name, fn) { hooks.set(name, fn); return noop; },
+    get() {}, set() {}, inject(_names, fn) { fn({ webServer: undefined, workspaceRegistry: undefined }); },
+  };
+  let completed;
+  const scanDone = new Promise((resolve) => { completed = resolve; });
+  const dispose = apply(ctx, { memoryRoot: root, skillRoot: path.join(root, 'skills'), recallTimeoutMs: 1000 }, {
+    async detectDistillationBacklog(scanRoot) {
+      try { return await detectDistillationBacklog(scanRoot); } finally { completed(); }
+    },
+  });
+  try {
+    const preStep = hooks.get('agent/pre-step');
+    const payload = { agent: { id: 'r28-test' }, messages: [{ role: 'user', content: [{ type: 'text', text: 'test candidate scan' }] }] };
+    const next = async () => ({ kind: 'enter', messages: [] });
+    await preStep({ ...payload, turn: 1 }, next);
+    await scanDone;
+    const result = await preStep({ ...payload, turn: 2 }, next);
+    return result.messages.flatMap((m) => m.content.map((c) => c.text)).join('\n');
+  } finally { dispose?.(); }
 }
 
-test('≥3 天同主题素材且晚于最新块 → 报 due，并点名是哪几天', async () => {
-	const root = makeRoot({
-		areas: [{ name: 'memory-manager', blocks: ['2026-11-01'] }],
-		days: {
-			'2026-11-10': bulk('memory_write 召回 索引行'),
-			'2026-11-11': bulk('memory_read 召回注入'),
-			'2026-11-12': bulk('索引行摘要 召回'),
-		},
-	});
-	try {
-		const r = await detectDistillationBacklog(root);
-		const hit = r.due.find((d) => d.area === 'memory-manager');
-		assert.ok(hit, `应报 due，实际 ${JSON.stringify(r.due)}`);
-		assert.deepEqual(hit.days, ['2026-11-10', '2026-11-11', '2026-11-12'], '必须点名是哪几天，不是只给计数');
-		assert.equal(hit.newestBlock, '2026-11-01');
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
+test('a later unrelated iteration cannot make lexical candidates disappear', async () => {
+  const root = fixture();
+  try {
+    const area = path.join(root, 'functions', 'memory-manager.md');
+    writeFileSync(area, '# Area\n## [2026-11-01] old\n');
+    addDays(root, ['memory_write alpha', 'memory_read beta', 'memory_check gamma']);
+    const before = await detectDistillationBacklog(root);
+    appendFileSync(area, '\n## [2026-11-20] unrelated iteration\nDifferent subject.\n');
+    const after = await detectDistillationBacklog(root);
+    assert.deepEqual(before.due[0].days, ['2026-11-10', '2026-11-11', '2026-11-12']);
+    assert.deepEqual(after.due[0].days, before.due[0].days);
+    assert.equal(after.due[0].newestBlock, '2026-11-20');
+    const text = await preStepText(root);
+    assert.match(text, /未验证词法候选/);
+    assert.doesNotMatch(text, /按纪律用 memory_write|收尾时一并蒸馏/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('素材已被吸收（最新块晚于素材日）→ 安静（不许永远在叫）', async () => {
-	const root = makeRoot({
-		areas: [{ name: 'memory-manager', blocks: ['2026-11-20'] }],
-		days: {
-			'2026-11-10': bulk('memory_write 召回'),
-			'2026-11-11': bulk('memory_read 召回'),
-			'2026-11-12': bulk('索引行 召回'),
-		},
-	});
-	try {
-		const r = await detectDistillationBacklog(root);
-		assert.equal(r.due.length, 0, `已吸收就不该再报：${JSON.stringify(r.due)}`);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
+test('unrelated unmatched sections are an unverified aggregate, not a structural gap', async () => {
+  const root = fixture();
+  try {
+    addDays(root, ['astronomy', 'baking', 'gardening']);
+    const result = await detectDistillationBacklog(root);
+    assert.equal(result.orphan.length, 1);
+    assert.equal(result.orphan[0].days.length, 3);
+    const text = await preStepText(root);
+    assert.match(text, /未验证未匹配汇总/);
+    assert.match(text, /可能互不相关/);
+    assert.doesNotMatch(text, /⚠ 结构缺口/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('不足 3 天 → 不报（2 天是积累期，不是积压）', async () => {
-	const root = makeRoot({
-		areas: [{ name: 'memory-manager', blocks: ['2026-11-01'] }],
-		days: {
-			'2026-11-10': bulk('memory_write 召回'),
-			'2026-11-11': bulk('memory_read 召回'),
-		},
-	});
-	try {
-		const r = await detectDistillationBacklog(root);
-		assert.equal(r.due.length, 0);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
+test('missing functions directory still scans daily files; empty root is valid', async () => {
+  const root = fixture();
+  try {
+    rmSync(path.join(root, 'functions'), { recursive: true });
+    assert.deepEqual(await detectDistillationBacklog(root), { due: [], orphan: [] });
+    addDays(root, ['alpha', 'beta', 'gamma']);
+    const result = await detectDistillationBacklog(root);
+    assert.equal(result.orphan.length, 1);
+    assert.equal(result.skipped, undefined);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('只写一天但体量很大 → 不报（due 不是「素材多」）', async () => {
-	const root = makeRoot({
-		areas: [{ name: 'memory-manager', blocks: ['2026-11-01'] }],
-		days: { '2026-11-10': `## 甲\n${'memory_write 召回 索引行 '.repeat(400)}` },
-	});
-	try {
-		const r = await detectDistillationBacklog(root);
-		assert.equal(r.due.length, 0, '单日大体积不该被判成该蒸馏');
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
+test('enumeration errors remain unknown and are visible in pre-step', async () => {
+  const root = fixture();
+  try {
+    rmSync(path.join(root, 'functions'), { recursive: true });
+    writeFileSync(path.join(root, 'functions'), 'not a directory');
+    const result = await detectDistillationBacklog(root);
+    assert.match(result.skipped, /ENOTDIR/);
+    assert.match(await preStepText(root), /候选扫描未知.*ENOTDIR/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('没有归属的素材 → 报 orphan（结构缺口不许悄悄丢）', async () => {
-	const root = makeRoot({
-		areas: [{ name: 'memory-manager', blocks: ['2026-01-01'] }],
-		days: {
-			'2026-11-10': bulk('双循环运行时阶段0隔离执行 DL-1 契约'),
-			'2026-11-11': bulk('运行时调度器与预算预留 DR-03'),
-			'2026-11-12': bulk('双循环执行框架的恢复入口'),
-		},
-	});
-	try {
-		const r = await detectDistillationBacklog(root);
-		assert.equal(r.due.length, 0, '没有对应功能域就不该报 due');
-		assert.equal(r.orphan.length, 1, `应报 orphan，实际 ${JSON.stringify(r.orphan)}`);
-		assert.equal(r.orphan[0].days.length, 3);
-		assert.ok(r.orphan[0].bytes > 0);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
+test('unreadable enumerated files make partial results visible in pre-step', async () => {
+  const root = fixture();
+  try {
+    mkdirSync(path.join(root, 'functions', 'broken.md'));
+    writeFileSync(path.join(root, 'functions', 'memory-manager.md'), '# Area\n');
+    addDays(root, ['memory_write', 'memory_read', 'memory_check']);
+    const result = await detectDistillationBacklog(root);
+    assert.equal(result.readUnknown, 1);
+    assert.equal(result.due.length, 1);
+    const text = await preStepText(root);
+    assert.match(text, /候选扫描不完整：1 个文件读不到/);
+    assert.match(text, /未验证词法候选/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('全新空根：安静，不报「积压状态未知」', async () => {
-	// A brand-new root has no functions/ directory. ENOENT there means "no areas
-	// yet", not "cannot tell". Measured: treating it as unknown made every fresh
-	// install report a distillation problem it does not have.
-	const root = mkdtempSync(path.join(tmpdir(), 'dsh-r28empty-'));
-	try {
-		const r = await detectDistillationBacklog(root);
-		assert.equal(r.due.length, 0);
-		assert.equal(r.orphan.length, 0);
-		assert.equal(r.skipped, undefined, `空根不该报未知：${r.skipped}`);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
+test('threshold is a sampling filter, not a claim of no backlog', async () => {
+  const root = fixture();
+  try {
+    writeFileSync(path.join(root, 'functions', 'memory-manager.md'), '# Area\n');
+    addDays(root, ['memory_write', 'memory_read']);
+    const result = await detectDistillationBacklog(root);
+    assert.deepEqual(result.due, []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('functions/ 存在但为空：也安静', async () => {
-	const root = mkdtempSync(path.join(tmpdir(), 'dsh-r28empty2-'));
-	try {
-		mkdirSync(path.join(root, 'functions'), { recursive: true });
-		const r = await detectDistillationBacklog(root);
-		assert.equal(r.due.length, 0);
-		assert.equal(r.skipped, undefined);
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
+test('a blocked scan cannot delay independent recall and is shared until completion', async () => {
+  const root = fixture();
+  let release;
+  let scans = 0;
+  let clock = 1000;
+  let releaseRefresh;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const refresh = new Promise((resolve) => { releaseRefresh = resolve; });
+  const hooks = new Map();
+  const noop = () => {};
+  const ctx = {
+    tools: { register: () => noop },
+    systemPrompt: { getSectionOrder: () => 2900, section: () => noop },
+    on(name, fn) { hooks.set(name, fn); return noop; },
+    get(name) { return name === 'valves' ? { upward() {}, async negativeRules() { return [{ id: 'test-rule', statement: 'Protect independent recall', keywords: ['独立召回测试'] }]; } } : undefined; },
+    set() {}, inject(_names, fn) { fn({ webServer: undefined, workspaceRegistry: undefined }); },
+  };
+  writeFileSync(path.join(root, 'MEMORY.md'), '# Index\n\n## 功能模块索引（functions/）\n\n| 功能域 | 一句话状态 |\n|---|---|\n| [独立召回测试](functions/独立召回测试.md) | 独立召回测试证据 |\n');
+  writeFileSync(path.join(root, 'functions', '独立召回测试.md'), '# Area\n');
+  const dispose = apply(ctx, { memoryRoot: root, skillRoot: path.join(root, 'skills'), recallTimeoutMs: 1000 }, {
+    now() { return clock; },
+    detectDistillationBacklog() { scans++; return scans === 1 ? blocked : refresh; },
+  });
+  const preStep = hooks.get('agent/pre-step');
+  const step = async (turn) => {
+    const result = await preStep({ agent: { id: 'r28-blocked' }, turn, messages: [{ role: 'user', content: [{ type: 'text', text: '独立召回测试证据' }] }] }, async () => ({ kind: 'enter', messages: [] }));
+    return result.messages.flatMap((m) => m.content.map((c) => c.text)).join('\n');
+  };
+  try {
+    const first = await step(1);
+    assert.match(first, /独立召回测试/);
+    assert.match(first, /test-rule/);
+    assert.match(first, /候选扫描进行中/);
+    const second = await step(2);
+    assert.match(second, /候选扫描进行中/);
+    assert.equal(scans, 1);
+    release({ due: [{ area: 'memory-manager', days: ['a', 'b', 'c'], newestBlock: null }], orphan: [] });
+    await blocked;
+    const third = await step(3);
+    assert.match(third, /未验证词法候选：memory-manager/);
+    assert.doesNotMatch(third, /候选扫描进行中/);
+    assert.equal(scans, 1);
+    clock += 600001;
+    const fourth = await step(4);
+    assert.match(fourth, /候选扫描进行中/);
+    assert.match(fourth, /未验证词法候选：memory-manager/);
+    assert.match(fourth, /test-rule/);
+    assert.equal(scans, 2);
+    await step(5);
+    assert.equal(scans, 2);
+    dispose();
+    releaseRefresh({ due: [{ area: 'stale-result', days: ['a', 'b', 'c'] }], orphan: [] });
+    await refresh;
+    const afterDispose = await step(6);
+    assert.doesNotMatch(afterDispose, /stale-result/);
+  } finally {
+    dispose();
+    releaseRefresh({ due: [], orphan: [] });
+    release({ due: [], orphan: [] });
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
-test('单文件读不到 → 不中断，报 readUnknown（读不到 ≠ 没有素材）', async () => {
-	// A single unreadable file must not abort the scan, and must not be counted as
-	// "a day with no material" either — it is reported separately so a partial
-	// scan never presents itself as complete.
-	const root = makeRoot({
-		areas: [{ name: 'memory-manager', blocks: ['2026-11-01'] }],
-		days: {
-			'2026-11-10': bulk('memory_write 召回'),
-			'2026-11-11': bulk('memory_read 召回'),
-			'2026-11-12': bulk('索引行 召回'),
-		},
-	});
-	try {
-		// Make one function file unreadable by replacing it with a directory: readdir
-		// still lists it, readFile fails.
-		mkdirSync(path.join(root, 'functions', 'broken.md'), { recursive: true });
-		const r = await detectDistillationBacklog(root);
-		assert.ok(r.readUnknown === undefined || r.readUnknown >= 0, '要么不报，要么如实报数量');
-		// The healthy area must still be detected despite the broken sibling.
-		assert.ok(r.due.some((d) => d.area === 'memory-manager'), '一个文件坏了不能拖垮其他文件的判定');
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
-});
-
-test('同一节不能两头占：已归属的不算孤儿', async () => {
-	const root = makeRoot({
-		areas: [{ name: 'memory-manager', blocks: ['2026-01-01'] }],
-		days: {
-			'2026-11-10': `${bulk('memory_write 召回说明')}\n${bulk('双循环运行时 DL-1')}\n${bulk('运行时调度 DR-03')}`,
-			'2026-11-11': bulk('运行时恢复入口'),
-		},
-	});
-	try {
-		const r = await detectDistillationBacklog(root);
-		assert.equal(r.due.length, 0, 'memory-manager 只有 1 天归属素材，不达门槛');
-		assert.equal(r.orphan.length, 0, '2 天孤儿素材还不够 3 天门槛');
-	} finally {
-		rmSync(root, { recursive: true, force: true });
-	}
+test('a rejected background scan stays unknown and is not retried within the cache interval', async () => {
+  const root = fixture();
+  const hooks = new Map();
+  const noop = () => {};
+  let scans = 0;
+  let rejectScan;
+  const blocked = new Promise((_resolve, reject) => { rejectScan = reject; });
+  const ctx = {
+    tools: { register: () => noop },
+    systemPrompt: { getSectionOrder: () => 2900, section: () => noop },
+    on(name, fn) { hooks.set(name, fn); return noop; },
+    get() {}, set() {}, inject(_names, fn) { fn({ webServer: undefined, workspaceRegistry: undefined }); },
+  };
+  const dispose = apply(ctx, { memoryRoot: root, skillRoot: path.join(root, 'skills') }, {
+    detectDistillationBacklog() { scans++; return blocked; },
+  });
+  const step = async (turn) => {
+    const result = await hooks.get('agent/pre-step')({ agent: { id: 'r28-failure' }, turn, messages: [{ role: 'user', content: [{ type: 'text', text: 'test scan failure' }] }] }, async () => ({ kind: 'enter', messages: [] }));
+    return result.messages.flatMap((m) => m.content.map((c) => c.text)).join('\n');
+  };
+  try {
+    assert.match(await step(1), /候选扫描进行中/);
+    rejectScan(Object.assign(new Error('scan failed'), { code: 'EIO' }));
+    await blocked.catch(() => {});
+    assert.match(await step(2), /候选扫描未知.*EIO/);
+    assert.match(await step(3), /候选扫描未知.*EIO/);
+    assert.equal(scans, 1);
+  } finally { dispose(); rmSync(root, { recursive: true, force: true }); }
 });

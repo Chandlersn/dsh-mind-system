@@ -13,10 +13,9 @@
  * "该原则能解释的 trace 占比"有两种判法，混用会让读数不可比：
  *
  * 1. **引用覆盖率（可代码算，本模块默认）**：
- *    coverage = 引用该原则的判定数 / 窗口内总判定数。
- *    "引用" = 账本行显式带 principle_refs 数组（阀门评估时由调用方声明
- *    "这次判定依据了哪些原则"）。没声明的行不计入分子——
- *    **不猜语义关联**：文本相似度猜出来的覆盖率是假精确。
+ *    Coverage is computed only when every eligible decision explicitly declares
+ *    a principle_refs array. An empty array declares no references; a missing or
+ *    malformed field is unknown and makes the window's coverage unavailable.
  *
  * 2. **语义覆盖率（只能人工输入）**：人读完 trace 后声明"这条原则解释了
  *    其中多少"。走 stats.coverage_rate 显式传入，本模块不代算。
@@ -47,32 +46,43 @@ export const COVERAGE_MIN_SAMPLE = 10;
  *   origins 缺省 ['daily', 'untagged']——治理判定用日常样本；
  *   verification/drill/nomination 默认不进分母（校准口径与 I-1 一致）。
  * @returns { coverage: number|null, cited: number, total: number,
+ *            declared: number, undeclared: number,
  *            window_days: number|null, basis: 'explicit_refs' }
  */
-export function referenceCoverage(entries, principleId, options = {}) {
-	const minSample = options.minSampleSize ?? COVERAGE_MIN_SAMPLE;
+function eligibleCoverageEntries(entries, options) {
 	const origins = new Set(options.origins ?? ['daily', 'untagged']);
 	const cutoff = options.windowDays ? Date.now() - options.windowDays * 86400_000 : undefined;
-	let total = 0;
-	let cited = 0;
-	for (const e of entries ?? []) {
-		if (e?.outcome !== 'admitted' && e?.outcome !== 'skipped') continue;
+	return (entries ?? []).filter((e) => {
+		// Governance records its own verdicts, which are not independent samples.
+		if (e?.gate === 'governance' || e?.gate === 'patrol' || (e?.outcome !== 'admitted' && e?.outcome !== 'skipped')) return false;
 		const origin = typeof e.origin === 'string' && e.origin ? e.origin : 'untagged';
-		if (!origins.has(origin)) continue;
+		if (!origins.has(origin)) return false;
 		if (cutoff !== undefined) {
 			const ms = Date.parse(e.t);
-			if (!Number.isFinite(ms) || ms < cutoff) continue;
+			if (!Number.isFinite(ms) || ms < cutoff) return false;
 		}
-		total++;
-		if (Array.isArray(e.principle_refs) && e.principle_refs.includes(principleId)) cited++;
-	}
+		return true;
+	});
+}
+
+function coverageForEligible(entries, principleId, options) {
+	const minSample = options.minSampleSize ?? COVERAGE_MIN_SAMPLE;
+	const total = entries.length;
+	const declared = entries.filter((e) => Array.isArray(e.principle_refs) && e.principle_refs.every((ref) => typeof ref === 'string' && ref.trim()));
+	const cited = declared.filter((e) => e.principle_refs.includes(principleId)).length;
 	return {
-		coverage: total >= minSample ? Number((cited / total).toFixed(3)) : null,
+		coverage: total >= minSample && total > 0 && declared.length === total ? Number((cited / total).toFixed(3)) : null,
 		cited,
 		total,
+		declared: declared.length,
+		undeclared: total - declared.length,
 		window_days: options.windowDays ?? null,
 		basis: 'explicit_refs',
 	};
+}
+
+export function referenceCoverage(entries, principleId, options = {}) {
+	return coverageForEligible(eligibleCoverageEntries(entries, options), principleId, options);
 }
 
 /**
@@ -116,7 +126,7 @@ export function validateClassification(nomination, options = {}) {
  *   principle_reports: [{ principle_id, status, triggered, coverage, anti_example_count, source_diversity }],
  *   redefinition_proposals: [{ principle_id, statement, reason, evidence }],
  *   human_gate_required: boolean,
- *   terminated_by: 'principles_valid' | 'redefinition_proposed' | 'human_gate',
+ *   terminated_by: 'principles_valid' | 'principles_uncertain' | 'redefinition_proposed' | 'human_gate',
  * }
  */
 export function governanceRound(input, options = {}) {
@@ -131,22 +141,17 @@ export function governanceRound(input, options = {}) {
 		if (classification.human_gate_required) humanGate = true;
 	}
 
+	const coverageOptions = { windowDays: options.windowDays, minSampleSize: options.minSampleSize };
+	const eligibleEntries = eligibleCoverageEntries(input?.entries, coverageOptions);
+
 	for (const p of input?.principles ?? []) {
 		const id = String(p?.principle_id ?? '').trim();
 		if (!id) continue;
-		const cov = referenceCoverage(input.entries, id, { windowDays: options.windowDays, minSampleSize: options.minSampleSize });
+		const cov = coverageForEligible(eligibleEntries, id, coverageOptions);
 		const antiExamples = Array.isArray(p.anti_examples) ? p.anti_examples.filter((a) => a && typeof a.trace_ref === 'string' && a.trace_ref) : [];
 		const sources = new Set(antiExamples.map((a) => String(a.source ?? 'unknown')));
-		// 语义覆盖率是人工显式输入才用；否则用引用覆盖率（可能 null）。
-		const coverage = Number.isFinite(p.semantic_coverage) ? p.semantic_coverage : cov.coverage;
-		// 冷启动保护（2026-11-09 真机第一轮抓到的假失效）：principle_refs
-		// 字段刚上线时历史行全没声明——引用覆盖率 0 是"没测过"不是
-		// "原则解释不了"。整个窗口 cited 总数为 0 且无人类语义输入时，
-		// 覆盖率按 null 处理（uncertain），不触发 coverage_below。
-		// 有人声明过引用（任何原则）后，0 才是真零。
-		const anyRefsInWindow = (input.entries ?? []).some((e) => Array.isArray(e?.principle_refs) && e.principle_refs.length > 0);
-		const coldStart = !Number.isFinite(p.semantic_coverage) && !anyRefsInWindow;
-		const effectiveCoverage = coldStart ? null : coverage;
+		// A human semantic assessment is independent of reference declarations.
+		const effectiveCoverage = Number.isFinite(p.semantic_coverage) ? p.semantic_coverage : cov.coverage;
 		const stats = {
 			anti_example_count: antiExamples.length,
 			source_diversity: sources.size,
@@ -161,11 +166,13 @@ export function governanceRound(input, options = {}) {
 			status: verdict.status,
 			triggered: verdict.triggered,
 			coverage: cov.coverage,
-			coverage_basis: Number.isFinite(p.semantic_coverage) ? 'human_semantic' : coldStart ? 'cold_start_no_refs' : cov.basis,
+			coverage_basis: Number.isFinite(p.semantic_coverage) ? 'human_semantic' : cov.undeclared > 0 ? 'incomplete_refs' : cov.basis,
 			sample_total: cov.total,
+			sample_declared: cov.declared,
+			sample_undeclared: cov.undeclared,
 			anti_example_count: antiExamples.length,
 			source_diversity: sources.size,
-			...(coldStart ? { note: '账本尚无 principle_refs 声明，覆盖率不可判（冷启动），本轮不触发 coverage_below' } : {}),
+			...(cov.undeclared > 0 && !Number.isFinite(p.semantic_coverage) ? { note: 'Some eligible decisions do not declare principle_refs; reference coverage is unavailable.' } : {}),
 		});
 		if (verdict.status === 'invalid') {
 			proposals.push({
@@ -181,7 +188,8 @@ export function governanceRound(input, options = {}) {
 		? 'human_gate'
 		: proposals.length > 0
 			? 'redefinition_proposed'
-			: 'principles_valid';
+			: reports.length > 0 && reports.length === (input?.principles?.length ?? 0) && reports.every((report) => report.status === 'valid')
+				? 'principles_valid' : 'principles_uncertain';
 	return {
 		...(classification === undefined ? {} : { classification }),
 		principle_reports: reports,

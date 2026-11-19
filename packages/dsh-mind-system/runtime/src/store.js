@@ -92,6 +92,17 @@ export class RuntimeStore {
         task_id TEXT NOT NULL REFERENCES runs(task_id), attempt_id TEXT,
         kind TEXT NOT NULL, payload_json TEXT NOT NULL, created_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS runtime_metadata (
+        key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS event_outbox (
+        event_id TEXT PRIMARY KEY NOT NULL REFERENCES events(event_id),
+        payload_json TEXT NOT NULL CHECK(length(CAST(payload_json AS BLOB)) <= 1024),
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+        acknowledged_at INTEGER,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS event_outbox_pending ON event_outbox(acknowledged_at, created_at, event_id);
       CREATE TABLE IF NOT EXISTS evidence (
         ref TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL REFERENCES runs(task_id),
         label TEXT NOT NULL, raw_json TEXT NOT NULL, sha256 TEXT NOT NULL,
@@ -184,6 +195,12 @@ export class RuntimeStore {
 
   close() { this.#db.close(); }
 
+  /** Stable identity for this database; concurrent initializers converge on the stored value. */
+  getProducerId() {
+    this.#db.prepare("INSERT OR IGNORE INTO runtime_metadata (key, value) VALUES ('producer_id', ?)").run(randomUUID());
+    return this.#db.prepare("SELECT value FROM runtime_metadata WHERE key = 'producer_id'").get().value;
+  }
+
   /**
    * Run a scoped operation against the underlying database handle.
    *
@@ -211,9 +228,47 @@ export class RuntimeStore {
   }
 
   #event(taskId, attemptId, kind, payload) {
+    const eventId = randomUUID();
     this.#db.prepare(`INSERT INTO events
       (event_id, task_id, attempt_id, kind, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(randomUUID(), taskId, attemptId, kind, JSON.stringify(jsonSnapshot(payload)), this.#now());
+      .run(eventId, taskId, attemptId, kind, JSON.stringify(jsonSnapshot(payload)), this.#now());
+    return eventId;
+  }
+
+  /** Inspect pending records; this does not claim or send them. */
+  listPendingOutbox({ limit = 100 } = {}) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw error('invalid_outbox', 'Outbox limit must be an integer from 1 to 100.');
+    }
+    return this.#db.prepare(`SELECT o.event_id, o.attempts, o.created_at, e.kind, e.task_id, e.attempt_id,
+      e.payload_json AS event_payload FROM event_outbox o JOIN events e ON e.event_id = o.event_id
+      WHERE o.acknowledged_at IS NULL ORDER BY o.attempts, o.created_at, o.event_id LIMIT ?`).all(limit)
+      .map((row) => ({ eventId: row.event_id, kind: row.kind,
+        payload: { ...JSON.parse(row.event_payload), taskId: row.task_id,
+          ...(row.attempt_id === null ? {} : { attemptId: row.attempt_id }) },
+        attempts: row.attempts, createdAt: row.created_at }));
+  }
+
+  /** Compare the observed attempt count before recording a retry or acknowledgement. */
+  retryOutbox(eventId, { expectedAttempts } = {}) {
+    return this.#updateOutbox(eventId, expectedAttempts, false);
+  }
+
+  acknowledgeOutbox(eventId, { expectedAttempts } = {}) {
+    return this.#updateOutbox(eventId, expectedAttempts, true);
+  }
+
+  #updateOutbox(eventId, expectedAttempts, acknowledge) {
+    requireString(eventId, 'eventId');
+    if (!Number.isSafeInteger(expectedAttempts) || expectedAttempts < 0 || expectedAttempts >= Number.MAX_SAFE_INTEGER) {
+      throw error('invalid_outbox', 'A bounded observed attempt count is required.');
+    }
+    const result = acknowledge
+      ? this.#db.prepare('UPDATE event_outbox SET acknowledged_at = ? WHERE event_id = ? AND attempts = ? AND acknowledged_at IS NULL')
+        .run(this.#now(), eventId, expectedAttempts)
+      : this.#db.prepare('UPDATE event_outbox SET attempts = attempts + 1 WHERE event_id = ? AND attempts = ? AND acknowledged_at IS NULL')
+        .run(eventId, expectedAttempts);
+    return result.changes === 1;
   }
 
   #row(taskId) {
@@ -239,6 +294,27 @@ export class RuntimeStore {
       this.#event(task.taskId, null, 'run_created', { task });
       return this.getRun(task.taskId);
     });
+  }
+
+  /** Read bounded persisted facts without opening another connection or changing the store. */
+  snapshotRuns({ limit = 100 } = {}) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw error('invalid_snapshot_limit', 'Snapshot limit must be an integer from 1 to 100.');
+    }
+    const rows = this.#db.prepare(`SELECT r.task_id, r.status, r.reason, r.created_at, r.updated_at,
+      (SELECT count(*) FROM attempts a WHERE a.task_id = r.task_id
+        AND a.status IN ('reserved', 'started', 'unknown')) AS unresolved_count,
+      (SELECT a.attempt_id FROM attempts a WHERE a.task_id = r.task_id
+        AND a.status IN ('reserved', 'started', 'unknown') ORDER BY a.created_at, a.attempt_id LIMIT 1) AS first_attempt_id,
+      (SELECT a.status FROM attempts a WHERE a.task_id = r.task_id
+        AND a.status IN ('reserved', 'started', 'unknown') ORDER BY a.created_at, a.attempt_id LIMIT 1) AS first_attempt_status
+      FROM runs r ORDER BY r.updated_at DESC, r.task_id ASC LIMIT ?`).all(limit + 1);
+    return { limit, truncated: rows.length > limit, runs: rows.slice(0, limit).map((row) => ({
+      taskId: row.task_id, status: row.status, reason: row.reason,
+      createdAt: row.created_at, updatedAt: row.updated_at,
+      unresolved: { count: row.unresolved_count, first: row.first_attempt_id === null ? null :
+        { attemptId: row.first_attempt_id, status: row.first_attempt_status } },
+    })) };
   }
 
   getRun(taskId) {
@@ -441,7 +517,7 @@ export class RuntimeStore {
     });
   }
 
-  recordOutcome(taskId, attemptId, outcomeInput, verificationInput, { expectedVersion, notStartedStatus = 'failed', nextState, fence } = {}) {
+  recordOutcome(taskId, attemptId, outcomeInput, verificationInput, { expectedVersion, notStartedStatus = 'failed', nextState, fence, checkpointEnvironment } = {}) {
     const state = nextState === undefined ? undefined : jsonSnapshot(nextState);
     if (state !== undefined && (!state || typeof state !== 'object' || Array.isArray(state))) {
       throw error('invalid_state', 'The next recipe state must be an object.');
@@ -482,6 +558,12 @@ export class RuntimeStore {
         .run(status, reason, state === undefined ? row.state_json : JSON.stringify(state), this.#now(), taskId);
       this.#event(taskId, attemptId, 'outcome_recorded', { outcome, verification, status,
         ...(state === undefined ? {} : { nextState: state }) });
+      if (checkpointEnvironment !== undefined && outcome.status === 'succeeded'
+          && verification.status === 'pass' && verification.evidenceRefs.length) {
+        this.#insertCheckpoint(taskId, { attemptId, stepIndex: row.attempts_used,
+          state: state === undefined ? JSON.parse(row.state_json) : state,
+          environment: checkpointEnvironment, evidenceRef: verification.evidenceRefs[0] });
+      }
       return this.getRun(taskId);
     });
   }
@@ -622,6 +704,22 @@ export class RuntimeStore {
    * state blob could be replayed into a context it was never verified in.
    */
   recordCheckpoint(taskId, input, { expectedVersion } = {}) {
+    return this.#transaction(() => {
+      const row = this.#row(taskId);
+      this.#version(row, expectedVersion);
+      return this.#insertCheckpoint(taskId, input);
+    });
+  }
+
+  /**
+   * Insertion only: the caller owns the transaction and the version/fence checks.
+   *
+   * Why the split exists: `recordOutcome` must commit the settled attempt, the business state and the
+   * checkpoint together. Calling the public `recordCheckpoint` from inside that transaction would open a
+   * nested BEGIN (SQLite refuses it) or, worse, quietly commit a second time — leaving exactly the
+   * half-settled state this consolidation removes.
+   */
+  #insertCheckpoint(taskId, input) {
     const value = storageSnapshot(input);
     requireString(value?.evidenceRef, 'checkpoint evidence reference');
     if (!Number.isSafeInteger(value?.stepIndex) || value.stepIndex < 0) throw error('invalid_checkpoint', 'A step index is required.');
@@ -632,23 +730,19 @@ export class RuntimeStore {
       throw error('invalid_checkpoint', 'A checkpoint records the environment it was taken under.');
     }
     const checkpointId = randomUUID();
-    return this.#transaction(() => {
-      const row = this.#row(taskId);
-      this.#version(row, expectedVersion);
-      // Remember which attempts existed at this moment. "What happened after the checkpoint" is then a
-      // recorded fact, so a rollback can be refused for effects that cannot be undone instead of trusting
-      // a proposal to declare itself safe.
-      const attemptFloor = this.#db.prepare('SELECT coalesce(max(rowid), 0) AS floor FROM attempts').get().floor;
-      this.#db.prepare(`INSERT INTO checkpoints (checkpoint_id, task_id, step_index, attempt_floor, state_json,
-        environment_json, evidence_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(checkpointId, taskId, value.stepIndex, attemptFloor, JSON.stringify(value.state),
-          JSON.stringify(value.environment), value.evidenceRef, this.#now());
-      // Checkpoints are metadata about verified progress; they advance the version like any event.
-      this.#db.prepare('UPDATE runs SET version = version + 1, updated_at = ? WHERE task_id = ?')
-        .run(this.#now(), taskId);
-      this.#event(taskId, value.attemptId ?? null, 'checkpoint_recorded', { checkpointId, stepIndex: value.stepIndex });
-      return { checkpointId, run: this.getRun(taskId) };
-    });
+    // Remember which attempts existed at this moment. "What happened after the checkpoint" is then a
+    // recorded fact, so a rollback can be refused for effects that cannot be undone instead of trusting
+    // a proposal to declare itself safe.
+    const attemptFloor = this.#db.prepare('SELECT coalesce(max(rowid), 0) AS floor FROM attempts').get().floor;
+    this.#db.prepare(`INSERT INTO checkpoints (checkpoint_id, task_id, step_index, attempt_floor, state_json,
+      environment_json, evidence_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(checkpointId, taskId, value.stepIndex, attemptFloor, JSON.stringify(value.state),
+        JSON.stringify(value.environment), value.evidenceRef, this.#now());
+    // Checkpoints are metadata about verified progress; they advance the version like any event.
+    this.#db.prepare('UPDATE runs SET version = version + 1, updated_at = ? WHERE task_id = ?')
+      .run(this.#now(), taskId);
+    this.#event(taskId, value.attemptId ?? null, 'checkpoint_recorded', { checkpointId, stepIndex: value.stepIndex });
+    return { checkpointId, run: this.getRun(taskId) };
   }
 
   /**
@@ -1190,7 +1284,11 @@ export class RuntimeStore {
           : failed && row.status === 'running' ? 'repair_no_progress' : row.reason;
       this.#db.prepare('UPDATE runs SET status = ?, reason = ?, version = version + 1, updated_at = ? WHERE task_id = ?')
         .run(nextStatus, nextReason, now, taskId);
-      this.#event(taskId, attemptId ?? null, 'repair_finished', { repairId, status, ...metadata });
+      const eventId = this.#event(taskId, attemptId ?? null, 'repair_finished', { repairId, status, ...metadata });
+      // The immutable event owns the full envelope; the bounded outbox row only marks delivery.
+      // This keeps valid long task identifiers from making repair settlement fail.
+      this.#db.prepare('INSERT INTO event_outbox (event_id, payload_json, created_at) VALUES (?, ?, ?)')
+        .run(eventId, JSON.stringify({ status }), now);
       return this.getRun(taskId);
     });
   }

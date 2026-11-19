@@ -194,9 +194,7 @@ window.__ModuleLoader__.load({
    the diagram and the numbers cannot disagree. Nodes open their zone. */
 /* ---- architecture DIAGRAM (SVG, 2026-11-16) ------------------------------
    A drawn graph: boxes, directed edges with arrowheads, a feedback return arc.
-   Cards in a row are not a diagram; this is. Edge stroke encodes the REAL health
-   of the stage it represents (solid accent = running, dashed red = broken), so
-   the picture degrades visibly instead of lying. */
+   Stage edges remain neutral when historical data cannot establish health. */
 .dmo-arch-svg{display:block;width:100%;height:auto;overflow:visible}
 .dmo-node .dmo-node-box{fill:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 72%,transparent);
   stroke:color-mix(in srgb,var(--dsw-alias-border-l3) 85%,transparent);stroke-width:1;transition:stroke .16s ease,fill .16s ease}
@@ -284,8 +282,8 @@ window.__ModuleLoader__.load({
 .dmo-arch-step-name{font-size:12px;line-height:18px;font-weight:600}
 .dmo-arch-step-d{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
 .dmo-arch-cycle{font-size:11px;line-height:17px;padding:2px 9px;border-radius:999px;white-space:nowrap;
-  border:.5px dashed color-mix(in srgb,var(--dsw-alias-state-error-primary) 55%,transparent);
-  color:var(--dsw-alias-state-error-primary)}
+  border:.5px dashed var(--dsw-alias-border-l3);
+  color:var(--dsw-alias-label-tertiary)}
 .dmo-arch-cycle.closed{border-style:solid;border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 55%,transparent);
   color:var(--dsw-alias-state-success-primary)}
 /* Hero card: measure on top, quiet drill-in link pinned to the bottom edge. */
@@ -1530,9 +1528,12 @@ window.__ModuleLoader__.load({
 		 * 召回方向（读取，自上而下）：dao/insights/functions 被 pre-step 钩子注入
 		 * 闭环：写入 → 索引 → 召回 → 命中/纠正信号 → 下一轮阈值与分层
 		 */
-		function buildArchitecture({ counts, usage, capture, env, health, sag }) {
+		const knownCount = (value) => Number.isFinite(value) ? value : null;
+		const displayCount = (value) => knownCount(value) ?? '未知';
+
+		function buildArchitecture({ counts, usage, capture, env, health, sag, cycleCoverage, runtimeSnapshot, patrolDelivery }) {
 			const c = counts ?? {};
-			const n = (v) => (Number.isFinite(v) ? v : 0);
+			const n = knownCount;
 			// 五个层：真实数量 + 该层在当前体系里的角色。role 是静态说明，
 			// count 全部来自后端。
 			const layers = [
@@ -1542,8 +1543,7 @@ window.__ModuleLoader__.load({
 				{ key: 'dao', name: '道', count: n(c.dao), unit: '条', role: '最抽象命题', tier: 'L0d' },
 				{ key: 'capabilities', name: '能力台账', count: n(c.capabilities), unit: '项', role: '外部工具索引', tier: 'L2c' },
 			];
-			const activeLayers = layers.filter((l) => l.count > 0).length;
-			// 闭环四段：每段的"是否在转"由真实数据判定，而不是画个圈了事。
+			const activeLayers = layers.every((l) => l.count !== null) ? layers.filter((l) => l.count > 0).length : null;
 			//
 			// 口径纪律（2026-11-16 用户追问"4372 条信号真实吗"后修正）：
 			// usage.signalCount 是 .usage.jsonl 的**事件行数**，其中绝大多数是
@@ -1554,14 +1554,15 @@ window.__ModuleLoader__.load({
 			const recallEvents = n(usage?.recallEvents);
 			const distinctHrefs = n(usage?.distinctHrefs);
 			const indexRows = n(usage?.indexRows);
-			const hasCapture = Boolean(capture?.enabled);
+			const hasCapture = typeof capture?.enabled === 'boolean' ? capture.enabled : null;
+			// Historical stock and aggregate events do not verify any stage or loop.
 			const loop = [
-				{ key: 'write', name: '写入', ok: n(c.daily) > 0 || n(c.functions) > 0, detail: `${n(c.daily)} 份原始 + ${n(c.functions)} 个功能域` },
-				{ key: 'distill', name: '蒸馏', ok: n(c.insights) > 0, detail: `${n(c.insights)} 条原则 / ${n(c.dao)} 条道` },
-				{ key: 'recall', name: '召回', ok: true, detail: indexRows > 0 ? `索引 ${indexRows} 行参与召回` : '每轮 pre-step 注入索引摘要' },
-				{ key: 'feedback', name: '反馈', ok: signals > 0, detail: signals > 0 ? `${recallEvents} 条召回曝光 → 采纳 ${n(usage?.verdictEvents)} 次` : '无信号（召回命中会记）' },
+				{ key: 'write', name: '写入', ok: null, detail: `${displayCount(n(c.daily))} 份原始 + ${displayCount(n(c.functions))} 个功能域 · 运行未验证` },
+				{ key: 'distill', name: '蒸馏', ok: null, detail: `${displayCount(n(c.insights))} 条原则 / ${displayCount(n(c.dao))} 条道 · 运行未验证` },
+				{ key: 'recall', name: '召回', ok: null, detail: `索引 ${displayCount(indexRows)} 行 · 运行未验证` },
+				{ key: 'feedback', name: '反馈', ok: null, detail: `${displayCount(recallEvents)} 条召回曝光 · 正向/纠正 ${displayCount(n(usage?.verdictEvents))} 次 · 回流未验证` },
 			];
-			const loopClosed = loop.filter((s) => s.ok).length === loop.length;
+			const loopClosed = null;
 			// 存储根：只报服务器实际解析出来的路径。
 			const roots = [
 				{ key: 'memory', name: '记忆根', path: env?.memoryRoot ?? '', active: Boolean(env?.memoryRoot) },
@@ -1569,6 +1570,9 @@ window.__ModuleLoader__.load({
 			];
 			return {
 				layers,
+				cycleCoverage,
+				runtimeSnapshot,
+				patrolDelivery,
 				activeLayers,
 				loop,
 				loopClosed,
@@ -1592,9 +1596,9 @@ window.__ModuleLoader__.load({
 				// configure it; service down → start it; unauthorized → rotate the key.
 				// Collapsing them into one "unavailable" badge hides which one broke.
 				sag: {
-					configured: sag?.configured === true,
-					online: sag?.online === true,
-					authorized: sag?.authorized === true,
+					configured: typeof sag?.configured === 'boolean' ? sag.configured : null,
+					online: typeof sag?.online === 'boolean' ? sag.online : null,
+					authorized: typeof sag?.authorized === 'boolean' ? sag.authorized : null,
 					endpoint: typeof sag?.endpoint === 'string' ? sag.endpoint : '',
 					// "usable" is what the diagram colours by: a channel can be online
 					// yet unusable without a key, and that must show as degraded.
@@ -1621,10 +1625,8 @@ window.__ModuleLoader__.load({
 		 *   band 4  y 432-512   会话上下文 ← 召回准入 ← 使用信号（闭环三段）
 		 *   return  y 540       反馈回流弧（闭环的第四段）
 		 *
-		 * Every node carries a count the SERVER returned; every edge is drawn with a
-		 * direction and its stage's real health (ok = solid accent, broken = dashed
-		 * red). If a stage is not turning, its edge is red and the loop is called
-		 * open — the picture cannot claim more than the data proves.
+		 * Nodes show server counts; structural edges show direction without claiming
+		 * that historical counts verify stage health or a closed loop.
 		 */
 		function Architecture({ model, onZone, live, lastEventAt, fallback }) {
 			const m = model ?? buildArchitecture({});
@@ -1670,13 +1672,87 @@ window.__ModuleLoader__.load({
 			// src / sag / ctx / gate / sig are structure, not destinations.
 		};
 
+		function RuntimeSnapshot({ snapshot, current = false }) {
+			const states = { ready: '可用', partial: '部分可用', disabled: '已禁用', unavailable: '不可用', missing: '缺失', error: '读取错误' };
+			const state = snapshot == null ? '缺失' : states[snapshot?.state] ?? '未知';
+			const runs = Array.isArray(snapshot?.runs) ? snapshot.runs : null;
+			const tasks = Array.isArray(snapshot?.registeredTasks?.taskIds) ? snapshot.registeredTasks.taskIds : null;
+			const text = (value) => typeof value === 'string' && value ? value : '未知';
+			const timestamp = (value) => Number.isFinite(value) && Number.isFinite(new Date(value).getTime()) ? new Date(value).toISOString() : text(value);
+			const truncated = (value, locallyTruncated) => value === true || locallyTruncated ? '已截断' : value === false ? '未截断' : '未知';
+			return h('div', { className: 'dmo-inset', style: { marginTop: 8 }, 'data-dmo': 'runtime-snapshot' },
+				h('div', { className: 'dmo-measure-l' }, current ? '当前运行时快照' : '周检历史运行时快照'),
+				h('div', { className: 'dmo-measure-x' }, `状态：${state}`),
+				typeof snapshot?.error === 'string' ? h('div', { className: 'dmo-measure-x' }, `错误：${snapshot.error}`) : null,
+				h('div', { className: 'dmo-measure-x' }, `运行记录截断：${truncated(snapshot?.truncated, runs?.length > 50)}`),
+				runs === null ? h('div', { className: 'dmo-measure-x' }, '运行记录：未知') : runs.length === 0 ? h('div', { className: 'dmo-measure-x' }, '快照中无运行记录') : runs.slice(0, 50).map((run, index) =>
+					h('div', { key: index, className: 'dmo-measure-x' },
+						`任务：${text(run?.taskId)} · 状态：${text(run?.status)} · 原因：${text(run?.reason)} · 注册：${run?.registered === true ? '是' : run?.registered === false ? '否' : '未知'}`,
+						h('div', null, `创建：${timestamp(run?.createdAt)} · 更新：${timestamp(run?.updatedAt)}`),
+						h('div', null, `未解决数量：${Number.isFinite(run?.unresolved?.count) ? run.unresolved.count : '未知'} · 首个尝试 ID：${text(run?.unresolved?.first?.attemptId)} · 尝试状态：${text(run?.unresolved?.first?.status)}`),
+					),
+				),
+				h('div', { className: 'dmo-measure-x' }, `已注册任务截断：${truncated(snapshot?.registeredTasks?.truncated, tasks?.length > 50)}`),
+				h('div', { className: 'dmo-measure-x' }, `已注册任务：${tasks === null ? '未知' : tasks.length === 0 ? '快照中无' : tasks.slice(0, 50).map(text).join('、')}`),
+			);
+		}
+
+		function CycleCoverage({ coverage, patrolDelivery }) {
+			const deliveryLabels = {
+				starting: '正在启动', unavailable: '投递服务不可用', unknown: '未知：数据缺失或无法读取',
+				unsupported_report: '报告格式不受支持', no_candidates: '没有待投递的候选',
+				delivered: '已写入收件箱，不代表已读或已确认', retrying: '投递失败，正在重试',
+			};
+			const deliveryStatus = Object.hasOwn(deliveryLabels, patrolDelivery?.status) ? deliveryLabels[patrolDelivery.status] : deliveryLabels.unknown;
+			const status = coverage?.status;
+			const report = coverage?.report;
+			const statusLabels = { observed: '已观察到历史证据', unknown: '未知', error: '读取错误', incomplete: '证据不完整' };
+			const rows = [
+				['定时投递', report?.micro_execution?.schedule_delivery],
+				['执行结果', report?.micro_execution?.outcome],
+				['记忆蒸馏', report?.memory?.distillation],
+				['记忆索引', report?.memory?.index],
+				['记忆召回', report?.memory?.recall],
+				['治理决策', report?.governance?.decisions],
+				['跨步骤关联', report?.cross_step_correlation],
+			];
+			const message = status === 'unavailable' ? '周检服务不可用，无法读取覆盖报告。'
+				: status === 'missing' ? '最近一次周检没有覆盖报告。'
+				: status === 'available' && report && typeof report === 'object' && !Array.isArray(report) ? null
+				: '覆盖报告状态未知或无法读取。';
+			return h(Card, { 'data-dmo': 'cycle-coverage' },
+				h('div', { className: 'dmo-eyebrow' }, '自动周检 · 闭环证据覆盖'),
+				h('div', { className: 'dmo-inset', 'data-dmo': 'patrol-delivery' },
+					h('div', { className: 'dmo-measure-l' }, '周检候选投递'),
+					h('div', { className: 'dmo-measure-x' }, `状态：${deliveryStatus}`),
+					typeof patrolDelivery?.reason === 'string' ? h('div', { className: 'dmo-measure-x' }, `原因：${patrolDelivery.reason}`) : null,
+					typeof patrolDelivery?.error === 'string' ? h('div', { className: 'dmo-measure-x' }, `错误：${patrolDelivery.error}`) : null,
+					typeof patrolDelivery?.reportId === 'string' ? h('div', { className: 'dmo-measure-x' }, `报告 ID：${patrolDelivery.reportId}`) : null,
+				),
+				h('div', { className: 'dmo-measure-x' }, `周检时间：${typeof coverage?.at === 'string' ? coverage.at : '未知'} · ${coverage?.ok === false ? '周检失败' : coverage?.ok === true ? '周检报告执行成功' : '周检结果未知'}`),
+				h('div', { className: 'dmo-measure-x' }, '各项是历史观测，单项证据不证明同一工作完成闭环。'),
+				message ? h('div', { className: 'dmo-inset' }, message) : rows.map(([name, evidence]) => {
+					const state = typeof evidence?.status === 'string' ? evidence.status : 'unknown';
+					return h('div', { key: name, className: 'dmo-inset', style: { marginTop: 8 } },
+						h('div', { className: 'dmo-measure-l' }, name),
+						h('div', { className: 'dmo-measure-x' }, `状态：${statusLabels[state] ?? state}`),
+						typeof evidence?.reason === 'string' ? h('div', { className: 'dmo-measure-x' }, `原因：${evidence.reason}`) : null,
+						typeof evidence?.scope === 'string' ? h('div', { className: 'dmo-measure-x' }, `范围：${evidence.scope}`) : null,
+						typeof evidence?.observed === 'boolean' ? h('div', { className: 'dmo-measure-x' }, `历史证据已观察：${evidence.observed ? '是' : '否'}`) : null,
+						typeof evidence?.tracked_function_write_observed === 'boolean' ? h('div', { className: 'dmo-measure-x' }, `已观察到受追踪的功能域写入：${evidence.tracked_function_write_observed ? '是' : '否'}`) : null,
+						typeof evidence?.note === 'string' ? h('div', { className: 'dmo-measure-x' }, evidence.note) : null,
+					);
+				}),
+				!message ? h(RuntimeSnapshot, { snapshot: report?.micro_execution?.runtime_snapshot }) : null,
+			);
+		}
+
 		function renderArchitecture(m, onZone) {
 			const W = 1120;
 			const H = 600;
-			const stage = (k) => m.loop.find((s) => s.key === k)?.ok !== false;
-			// Edge tone per real stage health: solid accent when the stage runs,
-			// dashed danger when it does not.
-			const tone = (ok, kind = 'business') => (ok ? `dmo-edge ${kind}` : 'dmo-edge danger');
+			const stage = () => null;
+			// Historical counts do not establish stage health.
+			const tone = () => 'dmo-edge muted dashed';
 
 			const node = (key, { x, y, w, h: bh, name, count, unit, role, tier, accent }) => {
 				const cx = x + w / 2;
@@ -1699,7 +1775,7 @@ window.__ModuleLoader__.load({
 					h('text', { x: cx, y: y + (tier ? 33 : 24), className: 'dmo-node-name', textAnchor: 'middle' }, name),
 					count !== undefined
 						? h('text', { x: cx, y: y + (tier ? 55 : 46), className: 'dmo-node-count', textAnchor: 'middle' }, [
-								h('tspan', { key: 'n', className: 'dmo-count-n' }, String(count)),
+								h('tspan', { key: 'n', className: 'dmo-count-n' }, String(displayCount(count))),
 								unit ? h('tspan', { key: 'u', className: 'dmo-count-u', dx: 3 }, unit) : null,
 							])
 						: null,
@@ -1715,18 +1791,20 @@ window.__ModuleLoader__.load({
 			const sagEdgeClass = () => {
 				if (!m.sag.known) return 'dmo-edge muted dashed';
 				if (m.sag.usable) return 'dmo-edge ok';
-				if (m.sag.online && !m.sag.authorized) return 'dmo-edge warn dashed';
+				if (m.sag.online === null || (m.sag.online && m.sag.authorized === null)) return 'dmo-edge muted dashed';
+				if (m.sag.online === true && m.sag.authorized === false) return 'dmo-edge warn dashed';
 				return 'dmo-edge danger dashed';
 			};
 			const sagMarker = () => {
 				if (!m.sag.known) return 'url(#dmo-ah-m)';
 				if (m.sag.usable) return 'url(#dmo-ah-ok)';
-				if (m.sag.online && !m.sag.authorized) return 'url(#dmo-ah-m)';
+				if (m.sag.online === null || (m.sag.online && m.sag.authorized === null)) return 'url(#dmo-ah-m)';
+				if (m.sag.online === true && m.sag.authorized === false) return 'url(#dmo-ah-m)';
 				return 'url(#dmo-ah-d)';
 			};
 
 			const layers = Object.fromEntries(m.layers.map((l) => [l.key, l]));
-			const nOf = (k) => layers[k]?.count ?? 0;
+			const nOf = (k) => layers[k]?.count ?? null;
 
 			return h(
 				'div',
@@ -1735,7 +1813,7 @@ window.__ModuleLoader__.load({
 					'div',
 					{ className: 'dmo-page-head' },
 					h('h2', { className: 'dmo-page-title' }, '实时架构'),
-					h('span', { className: 'dmo-page-sub' }, `${m.activeLayers} / ${m.layers.length} 层有内容 · 闭环${m.loopClosed ? '已闭合' : '未闭合'}`),
+					h('span', { className: 'dmo-page-sub' }, `${displayCount(m.activeLayers)} / ${m.layers.length} 层有内容 · 闭环未验证`),
 					h(
 						'span',
 						{ className: 'dmo-page-tools' },
@@ -1751,8 +1829,8 @@ window.__ModuleLoader__.load({
 								? `实时推送${m.lastEventAge !== null ? ` · ${m.lastEventAge}s 前` : ''}`
 								: '轮询降级（30s）',
 						),
-						h('span', { className: `dmo-dot ${m.health.fail ? 'fail' : m.health.warn ? 'warn' : 'ok'}` }, h('i'), m.health.fail ? `FAIL ${m.health.fail}` : m.health.warn ? `WARN ${m.health.warn}` : '体检正常'),
-						h('span', { className: `dmo-dot ${m.captureOn ? 'ok' : 'warn'}` }, h('i'), m.captureOn ? '采集运行中' : '采集未启用'),
+						h('span', { className: `dmo-dot ${m.health.fail > 0 ? 'fail' : m.health.warn > 0 ? 'warn' : m.health.fail === null || m.health.warn === null ? '' : 'ok'}` }, h('i'), m.health.fail > 0 ? `FAIL ${m.health.fail}` : m.health.warn > 0 ? `WARN ${m.health.warn}` : m.health.fail === null || m.health.warn === null ? '体检状态未知' : '体检正常'),
+						h('span', { className: `dmo-dot ${m.captureOn === false ? 'warn' : ''}` }, h('i'), m.captureOn === true ? '采集已配置启用' : m.captureOn === false ? '采集未启用' : '采集状态未知'),
 					),
 				),
 				h(
@@ -1771,37 +1849,37 @@ window.__ModuleLoader__.load({
 						// ---- edges first so nodes paint on top ----
 						h('g', { key: 'edges', className: 'dmo-edges' }, [
 							// 写入：来源 → 每日原始
-							h('path', { key: 'e1', d: 'M180 82 L180 120 L125 120 L125 148', className: tone(stage('write')), markerEnd: stage('write') ? 'url(#dmo-ah-b)' : 'url(#dmo-ah-d)' }),
+							h('path', { key: 'e1', d: 'M180 82 L180 120 L125 120 L125 148', className: tone(stage('write')), markerEnd: 'url(#dmo-ah-m)' }),
 							label('l1', 152, 112, '捕获'),
 							// 蒸馏链
-							h('path', { key: 'e2', d: 'M210 189 L248 189', className: tone(stage('write')), markerEnd: stage('write') ? 'url(#dmo-ah-b)' : 'url(#dmo-ah-d)' }),
-							h('path', { key: 'e3', d: 'M410 189 L448 189', className: tone(stage('distill')), markerEnd: stage('distill') ? 'url(#dmo-ah-b)' : 'url(#dmo-ah-d)' }),
-							h('path', { key: 'e4', d: 'M610 189 L648 189', className: tone(stage('distill')), markerEnd: stage('distill') ? 'url(#dmo-ah-b)' : 'url(#dmo-ah-d)' }),
+							h('path', { key: 'e2', d: 'M210 189 L248 189', className: tone(stage('write')), markerEnd: 'url(#dmo-ah-m)' }),
+							h('path', { key: 'e3', d: 'M410 189 L448 189', className: tone(stage('distill')), markerEnd: 'url(#dmo-ah-m)' }),
+							h('path', { key: 'e4', d: 'M610 189 L648 189', className: tone(stage('distill')), markerEnd: 'url(#dmo-ah-m)' }),
 							label('l2', 229, 181, 'write'),
 							label('l3', 429, 181, 'insight'),
 							label('l4', 629, 181, 'dao'),
 							// 各层收行进索引
-							h('path', { key: 'e5', d: 'M125 228 L125 294', className: tone(stage('write'), 'ok'), markerEnd: 'url(#dmo-ah-ok)' }),
-							h('path', { key: 'e6', d: 'M330 228 L330 294', className: tone(stage('distill'), 'ok'), markerEnd: 'url(#dmo-ah-ok)' }),
-							h('path', { key: 'e7', d: 'M530 228 L530 294', className: tone(stage('distill'), 'ok'), markerEnd: 'url(#dmo-ah-ok)' }),
-							h('path', { key: 'e8', d: 'M715 228 L715 294', className: tone(stage('distill'), 'ok'), markerEnd: 'url(#dmo-ah-ok)' }),
+							h('path', { key: 'e5', d: 'M125 228 L125 294', className: tone(stage('write'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
+							h('path', { key: 'e6', d: 'M330 228 L330 294', className: tone(stage('distill'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
+							h('path', { key: 'e7', d: 'M530 228 L530 294', className: tone(stage('distill'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
+							h('path', { key: 'e8', d: 'M715 228 L715 294', className: tone(stage('distill'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
 							h('path', { key: 'e9', d: 'M840 200 L800 200 L800 294', className: 'dmo-edge muted', markerEnd: 'url(#dmo-ah-m)' }),
 							label('l5', 640, 268, 'memory_index 收行'),
 							label('l9', 820, 192, '指针'),
 							// 索引 → 召回准入 / 会话
-							h('path', { key: 'e10', d: 'M520 366 L520 430', className: tone(stage('recall')), markerEnd: stage('recall') ? 'url(#dmo-ah-b)' : 'url(#dmo-ah-d)' }),
+							h('path', { key: 'e10', d: 'M520 366 L520 430', className: tone(stage('recall')), markerEnd: 'url(#dmo-ah-m)' }),
 							h('path', { key: 'e11', d: 'M170 366 L170 430', className: 'dmo-edge muted', markerEnd: 'url(#dmo-ah-m)' }),
 							label('l10', 552, 402, '召回读取索引'),
 							label('l11', 150, 402, 'pre-step'),
 							// 准入 → 会话（左向）
-							h('path', { key: 'e12', d: 'M390 460 L312 460', className: tone(stage('recall')), markerEnd: stage('recall') ? 'url(#dmo-ah-b)' : 'url(#dmo-ah-d)' }),
+							h('path', { key: 'e12', d: 'M390 460 L312 460', className: tone(stage('recall')), markerEnd: 'url(#dmo-ah-m)' }),
 							label('l12', 351, 452, '准入注入'),
 							// 信号 → 准入（左向）
-							h('path', { key: 'e13', d: 'M730 484 L652 484', className: tone(stage('feedback'), 'ok'), markerEnd: stage('feedback') ? 'url(#dmo-ah-ok)' : 'url(#dmo-ah-d)' }),
+							h('path', { key: 'e13', d: 'M730 484 L652 484', className: tone(stage('feedback'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
 							label('l13', 691, 476, '校准阈值'),
 							// 会话 → 信号：走底部回流弧（第四段，闭环）
-							h('path', { key: 'e14', d: 'M175 512 L175 540 L905 540 L905 514', className: tone(stage('feedback'), 'ok'), markerEnd: stage('feedback') ? 'url(#dmo-ah-ok)' : 'url(#dmo-ah-d)' }),
-							label('l14', 540, 532, stage('feedback') ? '闭环：命中 / 纠正 → 使用信号' : '此处断开：无使用信号，反馈未回流'),
+							h('path', { key: 'e14', d: 'M175 512 L175 540 L905 540 L905 514', className: tone(stage('feedback'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
+							label('l14', 540, 532, '反馈回流方向 · 未验证'),
 							// 外部知识库 → 召回准入（右廊道下行，不穿任何节点）
 							//
 							// Tone reflects the channel's REAL state, not a decoration:
@@ -1809,7 +1887,7 @@ window.__ModuleLoader__.load({
 							// warning; down → dashed danger; not reported → muted (unknown,
 							// never drawn as working).
 							h('path', { key: 'e15', d: 'M1080 51 L1098 51 L1098 412 L660 412 L660 430', className: sagEdgeClass(), markerEnd: sagMarker() }),
-							label('l15', 900, 404, m.sag.usable ? 'fast 档只读召回 · 可用' : m.sag.known ? '第二通道未接通（见下方状态）' : 'fast 档只读召回（实验层）'),
+							label('l15', 900, 404, m.sag.usable ? 'fast 档只读召回 · 可用' : m.sag.online === false || m.sag.authorized === false ? '第二通道未接通（见下方状态）' : '第二通道状态未知'),
 						]),
 						// ---- nodes ----
 						h('g', { key: 'nodes' }, [
@@ -1820,7 +1898,7 @@ window.__ModuleLoader__.load({
 								// The role line carries the REAL channel state so the node is not
 								// a permanent "experimental, read-only" caption that looks the
 								// same whether the channel works or is dead.
-								role: !m.sag.known ? '状态未上报' : m.sag.usable ? '第二通道 · 可用' : m.sag.online ? '在线但未授权' : '不可达',
+								role: !m.sag.known ? '状态未上报' : m.sag.usable ? '第二通道 · 可用' : m.sag.online === true ? (m.sag.authorized === false ? '在线但未授权' : '在线 · 鉴权未知') : m.sag.online === false ? '不可达' : '状态未知',
 							}),
 							node('daily', { x: 40, y: 150, w: 170, h: 78, name: '每日原始记录', count: nOf('daily'), unit: '份', role: layers.daily?.role, tier: 'L0' }),
 							node('functions', { x: 248, y: 150, w: 162, h: 78, name: '功能域', count: nOf('functions'), unit: '个', role: layers.functions?.role, tier: 'L2' }),
@@ -1830,18 +1908,18 @@ window.__ModuleLoader__.load({
 							node('index', { x: 40, y: 294, w: 800, h: 72, name: 'MEMORY.md 索引', count: m.indexRows, unit: '行', role: '派生物：各层收行于此，召回只读它', accent: true }),
 							node('ctx', { x: 40, y: 430, w: 272, h: 74, name: '下一轮会话上下文', role: '注入点：决定未来知道什么' }),
 							node('gate', { x: 390, y: 430, w: 262, h: 74, name: '召回准入', role: '预算 / 分层 / 阀门规则' }),
-							node('sig', { x: 730, y: 430, w: 350, h: 74, name: '曝光事件（未去重）', count: m.signals, unit: '条', role: `覆盖 ${m.distinctHrefs} 个文件 · 采纳 ${m.verdicts} 次` }),
+							node('sig', { x: 730, y: 430, w: 350, h: 74, name: '召回曝光（未去重）', count: m.recallEvents, unit: '条', role: `总事件 ${displayCount(m.signals)} · 正向/纠正 ${displayCount(m.verdicts)}` }),
 						]),
 						// legend
 						h('g', { key: 'legend' }, [
 							h('line', { key: 'k1', x1: 40, y1: 578, x2: 84, y2: 578, className: 'dmo-edge business', markerEnd: 'url(#dmo-ah-b)' }),
-							h('text', { key: 'k2', x: 92, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '数据流（该段在转）'),
+							h('text', { key: 'k2', x: 92, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '通道可用（SAG）'),
 							h('line', { key: 'k3', x1: 236, y1: 578, x2: 280, y2: 578, className: 'dmo-edge ok', markerEnd: 'url(#dmo-ah-ok)' }),
-							h('text', { key: 'k4', x: 288, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '索引 / 闭环方向'),
+							h('text', { key: 'k4', x: 288, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '结构方向'),
 							h('line', { key: 'k5', x1: 430, y1: 578, x2: 474, y2: 578, className: 'dmo-edge danger', markerEnd: 'url(#dmo-ah-d)' }),
-							h('text', { key: 'k6', x: 482, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '该段断开'),
+							h('text', { key: 'k6', x: 482, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '通道不可达（SAG）'),
 							h('line', { key: 'k7', x1: 590, y1: 578, x2: 634, y2: 578, className: 'dmo-edge muted dashed', markerEnd: 'url(#dmo-ah-m)' }),
-							h('text', { key: 'k8', x: 642, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '只读旁路'),
+							h('text', { key: 'k8', x: 642, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '运行未验证'),
 						]),
 					),
 				),
@@ -1858,7 +1936,7 @@ window.__ModuleLoader__.load({
 							h('span', { className: 'dmo-arch-step-d' }, s.detail),
 						),
 						i === m.loop.length - 1
-							? h('span', { key: 'cyc', className: `dmo-arch-cycle${m.loopClosed ? ' closed' : ''}` }, m.loopClosed ? '↺ 闭环已闭合' : '✕ 闭环在此断开')
+							? h('span', { key: 'cyc', className: `dmo-arch-cycle${m.loopClosed ? ' closed' : ''}` }, '↺ 闭环未验证')
 							: null,
 					]),
 				),
@@ -1884,16 +1962,20 @@ window.__ModuleLoader__.load({
 						{ className: 'dmo-span-5', 'data-dmo': 'arch-caps' },
 						h('div', { className: 'dmo-eyebrow' }, '索引容量'),
 						h('div', { className: 'dmo-measure' },
-							h('div', { className: 'dmo-measure-v' }, m.indexComfort ? `${Math.round((m.indexBytes / m.indexComfort) * 100)}%` : '—'),
+							h('div', { className: 'dmo-measure-v' }, m.indexBytes !== null && m.indexComfort > 0 ? `${Math.round((m.indexBytes / m.indexComfort) * 100)}%` : '—'),
 							h('div', { className: 'dmo-measure-l' }, '占舒适线'),
-							h('div', { className: 'dmo-measure-x' }, m.indexComfort ? `${fmtBytes(m.indexBytes)} / ${fmtBytes(m.indexComfort)}` : '服务器未返回舒适线'),
+							h('div', { className: 'dmo-measure-x' }, m.indexBytes !== null && m.indexComfort > 0 ? `${fmtBytes(m.indexBytes)} / ${fmtBytes(m.indexComfort)}` : '索引体积或舒适线未知'),
 						),
-						m.indexComfort
+						m.indexBytes !== null && m.indexComfort > 0
 							? h('div', { className: 'dmo-meter', style: { width: '100%', height: 8, marginTop: 12, borderRadius: 999 } },
 									h('i', { className: `dmo-meter-fill${m.indexBytes > m.indexComfort ? ' over' : ''}`, style: { width: `${Math.min(100, Math.round((m.indexBytes / Math.max(1, m.indexComfort)) * 100))}%` } }))
 							: null,
 					),
 				),
+				h(Card, { 'data-dmo': 'current-runtime' },
+					h(RuntimeSnapshot, { snapshot: m.runtimeSnapshot, current: true }),
+				),
+				h(CycleCoverage, { coverage: m.cycleCoverage, patrolDelivery: m.patrolDelivery }),
 				// Second recall channel: three facts, three rows. They fail independently
 				// (no key / service down / key rejected) and each has its own fix, so a
 				// single "unavailable" line would hide which one is broken.
@@ -1916,10 +1998,10 @@ window.__ModuleLoader__.load({
 										{ key: f.key, className: 'dmo-inset', 'data-dmo': `sag-${f.key}` },
 										h('div', { className: 'dmo-measure-l' }, f.name),
 										h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 } },
-											h('span', { className: `dmo-dot ${f.ok ? 'ok' : 'fail'}` }, h('i')),
-											h('span', { style: { fontSize: 13, color: f.ok ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-error-primary)' } }, f.ok ? '正常' : '不通'),
+											h('span', { className: `dmo-dot ${f.ok === true ? 'ok' : f.ok === false ? 'fail' : ''}` }, h('i')),
+											h('span', { style: { fontSize: 13, color: f.ok === true ? 'var(--dsw-alias-state-success-primary)' : f.ok === false ? 'var(--dsw-alias-state-error-primary)' : 'var(--dsw-alias-label-tertiary)' } }, f.ok === true ? '正常' : f.ok === false ? '不通' : '未知'),
 										),
-										f.ok ? null : h('div', { className: 'dmo-measure-x', style: { marginTop: 4 } }, f.bad),
+										f.ok === false ? h('div', { className: 'dmo-measure-x', style: { marginTop: 4 } }, f.bad) : null,
 									),
 								),
 							),
@@ -1933,7 +2015,8 @@ window.__ModuleLoader__.load({
 		}
 
 		function Overview({ health, counts, timeline, usage, env, capture, prose, preview, previewQ, setPreviewQ, onOpen, onZone, onNavigate }) {
-			const problems = health?.results ?? [];
+			const problems = Array.isArray(health?.results) ? health.results : [];
+			const healthKnown = knownCount(health?.failCount) !== null && knownCount(health?.warnCount) !== null;
 			const fails = problems.filter((p) => p.level === 'FAIL');
 			const warns = problems.filter((p) => p.level === 'WARN');
 			const cold = problems.filter((p) => p.rule === 'TEMP');
@@ -1991,7 +2074,7 @@ window.__ModuleLoader__.load({
 					{ className: 'dmo-span-3 dmo-hero-card', 'data-dmo': 'measure-functions' },
 					h('div', { className: 'dmo-eyebrow' }, '功能'),
 					h('div', { className: 'dmo-measure' },
-						h('div', { className: 'dmo-measure-v' }, String(counts.functions ?? 0)),
+						h('div', { className: 'dmo-measure-v' }, String(displayCount(counts.functions))),
 						h('div', { className: 'dmo-measure-l' }, '功能域'),
 						h('div', { className: 'dmo-measure-x' }, '可复跑的操作'),
 					),
@@ -2002,7 +2085,7 @@ window.__ModuleLoader__.load({
 					{ className: 'dmo-span-3 dmo-hero-card', 'data-dmo': 'measure-insights' },
 					h('div', { className: 'dmo-eyebrow' }, '思想'),
 					h('div', { className: 'dmo-measure' },
-						h('div', { className: 'dmo-measure-v' }, String(counts.insights ?? 0)),
+						h('div', { className: 'dmo-measure-v' }, String(displayCount(counts.insights))),
 						h('div', { className: 'dmo-measure-l' }, '创新优化思想'),
 						h('div', { className: 'dmo-measure-x' }, '可重套的原则'),
 					),
@@ -2013,7 +2096,7 @@ window.__ModuleLoader__.load({
 					{ className: 'dmo-span-3 dmo-hero-card', 'data-dmo': 'measure-capabilities' },
 					h('div', { className: 'dmo-eyebrow' }, '能力'),
 					h('div', { className: 'dmo-measure' },
-						h('div', { className: 'dmo-measure-v' }, String(counts.capabilities ?? 0)),
+						h('div', { className: 'dmo-measure-v' }, String(displayCount(counts.capabilities))),
 						h('div', { className: 'dmo-measure-l' }, '能力台账'),
 						h('div', { className: 'dmo-measure-x' }, '外部工具索引'),
 					),
@@ -2024,7 +2107,7 @@ window.__ModuleLoader__.load({
 					{ className: 'dmo-span-3 dmo-hero-card', 'data-dmo': 'measure-skills' },
 					h('div', { className: 'dmo-eyebrow' }, '技能'),
 					h('div', { className: 'dmo-measure' },
-						h('div', { className: 'dmo-measure-v' }, String(counts.skills ?? 0)),
+						h('div', { className: 'dmo-measure-v' }, String(displayCount(counts.skills))),
 						h('div', { className: 'dmo-measure-l' }, '技能库'),
 						h('div', { className: 'dmo-measure-x' }, '已验证的程序'),
 					),
@@ -2037,19 +2120,19 @@ window.__ModuleLoader__.load({
 					{ className: 'dmo-span-5', 'data-dmo': 'health-card' },
 					h('div', { className: 'dmo-eyebrow' }, '体检'),
 					h('div', { className: 'dmo-measure' },
-						h('div', { className: 'dmo-measure-v' }, problems.length ? String(problems.length) : '0'),
-						h('div', { className: 'dmo-measure-l' }, problems.length ? '条待处理问题' : '体检全通过'),
+						h('div', { className: 'dmo-measure-v' }, problems.length ? String(problems.length) : healthKnown ? String(health.failCount + health.warnCount) : '未知'),
+						h('div', { className: 'dmo-measure-l' }, problems.length || (healthKnown && health.failCount + health.warnCount > 0) ? '条待处理问题' : healthKnown ? '体检全通过' : '体检状态未知'),
 					),
 					h(
 						'div',
 						{ className: 'dmo-chips', style: { marginTop: 10 } },
-						h(Chip, { tone: fails.length ? 'fail' : 'ok' }, fails.length ? `FAIL ${fails.length}` : '无 FAIL'),
-						h(Chip, { tone: warns.length ? 'warn' : null }, warns.length ? `WARN ${warns.length}` : '无 WARN'),
+						h(Chip, { tone: health?.failCount > 0 ? 'fail' : knownCount(health?.failCount) === null ? null : 'ok' }, knownCount(health?.failCount) === null ? 'FAIL 未知' : health.failCount > 0 ? `FAIL ${health.failCount}` : '无 FAIL'),
+						h(Chip, { tone: health?.warnCount > 0 ? 'warn' : null }, knownCount(health?.warnCount) === null ? 'WARN 未知' : health.warnCount > 0 ? `WARN ${health.warnCount}` : '无 WARN'),
 						cold.length ? h(Chip, { tone: 'warn' }, `❄ 冷记忆 ${cold.length}`) : null,
 					),
 					problems.length
 						? h('ul', { className: 'dmo-probs dmo-inset', style: { marginTop: 12 } }, problems.slice(0, 12).map((p, i) => h('li', { key: i }, `[${p.level}] ${p.rule}: ${p.message}`)))
-						: h('div', { className: 'dmo-inset dmo-meta', style: { marginTop: 12 } }, '索引体积、摘要、反向链接、日期顺序、死链、冷记忆均正常。'),
+						: h('div', { className: 'dmo-inset dmo-meta', style: { marginTop: 12 } }, healthKnown && health.failCount === 0 && health.warnCount === 0 ? '索引体积、摘要、反向链接、日期顺序、死链、冷记忆均正常。' : '体检结果详情未提供。'),
 				),
 				h('div', { className: 'dmo-span-4', 'data-dmo': 'capture-slot' }, h(CaptureStatus, { capture })),
 				// Daily stock gets a sparkline of the last days actually on disk.
@@ -2058,7 +2141,7 @@ window.__ModuleLoader__.load({
 					{ className: 'dmo-span-3', 'data-dmo': 'measure-daily' },
 					h('div', { className: 'dmo-eyebrow' }, '每日'),
 					h('div', { className: 'dmo-measure' },
-						h('div', { className: 'dmo-measure-v' }, String(counts.daily ?? 0)),
+						h('div', { className: 'dmo-measure-v' }, String(displayCount(counts.daily))),
 						h('div', { className: 'dmo-measure-l' }, '日线索 / 月归档'),
 					),
 					(() => {
@@ -2103,7 +2186,9 @@ window.__ModuleLoader__.load({
 					Card,
 					{ className: 'dmo-span-6', 'data-dmo': 'usage-card' },
 					h(CardTitle, null, '使用信号'),
-					!hasSignals
+					knownCount(usage?.signalCount) === null
+						? h('div', { className: 'dmo-meta' }, '使用信号数量未知。')
+						: !hasSignals
 						? h('div', { className: 'dmo-meta' }, '还没有使用信号。召回命中与 memory_read 会自动记录；纠正/认可用 memory_usage(record) 记一笔。')
 						: h(
 								'div',
@@ -2111,13 +2196,13 @@ window.__ModuleLoader__.load({
 								h(
 									'div',
 									{ className: 'dmo-chips', 'data-dmo': 'usage-layers' },
-									h(Chip, null, `实验 ${usageLayer['实验'] ?? 0}`),
-									h(Chip, { tone: 'ok' }, `专项 ${usageLayer['专项'] ?? 0}`),
-									h(Chip, { tone: 'ok' }, `通用 ${usageLayer['通用'] ?? 0}`),
+									h(Chip, null, `实验 ${displayCount(usageLayer['实验'])}`),
+									h(Chip, { tone: 'ok' }, `专项 ${displayCount(usageLayer['专项'])}`),
+									h(Chip, { tone: 'ok' }, `通用 ${displayCount(usageLayer['通用'])}`),
 									// 口径必须标清：signalCount 里绝大部分是插件自己写的
 									// recall 曝光（同一文件会重复几百次），不是"被使用"，
 									// 更不是索引规模。索引规模看 memory_index 的行数。
-									h('span', { className: 'dmo-meta' }, `30 天 ${usage.signalCount} 条事件（含 ${usage.recallEvents ?? 0} 条召回曝光）· 采纳 ${usage.verdictEvents ?? 0} 次 · 覆盖 ${usage.distinctHrefs ?? 0} 个文件`),
+									h('span', { className: 'dmo-meta' }, `30 天 ${usage.signalCount} 条事件（含 ${displayCount(usage.recallEvents)} 条召回曝光）· 正向/纠正 ${displayCount(usage.verdictEvents)} 次 · 覆盖 ${displayCount(usage.distinctHrefs)} 个文件`),
 								),
 								hotspots.length
 									? h(
@@ -3211,7 +3296,7 @@ window.__ModuleLoader__.load({
 			// The panel API answers with `results` (see runHealthCheck); accept the
 			// older `problems` spelling too so a stale server half cannot blank the
 			// health chips silently.
-			const health = ws ? { initialized: ws.initialized, failCount: ws.failCount, warnCount: ws.warnCount, results: ws.results ?? ws.problems ?? [] } : null;
+			const health = ws ? { initialized: ws.initialized, failCount: ws.failCount, warnCount: ws.warnCount, results: ws.results ?? ws.problems ?? null } : null;
 			const indexText = indexFile.data?.text ?? '';
 			const tables = parseIndexTables(indexText);
 			const lists = { functions: funcs.data?.files ?? [], insights: insights.data?.files ?? [], dao: daos.data?.files ?? [], capabilities: caps.data?.files ?? [], skills: skills.data?.files ?? [], daily: dailies.data?.files ?? [] };
@@ -3366,7 +3451,7 @@ window.__ModuleLoader__.load({
 			// 架构图独用一个 view.kind：它不是"分区列表"，是跨层的结构视图。
 			else if (view.kind === 'arch')
 				main = h(Architecture, {
-					model: buildArchitecture({ counts, usage: overview.data?.[0]?.usage, capture: overview.data?.[0]?.capture, env: overview.data?.[0]?.env, health, sag: overview.data?.[0]?.sag }),
+					model: buildArchitecture({ counts, usage: overview.data?.[0]?.usage, capture: overview.data?.[0]?.capture, env: overview.data?.[0]?.env, health, sag: overview.data?.[0]?.sag, cycleCoverage: overview.data?.[0]?.cycleCoverage, runtimeSnapshot: overview.data?.[0]?.runtimeSnapshot, patrolDelivery: overview.data?.[0]?.patrolDelivery }),
 					// Freshness is read here (not stored in a hook) so the badge always
 					// reflects the channel's real state at render time.
 					live: sseFreshness().live,
@@ -3448,7 +3533,7 @@ window.__ModuleLoader__.load({
 							h('span', null, '心智系统'),
 						),
 						h('h1', { className: 'dmo-title' }, '心智管理'),
-						h('p', { className: 'dmo-sub' }, `${counts.functions ?? 0} 功能 · ${counts.insights ?? 0} 思想 · ${counts.dao ?? 0} 道 · ${counts.capabilities ?? 0} 能力 · ${counts.skills ?? 0} 技能 · ${counts.daily ?? 0} 日线索`),
+						h('p', { className: 'dmo-sub' }, `${displayCount(counts.functions)} 功能 · ${displayCount(counts.insights)} 思想 · ${displayCount(counts.dao)} 道 · ${displayCount(counts.capabilities)} 能力 · ${displayCount(counts.skills)} 技能 · ${displayCount(counts.daily)} 日线索`),
 					),
 					h(
 						'div',
@@ -3456,9 +3541,9 @@ window.__ModuleLoader__.load({
 						h(
 							'div',
 							{ className: 'dmo-statusbar', 'data-dmo': 'statusbar' },
-							h('span', { className: (ws?.failCount ?? 0) > 0 ? 'dmo-dot fail' : 'dmo-dot ok' }, h('i'), (ws?.failCount ?? 0) > 0 ? `FAIL ${ws.failCount}` : '体检正常'),
-							h('span', { className: (ws?.warnCount ?? 0) > 0 ? 'dmo-dot warn' : 'dmo-dot ok' }, h('i'), (ws?.warnCount ?? 0) > 0 ? `WARN ${ws.warnCount}` : '无警告'),
-							h('span', { className: 'dmo-dot ok' }, h('i'), `${counts.functions ?? 0} 功能 / ${counts.insights ?? 0} 思想 / ${counts.dao ?? 0} 道`),
+							h('span', { className: knownCount(ws?.failCount) === null ? 'dmo-dot' : ws.failCount > 0 ? 'dmo-dot fail' : 'dmo-dot ok' }, h('i'), knownCount(ws?.failCount) === null ? 'FAIL 未知' : ws.failCount > 0 ? `FAIL ${ws.failCount}` : '无 FAIL'),
+							h('span', { className: knownCount(ws?.warnCount) === null ? 'dmo-dot' : ws.warnCount > 0 ? 'dmo-dot warn' : 'dmo-dot ok' }, h('i'), knownCount(ws?.warnCount) === null ? 'WARN 未知' : ws.warnCount > 0 ? `WARN ${ws.warnCount}` : '无警告'),
+							h('span', { className: 'dmo-dot' }, h('i'), `${displayCount(counts.functions)} 功能 / ${displayCount(counts.insights)} 思想 / ${displayCount(counts.dao)} 道`),
 						),
 						h(
 							'div',

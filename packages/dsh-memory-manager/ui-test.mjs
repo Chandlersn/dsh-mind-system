@@ -177,7 +177,7 @@ const fixtures = {
 		{ name: '测试候选甲', proposition: '判据要落在被测者控制不了的那一面。', source_count: 5, status: 'candidate', decision_needed: true, file: 'dao/_candidates/测试候选甲.md' },
 		{ name: '测试候选乙', proposition: '凡信号都需要一条它无法伪造的退路。', source_count: 6, status: 'candidate', decision_needed: true, file: 'dao/_candidates/测试候选乙.md' },
 	] }, loading: false, error: null },
-	'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], title: '全局记忆', path: 'C:/x/.dsh', counts: { functions: 2, insights: 1, capabilities: 0, skills: 1, daily: 4, archived: 1 }, env: { version: '5.26.0', canReload: true, hotReloadRunning: false, memoryRoot: 'C:/x/memory', skillRoot: 'C:/x/.dsh/skills', indexBytes: 6000, indexComfortBytes: 8000, indexHardBytes: 16000 } }], loading: false, error: null },
+	'/api/memory-org/overview?v=0': { data: [{ root: 'C:/x/memory', initialized: true, failCount: 0, warnCount: 1, results: [{ level: 'WARN', rule: 'TEMP', message: 'functions/beta.md 冷记忆' }], title: '全局记忆', path: 'C:/x/.dsh', counts: { functions: 2, insights: 1, dao: 0, capabilities: 0, skills: 1, daily: 4, archived: 1 }, env: { version: '5.26.0', canReload: true, hotReloadRunning: false, memoryRoot: 'C:/x/memory', skillRoot: 'C:/x/.dsh/skills', indexBytes: 6000, indexComfortBytes: 8000, indexHardBytes: 16000 } }], loading: false, error: null },
 	'/api/memory-org/list?zone=functions&v=0': { data: { files: [{ name: 'alpha.md', bytes: fnText.length, mtime: iso(30) }, { name: 'beta.md', bytes: 900, mtime: iso(2000) }] }, loading: false, error: null },
 	'/api/memory-org/list?zone=insights&v=0': { data: { files: [{ name: 'gamma.md', bytes: 500, mtime: iso(120) }] }, loading: false, error: null },
 	'/api/memory-org/list?zone=dao&v=0': { data: { files: [] }, loading: false, error: null },
@@ -381,6 +381,66 @@ const clickByText = (nodes, text) => nodes.find((node) => node.type === 'button'
 	ok(inbox.includes('收件箱断网') && !inbox.includes('暂无问题'), 'inbox errors remain visible instead of claiming an empty inbox');
 }
 
+// Weekly evidence is rendered from the overview payload without inferring a cycle.
+{
+	const arch = (cycleCoverage, runtimeSnapshot, patrolDelivery) => serialize(FakeReact.createElement(MemoryPanel, {
+		__apiFixtures: { ...fixtures, '/api/memory-org/overview?v=0': { data: [{ ...fixtures['/api/memory-org/overview?v=0'].data[0], cycleCoverage, runtimeSnapshot, patrolDelivery }], loading: false, error: null } },
+		initialView: { kind: 'arch' },
+	}));
+	for (const [state, label] of [
+		['starting', '正在启动'], ['unavailable', '投递服务不可用'], ['unknown', '未知：数据缺失或无法读取'],
+		['unsupported_report', '报告格式不受支持'], ['no_candidates', '没有待投递的候选'],
+		['delivered', '已写入收件箱，不代表已读或已确认'], ['retrying', '投递失败，正在重试'],
+	]) {
+		const rendered = arch({ status: 'unavailable' }, undefined, { status: state, reason: 'reason-code', error: 'delivery-error', reportId: 'report-123' });
+		const delivery = rendered.slice(rendered.indexOf('data-dmo="patrol-delivery"'), rendered.indexOf('周检时间：'));
+		ok([label, 'reason-code', 'delivery-error', 'report-123'].every((text) => delivery.includes(text)), `patrol delivery ${state} and details are rendered`);
+	}
+	for (const delivery of [undefined, null, {}, { status: 'future_state' }]) {
+		ok(arch({ status: 'missing' }, undefined, delivery).includes('未知：数据缺失或无法读取'), 'missing or unrecognized patrol delivery remains unknown');
+	}
+	ok(arch({ status: 'unavailable' }).includes('周检服务不可用'), 'unavailable weekly service is visible');
+	ok(arch({ status: 'unknown' }).includes('覆盖报告状态未知或无法读取'), 'unknown weekly report is visible');
+	const missing = arch({ status: 'missing', at: '2026-11-19T00:00:00Z', ok: false });
+	ok(missing.includes('最近一次周检没有覆盖报告') && missing.includes('周检失败') && missing.includes('2026-11-19T00:00:00Z'), 'missing report retains failed weekly result and timestamp');
+	const available = arch({ status: 'available', at: '2026-11-19T00:00:00Z', ok: false, report: {
+		micro_execution: { schedule_delivery: { status: 'unknown', reason: 'no_delivery_source_connected' }, outcome: { status: 'error', reason: 'EACCES' } },
+		memory: { distillation: { status: 'unknown', reason: 'generic_tracked_write_does_not_identify_distillation', tracked_function_write_observed: true }, index: { status: 'observed', scope: 'index_file_only' }, recall: { status: 'incomplete', observed: true, reason: 'invalid_records' } },
+		governance: { decisions: { status: 'observed' } },
+		cross_step_correlation: { status: 'unknown', reason: 'no_shared_cycle_identity_established', note: 'Individual observations do not establish a cycle.' },
+	} });
+	ok(['定时投递', '执行结果', '记忆蒸馏', '记忆索引', '记忆召回', '治理决策', '跨步骤关联'].every((s) => available.includes(s)), 'available report renders all evidence stages');
+	ok(['no_delivery_source_connected', 'EACCES', 'generic_tracked_write_does_not_identify_distillation', 'index_file_only', 'invalid_records', 'no_shared_cycle_identity_established'].every((s) => available.includes(s)), 'report retains reasons, scope and errors');
+	ok(available.includes('周检失败') && available.includes('已观察到历史证据') && available.includes('单项证据不证明同一工作完成闭环') && available.includes('受追踪的功能域写入：是'), 'observations and tracked writes do not claim cycle proof');
+	ok(arch({ status: 'available', report: {} }).includes('状态：未知'), 'missing evidence fields remain unknown');
+	const snapshot = (runtime_snapshot) => arch({ status: 'available', report: { micro_execution: { runtime_snapshot } } });
+	const ready = snapshot({ state: 'ready', runs: [{ taskId: 'task-one', status: 'running', reason: 'waiting', createdAt: 'created-time', updatedAt: 'updated-time', unresolved: { count: 2, first: { attemptId: 'attempt-one', status: 'pending' } }, registered: true }], truncated: true, registeredTasks: { taskIds: ['task-one', 'task-two'], truncated: false } });
+	ok(['运行时快照', '状态：可用', 'task-one', 'running', 'waiting', '创建：created-time', '更新：updated-time', '未解决数量：2', '首个尝试 ID：attempt-one', '尝试状态：pending', '注册：是', '运行记录截断：已截断', '已注册任务截断：未截断', 'task-two'].every((s) => ready.includes(s)), 'runtime snapshot renders task evidence and truncation');
+	const numericTime = snapshot({ state: 'ready', runs: [{ taskId: 'dated', createdAt: 0, updatedAt: 1000 }], truncated: false, registeredTasks: { taskIds: [], truncated: false } });
+	ok(numericTime.includes('创建：1970-01-01T00:00:00.000Z') && numericTime.includes('更新：1970-01-01T00:00:01.000Z'), 'runtime epoch milliseconds render as timestamps');
+	const empty = snapshot({ state: 'ready', runs: [], truncated: false, registeredTasks: { taskIds: [], truncated: false } });
+	ok(empty.includes('快照中无运行记录') && empty.includes('已注册任务：快照中无') && !empty.includes('任务已完成'), 'empty runtime snapshot does not infer task completion');
+	ok(snapshot({ state: 'unavailable' }).includes('状态：不可用') && snapshot({ state: 'disabled' }).includes('状态：已禁用') && snapshot({ state: 'error' }).includes('状态：读取错误'), 'runtime unavailability states are distinct');
+	const partial = snapshot({ state: 'partial', runs: [{ taskId: 'partial-task', unresolved: { count: 0, first: null }, registered: false }], truncated: false, registeredTasks: { taskIds: [], truncated: true } });
+	ok(['状态：部分可用', 'partial-task', '状态：未知', '注册：否', '未解决数量：0', '首个尝试 ID：未知', '已注册任务截断：已截断'].every((s) => partial.includes(s)) && !partial.includes('任务已完成'), 'partial snapshot retains unknown fields without inferring completion');
+	const bounded = snapshot({ state: 'ready', runs: Array.from({ length: 51 }, (_, i) => ({ taskId: `run-${i}` })), truncated: false, registeredTasks: { taskIds: Array.from({ length: 51 }, (_, i) => `registered-${i}`), truncated: false } });
+	ok(!bounded.includes('run-50') && !bounded.includes('registered-50') && bounded.includes('运行记录截断：已截断') && bounded.includes('已注册任务截断：已截断'), 'client bounds both runtime lists and reports local truncation');
+	const weekly = { status: 'available', at: 'weekly-date', report: { micro_execution: { runtime_snapshot: { state: 'unavailable', runs: [{ taskId: 'weekly-task' }] } } } };
+	const noCurrent = arch(weekly);
+	const currentSection = (html) => html.slice(html.indexOf('data-dmo="current-runtime"'), html.indexOf('data-dmo="cycle-coverage"'));
+	ok(currentSection(noCurrent).includes('当前运行时快照') && currentSection(noCurrent).includes('状态：缺失') && !currentSection(noCurrent).includes('weekly-task'), 'missing current service is explicit and does not reuse weekly data');
+	const late = arch(weekly, { state: 'ready', runs: [{ taskId: 'current-task', updatedAt: 'current-date', unresolved: { count: 1, first: { attemptId: 'current-attempt', status: 'started' } } }], truncated: true, registeredTasks: { taskIds: ['current-task'], truncated: false } });
+	const current = currentSection(late);
+	const historical = late.slice(late.indexOf('data-dmo="cycle-coverage"'));
+	ok(['状态：可用', 'current-task', 'current-date', 'current-attempt', '未解决数量：1', '运行记录截断：已截断'].every((s) => current.includes(s)) && !current.includes('weekly-date') && !current.includes('weekly-task'), 'late current service renders its own task evidence without the weekly date');
+	ok(['周检历史运行时快照', 'weekly-date', 'weekly-task', '状态：不可用'].every((s) => historical.includes(s)) && !historical.includes('current-task') && !historical.includes('current-date'), 'current service does not overwrite the historical weekly snapshot');
+	for (const [state, label] of [['disabled', '已禁用'], ['unavailable', '不可用'], ['missing', '缺失'], ['error', '读取错误']]) {
+		const section = currentSection(arch(weekly, { state, error: state === 'error' ? 'snapshot_failed' : undefined }));
+		ok(section.includes(`状态：${label}`) && (state !== 'error' || section.includes('snapshot_failed')), `current runtime ${state} is explicit`);
+	}
+	ok(!current.includes('任务已完成') && !current.includes('停滞'), 'current evidence does not assert success or a stall');
+}
+
 // --- overview ---------------------------------------------------------------
 const overview = render({ kind: 'overview' });
 // 10 = 总览/架构/索引/功能/思想/道/能力/技能/每日/收件箱。
@@ -416,9 +476,8 @@ const tl = overview.slice(overview.indexOf('data-dmo="timeline-row"'));
 ok(tl.indexOf('2026-10-18') < tl.indexOf('beta'), 'timeline is newest-first');
 ok(overview.includes('alpha 已稳定'), 'timeline rows carry the index one-line summary');
 ok(overview.includes('刚刚') || overview.includes('分钟前'), 'timeline shows relative time');
-// overview usage card: fixtures have no usage field -> the empty state explains
-// where signals come from instead of rendering a broken chart
-ok(overview.includes('还没有使用信号'), 'usage card explains itself when there are no signals');
+// Missing usage data must not be presented as an explicitly empty history.
+ok(overview.includes('使用信号数量未知'), 'usage card reports missing signal counts as unknown');
 ok(count(overview, 'dmo-card') >= 3, `overview renders health + usage + timeline cards (${count(overview, 'dmo-card')})`);
 // with usage data, the layer histogram + hotspots render
 const overviewWithUsage = serialize(
@@ -432,9 +491,21 @@ const overviewWithUsage = serialize(
 );
 ok(overviewWithUsage.includes('实验 2') && overviewWithUsage.includes('专项 1'), 'usage card renders the layer histogram');
 ok(overviewWithUsage.includes('30 天 12 条事件'), 'usage card counts EVENTS, not "signals" (exposure wording fixed 2026-11-16)');
-ok(overviewWithUsage.includes('召回曝光') && overviewWithUsage.includes('采纳'), 'the usage line names exposure and adoption separately');
+ok(overviewWithUsage.includes('召回曝光') && overviewWithUsage.includes('正向/纠正') && !overviewWithUsage.includes('采纳'), 'the usage line distinguishes exposure and verdicts without claiming adoption');
 ok(overviewWithUsage.includes('结论反复推翻（翻转 2）'), 'hotspots name flip-heavy memories');
 ok(overviewWithUsage.includes('纠正率 50%'), 'hotspots name high correction rates');
+
+// Verify the complete panel header and health card with missing versus zero data.
+{
+	const panel = (workspace) => serialize(FakeReact.createElement(MemoryPanel, {
+		__apiFixtures: { ...fixtures, '/api/memory-org/overview?v=0': { data: [workspace], loading: false, error: null } },
+		initialView: { kind: 'overview' },
+	}));
+	const missing = panel({ initialized: true });
+	const zero = panel({ initialized: true, counts: { functions: 0, insights: 0, dao: 0, capabilities: 0, skills: 0, daily: 0 }, failCount: 0, warnCount: 0, results: [] });
+	ok(missing.includes('未知 功能 · 未知 思想') && missing.includes('FAIL 未知') && missing.includes('WARN 未知') && missing.includes('体检状态未知') && !missing.includes('体检全通过'), 'missing panel counts and health remain unknown in header and card');
+	ok(zero.includes('0 功能 · 0 思想') && zero.includes('无 FAIL') && zero.includes('无警告') && zero.includes('体检全通过'), 'explicit zero panel counts and health render as zero and healthy');
+}
 
 // --- zone list --------------------------------------------------------------
 const funList = render({ kind: 'zone', zone: 'functions' });
@@ -1054,7 +1125,7 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 	ok(model.layers.find((l) => l.key === 'functions')?.count === 26, 'layer counts come from the server, not hardcoded');
 	ok(model.activeLayers === 5, `all five layers report content (${model.activeLayers})`);
 	ok(model.loop.length === 4 && model.loop.map((s) => s.key).join(',') === 'write,distill,recall,feedback', 'the loop has the four real stages');
-	ok(model.loopClosed === true, 'a fully populated root reports a closed loop');
+	ok(model.loopClosed === null && model.loop.every((stage) => stage.ok === null), 'historical stock and events leave every stage and the loop unverified');
 	// 口径纪律（2026-11-16 用户追问后立）：事件数、去重覆盖数、索引规模是三个
 	// 不同事实，图上必须分开标；把曝光当规模就是最贵的那种错。
 	ok(model.signals === 4372, 'exposure events are carried as events, not as a size');
@@ -1063,16 +1134,22 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 	ok(model.verdicts === 16, 'adoption (verdicts) is its own field, never folded into exposure');
 	ok(model.roots.every((r) => r.path), 'both storage roots come from the server');
 
-	// 空根：不能假装闭环，且 0 必须是真 0 而不是缺字段
+	// Missing measurements and explicit zeros must remain distinguishable.
 	const empty = T.buildArchitecture({});
-	ok(empty.layers.every((l) => l.count === 0), 'a fresh root reports zero on every layer');
-	ok(empty.loopClosed === false, 'a fresh root reports an OPEN loop rather than a closed one');
+	ok(empty.layers.every((l) => l.count === null) && empty.indexRows === null && empty.recallEvents === null, 'missing counts remain unknown in the model');
+	const zero = T.buildArchitecture({ counts: { daily: 0, functions: 0, insights: 0, dao: 0, capabilities: 0 }, usage: { indexRows: 0, recallEvents: 0 }, health: { failCount: 0, warnCount: 0 }, capture: { enabled: false } });
+	ok(zero.layers.every((l) => l.count === 0) && zero.indexRows === 0 && zero.recallEvents === 0, 'explicit zero counts remain zero');
+	const zeroHtml = serialize(FakeReact.createElement(T.Architecture, { model: zero }));
+	ok(zeroHtml.includes('体检正常') && zeroHtml.includes('采集未启用') && !zeroHtml.includes('采集状态未知'), 'explicit healthy and disabled states render distinctly');
+	const configuredHtml = serialize(FakeReact.createElement(T.Architecture, { model: T.buildArchitecture({ capture: { enabled: true } }) }));
+	ok(configuredHtml.includes('采集已配置启用') && !configuredHtml.includes('采集运行中'), 'configured capture does not claim it is running');
+	ok(empty.loopClosed === null, 'missing data leaves loop state unverified');
 	ok(empty.roots.every((r) => r.active === false), 'missing roots are marked inactive, not invented');
 
 	// 无信号 = 反馈段断开（召回命中会记信号，所以这真的是"没转起来"）
 	const noSignal = T.buildArchitecture({ counts: { daily: 5, functions: 2, insights: 1 }, usage: { signalCount: 0 }, env: { memoryRoot: 'r', skillRoot: 's' } });
-	ok(noSignal.loop.find((s) => s.key === 'feedback')?.ok === false, 'zero signals break the feedback stage');
-	ok(noSignal.loopClosed === false, 'no signals means the loop is not closed');
+	ok(noSignal.loop.find((s) => s.key === 'feedback')?.ok === null, 'zero historical events do not prove a broken stage');
+	ok(noSignal.loopClosed === null, 'zero events leave loop state unverified');
 
 	// 渲染层：这是**画出来的图**，不是卡片行——断言节点、连线和箭头都在
 	const archHtml = serialize(FakeReact.createElement(T.Architecture, { model }));
@@ -1081,9 +1158,19 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 	ok(archHtml.includes('dmo-arch-svg') && archHtml.includes('<svg'), 'the diagram is an SVG drawing, not a row of cards');
 	ok((archHtml.match(/marker-end=/g) ?? []).length >= 10, `edges carry arrowheads (${(archHtml.match(/marker-end=/g) ?? []).length})`);
 	ok(archHtml.includes('dmo-edge'), 'edges are stroked paths');
-	ok(archHtml.includes('闭环已闭合') || archHtml.includes('已闭合'), 'a closed loop is labelled as such');
+	ok(archHtml.includes('闭环未验证') && !archHtml.includes('闭环已闭合') && !archHtml.includes('此处断开'), 'populated historical data never claims a verified loop');
 	const openHtml = serialize(FakeReact.createElement(T.Architecture, { model: empty }));
-	ok(openHtml.includes('断开'), 'an open loop says it breaks instead of pretending');
+	ok(openHtml.includes('闭环未验证') && !openHtml.includes('此处断开'), 'missing data does not claim a broken loop');
+	ok(openHtml.includes('体检状态未知') && openHtml.includes('采集状态未知') && !openHtml.includes('体检正常') && !openHtml.includes('采集未启用'), 'missing health and capture render as unknown');
+	const missingNode = elements(FakeReact.createElement(T.Architecture, { model: empty })).find((node) => node.props?.['data-dmo'] === 'arch-node-daily');
+	const zeroNode = elements(FakeReact.createElement(T.Architecture, { model: zero })).find((node) => node.props?.['data-dmo'] === 'arch-node-daily');
+	ok(serialize(missingNode).includes('>未知<') && serialize(zeroNode).includes('>0<'), 'diagram renders missing and explicit-zero layer counts differently');
+	const edgeNodes = elements(FakeReact.createElement(T.Architecture, { model })).filter((node) => node.type === 'g' && node.props?.className === 'dmo-edges')[0].props.children.filter((node) => node.type === 'path');
+	ok(edgeNodes.slice(0, 14).every((edge) => edge.props.className.includes('muted') && edge.props.markerEnd === 'url(#dmo-ah-m)'), 'all historical stage edges and arrowheads are neutral');
+	const signalNode = elements(FakeReact.createElement(T.Architecture, { model })).find((node) => node.props?.['data-dmo'] === 'arch-node-sig');
+	const signalText = serialize(signalNode);
+	ok(signalText.includes('召回曝光（未去重）') && signalText.includes('4125') && !signalText.includes('采纳'), 'the exposure node uses recallEvents and does not call verdicts adoption');
+	ok(archHtml.includes('4372') && archHtml.includes('正向/纠正 16'), 'total events and positive/correction verdicts remain separately labelled');
 	ok(archHtml.includes('C:/x/memory') && archHtml.includes('C:/x/skills'), 'real storage roots are shown');
 }
 
@@ -1117,6 +1204,13 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 	ok(unauthHtml.includes('在线但未授权'), 'the node names the degraded state');
 	ok(unauthHtml.includes('dmo-edge warn'), 'the edge uses the warning tone, not the success tone');
 	ok(unauthHtml.includes('被拒：重新签发 key'), 'the failing row says how to fix it');
+
+	// Unknown authorization must not be reported as a rejected key.
+	const authUnknown = T.buildArchitecture({ ...base, sag: { configured: true, online: true, authorized: null } });
+	const authUnknownHtml = serialize(FakeReact.createElement(T.Architecture, { model: authUnknown }));
+	ok(authUnknown.sag.authorized === null && authUnknownHtml.includes('在线 · 鉴权未知') && !authUnknownHtml.includes('被拒：重新签发 key'), 'unknown authorization stays unknown without a rejection claim');
+	const authUnknownEdge = elements(FakeReact.createElement(T.Architecture, { model: authUnknown })).find((node) => node.type === 'path' && node.props?.d === 'M1080 51 L1098 51 L1098 412 L660 412 L660 430');
+	ok(authUnknownEdge?.props.className.includes('muted') && authUnknownEdge.props.markerEnd === 'url(#dmo-ah-m)', 'unknown authorization has a neutral edge and arrowhead');
 
 	// 3) service down
 	const down = T.buildArchitecture({ ...base, sag: { configured: true, online: false, authorized: null } });

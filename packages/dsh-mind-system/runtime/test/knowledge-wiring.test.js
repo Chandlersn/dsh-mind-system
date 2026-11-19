@@ -35,7 +35,9 @@ test('a knowledge reference carries its domain, so trust is never inferred from 
 });
 
 test('reading keeps the domain identity even when the same engine serves both', async () => {
-  const adapter = adapterReturning({ content: [{ path: '/x', text: 'body' }], verified: true });
+  const adapter = { async read({ domain, id, version }) {
+    return { identity: { domain, id, version }, content: [{ path: '/x', text: 'body' }], verified: true };
+  } };
   const formal = await readKnowledge({ adapter, reference: { domain: 'formal', id: 'n', version: '1' } });
   assert.equal(formal.trust, 'formal');
   assert.equal(formal.verified, true);
@@ -126,6 +128,19 @@ test('a SAG write without a path refuses instead of claiming index progress', as
   const adapter = createSagAdapter({ apiKey: 'sag_test', sagCmd: 'sag' });
   await assert.rejects(adapter.write({ id: 'x', version: '1', content: {} }),
     { code: 'invalid_knowledge_write' });
+});
+
+test('SAG cannot attribute global search results to the requested domain and version', async () => {
+  let searches = 0;
+  const adapter = createSagAdapter({ apiKey: 'test', fetchImpl: async () => {
+    searches++;
+    return { ok: true, async json() { return { results: [{ path: '/scratch/n', text: 'private note' }] }; } };
+  } });
+  await assert.rejects(readKnowledge({ adapter, reference: { domain: 'formal', id: 'n', version: '1' } }),
+    { code: 'knowledge_identity_unsupported' });
+  assert.equal(searches, 0);
+  await assert.rejects(adapter.write({ domain: 'formal', id: 'n', version: '1', content: { path: '/scratch/n' } }),
+    { code: 'knowledge_identity_unsupported' });
 });
 
 test('the governance outbox is idempotent and keeps failures retryable', () => {

@@ -184,6 +184,27 @@ test('apply：真实宿主 defineTool 编译全部 schema（宿主方言最严�
 	}
 });
 
+test('host tool accepts declared principle references and records them for governance', async (t) => {
+	const { loadDefineTool } = await import('../index.js');
+	let realDefine;
+	try { realDefine = loadDefineTool(); } catch { t.skip('Host tool compiler unavailable'); return; }
+	const { readDecisions } = await import('../src/store.js');
+	const { dir, cleanup } = tempDir();
+	fakeCtx.registered = [];
+	try {
+		apply(fakeCtx(new Map()), { storageDir: dir, patrol: { enabled: false } }, { loadDefineTool: () => realDefine });
+		const tool = fakeCtx.registered.find((entry) => entry.name === TOOL_NAMES.check);
+		const result = await tool.execute({ direction: 'down', from: 'L1', to: 'L2',
+			data: { constraints: ['Read before changes'], origin: 'verification', principle_refs: ['example-principle'] } });
+		assert.equal(result.action, 'allow');
+		await settle();
+		const rows = await readDecisions(dir);
+		assert.deepEqual(rows.find((entry) => entry.gate === 'downward_L1_L2')?.principle_refs, ['example-principle']);
+		await assert.rejects(() => tool.execute({ direction: 'down', from: 'L1', to: 'L2',
+			data: { constraints: ['Read'], principle_refs: [1] } }));
+	} finally { cleanup(); }
+});
+
 // —— memory 桥 ——
 
 test('桥：无服务/ctx 抛错 → 全 undefined，不抛', async () => {

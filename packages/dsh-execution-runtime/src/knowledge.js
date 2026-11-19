@@ -21,6 +21,9 @@ export async function readKnowledge({ adapter, reference, signal } = {}) {
   const ref = knowledgeRef(reference);
   const result = await adapter.read({ ...ref, signal });
   if (!result || typeof result !== 'object') fail('invalid_knowledge_result', 'The adapter returned no content.');
+  if (!result.identity || ['domain', 'id', 'version'].some((key) => result.identity[key] !== ref[key])) {
+    fail('knowledge_identity_mismatch', 'The adapter did not establish the requested knowledge identity.');
+  }
   return Object.freeze({ ...ref, content: result.content ?? null, trust: ref.domain,
     verified: ref.domain === 'formal' ? result.verified === true : false });
 }
@@ -48,8 +51,8 @@ export async function writeKnowledge({ adapter, reference, content, origin = 'ru
 }
 
 /**
- * Governance outbox: append-only intents with a stable id, so a replay after a crash cannot duplicate a
- * governance reference. Failed deliveries stay pending instead of being reported as delivered.
+ * In-memory governance outbox prototype: stable IDs deduplicate only within this instance.
+ * Entries do not survive a crash and are not connected to production execution.
  */
 export function createGovernanceOutbox({ now = Date.now } = {}) {
   const entries = new Map();

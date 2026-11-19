@@ -560,7 +560,7 @@ if (typeof ps === 'function') {
 		{ agent: fakeAgent, messages: [{ role: 'user', content: [{ type: 'text', text: '今天天气怎么样' }], }], turn: 2, step: 1, signal: new AbortController().signal },
 		nextEnter,
 	);
-	ok(miss.kind === 'enter' && miss.messages.length === 0, 'no recall on unrelated input');
+	ok(miss.kind === 'enter' && !miss.messages.some((m) => m.content?.some((part) => part.text?.includes('记忆召回（memory-manager'))), 'no index recall on unrelated input');
 	// 13d) pointer dedupe: user text already cites the file (e.g. quoting an
 	// earlier recall) -> that row is NOT injected again. Other rows may still be
 	// (generic bigrams can match unrelated rows); the cited one must be gone.

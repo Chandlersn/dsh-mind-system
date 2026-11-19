@@ -169,13 +169,13 @@ JSON模板提供`buildJsonCompensation`：从原Verifier观察到的版本与先
 
 ## 知识读写与治理outbox
 
-SAG在这里的角色是**读写引擎**，不是身份判定者。`knowledgeRef`要求显式`domain:id@version`（`formal`/`workspace`/`scratch`），因此身份来自所属域而不是检索路径。
+`knowledgeRef`要求显式`domain:id@version`（`formal`/`workspace`/`scratch`），但请求者填写身份并不能证明检索结果属于该域和版本。当前 SAG 全库近邻检索及目录索引无法核对这一身份，因此运行时 SAG 适配器暂时拒绝读写，返回 `knowledge_identity_unsupported`；独立的 `memory_sag` 检索通道不受此限制。恢复运行时读写需要可核验的域、对象和版本映射。
 
-`readKnowledge`保留域身份：`scratch`内容经同一引擎读出仍是`scratch`，`verified`恒为`false`；只有`formal`且适配器明确标记才为已验证。`writeKnowledge`把**存储**与**索引**分成两个事实：`stored_not_indexed`表示"写进去了但还搜不到"，`write_failed`表示根本没写进去，两者都带`indexError`。把这两件事合成一个`ok`正是"静默降级"的常见来源。
+`readKnowledge`要求适配器返回与请求一致的域、对象 ID 和版本；`scratch`的 `verified` 恒为 `false`，只有 `formal` 且适配器明确标记才返回已验证。这只是适配器的声明，调用方仍须信任并核验适配器的归属与版本来源。`writeKnowledge`把**存储**与**索引**分成两个事实：`stored_not_indexed`表示"写进去了但还搜不到"，`write_failed`表示根本没写进去，两者都带`indexError`。把这两件事合成一个`ok`正是"静默降级"的常见来源。
 
 写入带`origin`；`daily`origin只允许`formal`域，防止验证样本污染日常校准记录。
 
-`createGovernanceOutbox`按`eventId+kind`派生稳定ID：重放返回原条目并标`duplicate:true`，不新增行。`markFailed`只增加尝试次数并保留`pending`，`markDelivered`才置为`delivered`——**"投递过"不等于"投递成功"**。
+`createGovernanceOutbox`按`eventId+kind`派生稳定ID，并区分失败与已投递。它目前仅是进程内原型，重启后记录丢失，生产执行路径尚未接入；不能把原型内去重当成持久重放或治理投递已完成。
 
 ## 选择性接入结构诊断
 

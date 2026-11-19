@@ -24,6 +24,7 @@ import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { RuntimeStore } from './store.js';
+import { createOutboxDispatcher } from './outbox-dispatcher.js';
 import { HostExecutor } from './executor.js';
 import { RuntimeScheduler } from './scheduler.js';
 import { createExecutionRuntimePlugin } from './plugin.js';
@@ -106,6 +107,28 @@ async function loadHostValidator(ctx) {
     } catch { /* try the next root */ }
   }
   return null;
+}
+
+/**
+ * Load one host package synchronously, or return null.
+ *
+ * The same root assumption as `loadHostValidator`: the host install, not this package, owns its
+ * `@deepseek-ai/*` dependencies. Cached because a message factory is looked up on every hint.
+ */
+const hostModuleCache = new Map();
+function loadHostModule(specifier) {
+  if (hostModuleCache.has(specifier)) return hostModuleCache.get(specifier);
+  let resolved = null;
+  for (const root of [process.env.DSH_HOST_ROOT, 'D:/dsh']) {
+    if (typeof root !== 'string' || !root) continue;
+    try {
+      const require = createRequire(pathToFileURL(join(root, 'package.json')));
+      resolved = require(specifier);
+      break;
+    } catch { /* try the next root */ }
+  }
+  hostModuleCache.set(specifier, resolved);
+  return resolved;
 }
 
 /** One executor per call so the caller identity is the one the host just supplied. */
@@ -203,6 +226,35 @@ function makeValveChannel(ctx, config) {
   }
 }
 
+/** Monotonic suffix so fallback message ids stay unique within one process. */
+let fallbackMessageCounter = 0;
+
+/**
+ * Build the user message this runtime injects, in the shape the host can persist.
+ *
+ * `additionalContexts` carries `UserMessage` values, and the session log validates every message event
+ * strictly: a user message without a non-empty `id` makes the WHOLE session unreadable on the next load
+ * (`<subject> lacks an identified message`). A rejected session is not a visible failure — it simply
+ * disappears from history, which is the worst possible outcome for an advisory note.
+ *
+ * So the message is created through the host's own `createUserMessage`, which stamps the id and freezes the
+ * value. When that module cannot be loaded, the fallback still supplies an id rather than emitting a shape
+ * the host has never been promised to accept.
+ */
+export function createInjectedMessage(text) {
+  const input = { source: { kind: 'plugin:execution-runtime' }, content: [{ type: 'text', text }] };
+  try {
+    const factory = loadHostModule('@deepseek-ai/dsh-llm')?.createUserMessage;
+    if (typeof factory === 'function') return factory(input);
+  } catch { /* fall through to the identified literal */ }
+  fallbackMessageCounter += 1;
+  return {
+    id: `execution-runtime-hint-${Date.now().toString(36)}-${fallbackMessageCounter.toString(36)}`,
+    role: 'user',
+    ...input,
+  };
+}
+
 /**
  * Subscribe to tool completions and offer help on a repeated failure.
  *
@@ -230,7 +282,7 @@ function installIntervention(ctx, policy, base) {
         // Offer, not instruct: the note is appended as context and the host decides what to do with it.
         return { ...decision,
           additionalContexts: [...(decision?.additionalContexts ?? []),
-            { source: { kind: 'plugin:execution-runtime' }, content: [{ type: 'text', text: verdict.hint }] }] };
+            createInjectedMessage(verdict.hint)] };
       } catch {
         return decision;
       }
@@ -288,15 +340,41 @@ export async function apply(ctx, config = {}) {
   const base = { enabled: config?.enabled === true, loadError: null, recipes: [], tasks: 0, patterns: false };
   facts = base;
   disposeInner = null;
-
-  if (config?.enabled !== true) {
-    // Mounting while disabled is deliberate: register nothing rather than a half-usable tool.
-    base.state = 'disabled';
-    logger?.info?.('execution runtime mounted with enabled:false; no tool is registered.');
-    return () => {};
+  let store = null;
+  let registeredTasks = [];
+  let disposeStatus = null;
+  let stopOutbox = null;
+  const statusService = Object.freeze({
+    snapshot({ limit = 100 } = {}) {
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+        return { state: 'error', error: 'invalid_snapshot_limit' };
+      }
+      if (base.state === 'disabled') return { state: 'disabled' };
+      if (base.state === 'failed') return { state: 'error', error: 'runtime_assembly_failed' };
+      if (base.state !== 'ready' || store === null) return { state: 'unavailable' };
+      try {
+        const result = store.snapshotRuns({ limit });
+        return { state: 'ready', ...result, outbox: { ...base.outbox },
+          registeredTasks: { taskIds: registeredTasks.slice(0, limit), truncated: registeredTasks.length > limit },
+          runs: result.runs.map((run) => ({ ...run, registered: registeredTasks.includes(run.taskId) })) };
+      } catch {
+        return { state: 'error', error: 'snapshot_failed' };
+      }
+    },
+  });
+  // This optional service is independent of the tool registry and never exposes the store handle.
+  try {
+    if (typeof ctx?.provide === 'function') disposeStatus = ctx.provide('executionRuntimeStatus', statusService);
+  } catch (error) {
+    logger?.warn?.(`status service unavailable: ${error?.message}`);
   }
 
-  let store = null;
+  if (config?.enabled !== true) {
+    base.state = 'disabled';
+    logger?.info?.('execution runtime mounted with enabled:false; no tool is registered.');
+    return async () => { base.state = 'unloaded'; if (typeof disposeStatus === 'function') await disposeStatus(); };
+  }
+
   let executor = null;
   const mountedDisposers = [];
   disposeInner = async () => {
@@ -335,7 +413,8 @@ export async function apply(ctx, config = {}) {
         };
       } catch (error) { logger?.warn?.(`skipped task ${entry?.taskId}: ${error?.code ?? error?.message}`); }
     }
-    base.tasks = Object.keys(tasks).length;
+    registeredTasks = Object.keys(tasks).sort();
+    base.tasks = registeredTasks.length;
 
     const supplied = makeValidator(await loadHostValidator(ctx));
     base.validator = supplied === null ? 'none' : 'host';
@@ -446,6 +525,50 @@ export async function apply(ctx, config = {}) {
     base.mount = { scopeRef: mount.scopeRef, workspaceRoot: mount.workspaceRoot,
       allowedTools: mount.allowedTools };
     base.state = 'ready';
+    // A database-scoped identity is required for receiver-side deduplication across restarts.
+    let producerId = null;
+    try { producerId = store.getProducerId?.(); } catch { /* Keep delivery unavailable. */ }
+    base.outbox = { state: 'identity_unavailable', lastPass: null };
+    if (typeof producerId === 'string' && producerId.trim()) {
+      const intervalMs = Number.isSafeInteger(config?.outbox?.intervalMs)
+        ? Math.max(10, Math.min(config.outbox.intervalMs, 300_000)) : 5_000;
+      const limit = Number.isSafeInteger(config?.outbox?.limit)
+        ? Math.max(1, Math.min(config.outbox.limit, 100)) : 20;
+      const dispatcher = createOutboxDispatcher({ store, producerId, limit, logger,
+        receiver: async (message) => {
+          const valves = optional(ctx, 'valves');
+          if (typeof valves?.receiveRepairEvent !== 'function') throw new Error('receiver_unavailable');
+          const result = await valves.receiveRepairEvent(message);
+          if (!result || typeof result !== 'object' || Array.isArray(result)
+            || (result.eventId !== undefined && result.eventId !== message.eventId)) return null;
+          if (result.accepted === true && result.duplicate === false) {
+            return { eventId: message.eventId, status: 'accepted' };
+          }
+          if (result.accepted === false && result.duplicate === true) {
+            return { eventId: message.eventId, status: 'duplicate' };
+          }
+          return null;
+        } });
+      let stopped = false;
+      let active = null;
+      const run = () => {
+        if (stopped || active) return active;
+        if (typeof optional(ctx, 'valves')?.receiveRepairEvent !== 'function') {
+          base.outbox = { state: 'receiver_unavailable', lastPass: base.outbox.lastPass };
+          return null;
+        }
+        base.outbox = { ...base.outbox, state: 'dispatching' };
+        active = dispatcher.dispatchOnce().then((lastPass) => {
+          base.outbox = { state: lastPass.retried || lastPass.skipped ? 'pending' : 'ready', lastPass };
+        }).catch(() => { base.outbox = { ...base.outbox, state: 'error' }; })
+          .finally(() => { active = null; });
+        return active;
+      };
+      const timer = setInterval(run, intervalMs);
+      timer.unref?.();
+      stopOutbox = async () => { stopped = true; clearInterval(timer); if (active) await active; };
+      run();
+    }
     logger?.info?.(`execution runtime ready: ${base.recipes.join(', ')}; tasks=${base.tasks}`
       + `; dynamic tools=${base.dynamicTools.join(',') || 'none'}; intervention=${base.intervention}`);
   } catch (error) {
@@ -460,18 +583,21 @@ export async function apply(ctx, config = {}) {
   /** Release everything this mount owns, in order, and never throw out of a disposer. */
   const release = async () => {
     base.state = 'unloading';
+    try { if (typeof disposeStatus === 'function') { const dispose = disposeStatus; disposeStatus = null; await dispose(); } }
+    catch (error) { logger?.warn?.(`status dispose failed: ${error?.message}`); }
     try { if (typeof disposeInner === 'function') await disposeInner(); }
     catch (error) { logger?.warn?.(`inner dispose failed: ${error?.message}`); }
     for (const item of executors.splice(0)) {
       try { await item.dispose?.(); } catch (error) { logger?.warn?.(`executor dispose failed: ${error?.message}`); }
     }
+    try { await stopOutbox?.(); } catch (error) { logger?.warn?.(`outbox drain failed: ${error?.message}`); }
     try { store?.close?.(); } catch (error) { logger?.warn?.(`store close failed: ${error?.message}`); }
     base.state = 'unloaded';
   };
 
   // The host drives disposal through `ctx.effect`; without it the SQLite handle outlives the plugin and a
   // later removal of the state directory fails with EBUSY.
-  if (typeof ctx.effect === 'function') ctx.effect(() => () => { void release(); });
+  if (typeof ctx.effect === 'function') ctx.effect(() => release);
   return release;
 }
 

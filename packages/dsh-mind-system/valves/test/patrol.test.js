@@ -792,7 +792,7 @@ test('apply：当天已有报告 → 未到期跳过，但 facts 记 skipped_not
 	const dir = sandbox();
 	try {
 		// Same-day report already exists → the timer must skip.
-		await writePatrolReport(dir, { kind: 'weekly', at: new Date().toISOString(), ok: true, findings: [] });
+		await writePatrolReport(dir, { kind: 'weekly', at: new Date().toISOString(), ok: true, findings: [], cycle_coverage: {} });
 		const ctx = {
 			logger: () => ({ info() {}, warn() {}, error() {} }),
 			provide() {}, set() {}, on() {},

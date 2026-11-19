@@ -23,7 +23,7 @@
 
 ### 覆盖率口径（III-2，单一真值源 src/governance.js）
 
-- **引用覆盖率**（默认，可代码算）：引用原则的判定数 / 窗口内日常判定数。"引用"= 账本行显式 `principle_refs`（valve_check 的 data 里声明）；**不猜语义关联**。
+- **引用覆盖率**：引用原则的判定数 / 窗口内合格的日常判定数。`valve_check` 的 `data.principle_refs` 只记录调用方明确声明的依据，不证明实际采纳；空数组表示明确未引用，未声明或格式无效表示未知。窗口内任何合格记录未声明时覆盖率为 `null`，并报告已声明与未声明数量。治理和巡检自身的记录不进分母。结果不确定或没有有效受检原则时，治理轮返回 `principles_uncertain`，不冒称 `principles_valid`。
 - **语义覆盖率**：只能人工判读后显式传 `semantic_coverage`，报告标注 basis=human_semantic。
 - **小样本保护**：窗口内样本 <10（暂定）不出覆盖率（null → checkPrinciple 走 uncertain）——3 条里 1 条引用的 0.33 是噪声不是失效。
 

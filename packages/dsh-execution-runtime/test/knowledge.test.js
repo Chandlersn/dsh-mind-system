@@ -5,7 +5,7 @@ import { knowledgeRef, readKnowledge, writeKnowledge, createGovernanceOutbox } f
 const ref = (overrides = {}) => ({ domain: 'formal', id: 'doc-1', version: '3', ...overrides });
 
 const adapter = (overrides = {}) => ({
-  async read({ domain, id, version }) { return { content: `${domain}/${id}@${version}`, verified: domain === 'formal' }; },
+  async read({ domain, id, version }) { return { identity: { domain, id, version }, content: `${domain}/${id}@${version}`, verified: domain === 'formal' }; },
   async write() { return { stored: true, indexed: true }; },
   ...overrides,
 });
@@ -28,6 +28,14 @@ test('reading keeps the domain identity: scratch content is not relabelled as fo
   assert.equal(scratch.verified, false, 'Unverified notes must not claim verification.');
   const workspace = await readKnowledge({ adapter: adapter(), reference: ref({ domain: 'workspace' }) });
   assert.equal(workspace.verified, false);
+});
+
+test('reading requires the adapter to identify the returned domain, id and version', async () => {
+  for (const identity of [undefined, { domain: 'scratch', id: 'doc-1', version: '3' },
+    { domain: 'formal', id: 'doc-1', version: '2' }, { domain: 'formal', id: 'other', version: '3' }]) {
+    await assert.rejects(readKnowledge({ adapter: adapter({ async read() { return { identity, content: 'wrong' }; } }),
+      reference: ref() }), { code: 'knowledge_identity_mismatch' });
+  }
 });
 
 test('a write reports storage and indexing as separate facts', async () => {

@@ -460,7 +460,11 @@ export class RuntimeScheduler {
           }
         }
         this.#store.recordOutcome(task.taskId, attemptId, outcome, verification,
-          { ...version(), notStartedStatus: combinedSignal.aborted && !expired() ? 'cancelled' : 'failed', nextState });
+          { ...version(), notStartedStatus: combinedSignal.aborted && !expired() ? 'cancelled' : 'failed', nextState,
+            // The checkpoint lands inside the same transaction as the settled attempt. Two separate
+            // commits left a crash window in which a verified step had no rollback target at all.
+            checkpointEnvironment: { recipeId: task.recipeId, recipeVersion: task.recipeVersion,
+              scopeRef: task.scopeRef, workspaceRoot: trustedAuthority.workspaceRoot } });
         if (repairId !== null) {
           this.#store.finishRepair(task.taskId, repairId, { ...version(), attemptId,
             status: current().status === 'reconciling' ? 'unknown' : 'settled' });
@@ -471,18 +475,8 @@ export class RuntimeScheduler {
           repairHistory = Object.freeze(this.#store.readRepairTrace(task.taskId).map((item) => Object.freeze(item)));
         }
         attemptId = null;
-        // A checkpoint records only a verified step with evidence, so a later rollback target is a fact
-        // rather than a model claim. The environment travels with it: the same state under a changed
-        // template or scope is not a valid restore point.
-        if (verification.status === 'pass' && verification.evidenceRefs.length) {
-          this.#store.recordCheckpoint(task.taskId, {
-            stepIndex: current().budgetUsage.attempts,
-            state: current().state,
-            environment: { recipeId: task.recipeId, recipeVersion: task.recipeVersion, scopeRef: task.scopeRef,
-              workspaceRoot: trustedAuthority.workspaceRoot },
-            evidenceRef: verification.evidenceRefs[0],
-          }, version());
-        }
+        // The checkpoint was committed by recordOutcome above, in the same transaction as the settled
+        // attempt. Nothing is written here: a second commit would reopen the crash window this closed.
         if (current().status !== 'running') break;
         noProgress = verification.progress === 'advanced' ? 0 : noProgress + 1;
         if (noProgress >= 3) { stop('waiting_analysis', 'no_progress'); break; }

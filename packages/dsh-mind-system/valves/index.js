@@ -23,7 +23,7 @@
  * memory 通过 ctx.get('valves') 运行时探测本服务——缺了照常工作（N4 降级）。
  */
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import {
@@ -73,6 +73,8 @@ import { nominateFromDisk } from './src/nominate.js';
 import { check as checkBudget, DEFAULT_BUDGET } from './src/budget.js';
 import { readClisHistory, consumeClisHistory, criterionEvidenceFromInsights, collideNoteToCandidate } from './src/clis-bridge.js';
 import { governanceRound, referenceCoverage, validateClassification } from './src/governance.js';
+import { collectCycleCoverage } from './src/cycle-coverage.js';
+import { createRepairEventReceiver } from './src/repair-event-receiver.js';
 
 export const name = 'valves';
 
@@ -201,6 +203,18 @@ export function createRuntime(options = {}) {
 	const thresholds = mergeThresholds(options.thresholds);
 	const layers = Array.isArray(options.layers) && options.layers.length >= 2 ? [...options.layers] : [...DEFAULT_LAYERS];
 
+	// The receiver file sits next to the other valve stores. It is created lazily: a runtime that never
+	// receives a repair event leaves no empty database behind.
+	const repairEventsPath = join(storageDir, 'mind-repair-events.sqlite');
+	let repairReceiverInstance = null;
+	const repairReceiver = () => {
+		if (repairReceiverInstance === null) {
+			mkdirSync(storageDir, { recursive: true });
+			repairReceiverInstance = createRepairEventReceiver({ filePath: repairEventsPath });
+		}
+		return repairReceiverInstance;
+	};
+
 	const record = (gate, direction, decision, input) => {
 		const outcome = decision.action === 'deny' || decision.action === 'reject' ? 'skipped' : 'admitted';
 		void appendDecision(storageDir, {
@@ -237,6 +251,27 @@ export function createRuntime(options = {}) {
 		storageDir,
 		thresholds,
 		layers,
+		/**
+		 * Durable, passive receiver for runtime `repair_finished` events.
+		 *
+		 * It records what the runtime says happened; it never creates, confirms or modifies a rule. The
+		 * distinction matters: this codebase's `confirm()` is itself a human channel, so exposing it here
+		 * would hand the runtime rule-writing authority it must not have.
+		 */
+		receiveRepairEvent(event) {
+			return repairReceiver().receive(event);
+		},
+		repairEventStatus() {
+			if (repairReceiverInstance === null && !existsSync(repairEventsPath)) {
+				return { path: repairEventsPath, received: 0, ready: false };
+			}
+			const receiver = repairReceiver();
+			return { path: repairEventsPath, received: receiver.count(), ready: true };
+		},
+		dispose() {
+			try { repairReceiverInstance?.close(); } catch { /* closing twice is not an error worth raising */ }
+			repairReceiverInstance = null;
+		},
 		downward(from, to, data) {
 			return record(`downward_${from}_${to}`, 'down', admitDownward(from, to, data, { layers, thresholds }), { from, to, origin: data?.origin, principle_refs: data?.principle_refs });
 		},
@@ -395,12 +430,13 @@ export function createRuntime(options = {}) {
 					}
 				}
 			} catch (err) {
-				const failed = { kind, at, ok: false, error: err instanceof Error ? err.message : String(err) };
-				await writePatrolReport(storageDir, failed);
-				return failed;
+				const failed = { kind, at, ok: false, error: err instanceof Error ? err.message : String(err), ...(input.cycle_coverage ? { cycle_coverage: input.cycle_coverage } : {}) };
+				const written = await writePatrolReport(storageDir, failed);
+				return { ...failed, report_ok: written.ok, ...(written.ok ? { report_path: written.path } : { report_error: written.error }) };
 			}
-			const report = { kind, at, ok: true, ...body };
+			const report = { kind, at, ok: true, ...body, ...(input.cycle_coverage ? { cycle_coverage: input.cycle_coverage } : {}), ...(input.recall_boundary ? { recall_boundary: input.recall_boundary } : {}), ...(input.pending_axiom_candidates ? { pending_axiom_candidates: input.pending_axiom_candidates } : {}) };
 			const written = await writePatrolReport(storageDir, report);
+			if (!written.ok) return { ...report, ok: false, error: 'report_write_failed', report_ok: false, report_error: written.error };
 			void appendDecision(storageDir, {
 				gate: 'patrol',
 				direction: 'scheduled',
@@ -833,7 +869,9 @@ export function apply(ctx, config = {}, overrides = {}) {
 		try {
 			const last = await readLatestPatrolReport(runtime.storageDir, kind);
 			const period = kind === 'quarterly' ? PATROL_PERIODS.quarterlyMs : PATROL_PERIODS.weeklyMs;
-			if (!isPatrolDue(last, period)) {
+			// Retry the one-time weekly upgrade until a report with coverage is persisted.
+			const needsCoverage = kind === 'weekly' && last && !Object.hasOwn(last, 'cycle_coverage');
+			if (!needsCoverage && !isPatrolDue(last, period)) {
 				// "Not due" is a legitimate skip, but it used to leave no trace at all:
 				// last_patrol then reads the previous report and patrol_facts stays null,
 				// which is indistinguishable from "the run never happened". Recording the
@@ -923,7 +961,7 @@ export function apply(ctx, config = {}, overrides = {}) {
 			// derived from storageDir — never homedir, so sandbox tests stay clean.
 			const rootForCandidates = typeof patrolConfig.memoryRoot === 'string' && patrolConfig.memoryRoot.trim()
 				? patrolConfig.memoryRoot.trim()
-				: memoryRootForStorage(storageDir);
+				: memoryRootForStorage(runtime.storageDir);
 			try {
 				if (typeof patrolConfig.pendingAxiomCandidates === 'function') {
 					const got = await patrolConfig.pendingAxiomCandidates();
@@ -967,6 +1005,8 @@ export function apply(ctx, config = {}, overrides = {}) {
 				// Degrade honestly: a missing section reads differently from a clean one.
 				facts.patrolBoundary = `error:${err instanceof Error ? err.message : String(err)}`;
 			}
+			const cycleCoverage = await collectCycleCoverage({ storageDir: runtime.storageDir, memoryRoot: rootForCandidates,
+				getRuntimeStatus: () => ctx.get?.('executionRuntimeStatus') });
 			if (principles.length === 0 && pendingCandidates === null) {
 				const skipped = {
 					kind: 'weekly',
@@ -978,8 +1018,10 @@ export function apply(ctx, config = {}, overrides = {}) {
 					// attach it even to a no_input report so K4 observable never
 					// depends on whether principles happen to be present.
 					...(recallBoundary ? { recall_boundary: recallBoundary } : {}),
+					cycle_coverage: cycleCoverage,
 				};
-				await writePatrolReport(runtime.storageDir, skipped);
+				const written = await writePatrolReport(runtime.storageDir, skipped);
+				if (!written.ok) throw new Error(`no_input; report write failed: ${written.error}`);
 				facts.patrolWeekly = 'skipped_no_principles';
 				return null;
 			}
@@ -989,33 +1031,24 @@ export function apply(ctx, config = {}, overrides = {}) {
 			const report = await runtime.patrol('weekly', {
 				principles,
 				options: { refsSufficient: refsRowsForPatrol >= MIN_REFS_ROWS },
+				cycle_coverage: cycleCoverage,
+				recall_boundary: recallBoundary,
+				...(pendingCandidates !== null ? { pending_axiom_candidates: {
+					count: pendingCandidates.length,
+					items: pendingCandidates,
+					...(pendingCandidates.length ? { note: '有候选公理待你决策：确认转正，或说明理由否决（否决会留档作为反例）' } : {}),
+				} } : {}),
 			});
-			// VI-4: attach the boundary section and re-persist (same-day overwrite,
-			// the exact pattern the pending-candidates enrichment below uses).
-			if (recallBoundary) report.recall_boundary = recallBoundary;
-			await writePatrolReport(runtime.storageDir, report);
-			if (pendingCandidates !== null) {
-				// 候选单独成段，不混进 findings：findings 是"原则本身有问题"，
-				// 候选是"等你决策"，两件事混在一起会让人以为候选也是故障。
-				const enriched = {
-					...report,
-					pending_axiom_candidates: {
-						count: pendingCandidates.length,
-						items: pendingCandidates,
-						...(pendingCandidates.length
-							? { note: '有候选公理待你决策：确认转正，或说明理由否决（否决会留档作为反例）' }
-							: {}),
-					},
-				};
-				await writePatrolReport(runtime.storageDir, enriched);
-				facts.patrolCandidates = pendingCandidates.length;
-				return enriched;
-			}
+			if (!report.report_ok) throw new Error(`${report.error ? `${report.error}; ` : ''}report write failed: ${report.report_error}`);
+			if (!report.ok) throw new Error(report.error ?? 'patrol failed');
+			if (pendingCandidates !== null) facts.patrolCandidates = pendingCandidates.length;
 			return report;
 		} catch (error) {
-			// 巡检失败不能拖垮插件：记事实 + 日志，不抛。
-			facts.patrolError = error instanceof Error ? error.message : String(error);
-			logger?.warn?.(`巡检执行失败：${facts.patrolError}`);
+			// Keep errors from concurrent patrols visible instead of replacing them.
+			const message = error instanceof Error ? error.message : String(error);
+			facts.patrolError = facts.patrolError ? `${facts.patrolError}; ${kind}: ${message}` : `${kind}: ${message}`;
+			if (kind === 'weekly') facts.patrolWeekly = `error:${message}`;
+			logger?.warn?.(`巡检执行失败：${kind}: ${message}`);
 			return null;
 		}
 	};
@@ -1048,6 +1081,7 @@ export function apply(ctx, config = {}, overrides = {}) {
 				try { clearInterval(t); } catch { /* ignore */ }
 			}
 			patrolTimers.length = 0;
+			try { runtime.dispose?.(); } catch { /* ignore */ }
 		});
 	}
 
@@ -1100,6 +1134,7 @@ export function apply(ctx, config = {}, overrides = {}) {
 					// 样本口径（可选）：验证/演练样本显式标记，日常样本缺省不标。
 					// I-1 计数只数无 origin 或 origin=daily 的行——验证样本不得灌进校准分布。
 					origin: { type: 'string', enum: ['daily', 'verification', 'drill', 'nomination'], description: '样本类型：daily=日常（缺省）；verification=部署/闭环验证；drill=演练；nomination=自动提名器产物。' },
+					principle_refs: { type: 'array', items: { type: 'string' }, description: '本次判定实际依据的原则 ID；仅在依据明确时声明，记录为调用方声明而非独立证明。' },
 					testChannel: { type: 'boolean', description: 'up 公理：声明走测试通道——不消耗月度额度、不进生产分布（IV-5）。只能由显式参数打开，不读环境变量。' },
 					// down
 					constraints: { type: 'array', items: { type: 'string' }, description: 'down：已具体化的可执行约束（空 = 未具体化，拒）。' },

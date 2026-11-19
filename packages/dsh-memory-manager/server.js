@@ -304,6 +304,7 @@ import { resolveDshRoot, setHostRoot, loadHost, defineTool, createUserMessage } 
 // 健康探针与问题收件箱（2026-10-26）：让记忆系统参与插件互查互治，
 // 并成为各插件 / agent 投递问题的统一邮箱。
 import { createHealthProbe, MemoryInbox } from './health-inbox.js';
+import { createPatrolReportDelivery } from './src/patrol-report-delivery.js';
 import {
 	name, inject, DEFAULTS, FUNC_TABLE_HEADING, INSIGHT_TABLE_HEADING, CAP_TABLE_HEADING,
 	CAP_TABLE_HEADER, FUNC_TABLE_HEADER, INSIGHT_TABLE_HEADER,
@@ -499,26 +500,7 @@ async function runHealthCheck(root, opts) {
 	else if (memSize > opts.maxIndexBytes) add('WARN', 'R5', `MEMORY.md ${memSize}B > 舒适线 ${opts.maxIndexBytes}B`, { subtype: 'index-size', subject: 'MEMORY.md' });
 
 	let emptySummary = 0;
-	// R28 — distillation backlog (2026-11-19).
-	//
-	// WHY THIS RULE EXISTS: measured on a real root, five days produced 86KB of
-	// daily notes and ONE iteration block. Nothing surfaced that: R14 only flags a
-	// block that is too LONG (a block that never got written passes), and R27 only
-	// flags several blocks on one day. A pipeline whose input keeps growing while
-	// its output stops is exactly the "silent stall" this project keeps hitting —
-	// and the only reason it was found is that the user asked.
-	//
-	// WHAT IT MEASURES: for each topic that has material in >= 3 recent daily logs
-	// (the cadence rule), is the newest iteration block older than the newest
-	// material? If so the topic is DUE. Two distinct signals, because they need
-	// different fixes:
-	//   · due            — the area exists and has material ready → distill now
-	//   · orphan-topic   — material with no function area at all → structural gap
-	// Both are reported with the DAYS, not just a count: "3 days" is not actionable,
-	// "11-17, 11-18" tells the next reader exactly which files to open.
-	//
-	// Deliberately silent when nothing is due: a warning that always fires is
-	// indistinguishable from one that never does.
+	// R28 reports unverified lexical candidates, not proven backlog or coverage.
 	const backlog = opts.skipBacklog ? { due: [], orphan: [] } : await detectDistillationBacklog(root, opts);
 	if (backlog.skipped) {
 		// "Could not scan" must not read as "nothing is due".
@@ -527,13 +509,13 @@ async function runHealthCheck(root, opts) {
 	if (backlog.readUnknown) {
 		// A partial scan: the listed backlog may be incomplete. Say so rather than
 		// presenting a short list as the whole truth.
-		add('WARN', 'R28', `蒸馏积压检查不完整：${backlog.readUnknown} 个文件读不到，下列判定可能漏项（读不到 ≠ 没有素材）`, { subtype: 'distill-partial' });
+		add('WARN', 'R28', `候选扫描不完整：${backlog.readUnknown} 个文件读不到，结果可能漏项`, { subtype: 'distill-partial' });
 	}
 	for (const b of backlog.due) {
-		add('WARN', 'R28', `该蒸馏未蒸馏：${b.area} 有 ${b.days.length} 天素材（${b.days.join('、')}，约 ${b.bytes}B），但最新迭代块停在 ${b.newestBlock ?? '（无）'}——用 memory_write 跨日蒸馏`, { subtype: 'distill-due', subject: b.area });
+		add('WARN', 'R28', `未验证词法候选：${b.area} 在 ${b.days.length} 个日期有关键词命中（${b.days.join('、')}，约 ${b.bytes} 字符）；最新块日期 ${b.newestBlock ?? '（无）'} 不证明素材已被处理或应蒸馏`, { subtype: 'distill-due', subject: b.area });
 	}
 	for (const b of backlog.orphan) {
-		add('WARN', 'R28', `结构缺口：${b.topic} 有 ${b.days.length} 天素材（${b.days.join('、')}），但没有对应的 functions/ 功能域——素材正在失去归属`, { subtype: 'distill-orphan', subject: b.topic });
+		add('WARN', 'R28', `未验证未匹配汇总：${b.days.length} 个日期（${b.days.join('、')}）的部分段落未命中现有关键词；可能互不相关，不能据此判定结构缺口`, { subtype: 'distill-orphan', subject: b.topic });
 	}
 
 	const longRows = [];
@@ -2236,55 +2218,24 @@ async function listMdDir(dir) {
  */
 
 /**
- * R28 support: find topics that have enough daily material to distill, and say
- * whether each has a home.
- *
- * ## The failure this exists for
- *
- * Measured on the real root 2026-11-19: five days of daily logs (86KB) produced
- * ONE iteration block, and nothing said a word. R14 only flags a block that is
- * too long — a block that was never written passes silently. R27 only flags
- * several blocks in one day. So the pipeline could stop moving and stay quiet,
- * which is the same class of failure as `insights/失败被伪装成成功`: a stalled
- * thing that reports nothing looks exactly like a healthy idle one.
- *
- * ## What "due" means, and what it deliberately does NOT mean
- *
- * The cadence rule says a block synthesizes >= 3 TOPIC-RELATED days. So a topic is
- * due when it has material in >= 3 daily logs whose newest day is LATER than the
- * newest iteration block of the area it would belong to. That comparison is the
- * part that matters: content volume alone says nothing (a huge single day is not
- * due), and a fresh block means the material was already absorbed.
- *
- * ## Topic assignment is keyword-based on purpose
- *
- * There is no semantic index here, and inventing one would make the signal
- * unverifiable. Each area contributes its own name tokens plus a small, explicit
- * keyword list; a section that matches no area becomes an ORPHAN candidate, which
- * is itself reported rather than silently dropped — material that belongs nowhere
- * is a structural gap, not noise.
- *
- * @returns {Promise<{due: Array, orphan: Array, skipped?: string}>}
+ * Find unverified lexical candidates in a bounded sample of daily logs.
+ * Matching and block dates cannot establish topic relevance or absorption.
+ * The legacy due/orphan field names are retained for existing consumers.
  */
 export async function detectDistillationBacklog(root, opts = {}, options = {}) {
 	const windowDays = Number.isFinite(options.windowDays) ? options.windowDays : 10;
 	const minDays = Number.isFinite(options.minDays) ? options.minDays : 3;
 	const minBytes = Number.isFinite(options.minBytes) ? options.minBytes : 400;
-	const empty = { due: [], orphan: [] };
 
 	// Which function areas exist, and when each last produced a block.
 	let areaFiles = [];
 	try {
 		areaFiles = (await readdir(path.join(root, 'functions'))).filter((f) => f.endsWith('.md'));
 	} catch (err) {
-		// ENOENT means a brand-new root with no areas yet — that is "nothing is due",
-		// not "cannot tell". Only a real read failure (EACCES/EIO/…) is unknown.
-		// Measured: treating ENOENT as unknown made every fresh install report a
-		// distillation problem it does not have.
-		if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return { due: [], orphan: [] };
-		// Cannot enumerate → cannot claim anything about the backlog. Say so instead
-		// of reporting an empty result, which would read as "nothing is due".
-		return { due: [], orphan: [], skipped: `functions/ 枚举失败（${err?.code ?? 'unknown'}）——积压状态未知` };
+		// A missing functions directory still allows unmatched daily sections to be scanned.
+		if (err?.code !== 'ENOENT') {
+			return { due: [], orphan: [], skipped: `functions/ 枚举失败（${err?.code ?? 'unknown'}）——候选状态未知` };
+		}
 	}
 
 	const areas = [];
@@ -2297,7 +2248,7 @@ export async function detectDistillationBacklog(root, opts = {}, options = {}) {
 		// rule exists to remove. Counted and reported instead.
 		let text = '';
 		try {
-			text = (await readIfExists(path.join(root, 'functions', f))) ?? '';
+			text = await readFile(path.join(root, 'functions', f), 'utf8');
 		} catch {
 			readUnknown += 1;
 			continue;
@@ -2364,7 +2315,7 @@ export async function detectDistillationBacklog(root, opts = {}, options = {}) {
 		// the scan, and it must not be counted as "a day with no material" either.
 		let text = '';
 		try {
-			text = (await readIfExists(path.join(root, file))) ?? '';
+			text = await readFile(path.join(root, file), 'utf8');
 		} catch {
 			readUnknown += 1;
 			continue;
@@ -2392,10 +2343,7 @@ export async function detectDistillationBacklog(root, opts = {}, options = {}) {
 	for (const [name, g] of perArea) {
 		if (g.days.size < minDays || g.bytes < minBytes) continue;
 		const area = areas.find((a) => a.name === name);
-		const newestDay = [...g.days].sort().pop();
-		// Due only when the newest material is NEWER than the newest block —
-		// otherwise the material has already been absorbed.
-		if (area?.newestBlock && newestDay <= area.newestBlock) continue;
+		// A later block date does not prove that matching material was absorbed.
 		due.push({ area: name, days: [...g.days].sort(), bytes: g.bytes, newestBlock: area?.newestBlock ?? null });
 	}
 
@@ -3338,6 +3286,15 @@ function memoryWriteTool(opts) {
 			open: { type: 'string', description: '待观察（一句话）：遗留风险或下一步要确认什么。' },
 			guard: { type: 'boolean', description: '守护型标记：低频高价值、绝不能因为"很久没写"被判冷记忆的记忆（安全审计、关键踩坑、兜底规则）。写入后文件头带 🛡 标记，体检 TEMP 跳过它；传 false 不解除已有标记（删掉文件头那行才真正解除）。' },
 			related: { type: 'array', description: '相关功能域 slug 列表，渲染为迭代块内的“相关”链接。', items: { type: 'string' } },
+			sources: {
+				type: 'array',
+				items: { type: 'string' },
+				description: '调用方声明的每日记录日期列表（YYYY-MM-DD，去重）。任一日期的每日文件缺失或为空、或日期重复，整次写入被拒。只检查声明的文件存在且非空，不核验其相关性或是否实际读过；未声明时块内明确标“未声明素材”。',
+			},
+			cadenceException: {
+				type: 'string',
+				description: '可选：素材不足 3 天的豁免理由（用户显式要求 / 当日踩坑因果 / 安全约束）。这是调用方声明，不是核验过的事实；调用方自己写明是哪一类。',
+			},
 			summary: { type: 'string', required: true, description: '本块的一句话概括（≤60 字）：从每日原始记录蒸馏本迭代时，它回答“这次迭代做了什么/解决了什么”。功能域稳定后由 memory_index 把它收进索引行。' },
 			currentState: { type: 'string', description: '刷新文件头部“当前状态摘要”：只写当前稳定行为/关键约束/隐患（3-5 条），不写历史与过程。' },
 			date: { type: 'string', description: '迭代日期 YYYY-MM-DD；缺省今天。同日第二个迭代自动加“补”后缀。' },
@@ -3360,6 +3317,9 @@ function memoryWriteTool(opts) {
 					createdFunctionFile: { type: 'boolean', required: true },
 					functionBytes: { type: 'integer', required: true },
 					resolvedDailyLogs: { type: 'array', required: true, items: { type: 'string' } },
+					sourceDays: { type: 'array', required: true, items: { type: 'string' } },
+					sourceDaysUndeclared: { type: 'boolean', required: true },
+					cadenceException: { type: 'string' },
 					selfCheck: SELF_CHECK_SCHEMA,
 					warnings: { type: 'array', required: true, items: { type: 'string' } },
 				},
@@ -3370,6 +3330,10 @@ function memoryWriteTool(opts) {
 					`功能文件：${v.featureFile}（${v.functionBytes}B${v.createdFunctionFile ? '，新建' : ''}）`,
 				];
 				if (v.resolvedDailyLogs.length) lines.push(`✅ 已勾掉待观察项：${v.resolvedDailyLogs.join('、')}`);
+				lines.push(v.sourceDays.length
+					? `📅 声明的素材日（仅检查文件存在且非空）：${v.sourceDays.join('、')}`
+					: '📅 素材日：未声明——产物无法核验蒸馏依据了哪些每日记录');
+				if (v.cadenceException) lines.push(`ℹ 豁免（调用方声明，未经核验）：${v.cadenceException}`);
 				lines.push('ℹ 索引行未自动写入——功能域稳定后用 memory_index 收进索引；本工具不改写每日原始记录，直接编辑的来源可能未知。');
 				// 自检结果必须显示：合格给一句确认，不合格逐项点名。
 				if (v.selfCheck) {
@@ -3392,6 +3356,46 @@ function memoryWriteTool(opts) {
 			const summary = oneLine(args.summary);
 			if (!summary) throw new Error('summary is required: the MEMORY.md index row must carry a one-line summary');
 			const warnings = [];
+
+			// Distillation provenance (2026-11-19). The >=3-days cadence rule used to be
+			// prompt-only: the block could claim it while leaving no evidence of which days
+			// were read. Declared days are verified against the daily files here, so a
+			// declared source can be re-checked later. Undeclared provenance is recorded as
+			// undeclared rather than silently implied — capture is opt-in, so a hard gate
+			// would also reject legitimate writes in roots that never collected dailies.
+			const declaredSources = [];
+			if (args.sources !== undefined) {
+				if (!Array.isArray(args.sources)) throw new Error('sources must be an array of YYYY-MM-DD dates');
+				for (const raw of args.sources) {
+					const value = typeof raw === 'string' ? raw.trim() : '';
+					const parsedDay = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00.000Z`) : null;
+					if (!parsedDay || Number.isNaN(parsedDay.getTime()) || parsedDay.toISOString().slice(0, 10) !== value) {
+						throw new Error(`sources: "${String(raw).slice(0, 40)}" is not a YYYY-MM-DD date`);
+					}
+					if (declaredSources.includes(value)) throw new Error(`sources: duplicate date ${value}`);
+					declaredSources.push(value);
+				}
+			}
+			const verifiedSources = [];
+			const missingSources = [];
+			for (const day of declaredSources) {
+				const text = await readIfExists(path.join(root, `${day}.md`));
+				if (typeof text === 'string' && text.trim()) verifiedSources.push(day);
+				else missingSources.push(day);
+			}
+			if (missingSources.length) {
+				throw new Error(`sources: 每日记录缺失或为空：${missingSources.join('、')}（声明不存在的素材等于伪造证据）`);
+			}
+			const exceptionText = args.cadenceException === undefined ? '' : oneLine(args.cadenceException);
+			if (exceptionText && charLen(exceptionText) < 4) {
+				throw new Error('cadenceException 太短：写清属于哪类豁免（用户显式要求 / 当日踩坑因果 / 安全约束）');
+			}
+			// A clean write must stay warning-free (existing contract), so an
+			// undeclared provenance is recorded in the receipt and the block, not
+			// raised as a warning on every write.
+			if (!exceptionText && verifiedSources.length > 0 && verifiedSources.length < 3) {
+				warnings.push(`声明的素材日只有 ${verifiedSources.length} 天（<3）：蒸馏纪律要求 ≥3 个主题相关素材日；要么补素材，要么传 cadenceException 说明豁免`);
+			}
 
 			const indexPath = path.join(root, 'MEMORY.md');
 			const indexNow = await readIfExists(indexPath);
@@ -3444,6 +3448,12 @@ function memoryWriteTool(opts) {
 			const suffix = suffixCount === 0 ? '' : suffixCount === 1 ? '补' : `补${suffixCount}`;
 			const heading = `## [${date}${suffix}] ${title}`;
 			const bullets = [`- **概括**：${summary}`];
+			// Provenance is part of the block, not a receipt-only field: the block is what
+			// survives in the repository and what a later reader can re-check.
+			const sourceLabel = verifiedSources.length
+				? `${verifiedSources.join('、')}（仅检查声明的每日文件存在且非空${verifiedSources.length < 3 ? '；声明少于 3 天' : ''}）`
+				: '未声明（素材天数未知）';
+			bullets.push(`- **素材**：${sourceLabel}${exceptionText ? `（豁免：${exceptionText}；调用方声明，未经核验）` : ''}`);
 			if (args.change !== undefined && oneLine(args.change)) bullets.push(`- **改动**：${oneLine(args.change)}`);
 			if (args.reason !== undefined && oneLine(args.reason)) bullets.push(`- **原因**：${oneLine(args.reason)}`);
 			if (args.verification !== undefined && oneLine(args.verification)) bullets.push(`- **验证**：${oneLine(args.verification)}`);
@@ -3532,6 +3542,9 @@ function memoryWriteTool(opts) {
 				createdFunctionFile: created,
 				functionBytes: fnBytes,
 				resolvedDailyLogs: resolvedIn,
+				sourceDays: verifiedSources,
+				sourceDaysUndeclared: verifiedSources.length === 0,
+				...(exceptionText ? { cadenceException: exceptionText } : {}),
 				selfCheck,
 				warnings,
 			};
@@ -5132,6 +5145,73 @@ async function zoneCounts(root, skillRoot = '') {
  *   engagement    = reads + verdicts (the only honest "usage")
  *   indexRows     = rows in MEMORY.md (the real index size)
  */
+async function cycleCoverageProjection(ctx) {
+	try {
+		const valves = typeof ctx?.get === 'function' ? ctx.get('valves') : null;
+		if (!valves || typeof valves.lastPatrol !== 'function') return { status: 'unavailable', at: null, ok: null, report: null };
+		const patrol = await valves.lastPatrol('weekly');
+		if (!patrol || typeof patrol !== 'object' || Array.isArray(patrol)) return { status: 'unknown', at: null, ok: null, report: null };
+		const at = typeof patrol.at === 'string' ? patrol.at : null;
+		const ok = typeof patrol.ok === 'boolean' ? patrol.ok : null;
+		if (patrol.cycle_coverage == null) return { status: 'missing', at, ok, report: null };
+		if (typeof patrol.cycle_coverage !== 'object' || Array.isArray(patrol.cycle_coverage)) return { status: 'unknown', at, ok, report: null };
+		return { status: 'available', at, ok, report: patrol.cycle_coverage };
+	} catch {
+		return { status: 'unknown', at: null, ok: null, report: null };
+	}
+}
+
+function createRuntimeSnapshotProjection(ctx) {
+	let cachedService;
+	let cachedResult;
+	let expiresAt = 0;
+	let pending;
+	return async () => {
+		let service;
+		try {
+			service = typeof ctx?.get === 'function' ? ctx.get('executionRuntimeStatus') : null;
+		} catch {
+			return { state: 'error', error: 'runtime_status_lookup_failed' };
+		}
+		if (!service) return { state: 'missing' };
+		if (service !== cachedService) {
+			cachedService = service;
+			cachedResult = undefined;
+			expiresAt = 0;
+			pending = undefined;
+		}
+		try {
+			if (typeof service.snapshot !== 'function') return { state: 'unavailable' };
+			if (cachedResult && Date.now() < expiresAt) return cachedResult;
+			if (pending) return await pending;
+			let timer;
+			const call = Promise.resolve().then(() => service.snapshot({ limit: 100 }));
+			const request = Promise.race([
+				call,
+				new Promise((resolve) => { timer = setTimeout(() => resolve({ state: 'error', error: 'runtime_snapshot_timeout' }), 1000); }),
+			]).then((result) => {
+				if (!result || typeof result !== 'object' || Array.isArray(result) || !['missing', 'disabled', 'unavailable', 'error', 'ready'].includes(result.state)) {
+					return { state: 'error', error: 'invalid_runtime_snapshot' };
+				}
+				return result;
+			}, () => ({ state: 'error', error: 'runtime_snapshot_failed' })).then((result) => {
+				clearTimeout(timer);
+				if (cachedService === service) {
+					cachedResult = result;
+					expiresAt = Date.now() + 5000;
+				}
+				return result;
+			});
+			pending = request;
+			// Keep a timed-out call in flight until it settles, preventing unbounded calls.
+			call.finally(() => { if (pending === request) pending = undefined; }).catch(() => {});
+			return await request;
+		} catch {
+			return { state: 'error', error: 'runtime_snapshot_failed' };
+		}
+	};
+}
+
 async function overviewPayload(root, opts) {
 	const health = panelizeHealth(await runHealthCheck(root, opts));
 	const usage = summarizeUsage(await readUsage(root, 30));
@@ -5236,6 +5316,9 @@ async function overviewPayload(root, opts) {
 			tool: 'memory_sag',
 		},
 		capture: capture ? { ...capture, intentWitness: await inspectCaptureIntent(root) } : null,
+		cycleCoverage: await cycleCoverageProjection(opts.ctx),
+		patrolDelivery: opts.patrolDelivery?.() ?? { status: 'unavailable' },
+		runtimeSnapshot: await opts.runtimeSnapshot(),
 		env,
 	};
 }
@@ -6043,7 +6126,7 @@ function memoryPanelApi(opts, connection, inbox) {
 /** 当前 apply() 实例的召回账本汇总 getter（模块级，供零参数探针读取）。 */
 let liveRecallSummary = () => ({ rounds: 0 });
 
-export function apply(ctx, config) {
+export function apply(ctx, config, dependencies = {}) {
 	// The Host install may be pointed at explicitly; otherwise it is discovered
 	// (env / CLI entry / cwd / profile). Loading eagerly fails fast with an
 	// actionable message instead of breaking the first tool call.
@@ -6111,6 +6194,8 @@ export function apply(ctx, config) {
 		reload: () => selfReload(ctx, { logger: ctx.logger ?? console }),
 	};
 
+	opts.runtimeSnapshot = createRuntimeSnapshotProjection(ctx);
+
 	// Instance-local observations only; no event, inbox post or durable data.
 	const captureStatus = createCaptureStatus({ enabled: opts.captureUserTurns });
 	opts.captureStatus = () => captureStatus.snapshot();
@@ -6166,6 +6251,12 @@ export function apply(ctx, config) {
 
 	// 收件箱先建：memory_check 的自动投递要用它（发现→跟踪零配合）。
 	const inbox = new MemoryInbox(dshHome);
+	const patrolDelivery = createPatrolReportDelivery({
+		getValves: () => ctx.get?.('valves'), inbox, home: dshHome(),
+		intervalMs: config?.patrolDeliveryIntervalMs,
+	});
+	opts.patrolDelivery = () => patrolDelivery.status();
+	archiveDisposers.push(() => patrolDelivery.dispose());
 
 	// One cooperative queue covers the entire read/modify/write operation, not
 	// just its final rename. It is shared across plugin reloads in this process.
@@ -6323,12 +6414,28 @@ export function apply(ctx, config) {
 	// clears the threshold. Waterfall listener returning next() unchanged when
 	// nothing matches or the batch was already served a recall (per-agent
 	// signature dedupe). Registration is global; dispatch is agent-scoped.
-	const recallServed = new Map(); // agentId -> signature of last served batch
+	const recallServed = new Map(); // agentId -> independent delivery state for the last batch
+	let distillPromptRevision = 0;
 	// R28 promotion cache (2026-11-19): the backlog scan reads recent daily logs,
 	// so it is throttled and shared across steps rather than recomputed per turn.
 	const DISTILL_PROMPT_INTERVAL_MS = 10 * 60 * 1000;
 	let distillPromptAt = 0;
-	let distillPromptCache = { due: [], orphan: [] };
+	let distillPromptCache = { due: [], orphan: [], pending: true };
+	let distillPromptFlight = null;
+	let distillPromptDisposed = false;
+	const scheduleDistillScan = () => {
+		const now = (dependencies.now ?? Date.now)();
+		if (distillPromptDisposed || distillPromptFlight || (distillPromptAt && now - distillPromptAt <= DISTILL_PROMPT_INTERVAL_MS)) return;
+		distillPromptAt = now;
+		distillPromptCache = { ...distillPromptCache, pending: true };
+		const scan = dependencies.detectDistillationBacklog ?? detectDistillationBacklog;
+		// Defer invocation so neither synchronous setup nor a rejected scan enters recall.
+		distillPromptFlight = Promise.resolve().then(() => distillPromptDisposed ? undefined : scan(resolveRoot(opts))).then(
+			(result) => { if (!distillPromptDisposed) { distillPromptCache = result; distillPromptRevision++; } },
+			(err) => { if (!distillPromptDisposed) { distillPromptCache = { due: [], orphan: [], skipped: `候选扫描失败（${err?.code ?? 'unknown'}）——状态未知` }; distillPromptRevision++; } },
+		).finally(() => { distillPromptFlight = null; });
+	};
+	disposers.push(() => { distillPromptDisposed = true; });
 	// 召回双侧账本（2026-11-09）：有界环形缓冲，记录最近 N 轮召回的
 	// 注入/暂缓/丢弃/预算用量。探针只读汇总，不落盘（曝光数据不是记忆）。
 	const RECALL_LEDGER_CAP = 50;
@@ -6418,7 +6525,8 @@ export function apply(ctx, config) {
 				const deadline = performance.now() + budgetMs;
 				const buildRecall = async () => {
 					if (!userText.trim()) return null;
-					if (recallServed.get(payload.agent.id) === signature) return null;
+					const served = recallServed.get(payload.agent.id);
+					const prior = served?.signature === signature ? served : {};
 					const indexText = await readIndexCached();
 					// A missing index must not suppress separately configured negative rules.
 					// RRF fusion: lexical IDF rank + usage-heat rank (see
@@ -6466,34 +6574,22 @@ export function apply(ctx, config) {
 					} catch {
 						negativeLines = [];
 					}
-					// R28 SELF-DRIVEN PROMOTION (2026-11-19).
-					//
-					// The health check reports a backlog, but a WARN sitting in a panel
-					// nobody opens changes nothing — measured: five days of material and
-					// one block, and the only reason it was noticed is that the user
-					// asked "is distillation running?". So the same detection runs here,
-					// in the pre-step path, and rides along with recall: the mechanism
-					// raises it itself instead of waiting to be inspected.
-					//
-					// Cost control: the scan reads recent daily logs, so it is throttled
-					// to once per 10 minutes and cached; a step that arrives sooner reuses
-					// the previous answer.
-					const nowMs = Date.now();
-					if (nowMs - distillPromptAt > DISTILL_PROMPT_INTERVAL_MS) {
-						distillPromptAt = nowMs;
-						try {
-							distillPromptCache = await detectDistillationBacklog(resolveRoot(opts));
-						} catch {
-							distillPromptCache = { due: [], orphan: [] };
-						}
-					}
+					// R28 scans run in the background; recall consumes only the cached state.
+					scheduleDistillScan();
 					const backlogLines = [];
-					for (const b of distillPromptCache?.due ?? []) {
-						backlogLines.push(`⚠ 蒸馏积压：${b.area} 有 ${b.days.length} 天素材（${b.days.join('、')}）但最新迭代块停在 ${b.newestBlock ?? '（无）'}。按纪律用 memory_write 跨日蒸馏；素材不足 3 天同主题时忽略本提示。`);
+					const scanPending = Boolean(distillPromptCache?.pending);
+					const scanRevision = distillPromptRevision;
+					const includeScan = scanPending ? !prior.pending : prior.scanRevision !== scanRevision;
+					if (includeScan && scanPending) backlogLines.push('⚠ 候选扫描进行中，结果尚未确定；如有旧结果仅供参考。');
+					if (includeScan && distillPromptCache?.skipped) backlogLines.push(`⚠ 候选扫描未知：${distillPromptCache.skipped}`);
+					if (includeScan && distillPromptCache?.readUnknown) backlogLines.push(`⚠ 候选扫描不完整：${distillPromptCache.readUnknown} 个文件读不到，结果可能漏项。`);
+					for (const b of (includeScan ? distillPromptCache?.due : []) ?? []) {
+						backlogLines.push(`⚠ 未验证词法候选：${b.area} 在 ${b.days.length} 个日期有关键词命中（${b.days.join('、')}）；最新块日期 ${b.newestBlock ?? '（无）'} 不证明素材是否已处理。`);
 					}
-					for (const b of distillPromptCache?.orphan ?? []) {
-						backlogLines.push(`⚠ 结构缺口：${b.days.length} 天共约 ${b.bytes}B 的日记录素材没有对应 functions/ 功能域——核对是否需要新建功能域，否则素材会失去归属。`);
+					for (const b of (includeScan ? distillPromptCache?.orphan : []) ?? []) {
+						backlogLines.push(`⚠ 未验证未匹配汇总：${b.days.length} 个日期共约 ${b.bytes} 字符的部分段落未命中现有关键词；这些段落可能互不相关，不能据此判定结构缺口。`);
 					}
+					if (prior.foreground) { rows.length = 0; archives.length = 0; negativeLines = []; }
 					if (!rows.length && !negativeLines.length && !archives.length && !backlogLines.length) return null;
 					let selectedRows = [], selectedArchives = [];
 					let budgetOmitted = { rows: 0, repairs: 0, held: 0, archives: 0 }, optionalBytes = 0, renderFailed = false;
@@ -6511,6 +6607,17 @@ export function apply(ctx, config) {
 							renderFailed = true;
 						}
 					}
+					// R28 is supplementary; render it before the complete negative rules.
+					if (backlogLines.length) {
+						const block = [
+							'### ♻ 日记录候选扫描（未验证 · 非本轮任务）',
+							'',
+							...backlogLines,
+							'',
+							'关键词命中不证明主题相关或存在积压；日期比较也不证明素材已被吸收。扫描只检查最近 10 个日文件中的二级标题段落，且每段只计入首个匹配域；须查阅原文才能判断。',
+						].join('\n');
+						message.content = [{ type: 'text', text: `${message.content[0]?.text ? message.content[0].text + '\n\n' : ''}${block}` }];
+					}
 					if (negativeLines.length) {
 						const block = [
 							'### ⛔ 负向规则（valves · 已人工确认）',
@@ -6520,22 +6627,11 @@ export function apply(ctx, config) {
 						].join('\n');
 						message.content = [{ type: 'text', text: `${message.content[0]?.text ? message.content[0].text + '\n\n' : ''}${block}` }];
 					}
-					// R28: the pipeline raises its own backlog. Rendered last so it never
-					// displaces a memory row or a negative rule — the prompt is advice about
-					// housekeeping, not a reason to skip the evidence above it.
-					if (backlogLines.length) {
-						const block = [
-							'### ♻ 蒸馏积压（机制自动提示 · 非本轮任务）',
-							'',
-							...backlogLines,
-							'',
-							'处理时机由你判断：本轮任务优先；但如果本次工作正好积累了同主题素材，收尾时一并蒸馏。**不要为了消掉提示而写空块**——块必须是从多日素材提炼的结论。',
-						].join('\n');
-						message.content = [{ type: 'text', text: `${message.content[0]?.text ? message.content[0].text + '\n\n' : ''}${block}` }];
-					}
 					if (!message.content[0]?.text) return null;
 					return {
 						message: createUserMessage(message), signature, rows: selectedRows,
+						foreground: Boolean(selectedRows.length || selectedArchives.length || negativeLines.length),
+						pending: Boolean(backlogLines.length && scanPending), scanRevision: backlogLines.length && !scanPending ? scanRevision : undefined,
 						recallStats: recallStats ?? { injected: 0, held: 0, dropped: 0, budget: RECALL_BUDGET_TOKENS, usedTokens: 0 },
 						archivesCount: selectedArchives.length, rulesCount: negativeLines.length, budgetOmitted, optionalBytes, renderFailed,
 					};
@@ -6586,7 +6682,12 @@ export function apply(ctx, config) {
 			// inserted into an entered step. Late builds and rejected steps leave no
 			// served signature or exposure records behind.
 			if (recallServed.size >= 512 && !recallServed.has(payload.agent.id)) recallServed.delete(recallServed.keys().next().value);
-			recallServed.set(payload.agent.id, recall.signature);
+			const previous = recallServed.get(payload.agent.id);
+			const state = previous?.signature === recall.signature ? previous : { signature: recall.signature };
+			if (recall.foreground) state.foreground = true;
+			if (recall.pending) state.pending = true;
+			if (recall.scanRevision !== undefined) state.scanRevision = recall.scanRevision;
+			recallServed.set(payload.agent.id, state);
 			if (recall.recallStats) recordRecall({ ...recall.recallStats, actualRows: recall.rows.length, archives: recall.archivesCount, rules: recall.rulesCount, budgetOmitted: recall.budgetOmitted, optionalBytes: recall.optionalBytes, renderFailed: recall.renderFailed });
 			for (const r of recall.rows) {
 				const root = resolveRoot(opts);

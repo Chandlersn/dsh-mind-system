@@ -74,9 +74,14 @@ const suites = [
 	'tests/usage-health.test.js',
 	// 归档日线索最新在上（2026-11-19 用户要求）。
 	'tests/archive-order.test.js',
-	// R28 蒸馏积压检测（2026-11-19）：流水线停住不许安静——素材攒够 3 天却
-	// 没蒸馏、或素材没有对应功能域，都必须报出来。
+	// Lexical candidates are not evidence of related days or completed work.
 	'tests/distill-backlog.test.js',
+	'tests/scan-dedupe.test.js',
+	// HTTP and SSE must expose the same cycle coverage and unavailable states.
+	'tests/panel-cycle-coverage.test.js',
+	'tests/memory-runtime-live.test.js',
+	'tests/patrol-report-delivery.test.js',
+	'tests/patrol-delivery-apply.test.js',
 	'tests/layer-selfcheck.test.js',
 	'tests/dao-shape.test.js',
 	'tests/coverage.test.js',
@@ -112,6 +117,9 @@ const suites = [
 	'tests/client-action-reconcile.test.js',
 	// 写入溯源（R26）+ 写入口守卫：不接进来的测试等于没跑（2026-11-10）。
 	'tests/write-ledger.test.js',
+	// 蒸馏来源可核验（2026-11-19）：“≥3 个素材日”此前只是提示词约束，
+	// 产物里没有可回查的素材证据；这里钉住三类状态与伪造声明的拒绝。
+	'tests/distill-provenance.test.js',
 	'tests/ledger-delete-pairing.test.js',
 	'tests/daily-ledger-key.test.js',
 	'tests/daily-capture-audit.test.js',
