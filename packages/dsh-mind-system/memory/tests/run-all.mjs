@@ -67,6 +67,11 @@ const suites = [
 	// shards. This suite pins the compatibility contract — legacy single file
 	// still readable, both layouts read together, recall stays an EVENT.
 	'tests/usage-shard.test.js',
+	// Usage-ledger observability (2026-11-19): a failed write must leave a trace,
+	// and the frozen legacy file must be distinguishable from the live shard —
+	// otherwise "the number stopped moving" cannot be told apart from "the
+	// collector broke".
+	'tests/usage-health.test.js',
 	'tests/layer-selfcheck.test.js',
 	'tests/dao-shape.test.js',
 	'tests/coverage.test.js',

@@ -52,6 +52,43 @@ export function canonicalHref(href) {
 	return m ? `skills/${m[1]}/SKILL.md` : String(href ?? '');
 }
 
+/**
+ * Last usage-write failure, for observability only.
+ *
+ * WHY THIS EXISTS (2026-11-19): the catch below used to be entirely empty, on the
+ * stated principle that "usage logging must never break a step or a tool call".
+ * The principle is right — a signal ledger must not be able to fail a real write —
+ * but the implementation made the failure INVISIBLE in both directions:
+ *
+ *   · no error surfaced to the caller (by design), and
+ *   · no record anywhere that the ledger had stopped accepting rows.
+ *
+ * Measured consequence: `.usage/2026-11.jsonl` went from 158 rows on 11-17 and
+ * 176 on 11-18 to 1 row on 11-19, while the panel kept showing a frozen total.
+ * Nothing anywhere said the ledger was down; the numbers simply stopped moving
+ * and read as "no activity today" — which is the exact failure mode
+ * `insights/失败被伪装成成功` warns about.
+ *
+ * The fix keeps the no-throw contract but adds a bounded, in-memory record that
+ * a health probe and the panel can read. In-memory on purpose: writing a failure
+ * record into the same filesystem that just refused a write is not reliable.
+ *
+ * @type {{ at: string, code: string, message: string, count: number } | null}
+ */
+let lastUsageWriteFailure = null;
+let usageWriteFailureCount = 0;
+
+/** Read the most recent usage-write failure (null when the last write was fine). */
+export function usageWriteHealth() {
+	return { failure: lastUsageWriteFailure, failures: usageWriteFailureCount };
+}
+
+/** Test hook: forget any recorded failure. */
+export function resetUsageWriteHealth() {
+	lastUsageWriteFailure = null;
+	usageWriteFailureCount = 0;
+}
+
 export async function appendUsage(root, entry) {
 	try {
 		await mkdir(root, { recursive: true });
@@ -68,8 +105,17 @@ export async function appendUsage(root, entry) {
 		// migration step, so an existing root loses nothing.
 		await mkdir(usageShardDir(root), { recursive: true });
 		await appendFile(usageShardPath(root, now), line, 'utf8');
-	} catch {
-		/* usage logging must never break a step or a tool call */
+	} catch (error) {
+		// Still never throws — but no longer silent. See usageWriteHealth above.
+		usageWriteFailureCount += 1;
+		lastUsageWriteFailure = {
+			at: new Date().toISOString(),
+			code: String(error?.code ?? error?.name ?? 'unknown'),
+			// Bounded: an EACCES message can carry a long path, and this is read by
+			// a probe on every panel refresh.
+			message: String(error?.message ?? error).slice(0, 300),
+			count: usageWriteFailureCount,
+		};
 	}
 }
 

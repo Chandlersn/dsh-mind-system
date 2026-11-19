@@ -43,7 +43,7 @@ import {
 	localDateStr, normDate, oneLine, charLen, readIfExists, writeText, statExists, safeSlug,
 	splitIterationBlocks, dshHome, joinDshHome, resolveRoot, appendBlock, countHeadingDate, withPathLock, withWriteCommitLock, MemoryWriteCommitUnknown, MemoryLedgerAppendError, MemoryStageOutcomeUnknown,
 } from './src/util.js';
-import { usagePath, usageFiles, appendUsage, readUsage, summarizeUsage, insightTrust, trustLineFor, refreshTrustLine, canonicalHref, compactUsage } from './src/usage.js';
+import { usagePath, usageFiles, appendUsage, usageWriteHealth, readUsage, summarizeUsage, insightTrust, trustLineFor, refreshTrustLine, canonicalHref, compactUsage } from './src/usage.js';
 // SAG bridge (second recall channel): startSagService is fire-and-forget at
 // apply() time — `sag api start` measured 512ms and must never block the host.
 import { sagSearch, sagPing, sagStatus, sagIsIndexed, startSagService, readSagEndpoint, resolveSagApiKey } from './src/sag.js';
@@ -4894,9 +4894,30 @@ async function overviewPayload(root, opts) {
 		}
 	}
 	const usageLines = [];
+	// Per-source counts, because a single total hides which source is alive.
+	//
+	// Measured 2026-11-19: the legacy `.usage.jsonl` holds 4376 rows and stopped
+	// growing on 11-16 (rotation: writes go to the month shard now, the legacy file
+	// is read forever). The month shard held 356. The panel showed signalCount
+	// 4732 — 92% of it frozen history. The number looked healthy and never moved,
+	// and "never moves" is indistinguishable from "nothing is happening" unless
+	// the sources are reported separately.
+	const usageSources = [];
+	let liveLines = 0;
 	for (const uf of await usageFiles(root)) {
 		const text = (await readIfExists(uf.file)) ?? '';
-		for (const line of text.split('\n')) if (line.trim()) usageLines.push(line);
+		const lines = text.split('\n').filter((line) => line.trim());
+		for (const line of lines) usageLines.push(line);
+		// A shard under `.usage/` is the live path; the root `.usage.jsonl` is the
+		// frozen legacy file. Naming them here is what makes the difference visible.
+		//
+		// Classified by DIRECTORY, not filename: both files end in `.jsonl`, and
+		// matching on the extension alone labelled the frozen legacy file "live"
+		// (measured — the first version of this check did exactly that, so the
+		// split reported 4732 live rows when only 356 were live).
+		const isLegacy = path.dirname(path.resolve(uf.file)) === path.resolve(root);
+		usageSources.push({ file: path.basename(uf.file), rows: lines.length, live: !isLegacy });
+		if (!isLegacy) liveLines += lines.length;
 	}
 	const signalCount = usageLines.length;
 	let recallEvents = 0;
@@ -4948,6 +4969,14 @@ async function overviewPayload(root, opts) {
 		usage: {
 			signalCount, layers: layerCounts, hotspots: hotspots.slice(0, 5),
 			recallEvents, readEvents, verdictEvents, distinctHrefs: hrefsSeen.size, indexRows,
+			// Split totals so "the number is not moving" can be diagnosed instead of
+			// guessed at: `liveRows` is what the shard path has accepted, `sources`
+			// names each file and whether it is still written to.
+			liveRows: liveLines,
+			sources: usageSources,
+			// Non-null means the last ledger write failed and was swallowed. The
+			// write itself is still non-blocking by design; this is the trace.
+			writeHealth: usageWriteHealth(),
 		},
 		sag: {
 			configured: Boolean(sagKey.key),
@@ -6367,3 +6396,4 @@ export const healthProbe = createHealthProbe({
 });
 
 export { name, inject, dshHome, joinDshHome, resolveRoot, resolveDshRoot, runHealthCheck, panelizeHealth, zoneCounts, tokensOf, matchIndexRows, buildRecallMessage, decisionRepairTargets, indexRowsOf, captureLineFor, insightTrust, DEFAULTS, DISCIPLINE_TEXT };
+

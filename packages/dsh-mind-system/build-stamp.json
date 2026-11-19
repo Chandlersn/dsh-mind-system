@@ -173,7 +173,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "a48c56ef19896580bf5659c2e69553974c3b46dd01efacb1377481a630711b2e"
+      "sha256": "8d5b65c7dbe5242a9728e80f4189cdba1d77a8fca8b63f2bed1463ef70333ecc"
     },
     "memory/src/axiom-candidate.js": {
       "source": "dsh-memory-manager/src/axiom-candidate.js",
@@ -265,7 +265,7 @@
     },
     "memory/src/usage.js": {
       "source": "dsh-memory-manager/src/usage.js",
-      "sha256": "414546fb271f1bff55c65fe38d7258bccc48009722039a97694f6793288c0ff9"
+      "sha256": "567c4832316759de6b7dbb55a0070bc1246eb54dcd46207c0a0f97c4f1fa8806"
     },
     "memory/src/util.js": {
       "source": "dsh-memory-manager/src/util.js",
@@ -581,7 +581,7 @@
     },
     "memory/tests/run-all.mjs": {
       "source": "dsh-memory-manager/tests/run-all.mjs",
-      "sha256": "9995da26a6aeab01d85f457be185e51cfd7db1b0c26219224e6286ad16085a34"
+      "sha256": "3b3c4073a097cfe5b78246fb3ed197264ec8cc7f26ca4e787618e852618edfba"
     },
     "memory/tests/sag-bridge.test.js": {
       "source": "dsh-memory-manager/tests/sag-bridge.test.js",
@@ -606,6 +606,10 @@
     "memory/tests/supersede-safety.test.js": {
       "source": "dsh-memory-manager/tests/supersede-safety.test.js",
       "sha256": "91edabe69d746f178d51c0c0b3fafebc02d0ecf90026c90670db02892b65eba9"
+    },
+    "memory/tests/usage-health.test.js": {
+      "source": "dsh-memory-manager/tests/usage-health.test.js",
+      "sha256": "cb59fff23f3c2403e149b3d575fb1f7a2085e157bfa027f3d89c1db026954ba2"
     },
     "memory/tests/usage-ledger-helper.mjs": {
       "source": "dsh-memory-manager/tests/usage-ledger-helper.mjs",
