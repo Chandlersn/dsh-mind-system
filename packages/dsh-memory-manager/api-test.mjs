@@ -1,4 +1,4 @@
-/**
+﻿/**
  * API-route test: drives the panel HTTP handlers with stub req/res objects
  * against the plugin's real (global) memory root.
  *
@@ -222,8 +222,8 @@ const dailyDays = await tcall('/api/memory-org/daily-days?name=2026-08.md');
 ok(dailyDays.status === 200, `daily-days 200 (${dailyDays.status})`);
 const ddBody = JSON.parse(dailyDays.body);
 ok(ddBody.name === '2026-08.md' && Array.isArray(ddBody.days) && ddBody.days.length === 2, `daily-days parses the ### [date] headings (${ddBody.days?.length})`);
-ok(ddBody.days[0]?.date === '2026-08-05' && ddBody.days[1]?.date === '2026-08-06', 'the clues keep chronological file order');
-ok(ddBody.days[1]?.title === '补', 'the heading tail after the date travels as title');
+ok(ddBody.days[0]?.date === '2026-08-06' && ddBody.days[1]?.date === '2026-08-05', 'the clues are NEWEST-FIRST (user request 2026-11-19; archives are append-only so file order is oldest-first)');
+ok(ddBody.days[0]?.title === '补', 'the heading tail after the date travels as title (newest day is index 0)');
 ok(!JSON.stringify(ddBody).includes('归档月的一天'), 'daily-days carries headings only, never the body');
 // 防护：非月形名、穿越、不存在、非法月号一律拒绝。
 for (const [url, label] of [

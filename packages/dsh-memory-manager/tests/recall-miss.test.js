@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 召回漏判必须可见（2026-11-16）
  *
  * ## 为什么这个文件必须存在
@@ -64,6 +64,35 @@ test('判据是占比而非 bestScore：通用碎片命中不算命中', () => {
 	const r = matchIndexRows(INDEX, tokensOf('完全无关的量子化纤维护理流程'), 3);
 	assert.equal(r.stats.miss, true, '通用碎片命中不足以判为命中');
 	assert.ok(r.stats.missTokens.length > r.stats.hitTokens.length, '未命中的词应占多数');
+});
+
+test('分词碎片不该制造假漏判（判据按字符覆盖，不按 token 占比）', () => {
+	// 2026-11-19: the first criterion counted TOKENS. Chinese tokenizes into
+	// bigrams that straddle word boundaries — 面板时间线 → 面板/板时/时间/间线/
+	// 线要/要倒/倒序. Fragments like 板时/线要/要倒 exist in no summary and never
+	// will; charging the match for them made a fully-matched query report miss.
+	// Measured: every real word hit, the row scored well, miss was still true —
+	// and a warning that fires on correct matches is worse than no warning.
+	const query = 'hook 的 inject 语义和 ctx.get 有什么不同';
+	const r = matchIndexRows(INDEX, tokensOf(query), 3, undefined, { queryText: query });
+	assert.equal(r.stats.miss, false, `真实词都命中就不该报漏判：${(r.stats.missTokens ?? []).join(',')}`);
+	assert.ok(r.stats.charCoverage >= 0.75, `字符覆盖率应达标，实际 ${r.stats.charCoverage}`);
+});
+
+test('字符覆盖率把两类查询分开（阈值 0.75 落在实测分布中间）', () => {
+	// Should match: 86–100% measured on real queries. Should not: 33–64%.
+	// Assert the CONTRAST: a threshold that only separates one side is not a
+	// criterion, it is a guess.
+	const qHit = 'hook 的 inject 语义';
+	const qMiss = '火星上的土豆种植技术';
+	const hit = matchIndexRows(INDEX, tokensOf(qHit), 3, undefined, { queryText: qHit });
+	const miss = matchIndexRows(INDEX, tokensOf(qMiss), 3, undefined, { queryText: qMiss });
+	assert.ok(
+		hit.stats.charCoverage > miss.stats.charCoverage,
+		`两侧必须可比：${hit.stats.charCoverage} 应大于 ${miss.stats.charCoverage}`,
+	);
+	assert.equal(miss.stats.miss, true);
+	assert.equal(hit.stats.miss, false);
 });
 
 test('注入文本真的带出 ⚠ 标记（算了却没用 = 没做）', () => {

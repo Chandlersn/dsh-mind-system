@@ -141,7 +141,7 @@
     },
     "memory/api-test.mjs": {
       "source": "dsh-memory-manager/api-test.mjs",
-      "sha256": "e77b261f84e86400c3e8f6444f028d6f74f71b8ced94edf8b3f152e65bf329d9"
+      "sha256": "c418f515b2a07d2d9b491bf0b90d0033cdb5f4401b84bbcf0a1aeac4f6f90059"
     },
     "memory/client.js": {
       "source": "dsh-memory-manager/client.js",
@@ -173,7 +173,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "8d5b65c7dbe5242a9728e80f4189cdba1d77a8fca8b63f2bed1463ef70333ecc"
+      "sha256": "130b3370c6b0ee982c5035b6f9d244e91240139248a542150b945d307d519887"
     },
     "memory/src/axiom-candidate.js": {
       "source": "dsh-memory-manager/src/axiom-candidate.js",
@@ -241,7 +241,7 @@
     },
     "memory/src/recall.js": {
       "source": "dsh-memory-manager/src/recall.js",
-      "sha256": "98193237207ffc79cf2b73afaad498f1ec08a55333ffa89b651ed78ad84f6218"
+      "sha256": "7162a097fa142d35ad7d4357a66ba2c0d5434a73517c2d37003e62d0c72e8bd0"
     },
     "memory/src/reload.js": {
       "source": "dsh-memory-manager/src/reload.js",
@@ -282,6 +282,10 @@
     "memory/src/write-ledger.js": {
       "source": "dsh-memory-manager/src/write-ledger.js",
       "sha256": "196f56fceb0410218b43df60776309faf5d833f60132bfa9e88bc6eff0158cda"
+    },
+    "memory/tests/archive-order.test.js": {
+      "source": "dsh-memory-manager/tests/archive-order.test.js",
+      "sha256": "d77d2d7c351142dd1c50875a6d5b09254965aa9e1dfa97b02c98acce74442fb1"
     },
     "memory/tests/axiom-candidate.test.js": {
       "source": "dsh-memory-manager/tests/axiom-candidate.test.js",
@@ -537,7 +541,7 @@
     },
     "memory/tests/recall-miss.test.js": {
       "source": "dsh-memory-manager/tests/recall-miss.test.js",
-      "sha256": "7ff7f2438359f2c1490be3f722b3c8e0666ced43ac79c082368f479c9a1d1dc2"
+      "sha256": "c1b0047b5c41231c60174e5c7046443a0a5512c45817687119c888455d88f68e"
     },
     "memory/tests/recall-mutation.mjs": {
       "source": "dsh-memory-manager/tests/recall-mutation.mjs",
@@ -581,7 +585,7 @@
     },
     "memory/tests/run-all.mjs": {
       "source": "dsh-memory-manager/tests/run-all.mjs",
-      "sha256": "3b3c4073a097cfe5b78246fb3ed197264ec8cc7f26ca4e787618e852618edfba"
+      "sha256": "b53b38e5693e4826bc7a8192ce167cac091ba72ba7c5c8fe478b6ad2244e495c"
     },
     "memory/tests/sag-bridge.test.js": {
       "source": "dsh-memory-manager/tests/sag-bridge.test.js",

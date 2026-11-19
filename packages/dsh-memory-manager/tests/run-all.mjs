@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 统一测试入口：先定位 DSH 宿主安装，再以真实环境串行跑全部套件。
  *
  * 为什么需要它：harness-test.mjs / api-test.mjs 在找不到宿主时默认 SKIP，
@@ -72,6 +72,8 @@ const suites = [
 	// otherwise "the number stopped moving" cannot be told apart from "the
 	// collector broke".
 	'tests/usage-health.test.js',
+	// 归档日线索最新在上（2026-11-19 用户要求）。
+	'tests/archive-order.test.js',
 	'tests/layer-selfcheck.test.js',
 	'tests/dao-shape.test.js',
 	'tests/coverage.test.js',
@@ -172,3 +174,4 @@ for (const suite of suites) {
 }
 console.log(failed === 0 ? '\nrun-all: ALL SUITES PASS' : `\nrun-all: ${failed} SUITE(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
+

@@ -2212,6 +2212,32 @@ export function srcsOfExisting(text) {
 		.filter((s) => ZONE_RE.test(s));
 }
 
+/**
+ * Parse an archive month file into day entries, NEWEST FIRST.
+ *
+ * Exported because the ordering is a data contract, not a rendering detail:
+ * archive files (`daily/YYYY-MM.md`) are append-only, so document order is
+ * oldest-first, and rendering it verbatim put the most recent days at the bottom
+ * of the panel (user request 2026-11-19: newest on top). Sorting in one place
+ * means every consumer of `/daily-days` agrees, instead of each one flipping it.
+ *
+ * Regex notes (both are recorded bugs from earlier rounds):
+ *   · `[ \t]*` instead of `\s*` for the trailing part — `\s*` eats the newline
+ *     and swallows the next day's first content line into the title.
+ *   · `$` with the `m` flag only matches real line ends, so a `### [date]`
+ *     quoted inside prose does not become a day entry.
+ * `date` is ISO `YYYY-MM-DD`, so a descending string compare is exact — no Date
+ * parsing, no timezone question.
+ */
+export function parseArchiveDays(text) {
+	const days = [...String(text ?? '').matchAll(/^###[ \t]*\[(\d{4}-\d{2}-\d{2})\][ \t]*([^\n]*)$/gm)].map((m) => ({
+		date: m[1],
+		title: m[2].trim(),
+	}));
+	days.sort((a, b) => b.date.localeCompare(a.date));
+	return days;
+}
+
 function skillTemplate(name, f) {
 	return [
 		'---',
@@ -5165,9 +5191,7 @@ function memoryPanelApi(opts, connection, inbox) {
 				// 严格月形名 + 无分隔符（上面已拒 .. 与 /）→ join 只能落在 root/daily/。
 				const text = await readIfExists(path.join(root, 'daily', name));
 				if (text === undefined) return json(res, 404, { error: 'archive not found' });
-				// 标题行解析必须**不跨行**：`\s*` 会吃掉 \n 把下一天的正文第一行当成
-				// 标题尾（实测踩过）。行内空白用 [ \t]*，标题只可能是同一行的尾巴。
-				const days = [...text.matchAll(/^###[ \t]*\[(\d{4}-\d{2}-\d{2})\][ \t]*([^\n]*)$/gm)].map((m) => ({ date: m[1], title: m[2].trim() }));
+				const days = parseArchiveDays(text);
 				return json(res, 200, { name, days });
 			}
 			// Recall preview (MemOS borrow ②): run the REAL pre-step pipeline
@@ -5183,7 +5207,7 @@ function memoryPanelApi(opts, connection, inbox) {
 				const usageItems = summarizeUsage(await readUsage(root, 30));
 				const usage = new Map(usageItems.map((it) => [it.href, it]));
 				const tokens = tokensOf(q);
-				const rows = matchIndexRows(indexText, tokens, 3, usage, { memoryRoot: root })
+				const rows = matchIndexRows(indexText, tokens, 3, usage, { memoryRoot: root, queryText: q })
 					.filter((l) => !q.includes(l.href))
 					.map((r) => {
 						const u = usage.get(r.href);
@@ -6175,7 +6199,7 @@ export function apply(ctx, config) {
 					const qTokens = tokensOf(userText);
 					// 档案块：共识/道条目整份带入（独立通道，不与索引行 IDF 争名额）。
 					const archives = archiveBlocks(indexText, qTokens);
-					const matchedRows = matchIndexRows(indexText, qTokens, 3, usage, { memoryRoot: resolveRoot(opts) });
+					const matchedRows = matchIndexRows(indexText, qTokens, 3, usage, { memoryRoot: resolveRoot(opts), queryText: userText });
 					// 三档 + 双侧账本挂在返回数组上，filter 会丢掉自定义属性，先取下来。
 					const recallStats = matchedRows.stats ?? null;
 					const recallHeld = matchedRows.heldRows ?? [];

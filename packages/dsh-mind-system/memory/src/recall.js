@@ -316,7 +316,14 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage, options 
 		options.windowTokens ? Math.floor(options.windowTokens * RECALL_WINDOW_GUARD) : Infinity,
 	);
 	const candidates = eligibleIndexRows(indexText, options).map((row) => ({
-		...row, nameTokens: tokensOf(row.name), bodyTokens: tokensOf(row.bodyText),
+		...row,
+		// `bodyText` is defined as a NON-enumerable property upstream, so the spread
+		// above silently drops it — measured: row.bodyText was readable on the row
+		// itself but undefined on the copy, which made the character-coverage signal
+		// report 38% for a query whose words were all present. Carried explicitly.
+		bodyText: String(row.bodyText ?? ''),
+		nameTokens: tokensOf(row.name),
+		bodyTokens: tokensOf(row.bodyText),
 	}));
 	if (!candidates.length) return [];
 	// Document frequency per token across rows → IDF weights.
@@ -437,6 +444,39 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage, options 
 	//   missTokens     the ones that matched nothing — literally the words to add
 	//                  to a summary (this is what turned 5/8 into 8/8)
 	//   miss           true when under half the tokens landed
+	// ---- miss criterion, take 2 (2026-11-19) --------------------------------
+	//
+	// Take 1 counted TOKENS: miss when under half the user's tokens matched. That
+	// produced false warnings. The tokenizer emits bigram fragments that straddle
+	// real word boundaries — 「面板时间线要倒序」 gives 面板 / 板时 / 时间 / 间线 /
+	// 线要 / 要倒 / 倒序. Fragments like 板时 / 线要 / 要倒 / 最上 / 上面 exist in no
+	// summary and should not: they are artifacts of segmentation, not vocabulary.
+	// Measured on that exact query: every real word matched (面板, 时间, 间线, 倒序,
+	// 最新, 内容) and the row scored well, yet miss came out true. A warning that
+	// fires on correct matches is worse than no warning.
+	//
+	// Take 2 counts CHARACTERS: what share of the query's letters/CJK characters
+	// appears anywhere in the index. Segmentation artifacts stop mattering and the
+	// question becomes the useful one — did this wording reach the index at all.
+	// Measured separation on 9 queries:
+	//   should match  86 / 94 / 86 / 92 / 86 / 90 %
+	//   should not    64 / 33 / 36 %
+	// Cleanly separable, so 0.75 sits between the two populations with margin on
+	// both sides. Not derived from a wish — from those two distributions.
+	// The raw query is optional: callers pass it as `options.queryText` so the
+	// character-coverage check sees real characters instead of re-joined tokens
+	// (re-joining loses ordering and double-counts bigram fragments). When absent,
+	// fall back to the token list — the signal gets coarser but never wrong.
+	const queryText = typeof options.queryText === 'string' && options.queryText
+		? options.queryText
+		: (userTokens.has ? [...userTokens] : [...userTokens]).join(' ');
+	const qChars = [...String(queryText).toLowerCase()].filter((c) => /[\u4e00-\u9fff]|[a-z0-9]/i.test(c));
+	const rowCharText = candidates.map((c) => `${c.name} ${c.bodyText}`.toLowerCase()).join(' ');
+	let hitChars = 0;
+	for (const ch of qChars) if (rowCharText.includes(ch)) hitChars += 1;
+	const charCoverage = qChars.length ? hitChars / qChars.length : 1;
+	// Token lists are still reported: `missTokens` is what tells a human which
+	// WORDS to add to a summary, and that is per-token, not per-character.
 	const qTokens = userTokens.has ? [...userTokens] : [...userTokens];
 	const hitTokens = [];
 	const missTokens = [];
@@ -448,7 +488,8 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage, options 
 		if (hit) hitTokens.push(tk);
 		else missTokens.push(tk);
 	}
-	const miss = qTokens.length > 0 && hitTokens.length / qTokens.length < 0.5;
+	const MISS_CHAR_BAR = 0.75;
+	const miss = qChars.length > 0 && charCoverage < MISS_CHAR_BAR;
 	out.stats = {
 		matched,
 		injected: out.length,
@@ -459,7 +500,10 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage, options 
 		tiers: { strongBar, holdBar },
 		bestScore: best,
 		miss,
+		charCoverage,
 		hitTokens,
+		// Only fragment-ish tokens are useful to a reader; keep them all but let the
+		// caller see the count, since bigram noise inflates this list.
 		missTokens: miss ? missTokens : [],
 	};
 	out.heldRows = heldRows;
