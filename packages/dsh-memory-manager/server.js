@@ -6748,6 +6748,32 @@ export function apply(ctx, config, dependencies = {}) {
 		}
 	});
 
+	// VI-4: hand the recall probe a real search function.
+	//
+	// The probe lives in valves, but the SAG client lives here — endpoint
+	// discovery, the API key, the fast-mode request, and the honest failure
+	// reasons (no_key / network / timeout / http_xxx) are all already implemented
+	// on this side. Re-implementing them in valves would break N2 (valves imports
+	// node built-ins only) and would put two clients for one service in the repo.
+	//
+	// So the owner registers what it has. Lazy via ctx.inject because valves may
+	// not be provided yet at apply time; absent valves simply means the probe
+	// stays unconfigured, which the weekly report states in those words.
+	ctx.inject(['valves'], (scoped) => {
+		const valves = scoped.valves;
+		if (!valves || typeof valves.registerRecallSearch !== 'function') return;
+		try {
+			valves.registerRecallSearch(async (query) => {
+				const out = await sagSearch(query, { limit: 20 });
+				// Pass-through shape: runRecallProbe needs { ok, results } and the
+				// same honest reasons on failure, so nothing is translated here.
+				return out;
+			});
+		} catch {
+			/* An older valves without the method simply keeps the probe unconfigured. */
+		}
+	});
+
 	return () => {
 		for (const d of disposers.reverse()) d();
 	};

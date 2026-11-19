@@ -173,7 +173,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "f9f42835dfead896535f626c8a0003901fbabf3daefbfe646aaa238deda88cf2"
+      "sha256": "34329822f719a8bec8a0c10f5199d15db06b675f5a4a6cb4333b58eba8065d3c"
     },
     "memory/src/axiom-candidate.js": {
       "source": "dsh-memory-manager/src/axiom-candidate.js",
@@ -1293,7 +1293,7 @@
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
-      "sha256": "ecadd2a592752c3d507939b44a231d020a8e055da13dce4f8774eb3d0eb24a13"
+      "sha256": "8d599a4cf232841a8d52022e28181d80f060367c8c60911bc633f9aff40a9baf"
     },
     "valves/package.json": {
       "source": "dsh-valves/package.json",
@@ -1446,6 +1446,10 @@
     "valves/test/recall-probe.test.js": {
       "source": "dsh-valves/test/recall-probe.test.js",
       "sha256": "0d44f4c9250386ded8809391e81a4a5ebbb19b8e1e9e77d7d0bf48de06978733"
+    },
+    "valves/test/recall-search-registration.test.js": {
+      "source": "dsh-valves/test/recall-search-registration.test.js",
+      "sha256": "990466e8aeee6b39baeb75dfeef3a3d29b4b65b3e9d5bfca483311001e8fb40f"
     },
     "valves/test/receipt-json.test.js": {
       "source": "dsh-valves/test/receipt-json.test.js",

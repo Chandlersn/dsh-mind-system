@@ -203,6 +203,11 @@ export function createRuntime(options = {}) {
 	const thresholds = mergeThresholds(options.thresholds);
 	const layers = Array.isArray(options.layers) && options.layers.length >= 2 ? [...options.layers] : [...DEFAULT_LAYERS];
 
+	// Recall search registered by a peer that owns it (VI-4). Held here in the
+	// runtime closure so `apply` can read it, and so a caller that never registers
+	// stays at "not configured" rather than looking like a clean boundary.
+	let registeredRecallSearch;
+
 	// The receiver file sits next to the other valve stores. It is created lazily: a runtime that never
 	// receives a repair event leaves no empty database behind.
 	const repairEventsPath = join(storageDir, 'mind-repair-events.sqlite');
@@ -447,9 +452,38 @@ export function createRuntime(options = {}) {
 			});
 			return { ...report, report_path: written.path, report_ok: written.ok };
 		},
-		/** 上次巡检报告（探针与"是否该补跑"的判据来源）。 */
+		/**
+		 * 上次巡检报告（探针与"是否该补跑"的判据来源）。
+		 */
 		async lastPatrol(kind) {
 			return readLatestPatrolReport(storageDir, kind);
+		},
+		/**
+		 * 注册召回检索函数，供周检的 recall_boundary 探针使用（VI-4）。
+		 *
+		 * **为什么是注册而不是配置**：检索要打 HTTP、要读 key、要知道端点，
+		 * 这些都在 memory 包里已经实现好了。让 valves 自己实现一遍，等于把
+		 * 同一件事写两遍，且会打破 N2（valves 只依赖 node 内置）。所以由持有
+		 * 检索能力的一方在装配时注册进来——config 表达不了函数，注册可以。
+		 *
+		 * 未注册时探针如实报 `no_probe_configured`，violations 保持 null：
+		 * **"没查"永远不能读成"查了没问题"**。
+		 *
+		 * @param {(query: string) => Promise<{ok: boolean, results?: object[]}>} searcher
+		 * @returns {{ok: boolean, reason?: string}}
+		 */
+		registerRecallSearch(searcher) {
+			if (typeof searcher !== 'function') return { ok: false, reason: 'not_a_function' };
+			registeredRecallSearch = searcher;
+			return { ok: true };
+		},
+		/** 探针是否已接线（只读，供诊断；不触发任何检索）。 */
+		recallSearchState() {
+			return { registered: typeof registeredRecallSearch === 'function' };
+		},
+		/** 已注册的检索函数本体（未注册时为 undefined）。 */
+		recallSearchFn() {
+			return registeredRecallSearch;
 		},
 		/**
 		 * III-6 语义越权标记：**只标记不阻断**。
@@ -987,14 +1021,20 @@ export function apply(ctx, config = {}, overrides = {}) {
 					? patrolConfig.recallRoots
 					: [rootForCandidates];
 				const scan = await scanRecallSubjects(roots);
-				// Two accepted shapes, so a host can wire whichever it has:
-				//   - `recallProbe`: a ready callback taking `{ subjects }` (legacy)
-				//   - `recallSearch`: one query -> { ok, results } (e.g. SAG);
-				//     runRecallProbe derives the queries from the subject file
-				//     names and normalizes the outcome.
+				// Resolution order, most explicit first:
+				//   1. `patrol.recallProbe` — a ready callback taking `{ subjects }`
+				//   2. `patrol.recallSearch` — config-supplied single query search
+				//   3. runtime registration — a peer (memory) that owns the search
+				//      client registers it after assembly, since a function cannot be
+				//      expressed in YAML config.
+				// None of them present => undefined => `no_probe_configured`.
+				const registered = runtime.recallSearchState().registered ? runtime.recallSearchFn() : undefined;
+				const searcher = typeof patrolConfig.recallSearch === 'function'
+					? patrolConfig.recallSearch
+					: registered;
 				const probe = typeof patrolConfig.recallProbe === 'function'
 					? await patrolConfig.recallProbe({ subjects: scan.subjects })
-					: await runRecallProbe({ searcher: patrolConfig.recallSearch, subjects: scan.subjects });
+					: await runRecallProbe({ searcher, subjects: scan.subjects });
 				recallBoundary = summarizeRecallBoundary({
 					scan,
 					previousSubjects: last?.recall_boundary?.subjects ?? null,
