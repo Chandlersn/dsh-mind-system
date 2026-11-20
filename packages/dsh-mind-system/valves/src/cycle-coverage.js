@@ -2,6 +2,16 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 // These sources establish observations, not completeness or success of a cycle.
+//
+// A leading BOM is stripped before parsing. Two of these ledgers were created by
+// a PowerShell `Set-Content` once (2026-11-18 recorded that accident) and have
+// been append-only since, so the BOM sits on line 1 forever. Node's `readFile`
+// keeps it, `JSON.parse` rejects it, and treating that as "the whole file is
+// invalid" threw away 255 readable rows of evidence because of one byte.
+//
+// Unparseable lines are counted, not fatal: `invalid` now means "at least one row
+// could not be read", reported alongside what WAS observed. Dropping a corrupt row
+// loses one fact; failing the file loses the reader's confidence in every fact.
 async function ledger(file, match) {
   let text;
   try { text = await readFile(file, 'utf8'); }
@@ -9,17 +19,32 @@ async function ledger(file, match) {
     return err?.code === 'ENOENT' ? { status: 'unknown', reason: 'source_absent' }
       : { status: 'error', reason: err?.code ?? 'read_failed' };
   }
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   let observed = false;
-  let invalid = false;
+  let invalid = 0;
+  let rows = 0;
   for (const line of text.split('\n')) {
     if (!line.trim()) continue;
+    let row;
     try {
-      const row = JSON.parse(line);
-      if (!row || typeof row !== 'object' || Array.isArray(row)) invalid = true;
-      else if (match(row)) observed = true;
-    } catch { invalid = true; }
+      row = JSON.parse(line);
+    } catch {
+      invalid++;
+      continue;
+    }
+    if (!row || typeof row !== 'object' || Array.isArray(row)) { invalid++; continue; }
+    rows++;
+    if (match(row)) observed = true;
   }
-  if (invalid) return { status: 'incomplete', observed, reason: 'invalid_records' };
+  if (invalid) {
+    return {
+      status: rows === 0 ? 'unknown' : 'incomplete',
+      observed,
+      invalid,
+      rows,
+      reason: rows === 0 ? 'no_readable_records' : 'invalid_records',
+    };
+  }
   return observed ? { status: 'observed' } : { status: 'unknown', reason: 'no_matching_evidence' };
 }
 
@@ -102,17 +127,83 @@ async function runtimeEvidence(getRuntimeStatus) {
     })) };
 }
 
+/**
+ * Delivery evidence: did a weekly report actually reach the inbox?
+ *
+ * This used to be a hardcoded `{ status: 'unknown', reason: 'no_delivery_source_connected' }`.
+ * That claim went stale: the memory package has been writing durable receipts under
+ * `<storageDir>/patrol-delivery-receipts/` since VI-5, and a real receipt was on disk
+ * (2026-11-19) while the panel still reported "no delivery source connected". A fixed
+ * `unknown` is not honesty — when the evidence exists, saying "unknown" misreports it
+ * as absent, which is the same error as claiming a clean boundary nobody checked.
+ *
+ * Reading a directory the peer owns is not an import edge (N2 holds: node built-ins
+ * only), and it matches how this module already reads `memoryRoot` files.
+ *
+ * A receipt proves delivery was recorded. It does NOT prove the message was read,
+ * acknowledged, or acted on — so the reason string says which of those it is not.
+ */
+async function deliveryEvidence(storageDir) {
+  const dir = join(storageDir, 'patrol-delivery-receipts');
+  let names;
+  try {
+    names = await readdir(dir);
+  } catch (err) {
+    return err?.code === 'ENOENT'
+      ? { status: 'unknown', reason: 'no_delivery_receipts_written' }
+      : { status: 'error', reason: err?.code ?? 'read_failed' };
+  }
+  // Sorted so the pass is reproducible: readdir gives no order guarantee, and an
+  // unordered walk makes "which receipt a test sees first" depend on the
+  // filesystem. The reported latest is chosen by timestamp, but determinism here
+  // is what makes that choice testable at all.
+  const json = names.filter((n) => n.endsWith('.json')).sort();
+  if (json.length === 0) return { status: 'unknown', reason: 'no_delivery_receipts_written' };
+  let parsed = 0;
+  let invalid = 0;
+  let latest = null;
+  for (const name of json) {
+    let body;
+    try {
+      body = await readFile(join(dir, name), 'utf8');
+    } catch {
+      invalid++;
+      continue;
+    }
+    let row;
+    try {
+      row = JSON.parse(body.charCodeAt(0) === 0xfeff ? body.slice(1) : body);
+    } catch {
+      invalid++;
+      continue;
+    }
+    if (!row || typeof row !== 'object' || Array.isArray(row) || typeof row.reportId !== 'string') { invalid++; continue; }
+    parsed++;
+    const at = Date.parse(row.deliveredAt);
+    if (Number.isFinite(at) && (latest === null || at > latest.at)) latest = { at, reportId: row.reportId };
+  }
+  if (parsed === 0) return { status: 'incomplete', observed: false, invalid, reason: 'no_readable_receipts' };
+  return {
+    status: 'observed',
+    receipts: parsed,
+    invalid,
+    ...(latest ? { latest_delivered_at: new Date(latest.at).toISOString() } : {}),
+    note: 'A receipt records that delivery was written; it does not record that it was read, acknowledged, or acted on.',
+  };
+}
+
 export async function collectCycleCoverage({ storageDir, memoryRoot, getRuntimeStatus }) {
-  const [distillation, index, recall, governance, runtime] = await Promise.all([
+  const [distillation, index, recall, governance, runtime, delivery] = await Promise.all([
     ledger(join(memoryRoot, '.write-ledger.jsonl'), (r) => r.tool === 'memory-manager' && typeof r.key === 'string' && r.key.startsWith('functions/') && typeof r.hash === 'string'),
     indexEvidence(memoryRoot),
     recallEvidence(memoryRoot),
     ledger(join(storageDir, 'mind-valves.jsonl'), (r) => typeof r.gate === 'string' && r.gate !== 'patrol' && typeof r.outcome === 'string'),
     runtimeEvidence(getRuntimeStatus),
+    deliveryEvidence(storageDir),
   ]);
   return {
     micro_execution: {
-      schedule_delivery: { status: 'unknown', reason: 'no_delivery_source_connected' },
+      schedule_delivery: delivery,
       outcome: { status: 'unknown', reason: 'runtime_snapshot_does_not_establish_outcome' },
       runtime_snapshot: runtime,
     },
