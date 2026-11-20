@@ -967,7 +967,11 @@ export function apply(ctx, config = {}, overrides = {}) {
 					layers = got.layers;
 					counts = got.counts;
 				}
-				return await runtime.patrol('quarterly', { layers, counts });
+				const qReport = await runtime.patrol('quarterly', { layers, counts });
+				// Success leaves a trace: `null` used to mean both "ran clean" and
+				// "never ran". Findings count is the observable, not a verdict word.
+				if (qReport?.ok === true) facts.patrolQuarterly = `ran:${(qReport.findings ?? []).length} findings`;
+				return qReport;
 			}
 			// 周检没拿到原则清单时**不能报 clean**：那等于"什么都没查"却给出
 			// "查过没问题"的绿灯（真机第一份报告就是 principles:0 + clean，
@@ -1106,6 +1110,11 @@ export function apply(ctx, config = {}, overrides = {}) {
 			});
 			if (!report.report_ok) throw new Error(`${report.error ? `${report.error}; ` : ''}report write failed: ${report.report_error}`);
 			if (!report.ok) throw new Error(report.error ?? 'patrol failed');
+			// Success must leave a trace too. The skip and error branches each got
+			// their own reason precisely so "not run" would not read like "ran clean";
+			// leaving the success path null reintroduced the same indistinction from
+			// the other side. The findings count is an observable, not a verdict word.
+			facts.patrolWeekly = `ran:${(report.findings ?? []).length} findings`;
 			if (pendingCandidates !== null) facts.patrolCandidates = pendingCandidates.length;
 			return report;
 		} catch (error) {

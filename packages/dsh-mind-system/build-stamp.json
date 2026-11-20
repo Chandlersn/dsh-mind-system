@@ -1293,7 +1293,7 @@
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
-      "sha256": "f32f92509dde34642d57e5586b249d8d4b3c79f4d4823b74ba91984c6e4734af"
+      "sha256": "9a9c5d313fd4ef3ebc81d34ac5147138ab79fa81ad7d649eb395eb66895bb0e9"
     },
     "valves/package.json": {
       "source": "dsh-valves/package.json",
@@ -1446,6 +1446,10 @@
     "valves/test/origin.test.js": {
       "source": "dsh-valves/test/origin.test.js",
       "sha256": "5891d8bf504549c3d563cc135e8bab1e79abb447fc9399580a2283bb337e0a65"
+    },
+    "valves/test/patrol-run-trace.test.js": {
+      "source": "dsh-valves/test/patrol-run-trace.test.js",
+      "sha256": "5199f00f9c9ed4143c74fc3ca57464023d30cec7c8967e63efc6a9bf007e97a2"
     },
     "valves/test/patrol.test.js": {
       "source": "dsh-valves/test/patrol.test.js",
