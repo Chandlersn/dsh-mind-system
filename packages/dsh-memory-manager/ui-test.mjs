@@ -1229,6 +1229,27 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 	ok(unknownHtml.includes('服务器未上报 SAG 状态'), 'the card explains why it is unknown');
 	ok(unknownHtml.includes('dmo-edge muted'), 'unknown keeps the muted style, not the success style');
 
+	// LEGEND HONESTY (2026-11-20, boss: 「架构图上，通道可用（SAG）一条都没有」).
+	// The legend is static: it promises colours. A swatch for a tone that NO
+	// state ever draws is the same class of lie as the fixed-muted SAG edge this
+	// file already guards against -- it makes an absent state look documented.
+	// Collect every edge class across all four channel states, then require each
+	// legend swatch to appear among them.
+	const edgeClasses = (model) => elements(FakeReact.createElement(T.Architecture, { model }))
+		.filter((n) => n.type === 'path' && typeof n.props?.className === 'string' && n.props.className.includes('dmo-edge'))
+		.map((n) => n.props.className);
+	const drawn = new Set([usable, unauth, down, unknown].flatMap(edgeClasses));
+	ok([...drawn].some((c) => c.includes('business')), 'a usable channel draws a business-coloured edge (it had drifted to green ok, so the blue legend swatch matched nothing)');
+	const sagEdgeOf = (model) => edgeClasses(model).find((c) => c.includes('business') || c.includes('danger') || c.includes('warn'));
+	ok(sagEdgeOf(usable)?.includes('business'), 'usable tone is business, not ok');
+	const legendSwatches = elements(FakeReact.createElement(T.Architecture, { model: usable }))
+		.filter((n) => n.type === 'line' && typeof n.props?.className === 'string' && n.props.className.includes('dmo-edge'));
+	ok(legendSwatches.length >= 3, `legend still carries its swatches (${legendSwatches.length})`);
+	for (const swatch of legendSwatches) {
+		ok([...drawn].some((c) => c === swatch.props.className),
+			`legend swatch "${swatch.props.className}" is a tone some state actually draws`);
+	}
+
 	// CARD PROP FORWARDING (real-host bug, 2026-11-16): Card used to accept only
 	// {children, tight, className} and silently drop everything else, so every
 	// `data-dmo` tag on a card vanished from the DOM. The serializer showed the
