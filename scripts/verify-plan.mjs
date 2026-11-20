@@ -12,10 +12,30 @@
  *
  * 1. **每条结论文档声称的计数 = 表格里实际标记数**（F 项 ✅/🔶/⬜）。
  *    这是最容易漂的一处，且不需要外部输入就能判。
- * 2. **阶段 III 节点表与验收表不矛盾**：节点表说某个 III-x 已完成，
+ * 2. **节点表与验收表不矛盾**：节点表说某个 III-x 已完成，
  *    验收表里对应的 F 项就不能还是 ⬜。
- * 3. **不核对"证据是否真实"** —— 那需要读账本/跑命令，属于人工判断。
+ * 3. **正文里的状态声明 = 表格状态**（2026-11-20 新增，见下）。
+ * 4. **不核对"证据是否真实"** —— 那需要读账本/跑命令，属于人工判断。
  *    守卫只保证"没有说谎的计数"。
+ *
+ * ## 为什么第 2 条改成从表里派生（2026-11-20）
+ *
+ * 原来这里是一张手写的 `NODE_TO_F` 映射表，注释还写着"守卫没覆盖 IV 是它
+ * 自己的盲区，补上"——补的方式是再手写两项。**手写映射必然漏，漏了照样
+ * 报 PASS**。实测：手写表只覆盖 8 个节点，而表里带「关联验收」列的节点有
+ * 31 行。映射本来就写在文档里，直接读出来即可，不需要人维护。
+ *
+ * ## 为什么必须加第 3 条（2026-11-20 真实漏判）
+ *
+ * boss 问"到底哪些闭环了"，核对时发现阶段 IV 验收句写「F15（灰度）⬜」，
+ * 而验收表 F15 是 ✅、IV-1 节点也是 ✅——**同一份文档自相矛盾，而守卫报
+ * ALL PASS**。守卫原先只查表格之间的一致性，正文完全不在射程内；而恰恰是
+ * 正文最容易在改表格时被忘记。这类"闸门只证没坏、不证该出现的出现了"，
+ * 是本项目已经沉淀过的法，这次轮到自己的守卫失守。
+ *
+ * 列位一律**按表头文字定位**，不写死下标：F/N 表的状态在第 3 列，K 表在
+ * 第 4 列（多一列"完成标志"）。写死下标会把 K 表读成"没有状态"，从而
+ * 静默放过冲突——这是本轮实测踩到的第二个坑。
  *
  * 设计取舍：宁可少查，不可乱判。判不了的一律跳过而不是猜。
  */
@@ -50,34 +70,122 @@ const claimed = /✅ (\d+) 项/.exec(plan);
 ok(claimed !== null, '汇总句含"✅ N 项"');
 if (claimed) ok(Number(claimed[1]) === count.ok, `汇总声称 ✅ ${claimed[1]} 项 = 表格实际 ${count.ok} 项`);
 
-console.log('\n--- 2. 阶段 III 节点表与验收表不矛盾 ---');
-// 节点表：III-x 行里若出现 ✅，则验收表对应 F 项不能是 ⬜
-const NODE_TO_F = {
-	'III-1': 'F1',
-	'III-2': 'F19',
-	'III-3': 'F10',
-	'III-4': 'F10',
-	'III-5': 'F10',
-	'III-6': 'F18',
-	// IV 节点也纳进来：2026-11-10 实测，IV-4 完成后验收表的 F13 还挂着 ⬜，
-	// 守卫没覆盖 IV 是它自己的盲区，补上。
-	'IV-4': 'F13',
-	'IV-5': 'F11',
+console.log('\n--- 2. 节点表与验收表不矛盾（映射从表里派生，不手写）---');
+// Locate columns BY HEADER TEXT. F/N tables put 状态 in column 3, the K table
+// puts it in column 4 (it carries an extra 完成标志 column). Hard-coding an
+// index silently reads the K table as "no status" and lets a conflict through
+// — measured on 2026-11-20 while writing this rule.
+const lines = plan.split('\n');
+const cellsOf = (line) => line.split('|').map((c) => c.trim());
+const isStatus = (s) => /^(✅|🔶|⬜)/u.test(s);
+// Take the mark with a full match, never slice(0,1): 🔶 is a surrogate PAIR, so
+// slicing yields half of it, isStatus then fails, and every 🔶 row is silently
+// dropped as "no status". Measured: 21 of 30 rows derived, and the missing 9
+// were exactly the 🔶 ones -- the guard would then report "referenced row does
+// not exist" for F1/F2/F7/N3 and blame the document for its own bug.
+const statusMark = (cell) => /^(✅|🔶|⬜)/u.exec(cell ?? '')?.[1];
+
+const acceptanceStatus = new Map();
+const nodeRows = [];
+// A Markdown table's header is the line immediately above its separator row.
+// Detecting headers that way (rather than carrying state across lines) means a
+// table we do not care about can never leave stale column positions behind --
+// the first version of this rule read 状态 by a fixed index, then recomputed
+// 关联验收 per data row, and silently derived zero nodes.
+const isSeparator = (line) => {
+  const c = cellsOf(line);
+  return line.trimStart().startsWith('|') && c.length > 2 && c.slice(1, -1).every((cell) => /^:?-{2,}:?$/.test(cell) || cell === '');
 };
-for (const [node, f] of Object.entries(NODE_TO_F)) {
-	const row = plan.split('\n').find((l) => l.startsWith(`| ${node} `));
-	if (!row) {
-		ok(false, `找不到节点行 ${node}`);
-		continue;
-	}
-	const done = row.includes('✅');
-	if (!done) {
-		console.log(`  SKIP ${node} 未标完成，不比对`);
-		continue;
-	}
-	const fRow = plan.split('\n').find((l) => l.startsWith(`| ${f} `));
-	ok(fRow !== undefined, `${node} 对应的 ${f} 存在于验收表`);
-	if (fRow) ok(!/\| ⬜ \|/.test(fRow), `${node} 已完成 → ${f} 不能仍标 ⬜`);
+const STATUS_HEADER = /^(当前)?状态$/u;
+
+const parseTable = (headerLine, refsHeader) => {
+  const c = cellsOf(headerLine);
+  const statusCol = c.findIndex((cell) => STATUS_HEADER.test(cell));
+  const refsCol = refsHeader ? c.findIndex((cell) => cell === refsHeader) : -1;
+  if (statusCol <= 0) return null;
+  return { statusCol, refsCol, kind: c[1] };
+};
+
+for (let i = 0; i < lines.length - 1; i++) {
+  if (!isSeparator(lines[i + 1])) continue;
+  const cols = parseTable(lines[i], '关联验收');
+  if (!cols) continue;
+  for (let j = i + 2; j < lines.length; j++) {
+    if (!lines[j].trimStart().startsWith('|')) break;
+    const c = cellsOf(lines[j]);
+    const mark = statusMark(c[cols.statusCol]);
+    if (cols.kind === '编号' && /^[FNK]\d+$/.test(c[1])) {
+      if (mark) acceptanceStatus.set(c[1], mark);
+      continue;
+    }
+    if (cols.kind === '节点' && cols.refsCol > 0 && /^(I|II|III|IV|V|VI)-\d+(\.\d+)?\s/u.test(c[1])) {
+      nodeRows.push({
+        id: c[1].split(' ')[0],
+        status: mark,
+        // Ranges are real in this document (V-2 claims F2–F8), so expand them;
+        // reading only the first id would under-claim and mis-flag orphans.
+        refs: [...(c[cols.refsCol] ?? '').matchAll(/([FNK])(\d+)(?:[–—-](\d+))?/g)].flatMap((m) => {
+          if (m[3]) {
+            const from = Number(m[2]);
+            const to = Number(m[3]);
+            return Array.from({ length: to - from + 1 }, (_, k) => `${m[1]}${from + k}`);
+          }
+          return [`${m[1]}${m[2]}`];
+        }),
+      });
+    }
+  }
+}
+
+ok(nodeRows.length >= 28, `派生出 ${nodeRows.length} 行节点（手写映射原先只覆盖 8 行）`);
+ok(acceptanceStatus.size >= 30, `派生出 ${acceptanceStatus.size} 行验收状态（含 K 表）`);
+
+let nodeViolations = 0;
+for (const node of nodeRows) {
+  if (node.status !== '✅') continue;
+  for (const ref of node.refs) {
+    const st = acceptanceStatus.get(ref);
+    if (st === undefined) { ok(false, `${node.id} 引用了不存在的验收行 ${ref}`); nodeViolations++; continue; }
+    if (st === '⬜') { ok(false, `${node.id} 标 ✅，但它声称达成的 ${ref} 仍是 ⬜`); nodeViolations++; }
+  }
+}
+ok(nodeViolations === 0, `${nodeRows.filter((n) => n.status === '✅').length} 个已完成节点引用的验收项均非 ⬜`);
+
+console.log('\n--- 2b. 正文里的状态声明必须等于表格状态 ---');
+// The gap that this closes: 阶段 IV 验收句写「F15（灰度）⬜」而验收表 F15 是
+// ✅、IV-1 也是 ✅。同一份文档自相矛盾，旧守卫照样报 ALL PASS——因为它只比
+// 表格之间，正文不在射程内，而改表格时最容易忘的就是正文那句。
+// Whitelist the connector rather than blacklist it: "K1–K5 全 ✅ 才算收口" is
+// a condition, not a status claim, and must not be read as one.
+const PROSE_STATUS = /([FNK]\d+)(?:（[^）]{1,14}）)?\s*(?:为|是|[:：=＝])?\s*(✅|🔶|⬜)/gu;
+let proseChecked = 0;
+let proseConflicts = 0;
+for (let i = 0; i < lines.length; i++) {
+  if (lines[i].trimStart().startsWith('|')) continue;
+  for (const m of lines[i].matchAll(PROSE_STATUS)) {
+    const [, id, claimed] = m;
+    const actual = acceptanceStatus.get(id);
+    if (actual === undefined) continue; // an id with no table row is not comparable here
+    proseChecked++;
+    if (actual !== claimed) {
+      proseConflicts++;
+      ok(false, `正文 L${i + 1} 说 ${id} ${claimed}，验收表是 ${actual}`);
+    }
+  }
+}
+ok(proseChecked >= 6, `正文状态声明比对 ${proseChecked} 处（少于 6 说明规则没真正读到东西）`);
+ok(proseConflicts === 0, '正文与验收表的状态声明无冲突');
+
+console.log('\n--- 2c. 验收表里标 ✅ 的项必须被某个已完成节点声称 ---');
+// An ✅ with no node behind it is a green light nobody produced. F6/N2/N6 are
+// legitimately reached by mechanisms outside the node tables, so they are
+// listed here as DECLARED exceptions: adding one requires a reason, and
+// removing the reason is what the check is for.
+const UNNODELED_OK = new Set(['F6', 'N2', 'N6']);
+const claimedByDone = new Set(nodeRows.filter((n) => n.status === '✅').flatMap((n) => n.refs));
+for (const [id, st] of acceptanceStatus) {
+  if (st !== '✅' || claimedByDone.has(id) || UNNODELED_OK.has(id)) continue;
+  ok(false, `${id} 标 ✅ 但没有任何 ✅ 节点声称达成它（若确属表外机制，请加入 UNNODELED_OK 并写明理由）`);
 }
 
 console.log('\n--- 3. 已知未走完闭环的项不得被误标完成 ---');

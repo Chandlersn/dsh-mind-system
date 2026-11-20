@@ -1790,14 +1790,20 @@ window.__ModuleLoader__.load({
 			// that it works.
 			const sagEdgeClass = () => {
 				if (!m.sag.known) return 'dmo-edge muted dashed';
-				if (m.sag.usable) return 'dmo-edge ok';
+				// usable → solid BUSINESS (blue), the colour the legend and the
+				// comment above both promise for "通道可用（SAG）". It had drifted to
+				// 'ok' (green), so the blue legend swatch matched no edge at all and
+				// the live usable channel read as "结构方向" instead.
+				if (m.sag.usable) return 'dmo-edge business';
 				if (m.sag.online === null || (m.sag.online && m.sag.authorized === null)) return 'dmo-edge muted dashed';
 				if (m.sag.online === true && m.sag.authorized === false) return 'dmo-edge warn dashed';
 				return 'dmo-edge danger dashed';
 			};
 			const sagMarker = () => {
 				if (!m.sag.known) return 'url(#dmo-ah-m)';
-				if (m.sag.usable) return 'url(#dmo-ah-ok)';
+				// Arrowhead must match the edge colour, or the tip reads as a
+				// different state than the line it caps.
+				if (m.sag.usable) return 'url(#dmo-ah-b)';
 				if (m.sag.online === null || (m.sag.online && m.sag.authorized === null)) return 'url(#dmo-ah-m)';
 				if (m.sag.online === true && m.sag.authorized === false) return 'url(#dmo-ah-m)';
 				return 'url(#dmo-ah-d)';
@@ -1910,16 +1916,21 @@ window.__ModuleLoader__.load({
 							node('gate', { x: 390, y: 430, w: 262, h: 74, name: '召回准入', role: '预算 / 分层 / 阀门规则' }),
 							node('sig', { x: 730, y: 430, w: 350, h: 74, name: '召回曝光（未去重）', count: m.recallEvents, unit: '条', role: `总事件 ${displayCount(m.signals)} · 正向/纠正 ${displayCount(m.verdicts)}` }),
 						]),
-						// legend
+						// legend — must describe colours the drawing ACTUALLY uses.
+						// An earlier key promised a green "结构方向" swatch, but every
+						// structural edge is drawn muted dashed (tone() is neutralised:
+						// historical counts do not establish stage health), and the only
+						// green user (usable SAG) now reads as business blue. A legend
+						// entry for a colour nothing draws is the same lie as a fixed
+						// "muted" SAG edge — it makes a state look present when it never
+						// appears (2026-11-20 boss: "通道可用（SAG）一条都没有").
 						h('g', { key: 'legend' }, [
 							h('line', { key: 'k1', x1: 40, y1: 578, x2: 84, y2: 578, className: 'dmo-edge business', markerEnd: 'url(#dmo-ah-b)' }),
 							h('text', { key: 'k2', x: 92, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '通道可用（SAG）'),
-							h('line', { key: 'k3', x1: 236, y1: 578, x2: 280, y2: 578, className: 'dmo-edge ok', markerEnd: 'url(#dmo-ah-ok)' }),
-							h('text', { key: 'k4', x: 288, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '结构方向'),
-							h('line', { key: 'k5', x1: 430, y1: 578, x2: 474, y2: 578, className: 'dmo-edge danger', markerEnd: 'url(#dmo-ah-d)' }),
-							h('text', { key: 'k6', x: 482, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '通道不可达（SAG）'),
-							h('line', { key: 'k7', x1: 590, y1: 578, x2: 634, y2: 578, className: 'dmo-edge muted dashed', markerEnd: 'url(#dmo-ah-m)' }),
-							h('text', { key: 'k8', x: 642, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '运行未验证'),
+							h('line', { key: 'k3', x1: 236, y1: 578, x2: 280, y2: 578, className: 'dmo-edge danger dashed', markerEnd: 'url(#dmo-ah-d)' }),
+							h('text', { key: 'k4', x: 288, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '通道不可达（SAG）'),
+							h('line', { key: 'k5', x1: 474, y1: 578, x2: 518, y2: 578, className: 'dmo-edge muted dashed', markerEnd: 'url(#dmo-ah-m)' }),
+							h('text', { key: 'k6', x: 526, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '结构方向 · 运行未验证'),
 						]),
 					),
 				),
