@@ -1293,7 +1293,7 @@
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
-      "sha256": "69f58596bfe148bb569cef9b14ab875231b835e198f3f147eabde4f63d4dc9c4"
+      "sha256": "f32f92509dde34642d57e5586b249d8d4b3c79f4d4823b74ba91984c6e4734af"
     },
     "valves/package.json": {
       "source": "dsh-valves/package.json",
@@ -1309,7 +1309,7 @@
     },
     "valves/src/cycle-coverage.js": {
       "source": "dsh-valves/src/cycle-coverage.js",
-      "sha256": "07385ecc14453cc57d047ff8cea8f90042d227fc657099290f5c49b4d92758eb"
+      "sha256": "1f37900a1a8f4585a2a0b68f4e78a9ccfda909fd5c0995b4c785fbebc01a3aa9"
     },
     "valves/src/governance.js": {
       "source": "dsh-valves/src/governance.js",
@@ -1387,6 +1387,10 @@
       "source": "dsh-valves/test/collide-flow.test.js",
       "sha256": "8f8c79b4bc96120b37f575e618d1b39fc95939e4e3cd43f8b6dc1a1e941e8dbb"
     },
+    "valves/test/coverage-staleness.test.js": {
+      "source": "dsh-valves/test/coverage-staleness.test.js",
+      "sha256": "995f7c58d6b6b6a23ee8b5d7554d3db7490d4805f5a2b3a1d70913bb7a996d7f"
+    },
     "valves/test/cycle-coverage-bom.test.js": {
       "source": "dsh-valves/test/cycle-coverage-bom.test.js",
       "sha256": "f3eb9c36be0337f9678bb4dbc39c0d19fe0310f3a0143dc090469e8477315ed2"
@@ -1445,7 +1449,7 @@
     },
     "valves/test/patrol.test.js": {
       "source": "dsh-valves/test/patrol.test.js",
-      "sha256": "811cb63ad93dfe8c4e82ecf4e080316b5f8e7ac203ddf2f78acea73c774dcac2"
+      "sha256": "f5bff7e0d1de2351a91a86d867189d9e86a8ca89f760215fccee9c58f7224d25"
     },
     "valves/test/predicates.test.js": {
       "source": "dsh-valves/test/predicates.test.js",

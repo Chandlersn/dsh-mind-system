@@ -1,6 +1,22 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
+// Bump when the MEANING of a status changes, not merely when code is refactored.
+//
+// WHY A VERSION EXISTS
+// The weekly patrol used to re-run coverage only when a stored report had no
+// `cycle_coverage` field at all. That answered "was this section ever written"
+// and not "which computation produced it". Consequence measured on 2026-11-20:
+// the BOM and delivery fixes landed, the running host loaded them, and the panel
+// still showed the data flow as not connected -- because the last report (11-19)
+// DID carry the field, holding values computed by the old code, so nothing
+// recomputed them. The display would have stayed wrong until the next due patrol
+// on 11-26.
+//
+// A version makes staleness observable: a report whose coverage version differs
+// from the current one is recomputed rather than trusted.
+export const COVERAGE_VERSION = 2;
+
 // These sources establish observations, not completeness or success of a cycle.
 //
 // A leading BOM is stripped before parsing. Two of these ledgers were created by
@@ -202,6 +218,7 @@ export async function collectCycleCoverage({ storageDir, memoryRoot, getRuntimeS
     deliveryEvidence(storageDir),
   ]);
   return {
+    version: COVERAGE_VERSION,
     micro_execution: {
       schedule_delivery: delivery,
       outcome: { status: 'unknown', reason: 'runtime_snapshot_does_not_establish_outcome' },

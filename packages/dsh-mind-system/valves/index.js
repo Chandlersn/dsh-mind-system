@@ -73,7 +73,7 @@ import { nominateFromDisk } from './src/nominate.js';
 import { check as checkBudget, DEFAULT_BUDGET } from './src/budget.js';
 import { readClisHistory, consumeClisHistory, criterionEvidenceFromInsights, collideNoteToCandidate } from './src/clis-bridge.js';
 import { governanceRound, referenceCoverage, validateClassification } from './src/governance.js';
-import { collectCycleCoverage } from './src/cycle-coverage.js';
+import { collectCycleCoverage, COVERAGE_VERSION } from './src/cycle-coverage.js';
 import { createRepairEventReceiver } from './src/repair-event-receiver.js';
 
 export const name = 'valves';
@@ -911,8 +911,20 @@ export function apply(ctx, config = {}, overrides = {}) {
 		try {
 			const last = await readLatestPatrolReport(runtime.storageDir, kind);
 			const period = kind === 'quarterly' ? PATROL_PERIODS.quarterlyMs : PATROL_PERIODS.weeklyMs;
-			// Retry the one-time weekly upgrade until a report with coverage is persisted.
-			const needsCoverage = kind === 'weekly' && last && !Object.hasOwn(last, 'cycle_coverage');
+			// Recompute when the stored report predates the current coverage logic.
+			//
+			// The old test was `!Object.hasOwn(last, 'cycle_coverage')` -- a
+			// one-time migration check. It answered "was this section ever written"
+			// and not "which computation produced it", so every later change to the
+			// evidence logic stayed invisible in the panel until the next due patrol:
+			// on 2026-11-20 the BOM and delivery fixes were live in the running host,
+			// yet the panel still reported the data flow as not connected, because the
+			// 11-19 report carried the field with values the old code had computed.
+			//
+			// Version mismatch is the observable form of "this evidence is stale".
+			const needsCoverage = kind === 'weekly' && last
+				&& (!Object.hasOwn(last, 'cycle_coverage')
+					|| last.cycle_coverage?.version !== COVERAGE_VERSION);
 			if (!needsCoverage && !isPatrolDue(last, period)) {
 				// "Not due" is a legitimate skip, but it used to leave no trace at all:
 				// last_patrol then reads the previous report and patrol_facts stays null,

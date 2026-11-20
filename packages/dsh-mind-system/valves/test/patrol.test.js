@@ -792,7 +792,11 @@ test('apply：当天已有报告 → 未到期跳过，但 facts 记 skipped_not
 	const dir = sandbox();
 	try {
 		// Same-day report already exists → the timer must skip.
-		await writePatrolReport(dir, { kind: 'weekly', at: new Date().toISOString(), ok: true, findings: [], cycle_coverage: {} });
+		// The seeded coverage carries the CURRENT version on purpose: an
+		// unversioned object is now treated as stale evidence and would (rightly)
+		// trigger a recompute instead of the skip this test is about.
+		const { COVERAGE_VERSION } = await import('../src/cycle-coverage.js');
+		await writePatrolReport(dir, { kind: 'weekly', at: new Date().toISOString(), ok: true, findings: [], cycle_coverage: { version: COVERAGE_VERSION } });
 		const ctx = {
 			logger: () => ({ info() {}, warn() {}, error() {} }),
 			provide() {}, set() {}, on() {},
