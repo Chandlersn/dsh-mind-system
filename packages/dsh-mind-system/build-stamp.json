@@ -1305,7 +1305,7 @@
     },
     "valves/src/clis-bridge.js": {
       "source": "dsh-valves/src/clis-bridge.js",
-      "sha256": "bcb5d869fb3cb0e3013c0ead9062c71be09a5aa74820aa8ef042d4e8958e28e7"
+      "sha256": "1ad7b255a7d9a7406a88f2119bb34d875b8abcd8751d7e85c80ed7eed3553efa"
     },
     "valves/src/cycle-coverage.js": {
       "source": "dsh-valves/src/cycle-coverage.js",
@@ -1379,9 +1379,13 @@
       "source": "dsh-valves/test/clis-bridge.test.js",
       "sha256": "ba7469f8e31086a6746f95e8cf65829b010180ab0c044362eb7fbc66c56b9a77"
     },
+    "valves/test/collide-adapter.test.js": {
+      "source": "dsh-valves/test/collide-adapter.test.js",
+      "sha256": "26a888ccc4c6e649794b30d81c5d0c0694c2d6be95670c1d842a4761623b78b2"
+    },
     "valves/test/collide-flow.test.js": {
       "source": "dsh-valves/test/collide-flow.test.js",
-      "sha256": "e264fa95cf5bc4533ca0ff7831a8c850eed404ffe9e166481f7ebdb70a616121"
+      "sha256": "8f8c79b4bc96120b37f575e618d1b39fc95939e4e3cd43f8b6dc1a1e941e8dbb"
     },
     "valves/test/cycle-coverage.test.js": {
       "source": "dsh-valves/test/cycle-coverage.test.js",

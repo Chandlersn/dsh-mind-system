@@ -42,14 +42,20 @@ test('自由文体笔记：标题成为陈述，路径成为来源', () => {
 });
 
 test('真实量化观测被提取；时钟时间不算证据', () => {
+	// Text mirrors the real note: "排在结果前面的——三比零——是那份已经删掉的"
+	// records an actual retrieval outcome (3 deleted-twin hits to 0 canonical),
+	// so it counts as a measurement. An earlier version of this fixture phrased
+	// it as "三比零那次是删掉的", which reads as a label rather than a result;
+	// that phrasing is what made counting it look wrong.
 	const c = collideNoteToCandidate({
 		theme: 't',
-		text: '召回 5/5 命中，三比零那次是删掉的。每周一 10:00 会跑。命中率 91.7% 。',
+		text: '召回 5/5 命中，排在结果前面的——三比零——是那份已经删掉的。每周一 10:00 会跑。命中率 91.7% 。',
 	});
-	// 5/5 and 91.7% are measurements; 10:00 is a schedule.
-	assert.equal(c.skill_coverage, 2, `应只数真观测，实际证据：${c.evidence.join(',')}`);
+	// 5/5, 三比零 and 91.7% are measurements; 10:00 is a schedule.
+	assert.equal(c.skill_coverage, 3, `应只数真观测，实际证据：${c.evidence.join(',')}`);
 	assert.ok(c.evidence.includes('collide-observation:5/5'));
 	assert.ok(c.evidence.includes('collide-observation:91.7%'));
+	assert.ok(c.evidence.includes('collide-observation:3:0'), '中文数字的比分也是观测');
 	assert.ok(!c.evidence.some((e) => e.includes('10:00')), '时钟时间不是量化观测');
 });
 

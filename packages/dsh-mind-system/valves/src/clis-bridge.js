@@ -197,7 +197,19 @@ export function collideNoteToCandidate(note) {
 	const observations = [...text.matchAll(/(\d+\s*[／/比:：]\s*\d+|\d+(?:\.\d+)?\s*%)/g)]
 		.map((m) => m[0].replace(/\s+/g, ''))
 		.filter((s) => !isClock(s));
-	const uniqueObs = [...new Set(observations)];
+
+	// Chinese numerals in the same ratio shape (`三比零`, `五比五`). These are
+	// measurements the author actually wrote down — the real note says "三比零"
+	// where the rest of it says "5/5", and matching only ASCII digits silently
+	// dropped one of its two observations, understating coverage against a gate
+	// that counts exactly this number. Narrow on purpose: a numeral before 比 and
+	// another after, so ordinary prose containing 比 ("compared to") is untouched.
+	const cnDigits = { 零: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+	const cnNumeral = (s) => [...s].reduce((n, ch) => n * 10 + cnDigits[ch], 0);
+	const cnObservations = [...text.matchAll(/([零一二三四五六七八九十]+)\s*比\s*([零一二三四五六七八九十]+)/g)]
+		.map((m) => `${cnNumeral(m[1])}:${cnNumeral(m[2])}`);
+
+	const uniqueObs = [...new Set([...observations, ...cnObservations])];
 
 	// The author's own falsification hook — the strongest evidence a free-form
 	// note can offer, because it states what would prove the note wrong.
