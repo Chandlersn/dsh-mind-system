@@ -708,6 +708,14 @@ export function createRuntime(options = {}) {
 					candidates: facts.patrolCandidates ?? null,
 					refs_basis: facts.patrolRefsBasis ?? null,
 					boundary: facts.patrolBoundary ?? null,
+					// Whether the recall probe has a search function to call. Without
+					// this, "violations: null" is indistinguishable from "nobody ever
+					// registered a searcher" and from "the timer never fired" — three
+					// different problems that read identically in the report.
+					//
+					// Reads the closure variable, not `runtime.`: this method belongs to
+					// the runtime being built, so `runtime` is not assigned yet.
+					recall_search: typeof registeredRecallSearch === 'function' ? 'registered' : 'not_registered',
 					error: facts.patrolError ?? null,
 				},
 				thresholds_status: calib.allowed ? '可校准（日常样本已达标）' : `暂定（${calib.reason}：日常样本 ${calib.evaluated}/${calib.needed}，提名与验证不计入）`,

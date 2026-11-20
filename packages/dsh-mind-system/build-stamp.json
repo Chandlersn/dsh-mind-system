@@ -1293,7 +1293,7 @@
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
-      "sha256": "8d599a4cf232841a8d52022e28181d80f060367c8c60911bc633f9aff40a9baf"
+      "sha256": "69f58596bfe148bb569cef9b14ab875231b835e198f3f147eabde4f63d4dc9c4"
     },
     "valves/package.json": {
       "source": "dsh-valves/package.json",
@@ -1442,6 +1442,10 @@
     "valves/test/ratelimit.test.js": {
       "source": "dsh-valves/test/ratelimit.test.js",
       "sha256": "cc1c50460783c794b53feb41f05611a9bb4f6e5f49666f048f26b21228d61e02"
+    },
+    "valves/test/recall-boundary-e2e.test.js": {
+      "source": "dsh-valves/test/recall-boundary-e2e.test.js",
+      "sha256": "b2491bf3b1c1f007c265d88d44f214020f3e7fc98b77518259cbc861d3973ad9"
     },
     "valves/test/recall-probe.test.js": {
       "source": "dsh-valves/test/recall-probe.test.js",
