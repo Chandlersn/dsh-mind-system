@@ -248,6 +248,10 @@ export function buildRecipeFromSpec(spec, { toolEffects } = {}) {
       return steps ? { step: 0 } : {};
     },
     candidates({ task, state, io }) {
+      // Refuse invalid verifier inputs before any tool can run, including on resumed state.
+      // Check later steps too: their invalid shape must not leave earlier writes behind.
+      verifier.validateInputs({ task, state });
+      for (const step of steps ?? []) step.verifier.validateInputs({ task, state });
       if (!steps) {
         return [{
           candidateId: `${checked.recipeId}:main`,

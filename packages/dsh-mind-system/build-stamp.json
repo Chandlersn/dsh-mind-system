@@ -173,7 +173,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "34329822f719a8bec8a0c10f5199d15db06b675f5a4a6cb4333b58eba8065d3c"
+      "sha256": "e2fd53d0b6e101212d0659413db3d9b8adc7ff2bd46fcbf8cec31e0b601d66ec"
     },
     "memory/src/axiom-candidate.js": {
       "source": "dsh-memory-manager/src/axiom-candidate.js",
@@ -395,6 +395,10 @@
       "source": "dsh-memory-manager/tests/dao-archive-safety.test.js",
       "sha256": "4344f3e867787c4c5c5b6e326194f5fe693d5770e56ab01d98d55d42097f682d"
     },
+    "memory/tests/dao-list-contract.test.js": {
+      "source": "dsh-memory-manager/tests/dao-list-contract.test.js",
+      "sha256": "8b893c6489e0baced19ba4eeb138c01784ed558394cbac838ee76d2f3ac8b6c2"
+    },
     "memory/tests/dao-shape.test.js": {
       "source": "dsh-memory-manager/tests/dao-shape.test.js",
       "sha256": "94455194c08427c00df8d2c420ec696a4631075a4d97348850d11eb442539f6d"
@@ -538,6 +542,10 @@
     "memory/tests/read-if-exists-safety.test.js": {
       "source": "dsh-memory-manager/tests/read-if-exists-safety.test.js",
       "sha256": "10780158d69ad1ba042c594c4112123d5ab5876099c8a5ec7f8502ee4231c20b"
+    },
+    "memory/tests/readonly-admission.test.js": {
+      "source": "dsh-memory-manager/tests/readonly-admission.test.js",
+      "sha256": "3cebdafd2b103b96048c409d65e0cb316dfa2e65b0495d49fea1fb99b2160f80"
     },
     "memory/tests/recall-admission.test.js": {
       "source": "dsh-memory-manager/tests/recall-admission.test.js",
@@ -981,7 +989,7 @@
     },
     "runtime/src/contracts.js": {
       "source": "dsh-execution-runtime/src/contracts.js",
-      "sha256": "42b552a3e84ec833d8760899ed23e0859ea966c18c5e66a6d16bbf2368524da6"
+      "sha256": "8027a5c9720371fd5248aa362423c4403549d7a54ae96fea43e036bd5c6ef0d7"
     },
     "runtime/src/decision-client.js": {
       "source": "dsh-execution-runtime/src/decision-client.js",
@@ -993,7 +1001,7 @@
     },
     "runtime/src/dynamic-tools.js": {
       "source": "dsh-execution-runtime/src/dynamic-tools.js",
-      "sha256": "9be5d3e9d52984f90d89cbf4571aaf9ec9ed7cbb527d0d5286176905148b42be"
+      "sha256": "3a2fc29fd266d039495bf06b5126d6d766cae452f803601f8562cb2eb1637c42"
     },
     "runtime/src/exceptions.js": {
       "source": "dsh-execution-runtime/src/exceptions.js",
@@ -1005,7 +1013,7 @@
     },
     "runtime/src/host-plugin.js": {
       "source": "dsh-execution-runtime/src/host-plugin.js",
-      "sha256": "5b2abd9b04e992ec2c0c9aaaa8adf75f0d3b566a6fd02bcc77ab90d1db90e25a"
+      "sha256": "ef1b49985598ba237a2b74f21cffc66cbbd65fc9a10e1f94086fdc19461d9bd3"
     },
     "runtime/src/intervention.js": {
       "source": "dsh-execution-runtime/src/intervention.js",
@@ -1021,7 +1029,7 @@
     },
     "runtime/src/outbox-dispatcher.js": {
       "source": "dsh-execution-runtime/src/outbox-dispatcher.js",
-      "sha256": "63dfb3e80b03bcbd180e58e640fff19b4917e99a135a3a8db48b61051a7209f2"
+      "sha256": "e87e3ba369a8054323503291ed6f992a7902639a48a9329f902f415c0ff3d490"
     },
     "runtime/src/pattern-approval.js": {
       "source": "dsh-execution-runtime/src/pattern-approval.js",
@@ -1045,11 +1053,15 @@
     },
     "runtime/src/recipe-factory.js": {
       "source": "dsh-execution-runtime/src/recipe-factory.js",
-      "sha256": "0b3a50d950f3815129fe40b1b4c03df78aa6a9a204ed35bb4f84874b786c2c26"
+      "sha256": "85a56ec4f29e6cdf80f493ec3a162d9bd9e2723af6b4892b316667a3749588b1"
     },
     "runtime/src/recipe-library.js": {
       "source": "dsh-execution-runtime/src/recipe-library.js",
       "sha256": "a33ffb435455c2729c857474f8b8c03712311deea91db4d2202a26b28b9573b5"
+    },
+    "runtime/src/repair-evidence-reader.js": {
+      "source": "dsh-execution-runtime/src/repair-evidence-reader.js",
+      "sha256": "b2aecc6c63e4f63d509cbfeeb3214b27029162737c45a5eb5a154c5015ae6d35"
     },
     "runtime/src/repair-patterns.js": {
       "source": "dsh-execution-runtime/src/repair-patterns.js",
@@ -1065,7 +1077,7 @@
     },
     "runtime/src/store.js": {
       "source": "dsh-execution-runtime/src/store.js",
-      "sha256": "3e10e6d0963be4f1e4d7fa10d560cae36b4c6559f6f751c521733f94650df1c0"
+      "sha256": "3fc543e59810eda60c6ee43c741ea0c2358ea03e25e04c9b651552d2ce98bd9b"
     },
     "runtime/src/valve-bridge.js": {
       "source": "dsh-execution-runtime/src/valve-bridge.js",
@@ -1073,7 +1085,7 @@
     },
     "runtime/src/verifier-primitives.js": {
       "source": "dsh-execution-runtime/src/verifier-primitives.js",
-      "sha256": "4fe2ebb2bc6be6eec07241505d05d9539f69d0ec3a8468363cbdad53b27d9884"
+      "sha256": "7f6791c1fffc0e7a046a26ad5bec08fc39696ff576d420c7571795363d8806f8"
     },
     "runtime/src/write-tools.js": {
       "source": "dsh-execution-runtime/src/write-tools.js",
@@ -1135,9 +1147,13 @@
       "source": "dsh-execution-runtime/test/host-enablement.test.js",
       "sha256": "8b9524959f1a6c8faefb20b00a956a9ba24aa189d3e296f2c2c8062e78eca9e4"
     },
+    "runtime/test/host-evidence-service.test.js": {
+      "source": "dsh-execution-runtime/test/host-evidence-service.test.js",
+      "sha256": "a39ad0f796b9c3e5941ece23118f0525d27a2a64ee8e74610b1b2adf55ac4b2b"
+    },
     "runtime/test/host-outbox-wiring.test.js": {
       "source": "dsh-execution-runtime/test/host-outbox-wiring.test.js",
-      "sha256": "1158915cb79f55e2debd1e8c7c300ad9f0c378ccbc58a1d36b0027edf885d66a"
+      "sha256": "d92bb4770281ec01fb602bcecb88ce7fa6def54fc8ceb1c2632c8c6b7f8e8c8d"
     },
     "runtime/test/host-pipeline.test.js": {
       "source": "dsh-execution-runtime/test/host-pipeline.test.js",
@@ -1145,7 +1161,15 @@
     },
     "runtime/test/host-plugin.test.js": {
       "source": "dsh-execution-runtime/test/host-plugin.test.js",
-      "sha256": "47d2bd56bf95505c864f8b2fc6e9a06f83e2d59ae0833e652fda796829422f7f"
+      "sha256": "a52a6f7a0b59ec9b7ac8f814e3e5c9f5f711c37e20f98cf9c5dcf36bdcf4697c"
+    },
+    "runtime/test/host-task-provenance.test.js": {
+      "source": "dsh-execution-runtime/test/host-task-provenance.test.js",
+      "sha256": "7ee271d2cf697744257a356502d4a29228e75bf6e30a5341e5db78b8d5fbc985"
+    },
+    "runtime/test/host-validator-unavailable.test.js": {
+      "source": "dsh-execution-runtime/test/host-validator-unavailable.test.js",
+      "sha256": "fb24a77aa19c61ac61d83ed6e9cbf8b1913ed860885bf0dd4a26a5d3dbc9c6d9"
     },
     "runtime/test/injected-message.test.js": {
       "source": "dsh-execution-runtime/test/injected-message.test.js",
@@ -1181,7 +1205,7 @@
     },
     "runtime/test/outbox-dispatcher.test.js": {
       "source": "dsh-execution-runtime/test/outbox-dispatcher.test.js",
-      "sha256": "7ba495e58ff75fb690c9b55e2cc86fcd0bd33f11163f3268a9b2bcb570e64141"
+      "sha256": "d815121f2b7f1d8c82a25cd79c1d57a9a566ca5f12806665616f6270872af613"
     },
     "runtime/test/outcome-checkpoint-atomic.test.js": {
       "source": "dsh-execution-runtime/test/outcome-checkpoint-atomic.test.js",
@@ -1221,7 +1245,7 @@
     },
     "runtime/test/recipe-factory.test.js": {
       "source": "dsh-execution-runtime/test/recipe-factory.test.js",
-      "sha256": "ccc256aeb716a531b211755aa7d72046e4aa8c5119b927ec7fce63fa4815a5d2"
+      "sha256": "4b0d6dabc97560560fe00f77f172dcac72c4c76d99744a99994afa5a3ce8448a"
     },
     "runtime/test/recipe-library.test.js": {
       "source": "dsh-execution-runtime/test/recipe-library.test.js",
@@ -1230,6 +1254,14 @@
     "runtime/test/recovery.test.js": {
       "source": "dsh-execution-runtime/test/recovery.test.js",
       "sha256": "17a5356c609628e87d51577a0c467b09b53599f7f11ef7a3e595d958b4529cce"
+    },
+    "runtime/test/repair-event-evidence.test.js": {
+      "source": "dsh-execution-runtime/test/repair-event-evidence.test.js",
+      "sha256": "065e1c9085d02125c64b8d697d385be3a9daca579a6416c9bbb5ecb2aefacf04"
+    },
+    "runtime/test/repair-evidence-reader.test.js": {
+      "source": "dsh-execution-runtime/test/repair-evidence-reader.test.js",
+      "sha256": "560d1cf0bb27b8ee8a9c719def413e6579d7037c866c72b5ab37ec8c87bbbeb9"
     },
     "runtime/test/repair-patterns.test.js": {
       "source": "dsh-execution-runtime/test/repair-patterns.test.js",
@@ -1261,7 +1293,7 @@
     },
     "runtime/test/store-outbox.test.js": {
       "source": "dsh-execution-runtime/test/store-outbox.test.js",
-      "sha256": "50f17c26ba5183c11a0ecbdf1ec71d4ff2a8d4962a3c93fa3e22f809a90f5c82"
+      "sha256": "1ae7690a431e0f6080826d5c81159625c09e75c90a7575a8c0c00eca98d71321"
     },
     "runtime/test/store-repair.test.js": {
       "source": "dsh-execution-runtime/test/store-repair.test.js",
@@ -1274,6 +1306,10 @@
     "runtime/test/store.test.js": {
       "source": "dsh-execution-runtime/test/store.test.js",
       "sha256": "52c9fecaaa410a6cc58860752e7a78d978f2315239bde2eee23b31ce3bc6dced"
+    },
+    "runtime/test/task-provenance.test.js": {
+      "source": "dsh-execution-runtime/test/task-provenance.test.js",
+      "sha256": "a51eecf4be4fb93202c127aa34773541203aca203f428a1eff22ba7ea26fe339"
     },
     "runtime/test/valve-bridge.test.js": {
       "source": "dsh-execution-runtime/test/valve-bridge.test.js",
@@ -1289,11 +1325,11 @@
     },
     "valves/README.md": {
       "source": "dsh-valves/README.md",
-      "sha256": "c06f14d34500f0f21d3e3e1aa668d13c9c01d83859a5f59984d0bb54cf27d8e9"
+      "sha256": "f7093d1da385aafd70465bc8809d80f657896e73f3e521f9f3ec0c6e428f07ea"
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",
-      "sha256": "9a9c5d313fd4ef3ebc81d34ac5147138ab79fa81ad7d649eb395eb66895bb0e9"
+      "sha256": "0faf07ccd1736251d8f2ab84df1be8f6d6816d39a09467c39236450b503f1a79"
     },
     "valves/package.json": {
       "source": "dsh-valves/package.json",
@@ -1313,7 +1349,7 @@
     },
     "valves/src/governance.js": {
       "source": "dsh-valves/src/governance.js",
-      "sha256": "0c075d55efb8260401f8b53ae67e4c725933c7e09d451a424d54def50f05eeae"
+      "sha256": "13e8bd84a39098acb3bd0672b1d384b15cf3824d7afc4c33d1faccacef4463ef"
     },
     "valves/src/guard.js": {
       "source": "dsh-valves/src/guard.js",
@@ -1342,6 +1378,14 @@
     "valves/src/repair-event-receiver.js": {
       "source": "dsh-valves/src/repair-event-receiver.js",
       "sha256": "7bcdde87c99426a8a95ee2287d776d1b386d044bedf8e73af805f8142ef93c5d"
+    },
+    "valves/src/repair-event-review.js": {
+      "source": "dsh-valves/src/repair-event-review.js",
+      "sha256": "ce9a8d4a5e219cccf2dbd6265dd22e1f8e7a5de9d0c1b3f5dded24486dd956f3"
+    },
+    "valves/src/repair-identity-resolver.js": {
+      "source": "dsh-valves/src/repair-identity-resolver.js",
+      "sha256": "4f0cad175598e5c05937cc2194bcdeaa8baf4520f105f181f439d8e11b60e324"
     },
     "valves/src/semantic.js": {
       "source": "dsh-valves/src/semantic.js",
@@ -1405,7 +1449,7 @@
     },
     "valves/test/entry.test.js": {
       "source": "dsh-valves/test/entry.test.js",
-      "sha256": "81b23ff225f9b9d464db790e24bfb1c82bda237a6dd6ad302dff137a1a6d1d90"
+      "sha256": "8f090a4704647df85e9cf2fa469cf974a24d621e657ba3a156fe54ba9fb8aad1"
     },
     "valves/test/fast-track.test.js": {
       "source": "dsh-valves/test/fast-track.test.js",
@@ -1414,6 +1458,10 @@
     "valves/test/full-loop.test.js": {
       "source": "dsh-valves/test/full-loop.test.js",
       "sha256": "4a0e0a84be199f5e90f60e19125e09a5ed67368275789376ce4e59041cafcf5b"
+    },
+    "valves/test/governance-evidence-dedup.test.js": {
+      "source": "dsh-valves/test/governance-evidence-dedup.test.js",
+      "sha256": "f780f2f2ddca276fd5feec5143e8ab39481d01f5a1ec8b626c2950e567cbef70"
     },
     "valves/test/governance.test.js": {
       "source": "dsh-valves/test/governance.test.js",
@@ -1479,9 +1527,21 @@
       "source": "dsh-valves/test/receipt-json.test.js",
       "sha256": "994b9e0684f839aaa4e05495e8e2c373471dc03889cd9189aee5f2d7705c0672"
     },
+    "valves/test/repair-event-identity.test.js": {
+      "source": "dsh-valves/test/repair-event-identity.test.js",
+      "sha256": "d0a0dacdac133ce7ad1e1cc0c25dae14e3d7e3125ae7a4467778152ce0a12a0a"
+    },
     "valves/test/repair-event-receiver.test.js": {
       "source": "dsh-valves/test/repair-event-receiver.test.js",
       "sha256": "a13236b1347766e65cae28b375b8f3f94c04e86d4c0ab6528e2b97ff74e5e1f7"
+    },
+    "valves/test/repair-event-review.test.js": {
+      "source": "dsh-valves/test/repair-event-review.test.js",
+      "sha256": "81ff6c9330bfb3ca0f3bcee6d0f60fe4ba3f3182bf5acd316e9495c544d59f17"
+    },
+    "valves/test/repair-identity-resolver.test.js": {
+      "source": "dsh-valves/test/repair-identity-resolver.test.js",
+      "sha256": "a3ef29d6c5cfc27804574a9b27f91a3352c7421f43115e5ed124cdaa2900edbe"
     },
     "valves/test/rollout.test.js": {
       "source": "dsh-valves/test/rollout.test.js",

@@ -268,6 +268,10 @@ export function buildVerifier({ primitive, parameters = {} } = {}) {
   const factory = PRIMITIVES[primitive].build(parameters);
   return Object.freeze({
     id: `builtin:${primitive.replaceAll('_', '-')}`, version: '1',
+    validateInputs({ task, state }) {
+      // Check the same shape as verification without reading artifacts that may not exist yet.
+      resolvePaths(task, state, parameters?.targetFile ?? null);
+    },
     verify({ task, state, io }) {
       // The verifier reads through the task's own I/O so every read stays metered and scoped; it never
       // reaches the filesystem directly.

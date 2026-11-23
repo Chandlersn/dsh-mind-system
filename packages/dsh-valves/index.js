@@ -75,6 +75,8 @@ import { readClisHistory, consumeClisHistory, criterionEvidenceFromInsights, col
 import { governanceRound, referenceCoverage, validateClassification } from './src/governance.js';
 import { collectCycleCoverage, COVERAGE_VERSION } from './src/cycle-coverage.js';
 import { createRepairEventReceiver } from './src/repair-event-receiver.js';
+import { readRepairEventPage } from './src/repair-event-review.js';
+import { createRepairIdentityResolver } from './src/repair-identity-resolver.js';
 
 export const name = 'valves';
 
@@ -265,6 +267,24 @@ export function createRuntime(options = {}) {
 		 */
 		receiveRepairEvent(event) {
 			return repairReceiver().receive(event);
+		},
+		reviewRepairEvents({ limit, cursor } = {}) {
+			// Never open the writable receiver while inspecting its inbox.
+			return readRepairEventPage({ filePath: repairEventsPath, limit, cursor });
+		},
+		resolveRepairEvent(args = {}) {
+			const unavailable = (code) => ({ schemaVersion: 1, status: 'error', code, attestation: 'record_consistency',
+				artifacts: 'not_evaluated', goalProof: 'not_evaluated', principleAttribution: 'not_evaluated', governanceEligible: false });
+			if (!args || typeof args !== 'object' || Array.isArray(args)
+				|| Reflect.ownKeys(args).length !== 2 || !Object.hasOwn(args, 'producerId') || !Object.hasOwn(args, 'eventId')) return unavailable('invalid_request');
+			try {
+				// Resolve the optional peer at call time so activation order cannot freeze absence.
+				const service = options.getEvidenceService?.();
+				if (typeof service?.producerId !== 'string' || typeof service?.readRepairEvidence !== 'function') return unavailable('runtime_evidence_unavailable');
+				return createRepairIdentityResolver({ inboxFilePath: repairEventsPath,
+					sources: { [service.producerId]: { readEvidence: request => service.readRepairEvidence(request) } },
+				}).resolve(args);
+			} catch { return unavailable('runtime_evidence_unavailable'); }
 		},
 		repairEventStatus() {
 			if (repairReceiverInstance === null && !existsSync(repairEventsPath)) {
@@ -871,7 +891,7 @@ export function createRuntime(options = {}) {
 }
 
 /** 工具名。 */
-export const TOOL_NAMES = { check: 'valve_check', confirm: 'valve_confirm', metrics: 'valve_metrics', nominate: 'valve_nominate', govern: 'valve_govern' };
+export const TOOL_NAMES = { check: 'valve_check', confirm: 'valve_confirm', metrics: 'valve_metrics', nominate: 'valve_nominate', govern: 'valve_govern', repairEvents: 'valve_repair_events', repairIdentity: 'valve_repair_identity' };
 
 export function apply(ctx, config = {}, overrides = {}) {
 	const logger = overrides.logger ?? ctx.logger?.('valves');
@@ -889,6 +909,7 @@ export function apply(ctx, config = {}, overrides = {}) {
 		storageDir: typeof config?.storageDir === 'string' && config.storageDir.trim() ? config.storageDir.trim() : undefined,
 		thresholds,
 		layers: config?.layers,
+		getEvidenceService: () => ctx.get?.('executionRuntimeEvidence'),
 	});
 	// III-6 语义层的 embedder 是**可选 peer**：配置里给了函数才用，
 	// 缺了就是 degraded（N4：附加能力缺了要降级，主流程不依赖它）。
@@ -1148,16 +1169,17 @@ export function apply(ctx, config = {}, overrides = {}) {
 	} else {
 		facts.patrol = 'disabled';
 	}
-	// 插件卸载时清掉定时器，否则重载会叠加出多个并行巡检。
-	if (typeof ctx.on === 'function') {
-		ctx.on('dispose', () => {
-			for (const t of patrolTimers) {
-				try { clearInterval(t); } catch { /* ignore */ }
-			}
-			patrolTimers.length = 0;
-			try { runtime.dispose?.(); } catch { /* ignore */ }
-		});
-	}
+	// Cordis owns effects; an event named dispose does not release plugin resources.
+	const ownedRuntime = runtime;
+	const release = () => {
+		for (const t of patrolTimers) {
+			try { clearInterval(t); } catch { /* ignore */ }
+		}
+		patrolTimers.length = 0;
+		try { ownedRuntime.dispose?.(); } catch { /* ignore */ }
+	};
+	if (typeof ctx.effect === 'function') ctx.effect(() => release);
+	else if (typeof ctx.on === 'function') ctx.on('dispose', release);
 
 	// 服务发布：memory 等成员用 ctx.get('valves') 运行时探测（可选依赖）。
 	// ctx.provide 两参数形态（Cordis 4.0.5 实测）；provide 不可用时退回 ctx.set。
@@ -1342,6 +1364,30 @@ export function apply(ctx, config = {}, overrides = {}) {
 		},
 	});
 
+	const repairEventsTool = defineTool({
+		name: TOOL_NAMES.repairEvents,
+		description: 'Read a bounded, read-only page of received repair events. These are raw producer claims, not reviewed evidence or governance decisions. Missing or corrupt storage is reported explicitly. Use nextCursor for continuation; omit it to start a new snapshot.',
+		parameters: {
+			limit: { type: 'number', description: 'Integer page size from 1 to 100; default 20. Byte limits may shorten a page.' },
+			cursor: { type: 'string', description: 'Opaque nextCursor returned by the previous page; omit for a new snapshot.' },
+		},
+		output: { schema: { type: 'json' }, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v) }] },
+		async execute(args) {
+			return runtime.reviewRepairEvents(args ?? {});
+		},
+	});
+
+	const repairIdentityTool = defineTool({
+		name: TOOL_NAMES.repairIdentity,
+		description: 'Read-only comparison of one received repair event against its host-bound producer records. Provide only producerId and eventId from the inbox. Record agreement is not file verification, goal proof, principle attribution, or governance eligibility.',
+		parameters: {
+			producerId: { type: 'string', required: true, description: 'Exact producer identity from a received event.' },
+			eventId: { type: 'string', required: true, description: 'Exact immutable event identity from the same receipt.' },
+		},
+		output: { schema: { type: 'json' }, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v) }] },
+		async execute(args) { return runtime.resolveRepairEvent(args); },
+	});
+
 	const nominateTool = defineTool({
 		name: TOOL_NAMES.nominate,
 		description:
@@ -1460,7 +1506,7 @@ export function apply(ctx, config = {}, overrides = {}) {
 		},
 	});
 
-	for (const tool of [checkTool, confirmTool, metricsTool, nominateTool, governTool]) {
+	for (const tool of [checkTool, confirmTool, metricsTool, nominateTool, governTool, repairEventsTool, repairIdentityTool]) {
 		ctx.tools.register(tool);
 		facts.registeredTools.push(tool.name ?? '(unnamed)');
 	}
@@ -1480,11 +1526,11 @@ export function probe() {
 	if (!facts.loaded) {
 		findings.push({ code: PROBE_CODES.notLoaded, severity: 'error', message: 'valves 未装载（apply 未执行）。', hint: '查宿主启动日志。' });
 	} else {
-		if (facts.registeredTools.length < 5) {
+		if (Object.values(TOOL_NAMES).some((name) => !facts.registeredTools.includes(name))) {
 			findings.push({
 				code: PROBE_CODES.toolMissing,
 				severity: 'error',
-				message: `工具只注册了 ${facts.registeredTools.length}/5：${facts.loadError ?? '原因未知'}`,
+				message: `工具只注册了 ${facts.registeredTools.length}/${Object.keys(TOOL_NAMES).length}：${facts.loadError ?? '原因未知'}`,
 				hint: '多为宿主定位失败；设 DSH_INSTALL_DIR 或 config.dshRoot。',
 			});
 		}

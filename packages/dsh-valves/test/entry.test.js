@@ -205,6 +205,77 @@ test('host tool accepts declared principle references and records them for gover
 	} finally { cleanup(); }
 });
 
+test('host repair review exposes raw claims without creating storage or governance samples', async (t) => {
+	const { loadDefineTool, getRuntime } = await import('../index.js');
+	const { readDecisions } = await import('../src/store.js');
+	let realDefine;
+	try { realDefine = loadDefineTool(); } catch { t.skip('Host tool compiler unavailable'); return; }
+	const { dir, cleanup } = tempDir();
+	fakeCtx.registered = [];
+	let rt;
+	try {
+		apply(fakeCtx(new Map()), { storageDir: dir, patrol: { enabled: false } }, { loadDefineTool: () => realDefine });
+		rt = getRuntime();
+		const tool = fakeCtx.registered.find((entry) => entry.name === TOOL_NAMES.repairEvents);
+		assert.ok(tool, 'The read-only review tool must be registered.');
+		const missing = await tool.execute({});
+		assert.equal(missing.status, 'unavailable');
+		assert.equal(missing.code, 'database_missing');
+		assert.equal(existsSync(join(dir, 'mind-repair-events.sqlite')), false);
+		const before = await readDecisions(dir);
+		rt.receiveRepairEvent({ producerId: 'verification-producer', eventId: 'event-1', kind: 'repair_finished',
+			payload: { status: 'settled', taskId: 'verification-task', repairId: 'repair-1' } });
+		const result = await tool.execute({ limit: 1 });
+		assert.equal(result.status, 'available');
+		assert.equal(result.provenance, 'raw_producer_claims');
+		assert.equal(result.items.length, 1);
+		assert.equal(result.nextCursor, null);
+		assert.deepEqual(await readDecisions(dir), before, 'Receipt and review must not write governance samples.');
+		assert.throws(() => rt.reviewRepairEvents({ limit: 101 }));
+		await assert.rejects(() => tool.execute({ limit: '1' }));
+	} finally { rt?.dispose(); cleanup(); }
+});
+
+test('host identity tool discovers late peer, refuses paths and never records governance', async () => {
+	const { loadDefineTool, getRuntime } = await import('../index.js');
+	const { readDecisions } = await import('../src/store.js');
+	const realDefine = loadDefineTool();
+	const { dir, cleanup } = tempDir();
+	const services = new Map();
+	fakeCtx.registered = [];
+	let rt;
+	try {
+		apply(fakeCtx(services), { storageDir: dir, patrol: { enabled: false } }, { loadDefineTool: () => realDefine });
+		rt = getRuntime();
+		const tool = fakeCtx.registered.find(t => t.name === TOOL_NAMES.repairIdentity);
+		assert.ok(tool);
+		const request = { producerId: 'producer', eventId: 'event' };
+		assert.equal((await tool.execute(request)).code, 'runtime_evidence_unavailable');
+		const payload = { status: 'settled', taskId: 'task', repairId: 'repair' };
+		let calls = 0;
+		services.set('executionRuntimeEvidence', { producerId: 'producer', readRepairEvidence(args) {
+			calls++; assert.deepEqual(args, request);
+			return { status: 'match', ...request, kind: 'repair_finished', payload };
+		} });
+		assert.equal((await tool.execute(request)).code, 'receipt_database_missing');
+		assert.equal(calls, 0);
+		assert.equal(existsSync(join(dir, 'mind-repair-events.sqlite')), false);
+		rt.receiveRepairEvent({ ...request, kind: 'repair_finished', payload });
+		const before = await readDecisions(dir);
+		const result = await tool.execute(request);
+		assert.equal(result.status, 'match');
+		assert.equal(result.governanceEligible, false);
+		assert.equal(result.goalProof, 'not_evaluated');
+		assert.equal(calls, 1);
+		assert.equal((await tool.execute({ ...request, runtimeFilePath: 'foreign' })).code, 'invalid_request');
+		assert.equal((await tool.execute({ ...request, producerId: 'foreign' })).code, 'producer_unbound');
+		assert.equal(calls, 1);
+		services.delete('executionRuntimeEvidence');
+		assert.equal((await tool.execute(request)).code, 'runtime_evidence_unavailable');
+		assert.deepEqual(await readDecisions(dir), before);
+	} finally { rt?.dispose(); cleanup(); }
+});
+
 // —— memory 桥 ——
 
 test('桥：无服务/ctx 抛错 → 全 undefined，不抛', async () => {

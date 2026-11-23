@@ -3810,18 +3810,78 @@ function memoryDaoTool(opts) {
 		},
 		output: {
 			schema: {
-				type: 'object',
-				additionalProperties: false,
-				properties: {
-					daoFile: { type: 'string', required: true },
-					name: { type: 'string', required: true },
-					extractedFrom: { type: 'array', required: true, items: { type: 'string' } },
-					missingLaws: { type: 'array', required: true, items: { type: 'string' } },
-					selfCheck: SELF_CHECK_SCHEMA,
-					warnings: { type: 'array', required: true, items: { type: 'string' } },
-				},
+				// Each operation retains its own required evidence; listing is not a write.
+				oneOf: [
+					{
+						type: 'object', additionalProperties: false,
+						properties: {
+							daoFile: { type: 'string', required: true },
+							name: { type: 'string', required: true },
+							extractedFrom: { type: 'array', required: true, items: { type: 'string' } },
+							missingLaws: { type: 'array', required: true, items: { type: 'string' } },
+							selfCheck: SELF_CHECK_SCHEMA,
+							warnings: { type: 'array', required: true, items: { type: 'string' } },
+						},
+					},
+					{
+						type: 'object', additionalProperties: false,
+						properties: {
+							ok: { type: 'boolean', const: true, required: true },
+							status: { type: 'string', const: 'candidate', required: true },
+							name: { type: 'string', required: true },
+							path: { type: 'string', required: true },
+							proposition: { type: 'string', required: true },
+							source_count: { type: 'integer', required: true },
+							sources: { type: 'array', required: true, items: { type: 'string' } },
+							warnings: { type: 'array', items: { type: 'string' } },
+							note: { type: 'string', required: true },
+						},
+					},
+					{
+						type: 'object', additionalProperties: false,
+						properties: {
+							ok: { type: 'boolean', const: true, required: true },
+							status: { type: 'string', const: 'list_candidates', required: true },
+							count: { type: 'integer', required: true },
+							candidates: { type: 'array', required: true, items: {
+								oneOf: [
+									{ type: 'object', additionalProperties: false, properties: {
+										name: { type: 'string', required: true },
+										proposition: { type: 'string', required: true },
+										source_count: { type: 'integer', required: true },
+									} },
+									{ type: 'object', additionalProperties: false, properties: {
+										name: { type: 'string', required: true },
+										unreadable: { type: 'boolean', const: true, required: true },
+										error: { type: 'string', required: true },
+									} },
+								],
+							} },
+							note: { type: 'string', required: true },
+						},
+					},
+				],
 			},
 			render: (_args, v) => {
+				if (v.status === 'list_candidates') {
+					const lines = [`待确认候选公理：${v.count} 条`, v.note];
+					for (const item of v.candidates) {
+						lines.push(item.unreadable
+							? `⚠ ${item.name}：无法读取（${item.error}）；命题与来源法数量未知。`
+							: `- ${item.name}：${item.proposition || '（未找到命题）'}\n  来源法：${item.source_count} 条`);
+					}
+					return [{ type: 'text', text: lines.join('\n') }];
+				}
+				if (v.status === 'candidate') {
+					const lines = [
+						`候选公理已写入（未生效）：${v.path}`,
+						`命题：${v.proposition}`,
+						`萃取自 ${v.source_count} 条法：${v.sources.join('、')}`,
+						v.note,
+					];
+					for (const w of v.warnings ?? []) lines.push(`⚠ ${w}`);
+					return [{ type: 'text', text: lines.join('\n') }];
+				}
 				const lines = [
 					`道已沉淀：${v.daoFile}`,
 					`萃取自 ${v.extractedFrom.length} 条法：${v.extractedFrom.join('、')}`,
@@ -3852,19 +3912,20 @@ function memoryDaoTool(opts) {
 				let names = [];
 				try {
 					names = (await readdir(candDir)).filter((f) => f.endsWith('.md')).sort();
-				} catch {
-					/* 还没有候选 = 正常态，不是错误 */
+				} catch (error) {
+					// Only an absent directory means there are no candidates.
+					if (error?.code !== 'ENOENT') throw error;
 				}
 				const items = [];
 				for (const f of names) {
 					const slug = f.replace(/\.md$/, '');
 					try {
-						const t = await readText(path.join(candDir, f));
+						const t = await readFile(path.join(candDir, f), 'utf8');
 						const prop = /##\s*命题\s*\n+([\s\S]*?)(?:\n##|$)/.exec(t)?.[1]?.trim() ?? '';
 						const srcCount = (t.match(/^- \[[^\]]+\]\(\.\.\/insights\//gm) ?? []).length;
 						items.push({ name: slug, proposition: prop, source_count: srcCount });
-					} catch {
-						items.push({ name: slug, proposition: '', source_count: 0, unreadable: true });
+					} catch (error) {
+						items.push({ name: slug, unreadable: true, error: String(error?.code ?? error?.message ?? error) });
 					}
 				}
 				return {
@@ -6274,7 +6335,9 @@ export function apply(ctx, config, dependencies = {}) {
 	const transactionTool = (tool) => ({
 		...tool,
 		execute: async (args, exec) => {
-			if (WRITE_LAYERS[tool.name] !== undefined) {
+			if (WRITE_LAYERS[tool.name] !== undefined
+				&& (tool.name !== 'memory_capability' || args?.action === 'record')
+				&& (tool.name !== 'memory_dao' || args?.status !== 'list_candidates')) {
 				try { recordDownwardWrite(ctx, { tool: tool.name, layer: WRITE_LAYERS[tool.name], target: String(args?.feature ?? args?.theme ?? args?.name ?? tool.name) }); }
 				catch { /* bookkeeping never blocks the write */ }
 			}

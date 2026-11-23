@@ -113,3 +113,14 @@ byGate：downward_L2_L3 9 · downward_L1_L2 1 · downward_L2_L1 1 · patrol 1。
 而不是日历相邻——11-11、11-12 无记录，11-14 属另一主题（设计交付），故未入选。
 
 **遗留**：daily 还差 18 条才可校准；weekly 巡检持续 no_input（需配 principles 才有意义）；I-4 补证 10 条待推进。
+
+### 2026-11-23 周检
+**双侧分布**（累计）：evaluated 268 · admitted 251 · skipped 17 · missRate 6.3%。
+byOrigin：daily **157** · nomination 84 · untagged 18 · verification 9。
+**校准口径**：evaluated 157 · admitted 155 · skipped 2 · missRate 1.3%；sampleSufficient: true / calibration_writable: true。
+**I-1 判定**：计数**已达标**（157 >= 30），但**样本按 gate 极不均**——downward_L2_L3 占 143（91%）、downward_L1_L2 5、upward_L2_L1 **3**、governance **0**。另 11-16 单日 77 条（同分钟 10 条）是当天批量产物，剔除后仍 80 条。结论：**downward 类阈值有资格校准；governance / principleInvalid 类仍无资格**——"总数达标"不等于"每条判据都够样本"。
+**I-4**：13 条法里 3 条带阀门证据节（**23%**，上周 17%）。
+**候选公理**：待决策 **0 条**（dao/_candidates/ 不存在；11-20 报告 count:0）。无需决策。
+**巡检**：weekly 已在 11-19、11-20 自动落盘（11-16 那个"未自动触发"随产物同步解决）；本次 patrol_facts.weekly = skipped_not_due——上周加的"跳过要留原因"生效，现在能区分"未到期"与"从未跑"。
+**本周蒸馏**：新增法「读数先经旁证再行动」（素材日 11-17 / 11-18 / 11-20，跨配方引擎、模块迁移、巡检状态三域）。选日理由：同一失效模式在三件不相干任务里独立复现，不是日历相邻——11-19 与 11-23 属别的主题，故未入选。
+**MEMORY.md 超线：机制缺口，不是"没去压"**。压 5 条过长摘要后 11437B -> **11077B**，仍超舒适线 837B（未超硬线 16000B）。结构：技能台账行 2777B（来自技能包 frontmatter，memory_index 改不了）、头部说明与共识段约 2800B（无写入通道，宿主拒绝直接编辑）、可压缩的 functions/insights 索引行已到接近下限。**现有工具集下回不到 10240B**。需要机制：给技能行/头部压缩通道，或让 R5 按"可压缩面"算而不是全文——否则这条 WARN 会永久挂着。

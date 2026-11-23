@@ -1,4 +1,4 @@
-import { RuntimeContractError, requireString } from './contracts.js';
+import { RuntimeContractError, requireString, TASK_ORIGINS, validateTaskProvenance } from './contracts.js';
 import { buildRecipeFromSpec, createRecipeRegistry } from './recipe-factory.js';
 import { describePrimitives, VERIFIER_PRIMITIVES } from './verifier-primitives.js';
 import { describeConditions } from './condition-primitives.js';
@@ -30,6 +30,10 @@ const SPEC_PARAMETERS = {
   type: 'object',
   properties: {
     taskId: { type: 'string', description: 'Caller-chosen identity for this run.' },
+    origin: { type: 'string', enum: [...TASK_ORIGINS],
+      description: 'Optional caller-declared task origin; omission remains unknown.' },
+    principleRefs: { type: 'array', items: { type: 'string' },
+      description: 'Optional caller-declared principle references: at most 32 nonblank strings of at most 256 characters each. An explicit empty array differs from omission; references are not independently verified.' },
     goal: { type: 'string', description: 'One sentence describing what must be true when the run ends.' },
     recipe: {
       type: 'object',
@@ -77,6 +81,7 @@ export function createExecuteTool({ store, schedulerFor, toolEffects, mount, reg
     async execute(args, exec) {
       if (!exec?.agent) fail('authority_unavailable', 'A runtime task needs the calling agent.');
       requireString(args?.goal, 'goal');
+      const provenance = validateTaskProvenance(args);
       const deadlineMs = Number.isSafeInteger(args?.deadlineMs) && args.deadlineMs > 0
         ? Math.min(args.deadlineMs, 3_600_000) : 60_000;
       const recipeSpec = args?.recipe;
@@ -103,7 +108,7 @@ export function createExecuteTool({ store, schedulerFor, toolEffects, mount, reg
       const taskId = typeof args?.taskId === 'string' && args.taskId ? args.taskId : `dynamic:${Date.now()}`;
       const task = { taskId, recipeId: recipe.id, recipeVersion: recipe.version, goal: args.goal,
         scopeRef: mount.scopeRef, workspaceRoot: mount.workspaceRoot,
-        inputs: args.inputs, deadlineAt: Date.now() + deadlineMs };
+        inputs: args.inputs, deadlineAt: Date.now() + deadlineMs, ...provenance };
       const scheduler = schedulerFor(exec.agent, recipes);
       const run = await scheduler.run(task, { authority: { scopeRef: mount.scopeRef,
         workspaceRoot: mount.workspaceRoot, allowedTools: mount.allowedTools, agent: exec.agent } });

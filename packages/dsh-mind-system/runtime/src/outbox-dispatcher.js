@@ -118,11 +118,11 @@ export function createOutboxDispatcher({ store, receiver, producerId, limit = 20
       warnSafely('outbox listing failed; no records were dispatched', {
         reason: 'listing_failed', error: describe(failure),
       });
-      return Object.freeze(stats);
+      throw failure;
     }
     if (!Array.isArray(entries)) {
       warnSafely('outbox listing was not an array; no records were dispatched', { reason: 'listing_invalid' });
-      return Object.freeze(stats);
+      throw new TypeError('Outbox listing must return an array.');
     }
 
     for (const entry of entries) {

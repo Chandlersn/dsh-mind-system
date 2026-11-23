@@ -63,7 +63,8 @@ test('an enabled mount registers both runtime tools in the host registry', async
   await withMount(t, async (host) => ({ enabled: true, stateDir: mkdtempSync(join(host.root, 'state-')),
     agent: await host.agent('host-caller') }), async (host) => {
     const probe = hostEntry.healthProbe.probe();
-    assert.equal(probe.status, 'ok', JSON.stringify(probe.findings));
+    assert.equal(probe.status, 'degraded', JSON.stringify(probe.findings));
+    assert.ok(probe.findings.some((item) => item.code === 'execution-runtime.outbox-unavailable'));
     assert.equal(probe.facts.state, 'ready');
     assert.deepEqual(probe.facts.recipes, ['json-normalize@1', 'csv-normalize@1']);
     // The tool must be reachable through the host, not merely described by the probe.

@@ -148,8 +148,21 @@ export function governanceRound(input, options = {}) {
 		const id = String(p?.principle_id ?? '').trim();
 		if (!id) continue;
 		const cov = coverageForEligible(eligibleEntries, id, coverageOptions);
-		const antiExamples = Array.isArray(p.anti_examples) ? p.anti_examples.filter((a) => a && typeof a.trace_ref === 'string' && a.trace_ref) : [];
-		const sources = new Set(antiExamples.map((a) => String(a.source ?? 'unknown')));
+		// References remain caller declarations, but replay cannot manufacture samples.
+		const byTrace = new Map();
+		const conflicts = new Set();
+		let duplicates = 0;
+		for (const item of Array.isArray(p.anti_examples) ? p.anti_examples : []) {
+			const trace = typeof item?.trace_ref === 'string' ? item.trace_ref.trim() : '';
+			if (!trace) continue;
+			const source = typeof item.source === 'string' ? item.source.trim() || null : null;
+			if (byTrace.has(trace)) {
+				duplicates += 1;
+				if (byTrace.get(trace).source !== source) conflicts.add(trace);
+			} else byTrace.set(trace, { trace_ref: trace, source });
+		}
+		const antiExamples = [...byTrace.values()].filter((item) => !conflicts.has(item.trace_ref));
+		const sources = new Set(antiExamples.map((a) => a.source).filter((source) => source !== null));
 		// A human semantic assessment is independent of reference declarations.
 		const effectiveCoverage = Number.isFinite(p.semantic_coverage) ? p.semantic_coverage : cov.coverage;
 		const stats = {
@@ -171,6 +184,8 @@ export function governanceRound(input, options = {}) {
 			sample_declared: cov.declared,
 			sample_undeclared: cov.undeclared,
 			anti_example_count: antiExamples.length,
+			anti_example_duplicates: duplicates,
+			anti_example_conflicts: conflicts.size,
 			source_diversity: sources.size,
 			...(cov.undeclared > 0 && !Number.isFinite(p.semantic_coverage) ? { note: 'Some eligible decisions do not declare principle_refs; reference coverage is unavailable.' } : {}),
 		});

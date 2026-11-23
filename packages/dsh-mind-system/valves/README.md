@@ -11,7 +11,7 @@
 
 本包补这两件，判据是纯函数、双侧记账、生效必须人工确认。
 
-## 五个工具
+## 六个工具
 
 | 工具 | 做什么 | 不做什么 |
 |---|---|---|
@@ -20,6 +20,10 @@
 | `valve_metrics` | 双侧账本：evaluated/admitted/skipped + missRate + reason/gate/origin 分布 + dailyCount | 不自评"阀门在工作"——分布给读的人判 |
 | `valve_nominate` | 自动提名器（阶段 II）：负向吃 clis 失败账本重复签名、正向吃 memory 使用聚合；check=true 立即送阀落账。channel=clis_trace 消费 clis-history 提名+裁决成对留痕（幂等，账本当游标）；channel=criteria 从真实 insights 来源回链数覆盖喂五门，**也可传 `collide_notes` 让实验层碰撞笔记走同一道闸门**（见下） | 只提名不生效；不编造成功率与反例数（数不出的留空，阀门如实拒/downgrade——那是设计：先人工补外部证据） |
 | `valve_govern` | 治理循环单轮（阶段 III）：账本→受检原则体检（引用覆盖率+反例四判据）→失效出改定义提议；归类提名代码校验（置信度 <0.7 转人工） | 不执行任务、不改规则库——提议生效走人工；不自动枚举全部原则 |
+| `valve_repair_events` | 只读分页查看运行时修复收件：默认 20/最多 100 条、完整响应 64 KiB；缺库/损坏显式报告 | 原始生产者声明，不验证证据、不计入治理、不产生规则 |
+| `valve_repair_identity` | 仅提供 producerId/eventId，经宿主绑定的运行时服务核对接收与生产记录；不接受数据库路径 | match 仅表示记录一致；文件/目标/原则归因未评估，治理资格始终 false |
+
+审查游标固定追加行的高水位，使用上一页 `nextCursor` 继续；新增事件需开启新一轮读取。该机制依赖收件表只追加，不能当成跨删除、替换数据库或 VACUUM 的历史快照。单条 payload 最多读取 16 KiB，标识最多 1 KiB；超大/坏 JSON 记录仍返回行标识及错误状态。查询不调用可写接收器，也不创建缺失数据库。
 
 ### 覆盖率口径（III-2，单一真值源 src/governance.js）
 

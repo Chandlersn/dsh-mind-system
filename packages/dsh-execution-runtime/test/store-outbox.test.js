@@ -48,7 +48,11 @@ test('migration preserves pending repair event across reopen and supports condit
   const [pending] = f.store.listPendingOutbox();
   const event = f.store.readEvents('task').find((item) => item.kind === 'repair_finished');
   assert.equal(pending.eventId, event.eventId);
-  assert.deepEqual(pending.payload, { status: 'blocked', taskId: 'task', repairId, succeeded: false, reason: 'denied' });
+  const { evidence, ...legacyPayload } = pending.payload;
+  assert.deepEqual(legacyPayload, { status: 'blocked', taskId: 'task', repairId, succeeded: false, reason: 'denied' });
+  assert.equal(evidence.schemaVersion, 1);
+  assert.equal(evidence.status, 'blocked');
+  assert.equal(evidence.governanceEligible, false);
   assert.equal(pending.attempts, 0);
   assert.deepEqual(f.reopen().listPendingOutbox(), [pending]);
   assert.equal(f.store.retryOutbox(pending.eventId, { expectedAttempts: 0 }), true);
@@ -66,6 +70,7 @@ test('real valve receiver deduplicates a delivery when its first acknowledgement
   const repairId = f.prepare();
   f.store.finishRepair('task', repairId, { ...f.options(), status: 'blocked', reason: 'denied' });
   const producerId = f.store.getProducerId();
+  const expectedPayload = f.store.listPendingOutbox()[0].payload;
   const valves = createValveRuntime({ storageDir: join(f.filename, '..', 'valves') });
   let loseReceipt = true;
   const dispatcher = createOutboxDispatcher({ store: f.store, producerId, receiver: async (event) => {
@@ -84,6 +89,13 @@ test('real valve receiver deduplicates a delivery when its first acknowledgement
     assert.deepEqual(f.store.listPendingOutbox(), []);
     valves.dispose();
     assert.equal(valves.repairEventStatus().received, 1);
+    const review = valves.reviewRepairEvents();
+    assert.equal(review.provenance, 'raw_producer_claims');
+    assert.equal(review.items.length, 1);
+    assert.equal(review.items[0].producerId, producerId);
+    assert.deepEqual(review.items[0].payload.value, expectedPayload);
+    assert.equal(review.items[0].payload.value.evidence.governanceEligible, false);
+    assert.equal((await valves.metrics()).evaluated, 0, 'Delivery, replay and review do not count as governance decisions.');
   } finally { valves.dispose(); }
 });
 
@@ -123,7 +135,11 @@ test('outbox payload has a database-enforced byte limit', (t) => {
   const f = fixture(t);
   const repairId = f.prepare();
   f.store.finishRepair('task', repairId, { ...f.options(), status: 'blocked', reason: 'x'.repeat(200) });
-  assert.deepEqual(f.store.listPendingOutbox()[0].payload, { status: 'blocked', taskId: 'task', repairId, succeeded: false, reason: 'x'.repeat(200) });
+  const { evidence, ...legacyPayload } = f.store.listPendingOutbox()[0].payload;
+  assert.deepEqual(legacyPayload, { status: 'blocked', taskId: 'task', repairId, succeeded: false, reason: 'x'.repeat(200) });
+  assert.equal(evidence.schemaVersion, 1);
+  assert.equal(evidence.status, 'blocked');
+  assert.equal(evidence.governanceEligible, false);
   f.store.withDatabase((db) => {
     assert.throws(() => db.prepare('UPDATE event_outbox SET payload_json = ?').run(JSON.stringify({ value: 'é'.repeat(1024) })), /CHECK constraint/);
   });

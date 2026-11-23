@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { validateRepairAction } from './analyzer.js';
-import { RuntimeContractError, jsonSnapshot, requireString, validateBudget, validateCandidate, validateTask, validateVerification } from './contracts.js';
+import { RuntimeContractError, jsonSnapshot, requireString, validateBudget, validateCandidate, validateTask, validateTaskProvenance, validateVerification } from './contracts.js';
 
 const error = (code, message) => new RuntimeContractError(code, message);
 const sha256 = (raw) => createHash('sha256').update(raw, 'utf8').digest('hex');
@@ -1219,7 +1219,13 @@ export class RuntimeStore {
       this.#version(row, expectedVersion);
       const repair = this.#db.prepare('SELECT * FROM repairs WHERE task_id = ? AND repair_id = ?').get(taskId, repairId);
       if (!repair || repair.status !== 'reserved') throw error('invalid_repair_state', 'Only a reserved same-task repair may finish.');
+      const analysis = this.#db.prepare('SELECT 1 FROM analyses WHERE task_id = ? AND analysis_id = ? AND consumed_at IS NOT NULL')
+        .get(taskId, repair.analysis_id);
+      if (!analysis) throw error('invalid_repair_state', 'Repair evidence requires its consumed same-task analysis.');
       let actualSuccess = false;
+      let storedAttempt = null;
+      let storedOutcome = null;
+      let storedVerification = null;
       if (status === 'observed') {        // Evidence gathering observes; it neither dispatches business work nor proves success.
         if (attemptId !== undefined || succeeded !== undefined || row.status !== 'running'
           || this.#db.prepare('SELECT 1 FROM attempts WHERE task_id = ? AND rowid > ?').get(taskId, repair.attempt_floor)) {
@@ -1244,6 +1250,17 @@ export class RuntimeStore {
           || (repair.candidate_json !== null && !isDeepStrictEqual(JSON.parse(attempt.candidate_json), JSON.parse(repair.candidate_json)))) {
           throw error('invalid_repair_attempt', 'Repair work must match a newer same-task attempt.');
         }
+        if (this.#db.prepare('SELECT 1 FROM repairs WHERE attempt_id = ? AND repair_id <> ?').get(attemptId, repairId)) {
+          throw error('invalid_repair_attempt', 'An attempt cannot attest to more than one repair.');
+        }
+        const candidate = validateCandidate(JSON.parse(attempt.candidate_json));
+        const task = JSON.parse(row.task_json);
+        if (candidate.source.recipeId !== task.recipeId || candidate.source.version !== task.recipeVersion) {
+          throw error('invalid_repair_attempt', 'Repair evidence must belong to the stored task recipe version.');
+        }
+        storedAttempt = { ...attempt, candidate };
+        storedOutcome = attempt.outcome_json === null ? null : JSON.parse(attempt.outcome_json);
+        storedVerification = attempt.verification_json === null ? null : validateVerification(JSON.parse(attempt.verification_json));
         if (status === 'unknown') {
           if (attempt.status === 'settled' || row.status !== 'reconciling' || succeeded !== undefined) {
             throw error('invalid_repair_outcome', 'Unknown repair work must remain unresolved and reconciling.');
@@ -1253,9 +1270,11 @@ export class RuntimeStore {
             || attempt.status !== 'settled' || !attempt.outcome_json || !attempt.verification_json) {
             throw error('invalid_repair_outcome', 'Settled repair work requires a stored settled outcome and verification.');
           }
-          const outcome = JSON.parse(attempt.outcome_json);
-          const verification = validateVerification(JSON.parse(attempt.verification_json));
-          if (!['succeeded', 'failed', 'not_started'].includes(outcome.status)) {
+          const outcome = storedOutcome;
+          const verification = storedVerification;
+          if (!['succeeded', 'failed', 'not_started'].includes(outcome.status)
+            || verification.status === 'unknown'
+            || (outcome.status !== 'succeeded' && verification.status === 'pass')) {
             throw error('invalid_repair_outcome', 'Settled repair work requires an actual execution outcome.');
           }
           actualSuccess = outcome.status === 'succeeded' && verification.status === 'pass'
@@ -1284,7 +1303,37 @@ export class RuntimeStore {
           : failed && row.status === 'running' ? 'repair_no_progress' : row.reason;
       this.#db.prepare('UPDATE runs SET status = ?, reason = ?, version = version + 1, updated_at = ? WHERE task_id = ?')
         .run(nextStatus, nextReason, now, taskId);
-      const eventId = this.#event(taskId, attemptId ?? null, 'repair_finished', { repairId, status, ...metadata });
+      // This projection attests only to stored producer facts. References are not independently
+      // resolved here, and neither a verifier pass nor a restored cursor grants governance authority.
+      const task = JSON.parse(row.task_json);
+      const declarations = validateTaskProvenance(task);
+      const evidence = {
+        schemaVersion: 1,
+        status: status !== 'settled' ? status : actualSuccess ? 'verified_success'
+          : storedOutcome.status === 'failed' || storedVerification.status === 'fail' ? 'verified_failure' : 'no_progress',
+        attestation: 'producer', reviewStatus: 'unreviewed', governanceEligible: false,
+        taskId, repairId, analysisId: repair.analysis_id, attemptId: storedAttempt?.attempt_id ?? null,
+        settlementStatus: status,
+        attemptStatus: storedAttempt?.status ?? 'unavailable',
+        executionStatus: storedOutcome?.status ?? 'unavailable',
+        verificationStatus: storedVerification?.status ?? 'unavailable',
+        verifier: storedVerification === null ? null
+          : { id: storedVerification.verifierId, version: storedVerification.verifierVersion },
+        progress: storedVerification?.progress ?? 'unknown',
+        goalSatisfied: storedVerification?.goalSatisfied ?? null,
+        evidenceRefs: storedVerification?.evidenceRefs ?? [],
+        provenance: {
+          source: storedAttempt === null ? null
+            : { recipeId: storedAttempt.candidate.source.recipeId, version: storedAttempt.candidate.source.version },
+          recipe: { id: task.recipeId, version: task.recipeVersion },
+          tool: storedAttempt === null ? null : { name: storedAttempt.candidate.toolName, version: null },
+          toolVersionStatus: 'unavailable', origin: declarations.origin ?? 'unknown',
+          ...(Object.hasOwn(declarations, 'origin') ? { originStatus: 'declared' } : {}),
+          principleRefs: declarations.principleRefs ?? null,
+          principleRefsStatus: Object.hasOwn(declarations, 'principleRefs') ? 'declared' : 'unavailable',
+        },
+      };
+      const eventId = this.#event(taskId, attemptId ?? null, 'repair_finished', { repairId, status, ...metadata, evidence });
       // The immutable event owns the full envelope; the bounded outbox row only marks delivery.
       // This keeps valid long task identifiers from making repair settlement fail.
       this.#db.prepare('INSERT INTO event_outbox (event_id, payload_json, created_at) VALUES (?, ?, ?)')

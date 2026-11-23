@@ -75,6 +75,110 @@ test('host retries late service, rejects forged acknowledgements, and keeps iden
   }
 });
 
+test('host reports pending after a successful bounded batch leaves another event', async (t) => {
+  const host = await createHost(t);
+  const stateDir = mkdtempSync(join(host.root, 'outbox-backlog-'));
+  seed(stateDir, host.storage);
+  const seeded = new RuntimeStore(join(stateDir, 'runtime.sqlite'));
+  seeded.withDatabase((db) => {
+    db.prepare("INSERT INTO events(event_id, task_id, kind, payload_json, created_at) VALUES (?, 'task', 'repair_finished', ?, 1)")
+      .run('another-event', JSON.stringify({ status: 'blocked', repairId: 'another-repair' }));
+    db.prepare("INSERT INTO event_outbox(event_id, payload_json, created_at) VALUES (?, '{}', 1)").run('another-event');
+  });
+  seeded.close();
+  let sends = 0;
+  const disposeValve = host.ctx.provide('valves', { receiveRepairEvent() {
+    sends += 1;
+    return { accepted: true, duplicate: false };
+  } });
+  const fiber = await host.ctx.plugin(hostEntry.plugin, { enabled: true, stateDir, workspaceRoot: host.storage,
+    outbox: { intervalMs: 1000, limit: 1 } });
+  try {
+    await fiber.await();
+    const status = host.ctx.get('executionRuntimeStatus');
+    await until(() => sends === 1 && status.snapshot().outbox.state === 'pending');
+    const check = new RuntimeStore(join(stateDir, 'runtime.sqlite'));
+    try { assert.equal(check.listPendingOutbox().length, 1); } finally { check.close(); }
+    await until(() => sends === 2 && status.snapshot().outbox.state === 'ready');
+  } finally {
+    await fiber.dispose();
+    if (typeof disposeValve === 'function') await disposeValve();
+  }
+});
+
+test('host reports an error when its post-batch queue check fails', async (t) => {
+  const host = await createHost(t);
+  const stateDir = mkdtempSync(join(host.root, 'outbox-post-check-'));
+  seed(stateDir, host.storage);
+  const original = RuntimeStore.prototype.listPendingOutbox;
+  let reads = 0;
+  let fail = true;
+  RuntimeStore.prototype.listPendingOutbox = function (...args) {
+    reads += 1;
+    if (fail && reads >= 2) throw new Error('post-batch read failed');
+    return original.apply(this, args);
+  };
+  let sends = 0;
+  const disposeValve = host.ctx.provide('valves', { receiveRepairEvent() {
+    sends += 1;
+    return { accepted: true, duplicate: false };
+  } });
+  let fiber;
+  try {
+    fiber = await host.ctx.plugin(hostEntry.plugin, { enabled: true, stateDir, workspaceRoot: host.storage,
+      outbox: { intervalMs: 1000 } });
+    await fiber.await();
+    const status = host.ctx.get('executionRuntimeStatus');
+    await until(() => status.snapshot().outbox.state === 'error');
+    assert.equal(sends, 1);
+    fail = false;
+    await until(() => status.snapshot().outbox.state === 'ready');
+    assert.equal(sends, 1);
+  } finally {
+    fail = false;
+    if (fiber) await fiber.dispose();
+    RuntimeStore.prototype.listPendingOutbox = original;
+    if (typeof disposeValve === 'function') await disposeValve();
+  }
+});
+
+test('host reports a queue read failure and recovers without losing the pending event', async (t) => {
+  const host = await createHost(t);
+  const stateDir = mkdtempSync(join(host.root, 'outbox-read-failure-'));
+  seed(stateDir, host.storage);
+  const original = RuntimeStore.prototype.listPendingOutbox;
+  let fail = true;
+  let sends = 0;
+  RuntimeStore.prototype.listPendingOutbox = function (...args) {
+    if (fail) throw new Error('simulated queue read failure');
+    return original.apply(this, args);
+  };
+  const disposeValve = host.ctx.provide('valves', { receiveRepairEvent() {
+    sends += 1;
+    return { accepted: true, duplicate: false };
+  } });
+  let fiber;
+  try {
+    fiber = await host.ctx.plugin(hostEntry.plugin, { enabled: true, stateDir, workspaceRoot: host.storage,
+      outbox: { intervalMs: 15 } });
+    await fiber.await();
+    const status = host.ctx.get('executionRuntimeStatus');
+    await until(() => status.snapshot().outbox.state === 'error');
+    assert.equal(hostEntry.healthProbe.probe().status, 'degraded');
+    assert.ok(hostEntry.healthProbe.probe().findings.some((finding) => finding.code === 'execution-runtime.outbox-unavailable'));
+    assert.equal(sends, 0);
+    fail = false;
+    await until(() => sends === 1 && status.snapshot().outbox.state === 'ready');
+    const check = new RuntimeStore(join(stateDir, 'runtime.sqlite'));
+    try { assert.deepEqual(check.listPendingOutbox(), []); } finally { check.close(); }
+  } finally {
+    fail = false;
+    if (fiber) await fiber.dispose();
+    RuntimeStore.prototype.listPendingOutbox = original;
+    if (typeof disposeValve === 'function') await disposeValve();
+  }
+});
+
 test('host disposal waits for in-flight delivery before closing its store', async (t) => {
   const host = await createHost(t);
   const stateDir = mkdtempSync(join(host.root, 'outbox-'));

@@ -51,6 +51,27 @@ function createFakeStore(records = []) {
   };
 }
 
+test('a failed or invalid queue listing rejects without acknowledging and a later pass recovers', async () => {
+  const store = createFakeStore([entry('e1')]);
+  const list = store.listPendingOutbox.bind(store);
+  let mode = 'throw';
+  store.listPendingOutbox = (options) => {
+    if (mode === 'throw') throw new Error('database unavailable');
+    if (mode === 'invalid') return null;
+    return list(options);
+  };
+  const dispatcher = createOutboxDispatcher({ store,
+    receiver: async ({ eventId }) => ({ eventId, status: 'accepted' }) });
+  await assert.rejects(dispatcher.dispatchOnce(), /database unavailable/);
+  mode = 'invalid';
+  await assert.rejects(dispatcher.dispatchOnce(), /must return an array/);
+  assert.equal(store.calls.ack.length, 0);
+  assert.equal(store.rows.get('e1').acked, false);
+  mode = 'healthy';
+  assert.equal((await dispatcher.dispatchOnce()).acknowledged, 1);
+  assert.equal((await dispatcher.dispatchOnce()).attempted, 0);
+});
+
 test('accepted receipts acknowledge each entry and pass the producer identity through', async () => {
   const store = createFakeStore([entry('e1'), entry('e2')]);
   const sent = [];

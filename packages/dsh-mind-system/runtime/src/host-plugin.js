@@ -25,6 +25,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { RuntimeStore } from './store.js';
 import { createOutboxDispatcher } from './outbox-dispatcher.js';
+import { readRepairEvidence } from './repair-evidence-reader.js';
 import { HostExecutor } from './executor.js';
 import { RuntimeScheduler } from './scheduler.js';
 import { createExecutionRuntimePlugin } from './plugin.js';
@@ -418,6 +419,11 @@ export async function apply(ctx, config = {}) {
 
     const supplied = makeValidator(await loadHostValidator(ctx));
     base.validator = supplied === null ? 'none' : 'host';
+    if (supplied === null) {
+      const failure = new Error('The host schema validator is unavailable.');
+      failure.code = 'schema_validator_unavailable';
+      throw failure;
+    }
     const resolvePattern = createPatternResolver({ store,
       patterns: Array.isArray(config?.patterns) ? config.patterns : [],
       approvals: Array.isArray(config?.approvals) ? config.approvals : [],
@@ -434,7 +440,7 @@ export async function apply(ctx, config = {}) {
     const nativeRecipes = recipes.map((recipe) => recipe === jsonNormalizeRecipe
       ? { ...recipe, repairPolicy: jsonNormalizeRepairPolicy } : recipe);
     const inner = createExecutionRuntimePlugin({ store, recipes: nativeRecipes, tasks,
-      validateArguments: supplied ?? (() => true), owner: ctx, resolvePattern, analyzer });
+      validateArguments: supplied, owner: ctx, resolvePattern, analyzer });
     // Delegate with the host ctx: that is the ctx whose `tools` service must receive the registrations.
     const innerDispose = inner.apply(ctx);
     if (typeof innerDispose === 'function') mountedDisposers.push(innerDispose);
@@ -451,7 +457,7 @@ export async function apply(ctx, config = {}) {
     const schedulerFactory = (agent, registry) => new RuntimeScheduler({ store,
       executor: makeExecutor(ctx, agent), tools: ctx.tools,
       recipes: registry.list().map((key) => registry.get(key)),
-      validateArguments: supplied ?? (() => true) });
+      validateArguments: supplied });
     // The library lives in the same database as the runs, so one file carries both what happened and what
     // was learned. It is created through the store's scoped accessor rather than holding the handle.
     const library = store?.withDatabase ? store.withDatabase((db) => createRecipeLibrary({ db })) : null;
@@ -530,6 +536,32 @@ export async function apply(ctx, config = {}) {
     try { producerId = store.getProducerId?.(); } catch { /* Keep delivery unavailable. */ }
     base.outbox = { state: 'identity_unavailable', lastPass: null };
     if (typeof producerId === 'string' && producerId.trim()) {
+      // Only this mount selects the database. Review opens a read-only snapshot, never another store.
+      const runtimeFilePath = base.storePath;
+      const refusal = (status, reason) => ({ status, reason, governanceEligible: false,
+        goalProof: 'not_evaluated', principleAttribution: 'not_evaluated' });
+      const evidenceService = Object.freeze({
+        producerId,
+        readRepairEvidence(request) {
+          if (base.state !== 'ready') return refusal('error', 'runtime_unavailable');
+          if (!request || typeof request !== 'object' || Array.isArray(request)
+            || Reflect.ownKeys(request).length !== 2
+            || !Object.hasOwn(request, 'producerId') || !Object.hasOwn(request, 'eventId')) {
+            return refusal('error', 'invalid_request');
+          }
+          if (request.producerId !== producerId) return refusal('mismatch', 'producer_id_mismatch');
+          return readRepairEvidence({ runtimeFilePath, producerId, eventId: request.eventId });
+        },
+      });
+      // Publish before the first dispatch so a receiver can resolve evidence during delivery.
+      try {
+        if (typeof ctx?.provide === 'function') {
+          const disposeEvidence = ctx.provide('executionRuntimeEvidence', evidenceService);
+          if (typeof disposeEvidence === 'function') mountedDisposers.push(disposeEvidence);
+        }
+      } catch (error) {
+        logger?.warn?.(`evidence service unavailable: ${error?.message}`);
+      }
       const intervalMs = Number.isSafeInteger(config?.outbox?.intervalMs)
         ? Math.max(10, Math.min(config.outbox.intervalMs, 300_000)) : 5_000;
       const limit = Number.isSafeInteger(config?.outbox?.limit)
@@ -559,7 +591,10 @@ export async function apply(ctx, config = {}) {
         }
         base.outbox = { ...base.outbox, state: 'dispatching' };
         active = dispatcher.dispatchOnce().then((lastPass) => {
-          base.outbox = { state: lastPass.retried || lastPass.skipped ? 'pending' : 'ready', lastPass };
+          // A successful bounded batch does not prove that the remaining queue is empty.
+          const remaining = store.listPendingOutbox({ limit: 1 });
+          if (!Array.isArray(remaining)) throw new TypeError('Outbox listing must return an array.');
+          base.outbox = { state: lastPass.retried || lastPass.skipped || remaining.length ? 'pending' : 'ready', lastPass };
         }).catch(() => { base.outbox = { ...base.outbox, state: 'error' }; })
           .finally(() => { active = null; });
         return active;
@@ -625,7 +660,13 @@ export const healthProbe = {
       findings.push({ code: 'execution-runtime.no-tasks', severity: 'info',
         message: 'Ready, but no task is declared: runtime_run will refuse until one is configured.' });
     }
-    return { plugin: 'execution-runtime', status: facts.state === 'failed' ? 'error' : 'ok',
+    const outboxDegraded = facts.state === 'ready'
+      && ['error', 'receiver_unavailable', 'identity_unavailable'].includes(facts.outbox?.state);
+    if (outboxDegraded) {
+      findings.push({ code: 'execution-runtime.outbox-unavailable', severity: 'warn',
+        message: `Repair event delivery is unavailable: ${facts.outbox.state}.` });
+    }
+    return { plugin: 'execution-runtime', status: facts.state === 'failed' ? 'error' : outboxDegraded ? 'degraded' : 'ok',
       findings, facts: { ...facts } };
   },
 };

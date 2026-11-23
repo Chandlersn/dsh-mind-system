@@ -68,6 +68,34 @@ export function validateBudget(input = {}) {
   return budget;
 }
 
+export const TASK_ORIGINS = Object.freeze(['daily', 'verification', 'drill']);
+export const MAX_PRINCIPLE_REFS = 32;
+export const MAX_PRINCIPLE_REF_LENGTH = 256;
+
+/** Preserve explicit caller declarations; absence carries no origin or principle claim. */
+export function validateTaskProvenance(input) {
+  const result = {};
+  if (Object.hasOwn(input, 'origin')) {
+    if (!TASK_ORIGINS.includes(input.origin)) {
+      throw new RuntimeContractError('invalid_task_provenance', 'origin must be daily, verification, or drill when supplied.');
+    }
+    result.origin = input.origin;
+  }
+  if (Object.hasOwn(input, 'principleRefs')) {
+    const refs = input.principleRefs;
+    if (!Array.isArray(refs) || refs.length > MAX_PRINCIPLE_REFS) {
+      throw new RuntimeContractError('invalid_task_provenance', `principleRefs must be an array of at most ${MAX_PRINCIPLE_REFS} strings.`);
+    }
+    result.principleRefs = Array.from(refs, (ref) => {
+      if (typeof ref !== 'string' || !ref.trim() || ref.length > MAX_PRINCIPLE_REF_LENGTH) {
+        throw new RuntimeContractError('invalid_task_provenance', `Each principleRefs entry must be nonblank and at most ${MAX_PRINCIPLE_REF_LENGTH} characters.`);
+      }
+      return ref;
+    });
+  }
+  return result;
+}
+
 export function validateTask(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new RuntimeContractError('invalid_task', 'A task object is required.');
@@ -94,6 +122,7 @@ export function validateTask(input) {
     inputs: input.inputs,
     deadlineAt: input.deadlineAt,
     budget: validateBudget(input.budget),
+    ...validateTaskProvenance(input),
   });
 }
 
