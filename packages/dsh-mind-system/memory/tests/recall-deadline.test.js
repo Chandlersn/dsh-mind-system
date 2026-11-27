@@ -63,7 +63,9 @@ test('an event-loop stall past the recall deadline cannot admit or consume a can
   };
   const mod = await import('../server.js');
   assert.equal(mod.resolveRecallBudget(budgetMs), budgetMs);
-  dispose = mod.apply(ctx, { memoryRoot: root, skillRoot: skills, recallTimeoutMs: budgetMs });
+  const { createLiveFlow } = await import('../src/live-flow.js');
+  const flow = createLiveFlow();
+  dispose = mod.apply(ctx, { memoryRoot: root, skillRoot: skills, recallTimeoutMs: budgetMs }, { createLiveFlow: () => flow });
   const preStep = hooks.get('agent/pre-step');
   assert.equal(typeof preStep, 'function');
   const payload = {
@@ -75,6 +77,7 @@ test('an event-loop stall past the recall deadline cannot admit or consume a can
   const next = async () => { nextCalls++; return { kind: 'enter', messages: [] }; };
   const first = await preStep(payload, next);
   const elapsed = performance.now() - before;
+  assert.equal(flow.snapshot().edges.e10, undefined, 'expired recall must not emit an index match');
   assert.ok(blockedFor >= blockMs && elapsed >= budgetMs, `fixture must really block past deadline (blocked ${blockedFor}ms, total ${elapsed}ms)`);
   assert.equal(bridgeCalls, 1, 'controlled stall must run in the first candidate');
   // Reading the probe takes another I/O turn, allowing an incorrectly scheduled
@@ -101,7 +104,9 @@ test('an event-loop stall past the recall deadline cannot admit or consume a can
   }
   t.diagnostic(`budgetMs=${budgetMs} blockedMs=${blockedFor.toFixed(1)} elapsedMs=${elapsed.toFixed(1)} firstMessages=${first.messages.length} exposure=${exposure} usageBytes=${Buffer.byteLength(usage)} retryMessages=${retry.messages.length} bridgeCalls=${bridgeCalls}`);
 
-  assert.equal(first.messages.length, 0, 'candidate completed after the wall-clock deadline must not be injected');
+  assert.equal(first.messages.length, 1, 'only the mandatory rule-timeout status may be injected');
+  assert.match(first.messages[0].content[0].text, /^⚠ 负向规则状态未知（读取超时）。$/);
+  assert.doesNotMatch(first.messages[0].content[0].text, /召回超时测试|记忆召回|负向规则（valves/);
   assert.equal(exposure, false, 'an over-deadline candidate must not record served exposure');
   assert.equal(usage, '', 'an over-deadline candidate must not append usage');
   assert.equal(retry.messages.length, 1, 'same agent, turn and text must remain retryable');

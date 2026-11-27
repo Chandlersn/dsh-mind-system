@@ -1,7 +1,11 @@
-import { RuntimeContractError, requireString } from './contracts.js';
+import { RuntimeContractError, requireString, validateTask } from './contracts.js';
+import { realpathSync } from 'node:fs';
+import { RuntimeStore, validateAuthoritySnapshot } from './store.js';
 import { HostExecutor } from './executor.js';
 import { RuntimeScheduler } from './scheduler.js';
 import { AnalysisCoordinator } from './exceptions.js';
+import { isDeepStrictEqual } from 'node:util';
+import { readAcceptancePredicate } from './acceptance-predicate-reader.js';
 
 const fail = (code, message) => { throw new RuntimeContractError(code, message); };
 
@@ -17,7 +21,7 @@ const describe = (error) => (error instanceof Error ? error.message : String(err
  */
 export function createExecutionRuntimePlugin({ store, recipes, tasks, validateArguments, probes = [], owner,
   decisionClient = null, decisionPolicy = null, resolvePattern = null, analyzer = null,
-  analysisMaxBytes = 16_384 }) {
+  analysisMaxBytes = 16_384, getRegistrationSnapshot = null, getOperationalStatus = null }) {
   if (!store || !Array.isArray(recipes) || !tasks || typeof tasks !== 'object'
     || typeof validateArguments !== 'function') {
     fail('invalid_runtime_plugin', 'A store, registered recipes, native tasks and argument validation are required.');
@@ -66,7 +70,10 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
   const statusTool = {
     name: 'runtime_status',
     description: 'Report the isolated execution runtime: which task templates are registered and, for a named task, '
-      + 'its persisted status, reason and budget usage. Read-only; it never starts or resumes work.',
+      + 'its persisted status, reason, budget usage and recipe binding coverage. Origins are caller declarations; '
+      + 'the current producer state does not independently prove the goal. Store identity is a hash of the SQLite-reported '
+      + 'main database path, not a file identity; aliases or replacement files may affect comparisons. '
+      + 'Read-only; it never starts or resumes work.',
     parameters: {
       type: 'object',
       properties: { taskId: { type: 'string', description: 'Optional task id to inspect.' } },
@@ -76,10 +83,55 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
     async execute(args) {
       const registered = recipes.map((recipe) => ({ recipeId: recipe.id, recipeVersion: recipe.version,
         allowedTools: [...recipe.allowedTools] }));
-      if (args?.taskId === undefined) return { templates: registered, tasks: Object.keys(tasks).sort() };
+      let operational;
+      try { operational = typeof getOperationalStatus === 'function' ? getOperationalStatus() : null; } catch { /* Unavailable. */ }
+      const runtime = operational ?? { analysis: { configuration: 'unknown', invocation: 'unknown' },
+        outbox: { startup: 'unknown', state: 'unknown', lastPass: null } };
+      let storeIdentity = { status: 'unavailable', reason: 'custom_adapter' };
+      if (store instanceof RuntimeStore) {
+        try { storeIdentity = RuntimeStore.prototype.getStoreIdentity.call(store); }
+        catch { storeIdentity = { status: 'unavailable', reason: 'sqlite_identity_read_failed' }; }
+      }
+      if (args?.taskId === undefined) return { templates: registered, tasks: Object.keys(tasks).sort(), ...runtime, storeIdentity };
       const run = store.getRun(args.taskId);
-      return { templates: registered, run: { taskId: args.taskId, status: run.status, reason: run.reason,
-        budgetUsage: run.budgetUsage, fence: run.fence, owner: run.owner } };
+      return { templates: registered, ...runtime, storeIdentity, run: { taskId: args.taskId, status: run.status, reason: run.reason,
+        budgetUsage: run.budgetUsage, fence: run.fence, owner: run.owner,
+        recipeOutcome: store.getRecipeOutcome(args.taskId) } };
+    },
+  };
+
+  const recoveryDiagnosisTool = {
+    name: 'runtime_recovery_diagnosis',
+    description: 'Compare one persisted native binding with the current host registration. Read-only observation; '
+      + 'it does not authorize recovery, establish terminality, prove a goal or establish provenance. '
+      + 'Full handwritten recipe identity is unknown.',
+    parameters: { type: 'object', properties: { taskId: { type: 'string' } },
+      required: ['taskId'], additionalProperties: false },
+    output: { schema: { type: 'object' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] },
+    async execute(args) {
+      if (!args || typeof args !== 'object' || Array.isArray(args)
+        || Reflect.ownKeys(args).length !== 1 || !Object.hasOwn(args, 'taskId')
+        || !Object.hasOwn(Object.getOwnPropertyDescriptor(args, 'taskId') ?? {}, 'value')) {
+        fail('invalid_contract', 'Only taskId is accepted.');
+      }
+      requireString(args.taskId, 'taskId');
+      const result = (status, reason, version = null) => ({ status, reason, version,
+        recipeIdentity: 'unknown', authorization: 'not_evaluated', terminality: 'not_evaluated',
+        goalProof: 'not_evaluated', provenance: 'not_evaluated' });
+      try {
+        if (typeof store.getRecoveryIdentitySnapshot !== 'function') return result('unknown', 'snapshot_unavailable');
+        const persisted = store.getRecoveryIdentitySnapshot(args.taskId);
+        if (persisted?.coverage !== 'bound') return result('unknown', 'binding_unavailable');
+        if (typeof getRegistrationSnapshot !== 'function') return result('unknown', 'registration_unavailable', persisted.version);
+        const registration = getRegistrationSnapshot(args.taskId);
+        if (!registration?.acceptanceBinding || !registration.authority || !persisted.binding?.authority) {
+          return result('unknown', 'registration_or_authority_unavailable', persisted.version);
+        }
+        const matches = isDeepStrictEqual(persisted.task, registration.task)
+          && isDeepStrictEqual(persisted.binding, { ...registration.acceptanceBinding, authority: registration.authority })
+          && persisted.binding.nativeRef === args.taskId;
+        return result(matches ? 'match' : 'mismatch', matches ? 'identity_matches' : 'identity_differs', persisted.version);
+      } catch { return result('unknown', 'snapshot_unavailable'); }
     },
   };
 
@@ -105,11 +157,32 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
     }
   };
 
+  const acceptanceResult = (status, reason) => ({ status, reason, goalProof: 'not_evaluated',
+    principleAttribution: 'not_evaluated', governanceEligible: false });
+
+  const reviewAcceptance = (prepared, run, taskRef, expectedBinding, expectedTask) => {
+    try {
+      const persisted = store.getRun(prepared.task.taskId);
+      const binding = store.getAcceptanceBinding(prepared.task.taskId);
+      if (!binding) return acceptanceResult('unknown', 'binding_unavailable');
+      if (!isDeepStrictEqual(binding, expectedBinding)
+        || binding.nativeRef !== taskRef || binding.nativeRef !== expectedTask.taskId
+        || !isDeepStrictEqual(persisted.task, expectedTask) || !isDeepStrictEqual(run.task, expectedTask)) {
+        return acceptanceResult('unknown', 'binding_mismatch');
+      }
+      return readAcceptancePredicate({ workspaceRoot: prepared.task.workspaceRoot, contract: binding.contract });
+    } catch {
+      return acceptanceResult('error', 'binding_unavailable');
+    }
+  };
+
   const runTool = {
     name: 'runtime_run',
     description: 'Run one already-registered task template. The caller supplies only a task reference: the goal, '
       + 'workspace, tools and verifier come from native registration, so this cannot widen its own authority. '
-      + 'Returns the persisted run state; unknown side effects stay frozen for reconciliation.',
+      + 'Returns the persisted run state; unknown side effects stay frozen for reconciliation. '
+      + 'For host-configured acceptance contracts, acceptance separately reports a predicate on current file bytes; '
+      + 'it does not prove the goal or principle attribution, and bound recovery is unavailable.',
     parameters: {
       type: 'object',
       properties: { taskRef: { type: 'string', description: 'A task reference registered by native code.' } },
@@ -124,14 +197,32 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
       if (!exec?.agent) fail('authority_unavailable', 'A task-level tool needs the calling agent.');
       const prepared = await factory({ agent: exec.agent });
       if (!prepared || typeof prepared !== 'object') fail('task_not_registered', 'The native task factory returned no task.');
-      const scheduler = schedulerFor(exec.agent);
+      let scheduler = schedulerFor(exec.agent);
+      let expectedBinding;
+      let expectedTask;
+      if (prepared.acceptanceBinding !== undefined) {
+        expectedTask = validateTask(prepared.task);
+        const nativeAuthority = validateAuthoritySnapshot({ schemaVersion: 1, scopeRef: prepared.authority?.scopeRef,
+          workspaceRoot: realpathSync(prepared.authority?.workspaceRoot), allowedTools: prepared.authority?.allowedTools });
+        expectedBinding = structuredClone({ ...prepared.acceptanceBinding, authority: nativeAuthority });
+        if (args.taskRef !== expectedTask.taskId || expectedBinding.nativeRef !== args.taskRef) {
+          fail('native_task_drift', 'Native task reference changed.');
+        }
+        const executor = new HostExecutor({ context: owner, tools: owner.get('tools'), agent: exec.agent });
+        executors.set(executor, executor);
+        scheduler = new RuntimeScheduler({ store, recipes, executor, tools: owner.get('tools'),
+          validateArguments, probes, decisionClient, decisionPolicy,
+          nativeBinding: prepared.acceptanceBinding, nativeTask: expectedTask, nativeAuthority });
+      }
       const authority = { ...prepared.authority, allowedTools: prepared.authority?.allowedTools?.slice() };
       const options = { authority, signal: exec.signal };
       const autoRepair = prepared.autoRepair === true;
       const work = (async () => {
         let run = await scheduler.run(prepared.task, options);
         const { taskId, recipeId, recipeVersion } = run.task;
+        const acceptance = prepared.acceptanceBinding === undefined ? undefined : reviewAcceptance(prepared, run, args.taskRef, expectedBinding, expectedTask);
         const analysis = await maybeAnalyze(exec.agent, taskId, authority, exec.signal);
+        if (analysis !== null) run = store.getRun(taskId);
         let repairError;
         if (autoRepair && analysis !== null) {
           run = store.getRun(taskId);
@@ -151,6 +242,7 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
           }
         }
         return { taskId, status: run.status, reason: run.reason, budgetUsage: run.budgetUsage,
+          ...(acceptance === undefined ? {} : { acceptance }),
           ...(analysis === null ? {} : { analysis }), ...(repairError ? { repairError } : {}) };
       })();
       active.add(work);
@@ -179,7 +271,7 @@ export function createExecutionRuntimePlugin({ store, recipes, tasks, validateAr
     apply(ctx) {
       disposed = false;
       const disposers = [];
-      for (const tool of [statusTool, runTool]) {
+      for (const tool of [statusTool, runTool, recoveryDiagnosisTool]) {
         const dispose = ctx.tools?.register?.(tool);
         if (typeof dispose !== 'function') fail('runtime_tool_unavailable', `The host did not accept ${tool.name}.`);
         disposers.push(dispose);

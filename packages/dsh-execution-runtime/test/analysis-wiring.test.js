@@ -73,6 +73,36 @@ function fixture(t, { analyzer = null, succeeds = false } = {}) {
     get(name) { return registered.get(name) ?? null; },
     list() { return [...registered.keys()]; },
     async execute(input) {
+      // Support both the new batch shape ({ calls: [{ id, name, arguments: JSON }] }) and the legacy
+      // single-call shape; normalize each to one execution with the legacy `name`/`arguments` fields.
+      if (Array.isArray(input?.calls)) {
+        const results = [];
+        for (const call of input.calls) {
+          // Build one legacy-shaped exec per batch call so the runtime's owned pre-execute/execute hooks
+          // receive the identity fields (callId/agent/name/arguments) they bind against.
+          const exec = {
+            callId: call.id, name: call.name, arguments: JSON.parse(call.arguments ?? '{}'),
+            agent: input.agent, signal: input.signal,
+            ...(call.rootCallId !== undefined ? { rootCallId: call.rootCallId } : {}),
+            ...(call.parent !== undefined ? { parent: call.parent } : {}),
+          };
+          await owner.waterfall('tools/pre-execute', exec, () => Promise.resolve({ kind: 'allow' }));
+          let result;
+          await owner.waterfall('tools/execute', exec, async () => {
+            try {
+              const tool = registered.get(exec.name);
+              if (!tool) throw new Error('unknown tool');
+              const value = await tool.execute(exec.arguments, exec);
+              result = { isError: false, value, content: [{ type: 'text', text: 'ok' }] };
+            } catch (error) {
+              result = { isError: true, content: [{ type: 'text', text: error?.message ?? String(error) }] };
+            }
+            return result;
+          });
+          results.push({ callId: call.id, result });
+        }
+        return { results };
+      }
       const tool = registered.get(input?.name);
       if (!tool) return { isError: true, content: [{ type: 'text', text: 'unknown tool' }] };
       await owner.waterfall('tools/pre-execute', input, () => Promise.resolve({ kind: 'allow' }));
@@ -179,6 +209,21 @@ test('a run that stops for analysis actually gets analyzed', async (t) => {
   } finally { await env.close(); }
 });
 
+test('a human-review proposal returns the persisted native run state', async (t) => {
+  const env = fixture(t, { analyzer: { async analyze(packet) {
+    return { status: 'proposed', repair: { ...repairFor(packet), requiresHumanReview: true } };
+  } } });
+  try {
+    const receipt = await env.registered.get('runtime_run').execute({ taskRef: 'run' }, { agent: env.agent });
+    const persisted = env.store.getRun(env.taskId);
+    assert.equal(receipt.analysis.status, 'proposed');
+    assert.equal(persisted.status, 'waiting_human');
+    assert.equal(receipt.status, persisted.status);
+    assert.equal(receipt.reason, persisted.reason);
+    assert.deepEqual(receipt.budgetUsage, persisted.budgetUsage);
+  } finally { await env.close(); }
+});
+
 test('the exception package carries the trigger and the failed verification', async (t) => {
   const calls = [];
   const env = fixture(t, { analyzer: { async analyze(packet) { calls.push(packet); return proposalFor(packet); } } });
@@ -228,8 +273,9 @@ test('an analysis failure is reported, not turned into a task failure', async (t
   const env = fixture(t, { analyzer: { async analyze() { throw new Error('provider exploded'); } } });
   try {
     const run = await env.registered.get('runtime_run').execute({ taskRef: 'run' }, { agent: env.agent });
-    // The task's own outcome is already settled; a bookkeeping failure must not rewrite it into something else.
-    assert.equal(run.status, 'waiting_analysis');
+    // A failed analysis moves the persisted run to human review.
+    assert.equal(run.status, 'waiting_human');
+    assert.equal(run.status, env.store.getRun(env.taskId).status);
     assert.ok(run.analysis, JSON.stringify(run));
     // A throwing provider is recorded as an unavailable proposal, never as a successful one.
     assert.notEqual(run.analysis.status, 'proposed');

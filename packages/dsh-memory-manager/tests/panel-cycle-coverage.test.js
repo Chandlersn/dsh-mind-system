@@ -6,6 +6,27 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { apply } from '../server.js';
 
+async function readOverview(reader) {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    assert.equal(done, false, 'stream ended before overview');
+    buffer += decoder.decode(value, { stream: true });
+    let boundary;
+    while ((boundary = buffer.search(/\r?\n\r?\n/)) !== -1) {
+      const frame = buffer.slice(0, boundary);
+      const separator = buffer.slice(boundary).match(/^\r?\n\r?\n/)[0];
+      buffer = buffer.slice(boundary + separator.length);
+      const lines = frame.split(/\r?\n/);
+      if (lines.includes('event: overview')) {
+        const data = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).replace(/^ /, '')).join('\n');
+        return JSON.parse(data);
+      }
+    }
+  }
+}
+
 test('overview and SSE expose weekly cycle coverage without inferring success', { timeout: 30000 }, async () => {
   const home = await mkdtemp(path.join(tmpdir(), 'memory-cycle-'));
   const root = path.join(home, 'memory');
@@ -66,10 +87,7 @@ test('overview and SSE expose weekly cycle coverage without inferring success', 
     const stream = await fetch(`${base}/stream`, { signal: abort.signal });
     assert.equal(stream.status, 200);
     const reader = stream.body.getReader();
-    let data = '';
-    while (!data.includes('\n\n')) data += new TextDecoder().decode((await reader.read()).value);
-    const event = data.split('\n').find((line) => line.startsWith('data: '));
-    assert.deepEqual(JSON.parse(event.slice(6)).cycleCoverage, expected);
+    assert.deepEqual((await readOverview(reader)).cycleCoverage, expected);
     abort.abort();
     assert.ok(kinds.length >= 3 && kinds.every((kind) => kind === 'weekly'));
   } finally {

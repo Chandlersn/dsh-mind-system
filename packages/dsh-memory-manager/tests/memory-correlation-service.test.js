@@ -1,0 +1,84 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { apply } from '../server.js';
+
+const install = process.env.DSH_INSTALL_DIR || 'D:/dsh';
+const { Context } = await import(pathToFileURL(path.join(install, 'node_modules/@deepseek-ai/cordis/lib/index.js')).href);
+const id = '12345678-1234-4123-8123-123456789abc';
+
+test('Cordis owns the read-only service and activates late consumers', async (t) => {
+  const base = await mkdtemp(path.join(tmpdir(), 'memory-correlation-service-'));
+  const memory = path.join(base, 'memory');
+  const skills = path.join(base, 'skills');
+  await mkdir(memory); await mkdir(skills);
+  const previousSag = process.env.SAG_BIN;
+  process.env.SAG_BIN = path.join(base, 'missing-sag');
+  const root = new Context();
+  t.after(async () => {
+    await root.fiber.dispose();
+    if (previousSag === undefined) delete process.env.SAG_BIN; else process.env.SAG_BIN = previousSag;
+    assert.equal(path.dirname(base), path.resolve(tmpdir()));
+    assert.ok(path.basename(base).startsWith('memory-correlation-service-'));
+    await rm(base, { recursive: true, force: true });
+  });
+  root.provide('tools', { register: () => () => {} });
+  root.provide('loader', {});
+  root.provide('systemPrompt', { getSectionOrder: () => 0, section: () => () => {} });
+  let active = 0;
+  const consumer = Object.assign(ctx => { active++; assert.equal(typeof ctx.memoryUsageCorrelation.readUsageCorrelation, 'function'); return () => { active--; }; }, { inject: ['memoryUsageCorrelation'] });
+  await root.plugin(consumer);
+  assert.equal(active, 0);
+  const plugin = Object.assign(ctx => apply(ctx, { memoryRoot: memory, skillRoot: skills, dshRoot: install, dailyArchiveFirstDelayMs: 0, dailyArchiveIntervalMs: 0 }), { inject: ['tools', 'loader', 'systemPrompt'] });
+  const fiber = root.plugin(plugin);
+  await fiber;
+  assert.equal(active, 1);
+  const service = root.get('memoryUsageCorrelation');
+  assert.equal(typeof service.readUsageCorrelation, 'function');
+  const usage = path.join(memory, '.usage.jsonl');
+  const row = { t: '2026-11-27T00:00:00Z', href: 'functions/example.md', kind: 'positive', note: 'safe note', correlationId: id };
+  await writeFile(usage, JSON.stringify(row) + '\n');
+  const before = await readFile(usage);
+  const out = await service.readUsageCorrelation(id, base);
+  assert.deepEqual(out, { status: 'observed', scope: 'selected_sources_complete', snapshot: 'unknown', sourceState: 'present', rows: [{ objectKey: 'functions/example.md', kind: 'positive', note: 'safe note', noteStatus: 'available' }], duplicate: false, overflow: false });
+  assert.deepEqual(await readFile(usage), before);
+  assert.deepEqual(await readdir(memory), ['.usage.jsonl']);
+  assert.equal((await service.readUsageCorrelation({ id, root: base })).status, 'error');
+  const secret = 'sk-' + 'X'.repeat(40);
+  await writeFile(usage, JSON.stringify({ ...row, note: secret }) + '\n');
+  const bad = await service.readUsageCorrelation(id);
+  assert.equal(bad.status, 'incomplete');
+  assert.deepEqual(bad.rows, []);
+  assert.ok(!JSON.stringify(bad).includes(secret));
+  await fiber.dispose();
+  assert.equal(root.get('memoryUsageCorrelation'), undefined);
+  assert.equal(active, 0);
+});
+
+test('existing service remains owned by its provider', async (t) => {
+  const base = await mkdtemp(path.join(tmpdir(), 'memory-correlation-service-'));
+  const previousSag = process.env.SAG_BIN;
+  process.env.SAG_BIN = path.join(base, 'missing-sag');
+  const root = new Context();
+  t.after(async () => {
+    await root.fiber.dispose();
+    if (previousSag === undefined) delete process.env.SAG_BIN; else process.env.SAG_BIN = previousSag;
+    assert.equal(path.dirname(base), path.resolve(tmpdir()));
+    assert.ok(path.basename(base).startsWith('memory-correlation-service-'));
+    await rm(base, { recursive: true, force: true });
+  });
+  root.provide('tools', { register: () => () => {} });
+  root.provide('loader', {});
+  root.provide('systemPrompt', { getSectionOrder: () => 0, section: () => () => {} });
+  const existing = { readUsageCorrelation: () => 'existing' };
+  root.provide('memoryUsageCorrelation', existing);
+  const plugin = Object.assign(ctx => apply(ctx, { memoryRoot: base, skillRoot: base, dshRoot: install, dailyArchiveFirstDelayMs: 0, dailyArchiveIntervalMs: 0 }), { inject: ['tools', 'loader', 'systemPrompt'] });
+  const fiber = root.plugin(plugin);
+  await fiber;
+  assert.equal(root.get('memoryUsageCorrelation').readUsageCorrelation(), 'existing');
+  await fiber.dispose();
+  assert.equal(root.get('memoryUsageCorrelation').readUsageCorrelation(), 'existing');
+});

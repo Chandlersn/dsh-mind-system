@@ -50,24 +50,27 @@ export class HostExecutor {
 
   get agent() { return this.#agent; }
 
-  async execute(candidate, { callId, signal, beforeDispatch } = {}) {
+  async execute(candidate, { callId, signal, beforeDispatch, finalDispatchGate } = {}) {
     if (this.#closed) throw new RuntimeContractError('executor_disposed', 'The executor is disposed.');
     requireString(callId, 'callId');
     const callerSignal = requireSignal(signal ?? this.#signal);
     if (beforeDispatch !== undefined && typeof beforeDispatch !== 'function') {
       throw new RuntimeContractError('executor_config', 'beforeDispatch must be a function.');
     }
+    if (finalDispatchGate !== undefined && typeof finalDispatchGate !== 'function') {
+      throw new RuntimeContractError('executor_config', 'finalDispatchGate must be a synchronous function.');
+    }
     const value = validateCandidate(candidate);
     const fused = this.#signal && signal && this.#signal !== signal
       ? AbortSignal.any([this.#signal, signal]) : callerSignal;
     // A private host ID prevents another caller's events from changing our evidence.
     const hostCallId = `${callId}:${randomUUID()}`;
-    const work = this.#run(value, { callId, hostCallId, signal: fused, beforeDispatch });
+    const work = this.#run(value, { callId, hostCallId, signal: fused, beforeDispatch, finalDispatchGate });
     this.#active.add(work);
     try { return await work; } finally { this.#active.delete(work); }
   }
 
-  async #run(candidate, { callId, hostCallId, signal, beforeDispatch }) {
+  async #run(candidate, { callId, hostCallId, signal, beforeDispatch, finalDispatchGate }) {
     let dispatchEntered = false;
     let hookError;
     let cancelled = signal.aborted;
@@ -88,6 +91,12 @@ export class HostExecutor {
       removeBinding = this.#context.on('tools/pre-execute', async (exec, next) => {
         if (exec.callId !== hostCallId) return next();
         try {
+          // The batch pipeline builds executions from { id, name, arguments, agent, toolSet, signal }
+          // and drops nested identity. This executor is the trusted source of rootCallId/parent; restore
+          // them from the construction snapshot before verification. The anti-crosstalk check still
+          // binds callId/agent/name/arguments/token to this exact live call.
+          if (this.#rootCallId !== undefined && exec.rootCallId !== this.#rootCallId) exec.rootCallId = this.#rootCallId;
+          if (this.#parent !== undefined && exec.parent !== this.#parent) exec.parent = this.#parent;
           verifyBinding(exec);
           ownedExecution = exec;
           for (const key of ['callId', 'rootCallId', 'name', 'agent', 'parent', 'arguments', 'token']) {
@@ -106,22 +115,32 @@ export class HostExecutor {
           verifyBinding(exec);
           // Cancellation during the hook must not initiate a tool body.
           signal.throwIfAborted();
+          if (finalDispatchGate) {
+            const result = finalDispatchGate();
+            if (result != null && typeof result.then === 'function') {
+              Promise.resolve(result).catch(() => {});
+              throw new RuntimeContractError('executor_config', 'finalDispatchGate must not return a promise.');
+            }
+          }
+          // This cannot revoke an already authorized call or close races with another process
+          // after this check, including asynchronous downstream host wrappers.
         } catch (error) {
           hookError = errorSummary(error, signal.aborted ? 'ABORTED_BEFORE_DISPATCH' : 'before_dispatch_failed');
           throw error;
         }
         dispatchEntered = true;
         return next();
-      });
+      }, { global: true });
       this.#observers.add(remove);
-      const input = {
-        callId: hostCallId, name: candidate.toolName, arguments: candidate.arguments,
-        agent: this.#agent, signal,
-        ...(this.#rootCallId === undefined ? {} : { rootCallId: this.#rootCallId }),
-        ...(this.#parent === undefined ? {} : { parent: this.#parent }),
-      };
+      // New dsh-tools dispatches a batch; nested identity is restored by the owned pre-execute hook above.
+      const input = { calls: [{ id: hostCallId, name: candidate.toolName, arguments: JSON.stringify(candidate.arguments) }],
+        signal, agent: this.#agent };
       // Await the complete host pipeline, including post policies and cancellation drain.
-      const raw = await this.#tools.execute(input);
+      const executed = await this.#tools.execute(input);
+      // Normalize the batch result back to the single-call shape the rest of this method expects.
+      const raw = executed && Array.isArray(executed.results)
+        ? (executed.results.find((row) => row.callId === hostCallId)?.result ?? executed.results[0]?.result)
+        : executed;
       const base = { callId, hostCallId, dispatchEntered, cancelled };
       if (!raw || typeof raw.isError !== 'boolean') throw new Error('Host returned an invalid execution result.');
       if (hookError || raw.isError) {

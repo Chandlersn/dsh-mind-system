@@ -1,8 +1,8 @@
 # dsh-agent-mind · 编排系统
 
-DSH 插件：把**"该用哪类工具"的判断顺序**装进系统提示，并让工具面跟着当下的问题走。
+DSH 插件：把**“该用哪类工具”的判断顺序**装进系统提示，并根据用户输入判断处境。
 
-它做的是给已有的工具面装一个索引 —— 不是加工具，而是决定**谁先被看见**。
+> **当前宿主兼容边界**：DSH 的 `system-prompt/assemble` 水瀑线不向监听器提供工具列表，工具顺序由 provider 提供；下文关于工具重排和相关实验的表述是既有设计及历史测试背景，不能视为当前宿主重排已生效。没有可重排的列表或顺序未变时源码不会记录重排引导；兼容方式待验证。设计约束是重排不删除工具、核心工具保持原位，延后加载默认关闭。
 
 ---
 
@@ -56,15 +56,15 @@ DSH 插件：把**"该用哪类工具"的判断顺序**装进系统提示，并�
 
 ---
 
-## 它怎么让工具面跟着处境走
+## 处境判断与重排设计
 
 ```
 agent/inbox/claimed ──看本轮消息──▶  判处境（diagnose/execute/recall/retrieve/unknown）
                                               │
-system-prompt/assemble ──读处境────────────▶  重排 assembly.tools
+system-prompt/assemble ──仅宿主暴露 tools 时──▶  尝试重排
 ```
 
-五种处境把对应工具族排到前面：
+在暴露可修改工具列表的兼容宿主上，设计目标是把对应工具族排到前面；当前宿主不满足此条件：
 
 | 处境 | 何时进入 | 工具面怎么变 |
 |---|---|---|
@@ -77,7 +77,7 @@ system-prompt/assemble ──读处境────────────▶  �
 并有一条**硬约束**：
 
 > **只重排，绝不删除。** 少了声明，模型连工具名都看不到 —— 那是能力损失。
-> 重排只影响注意力顺序，任何工具都还在，随时可调。
+> 此约束描述可用重排路径的设计，不证明当前宿主已重排。
 
 同时**核心工具永不动**（文件/shell/协作类）：判断标准不是"现在用不用得上"，
 而是"这个处境里如果突然要用，藏了它会不会把人卡住"。
@@ -85,13 +85,13 @@ system-prompt/assemble ──读处境────────────▶  �
 ### 两个刻意的设计
 
 - **处境 unknown 时什么都不做**：宁可保持默认顺序，也不凭猜重排
-- **`deferLoading` 缺省关**：重排是纯顺序、零风险；给异族工具打
+- **`deferLoading` 缺省关**：默认不设置延后加载；给异族工具打
   延后载入标记会让声明不常驻、效果依模型适配器而异。有风险的那半做成
-  显式开关（`DSH_MIND_PARK=1`），默认只交付无风险的那半
+  显式开关（`DSH_MIND_PARK=1`），实际效果依赖宿主和适配器
 
 ### 为什么用 `agent/inbox/claimed` 而不是 `agent/pre-step`
 
-宿主 `preStep()` 的次序是：
+历史宿主接线实验中记录的 `preStep()` 次序是：
 
 ```
 :906  claim()      ← 拿到本轮输入，并发出 agent/inbox/claimed
@@ -111,9 +111,9 @@ system-prompt/assemble ──读处境────────────▶  �
 提示缓存前缀作废**。收益在第 1 步（没有），代价在第 2 步（全付）。
 
 `agent/inbox/claimed` 在 `claim()` 里发出，**早于** `assemble()`，且携带用户
-消息本身 —— 工具面定稿时处境已经就位，重排能作用于第 1 步。
+消息本身 —— 处境可在装配前就位；能否影响第 1 步的工具顺序仍取决于宿主是否暴露并接受修改。当前宿主不满足这一条件。
 
-`agent/pre-step` 保留为**兜底**：老宿主没有 `inbox/claimed` 时仍可采样并影响后续装配，但首步已经装配，可能滞后一拍。
+`agent/pre-step` 保留为**兜底**：老宿主没有 `inbox/claimed` 时仍可判断和采样；只有兼容的工具装配路径才可能受影响，首步可能滞后一拍。
 
 ---
 
@@ -189,7 +189,7 @@ registerSignal({
 
 ## 行为策略（2026-11-03）
 
-下面这张表是插件**实际会做的判断**，不是设想。每一行的"验证方式"都指向
+下面的触发条件描述插件的处境判断；工具排序是兼容宿主上的预期，而非当前宿主事实。每一行的"验证方式"指向
 一条真的跑过的断言或实验，不是"应该没问题"。
 
 | 场景 | 触发条件 | 不触发条件 | 预期引导 | 生效位置 | 优先级 | 验证方式 |
@@ -251,7 +251,7 @@ registerSignal({
 | 级别 | 含义 | 数据来源 | 什么时候是 `null` |
 |---|---|---|---|
 | 1. 判断 | 插件判出了什么 | `situations.lastDecisionOf(agent)` | 还没见过任何用户输入 |
-| 2. 提供 | 插件**真的**据此重排了工具面 | `assemble` 里 `recordGuidance()` | 判成 unknown / ambiguous / 事件缺失 |
+| 2. 提供 | 兼容路径上确认顺序变化后记录引导 | `assemble` 里 `recordGuidance()` | 无工具列表、顺序未变、unknown / ambiguous 或事件缺失 |
 | 3. 照做 | 模型**实际**用了该族的工具 | `tools/result` 事件观察 | **没提供过引导** → 恒 null，不是 false |
 
 第 3 级的判据用 `isFamilyTool()`（与 `arrangeTools` 同一份族清单）。
@@ -293,7 +293,7 @@ registerSignal({
 | --- | --- |
 | 系统提示分节 | `mind:orchestration`，order 2410 |
 | 工具 | `mind_signals`（只读，见下） |
-| 状态 | 只读处境 + 重排装配结果，不写任何文件（采样除外，见下） |
+| 状态 | 记录处境；仅兼容宿主可重排装配结果，采样可能写文件 |
 | 采样文件 | `<DSH_HOME>/storages/mind-dispatch-samples.jsonl` |
 | 降级 | 监听器注册不等于事件已发出；旧宿主的 pre-step 兜底可能滞后一拍 |
 
@@ -321,8 +321,8 @@ registerSignal({
 | `mind.benchmark` | info | 每日记录中用户原话的信号覆盖率；不代表准确率或独立留出集 |
 | `mind.event-status` | info | 已观察到 claimed、使用了兜底，或事件尚未验证 |
 | `mind.signals` | info | 信号清单：内置几条、外部贡献几条（各 owner 一条独立代号） |
-| `mind.guidance-issued` | info | **第二级**：已向 DSH 提供引导（工具面真的按处境重排了） |
-| `mind.guidance-withheld` | info | **第二级**：判定已作出但未提供引导（unknown / ambiguous 克制 / 事件缺失） |
+| `mind.guidance-issued` | info | **第二级**：兼容路径上观察到装配列表顺序变化；不能据此推断其他宿主生效 |
+| `mind.guidance-withheld` | info | **第二级**：判定已作出但未提供引导（包括工具列表不可用或顺序未变） |
 | `mind.guidance-followed` | info | **第三级**：观察到模型采用了引导推荐的工具族 |
 | `mind.guidance-not-followed` | info | **第三级**：观察到工具调用，但不属引导推荐的族 |
 | `mind.guidance-unobserved` | info | **第三级**：已提供引导但本轮无工具调用 —— **无法判断，不等于没照做** |
@@ -356,8 +356,8 @@ npm test                        # 单元与真实宿主接线用例（分节 / �
 node scripts/verify-assembly.mjs # 对真实 systemPrompt 服务验证（推荐先跑这个）
 ```
 
-`verify-assembly.mjs` 装载**真实的** `@deepseek-ai/cordis` 与
-`@deepseek-ai/dsh-system-prompt`，调 `assemble()` 检查：
+`verify-assembly.mjs` 装载 `@deepseek-ai/cordis` 与
+`@deepseek-ai/dsh-system-prompt`，调 `assemble()` 检查；下列重排断言描述兼容宿主的目标，当前宿主不暴露列表时会失败：
 
 - 分节真的进了装配结果（不是"我调了 section()"）
 - 工具面重排真的落到装配结果，且与"不装本插件"的基线逐字相同（未判处境时）
@@ -371,10 +371,10 @@ node scripts/verify-assembly.mjs # 对真实 systemPrompt 服务验证（推荐�
 分节不注册、编排不生效 —— 脚本会报 5 项 FAIL 而插件看起来"没坏"。
 它现在也在测试套件里（`test/integration.test.js`），跑不掉。
 
-单测用假 ctx，只能证明"调用发生在"；这个脚本证明"下游真的接上了"。
+单测和脚本的结果仅适用于各自运行时；脚本可发现当前宿主不提供重排所需列表，不能把旧宿主通过结果套用到当前宿主。
 两者的差距正是本机反复踩过的那类缺陷。
 
-`test/integration.test.js` 用**真实 cordis** 装载插件，走宿主同一条路径，
+`test/integration.test.js` 用 cordis 装载插件；测试接线不自动等同当前宿主工具管线，
 钉住"宿主接线"这一层 —— 旧套件删掉 `agent/pre-step` 或
 `system-prompt/assemble` 监听器仍然全绿，那就是这条缺口。
 

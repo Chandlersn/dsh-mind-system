@@ -81,9 +81,14 @@ async function setup() {
 	ctx.systemPrompt.tools(() => ({
 		schemas: REAL_TOOLS.map((n) => ({ name: n, description: `d:${n}`, parameters: {} })),
 	}));
+	let exposesTools = false;
+	ctx.on('system-prompt/assemble', async (presentation, _context, next) => {
+		exposesTools = Array.isArray(presentation.tools);
+		return next();
+	});
 	await ctx.plugin(mindMod);
 	return {
-		ctx,
+		ctx, supportsReorder: () => exposesTools,
 		order: async (agent) => (await ctx.systemPrompt.assemble(agent === undefined ? {} : { agent, scope: agent })).tools.map((t) => t.name),
 		tool: () => ctx.tools.registered.find((t) => t.name === 'mind_signals'),
 	};
@@ -94,8 +99,9 @@ function userMsg(text) {
 }
 
 test('接线：判出 → 提供（guidance 只在真的重排后才出现）', async () => {
-	const { ctx, order, tool } = await setup();
+	const { ctx, order, tool, supportsReorder } = await setup();
 	const agent = { id: 'g-1' };
+	const baseline = await order(agent);
 	try {
 		ctx.emit('agent/inbox/claimed', { agent, turn: 1, message: userMsg('请审查这个插件有没有隐患') });
 
@@ -106,10 +112,15 @@ test('接线：判出 → 提供（guidance 只在真的重排后才出现）', 
 
 		// 装配 → 引导真的提供了
 		const names = await order(agent);
-		assert.ok(names[0].startsWith('clis_') || names[0].startsWith('meta_'), `diagnose 族应排前，实际 ${names[0]}`);
 		d = await tool().execute({}, { agent });
-		assert.equal(d.diagnosis.guidance?.situation, 'diagnose', '装配后应记下已提供的引导');
-		assert.equal(d.diagnosis.guidance.tools, REAL_TOOLS.length, '引导应记录重排后的工具数');
+		if (supportsReorder()) {
+			assert.ok(names[0].startsWith('clis_') || names[0].startsWith('meta_'));
+			assert.equal(d.diagnosis.guidance?.situation, 'diagnose');
+			assert.equal(d.diagnosis.guidance.tools, REAL_TOOLS.length);
+		} else {
+			assert.deepEqual(names, baseline);
+			assert.equal(d.diagnosis.guidance, null);
+		}
 	} finally {
 		await ctx.fiber.dispose();
 	}
@@ -153,7 +164,7 @@ test('接线：tools/result 观察真的接上了（第三级有来源）', asyn
 
 		const d = await tool().execute({}, { agent });
 		assert.deepEqual(d.diagnosis.observed.tool_calls, ['clis_classify'], '应观察到工具调用');
-		assert.equal(d.diagnosis.observed.followed, true, 'clis_classify 属 diagnose 族 → followed(true)');
+		assert.equal(d.diagnosis.observed.followed, d.diagnosis.guidance ? true : null);
 	} finally {
 		await ctx.fiber.dispose();
 	}
@@ -204,7 +215,7 @@ test('接线：观察到的行为按 agent 隔离（A 的调用不污染 B）', 
 });
 
 test('接线：探针报出三级各自的代号，且"没照做"不拉红灯', async () => {
-	const { ctx } = await setup();
+	const { ctx, supportsReorder } = await setup();
 	try {
 		ctx.emit('agent/inbox/claimed', { turn: 1, message: userMsg('请审查这个问题') });
 		await ctx.systemPrompt.assemble({});
@@ -213,12 +224,15 @@ test('接线：探针报出三级各自的代号，且"没照做"不拉红灯', 
 		const probe = mindMod.healthProbe.probe();
 		const codes = probe.findings.map((f) => f.code);
 		assert.ok(codes.includes('mind.dispatched'), `应报判断级，实际 ${codes.join(', ')}`);
-		assert.ok(codes.includes('mind.guidance-issued'), `应报提供级，实际 ${codes.join(', ')}`);
-		assert.ok(codes.includes('mind.guidance-not-followed'), `应报观察级，实际 ${codes.join(', ')}`);
-
-		// 关键：这三条都是 info，不得把"模型没照做"升级成故障
-		const notFollowed = probe.findings.find((f) => f.code === 'mind.guidance-not-followed');
-		assert.equal(notFollowed.severity, 'info', '"模型没照做"不是插件的故障');
+		if (supportsReorder()) {
+			assert.ok(codes.includes('mind.guidance-issued'));
+			assert.ok(codes.includes('mind.guidance-not-followed'));
+			assert.equal(probe.findings.find((f) => f.code === 'mind.guidance-not-followed').severity, 'info');
+		} else {
+			assert.ok(codes.includes('mind.guidance-withheld'));
+			assert.ok(!codes.includes('mind.guidance-issued'));
+			assert.ok(!codes.includes('mind.guidance-not-followed'));
+		}
 		assert.equal(probe.status, 'ok', '不得因此把整体状态拉到 degraded/failing');
 	} finally {
 		await ctx.fiber.dispose();
@@ -254,8 +268,56 @@ function sourcedMsg(text, source) {
 	return { role: 'user', source, content: [{ type: 'text', text }] };
 }
 
+test('current host records reply decisions without claiming unavailable tool guidance', async () => {
+	const { ctx, order, tool } = await setup();
+	const agent = { id: 'current-host-reply' };
+	try {
+		const baseline = await order(agent);
+		let presentationHasTools;
+		ctx.on('system-prompt/assemble', async (presentation, _context, next) => {
+			presentationHasTools = Object.hasOwn(presentation, 'tools');
+			return { ...await next(), tools: [{ name: 'tampered' }] };
+		});
+		ctx.emit('agent/inbox/claimed', {
+			agent, turn: 1,
+			message: sourcedMsg('请审查这个方案是否可行', { kind: 'user-question-reply', callId: 'c1', outcome: 'answered' }),
+		});
+		assert.deepEqual(await order(agent), baseline);
+		assert.equal(presentationHasTools, false);
+		const diagnostic = await tool().execute({}, { agent });
+		assert.equal(diagnostic.diagnosis.decision.situation, 'diagnose');
+		assert.equal(diagnostic.diagnosis.guidance, null);
+	} finally {
+		await ctx.fiber.dispose();
+	}
+});
+
+test('legacy presentation records guidance only for an actual tool change', async () => {
+	const handlers = new Map();
+	const registered = [];
+	const ctx = {
+		systemPrompt: { section: () => () => {} },
+		tools: { register: (tool) => { registered.push(tool); return () => {}; } },
+		on: (name, handler) => { handlers.set(name, handler); },
+	};
+	mindMod.apply(ctx);
+	const agent = { id: 'legacy-host' };
+	const signals = registered.find((tool) => tool.name === 'mind_signals');
+	const emitDecision = () => handlers.get('agent/inbox/claimed')({ agent, turn: 1, message: userMsg('请审查这个插件有没有隐患') });
+	const assemble = (tools) => handlers.get('system-prompt/assemble')({}, { agent }, async () => ({ tools }));
+	const guidance = async () => (await signals.execute({}, { agent })).diagnosis.guidance;
+	emitDecision();
+	await assemble([]);
+	assert.equal(await guidance(), null);
+	await assemble([{ name: 'clis_run' }, { name: 'read' }]);
+	assert.equal(await guidance(), null);
+	const result = await assemble([{ name: 'read' }, { name: 'clis_run' }]);
+	assert.deepEqual(result.tools.map((tool) => tool.name), ['clis_run', 'read']);
+	assert.equal((await guidance()).situation, 'diagnose');
+});
+
 test('source.kind：用户回答提问必须算用户输入（旧判据漏判这一类）', async () => {
-	const { ctx, order } = await setup();
+	const { ctx, order, tool, supportsReorder } = await setup();
 	const agent = { id: 'kind-reply' };
 	try {
 		const baseline = await order(agent);
@@ -265,7 +327,9 @@ test('source.kind：用户回答提问必须算用户输入（旧判据漏判这
 			message: sourcedMsg('请审查这个方案是否可行', { kind: 'user-question-reply', callId: 'c1', outcome: 'answered' }),
 		});
 		const after = await order(agent);
-		assert.notEqual(after.join(','), baseline.join(','), 'user-question-reply 必须能改变工具面（它是用户说的）');
+		assert.equal((await tool().execute({}, { agent })).diagnosis.decision.situation, 'diagnose');
+		if (supportsReorder()) assert.notDeepEqual(after, baseline);
+		else assert.deepEqual(after, baseline);
 	} finally {
 		await ctx.fiber.dispose();
 	}
@@ -308,16 +372,15 @@ test('source.kind：subagent 任务注入与真人输入不可区分 —— 这�
 	// 且子 agent 恰恰最需要"先看还是先动手"的判断。
 	// 这条测试把那个取舍**钉住**：如果哪天有人改成"排除 subagent"，
 	// 这里会红，提醒他去看 README 的那段说明。
-	const { ctx, order } = await setup();
+	const { ctx, order, tool, supportsReorder } = await setup();
 	const agent = { id: 'kind-subagent' };
 	try {
 		const baseline = await order(agent);
 		ctx.emit('agent/inbox/claimed', { agent, turn: 1, message: sourcedMsg('请审查这段代码', { kind: 'user' }) });
-		assert.notEqual(
-			(await order(agent)).join(','),
-			baseline.join(','),
-			'subagent 的 {kind:"user"} 任务注入会被当作意图（已知且刻意的取舍）',
-		);
+		const after = await order(agent);
+		assert.equal((await tool().execute({}, { agent })).diagnosis.decision.situation, 'diagnose');
+		if (supportsReorder()) assert.notDeepEqual(after, baseline);
+		else assert.deepEqual(after, baseline);
 	} finally {
 		await ctx.fiber.dispose();
 	}

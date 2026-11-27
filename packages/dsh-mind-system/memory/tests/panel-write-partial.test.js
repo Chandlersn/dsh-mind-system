@@ -74,7 +74,16 @@ function injectedError() { const error = new Error('模拟 EIO：写入后确认
 function pathIs(file, expected) { return typeof file === 'string' && path.resolve(file).toLowerCase() === path.resolve(expected).toLowerCase(); }
 function responseText(result) { return JSON.stringify(result.body); }
 
-test('真实面板否决：正文写了一部分后 EIO，正式归档路径不得暴露残片，源保留', async (t) => {
+// SKIPPED, not deleted. Each case below injects a fault AFTER a commit point of
+// the reject path (partial archive body write, lost link/rename receipt, lost
+// ledger-append receipt) to prove the receipt reports a real partial state.
+// axiom-action reject now refuses before its first side effect
+// (safe_delete_unavailable), so none of those commits — and therefore none of
+// those receipt states — can be reached. The bodies stay intact so the intent
+// is preserved and returns when a concurrency-safe delete lands.
+const REJECT_POST_COMMIT_SKIP = 'safe deletion unavailable: axiom-action reject refuses before any write, so the post-commit partial states are unreachable';
+
+test('真实面板否决：正文写了一部分后 EIO，正式归档路径不得暴露残片，源保留', { skip: REJECT_POST_COMMIT_SKIP }, async (t) => {
   const f = await fixture(t);
   let injected = false;
   // 2026-11-13：暂存已移入 .stage/，正文写入走 handle.writeFile（open 'wx'）。
@@ -103,7 +112,7 @@ test('真实面板否决：正文写了一部分后 EIO，正式归档路径不�
   await assert.rejects(f.io.readFile(f.target, 'utf8'), { code: 'ENOENT' }, 'formal target must not expose partial bytes');
 });
 
-test('真实面板否决：link 或 rename 已提交后回执丢失，明确未知并先核对，源保留', async (t) => {
+test('真实面板否决：link 或 rename 已提交后回执丢失，明确未知并先核对，源保留', { skip: REJECT_POST_COMMIT_SKIP }, async (t) => {
   const f = await fixture(t);
   let injected = false;
   for (const method of ['link', 'rename']) {
@@ -129,7 +138,7 @@ test('真实面板否决：link 或 rename 已提交后回执丢失，明确未�
   assert.match(persisted, /隔离反例/);
 });
 
-test('真实面板否决：账本已追加后回执丢失，明确未确认并先核对，源保留', async (t) => {
+test('真实面板否决：账本已追加后回执丢失，明确未确认并先核对，源保留', { skip: REJECT_POST_COMMIT_SKIP }, async (t) => {
   const f = await fixture(t);
   let injected = false;
   f.io.appendFile = async (file, ...args) => {

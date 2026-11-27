@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, symlinkSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
@@ -9,6 +9,8 @@ import { RuntimeStore } from '../src/store.js';
 import { HostExecutor } from '../src/executor.js';
 import { RuntimeScheduler } from '../src/scheduler.js';
 import { createRecipeRegistry } from '../src/recipe-factory.js';
+import { createRecipeLibrary } from '../src/recipe-library.js';
+import { createExecuteTool } from '../src/dynamic-tools.js';
 import { describePrimitives, VERIFIER_PRIMITIVES } from '../src/verifier-primitives.js';
 
 /**
@@ -38,7 +40,13 @@ async function pipeline(t, { sourceText = 'b\nc\na\n' } = {}) {
       writeFileSync(path, content, { flag: 'wx' });
       return { created: true };
     } });
-  const registry = createRecipeRegistry();
+  const rawRegistry = createRecipeRegistry();
+  const library = store.withDatabase((db) => createRecipeLibrary({ db }));
+  const registry = { ...rawRegistry, generate(spec, options) {
+    const result = rawRegistry.generate(spec, options);
+    library.record(spec, options);
+    return result;
+  } };
   const toolEffects = { 'runtime_write_text': 'reversible_write' };
   const validateArguments = ({ tool, arguments: args }) => validateJsonSchemaValue(tool.parameters, args);
   assertObjectJsonSchema(host.tools.get('runtime_write_text').parameters);
@@ -78,6 +86,43 @@ test('a task with no pre-registered recipe runs from a generated one', async (t)
     assert.equal(final.payload.verification.goalSatisfied, true);
   } finally { await env.close(); }
 });
+
+for (const mode of ['no-library', 'separate-library', 'binding-missing-library']) {
+  test(`generated execution handles ${mode} coverage`, async (t) => {
+    const env = await pipeline(t);
+    const runStore = new RuntimeStore(join(env.host.root, `${mode}.sqlite`));
+    try {
+      const library = mode === 'separate-library' ? env.store.withDatabase((db) => createRecipeLibrary({ db }))
+        : mode === 'binding-missing-library' ? runStore.withDatabase((db) => createRecipeLibrary({ db })) : null;
+      const mount = { scopeRef: env.authority.scopeRef, workspaceRoot: env.host.storage, allowedTools: ['runtime_write_text'] };
+      const tool = createExecuteTool({ store: runStore, library, mount, toolEffects: env.toolEffects,
+        schedulerFor: (_agent, registry) => {
+          const scheduler = new RuntimeScheduler({ store: runStore, executor: env.executor,
+            recipes: registry.list().map((key) => registry.get(key)), tools: env.host.tools,
+            validateArguments: env.validateArguments,
+            ...(mode === 'binding-missing-library' ? { bindGeneratedRecipes: true } : {}) });
+          if (mode === 'binding-missing-library') runStore.withDatabase((db) => db.exec('DROP TABLE recipe_library'));
+          return scheduler;
+        } });
+      const taskId = randomUUID();
+      const args = { taskId, goal: 'Write output', inputs: { inputFile: 'input.txt', outputFile: 'output.txt' },
+        recipe: { recipeId: 'standalone', tool: 'runtime_write_text', effect: 'reversible_write',
+          verifier: { primitive: 'line_set', parameters: { expectedLines: ['ok'] } },
+          arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'ok\n', createOnly: true } } };
+      if (mode === 'binding-missing-library') {
+        await assert.rejects(tool.execute(args, { agent: env.agent }), { code: 'recipe_identity_unverifiable' });
+        assert.throws(() => runStore.getRecipeOutcome(taskId), { code: 'run_not_found' });
+        assert.equal(env.host.count('write-dispatched'), 0);
+      } else {
+        const result = await tool.execute(args, { agent: env.agent });
+        assert.equal(result.status, 'completed');
+        assert.equal(readFileSync(join(env.host.storage, 'output.txt'), 'utf8'), 'ok\n');
+        assert.equal(runStore.getRecipeOutcome(taskId).coverage, 'unbound');
+        if (library) assert.equal(result.library.succeeded, true);
+      }
+    } finally { runStore.close(); await env.close(); }
+  });
+}
 
 const inputShapeCases = [
   { primitive: 'exact_bytes', parameters: { expectedSha256: digest('a\nb\nc\n') }, content: 'a\nb\nc\n' },
@@ -368,6 +413,86 @@ test('a branch whose condition is false takes the fallback instead', async (t) =
     assert.throws(() => readFileSync(join(env.host.storage, 'never.txt')), { code: 'ENOENT' });
   } finally { await env.close(); }
 });
+
+test('a final step follows a back edge before it can complete', async (t) => {
+  const env = await pipeline(t);
+  try {
+    const verifier = { primitive: 'line_set', parameters: { expectedLines: ['done'] } };
+    env.registry.generate({ recipeId: 'back-edge', tool: 'runtime_write_text', effect: 'reversible_write', verifier,
+      steps: [
+        { id: 'first', tool: 'runtime_write_text', effect: 'reversible_write', verifier,
+          arguments: { path: '{{workspaceRoot}}/output.txt', content: 'done\n', createOnly: true } },
+        { id: 'last', tool: 'runtime_write_text', effect: 'reversible_write', verifier,
+          arguments: { path: '{{workspaceRoot}}/last.txt', content: 'done\n', createOnly: true },
+          next: [{ when: { kind: 'always', parameters: { value: true } }, goto: 'first' }] },
+      ] }, { toolEffects: env.toolEffects });
+    const task = { taskId: randomUUID(), recipeId: 'back-edge', recipeVersion: '1', goal: 'Follow the back edge.',
+      scopeRef: env.authority.scopeRef, workspaceRoot: env.host.storage,
+      inputs: { inputFile: 'input.txt', outputFile: 'output.txt' }, deadlineAt: Date.now() + 60_000 };
+    const run = await schedulerFor(env).run(task, { authority: env.authority });
+    const outcomes = env.store.readEvents(task.taskId).filter((event) => event.kind === 'outcome_recorded');
+    assert.notEqual(run.status, 'completed');
+    assert.equal(run.budgetUsage.attempts, 2);
+    assert.equal(outcomes[1].payload.verification.goalSatisfied, false);
+    assert.deepEqual(run.state.branchTrail.slice(0, 2), [{ from: 'first', to: 'last' }, { from: 'last', to: 'first' }]);
+  } finally { await env.close(); }
+});
+
+test('a final step completes when its back edge does not match', async (t) => {
+  const env = await pipeline(t);
+  try {
+    const verifier = { primitive: 'line_set', parameters: { expectedLines: ['done'] } };
+    env.registry.generate({ recipeId: 'no-back-edge', tool: 'runtime_write_text', effect: 'reversible_write', verifier,
+      steps: [{ id: 'only', tool: 'runtime_write_text', effect: 'reversible_write', verifier,
+        arguments: { path: '{{workspaceRoot}}/output.txt', content: 'done\n', createOnly: true },
+        next: [{ when: { kind: 'always', parameters: { value: false } }, goto: 'only' }] }] },
+    { toolEffects: env.toolEffects });
+    const task = { taskId: randomUUID(), recipeId: 'no-back-edge', recipeVersion: '1', goal: 'Finish on fallthrough.',
+      scopeRef: env.authority.scopeRef, workspaceRoot: env.host.storage,
+      inputs: { inputFile: 'input.txt', outputFile: 'output.txt' }, deadlineAt: Date.now() + 60_000 };
+    const run = await schedulerFor(env).run(task, { authority: env.authority });
+    assert.equal(run.status, 'completed');
+    assert.deepEqual(run.state.branchTrail, [{ from: 'only', to: null }]);
+  } finally { await env.close(); }
+});
+
+for (const kind of ['outside-link', 'large-file']) {
+  test(`file branch rejects ${kind} through metered verifier I/O`, async (t) => {
+    const env = await pipeline(t);
+    try {
+      if (kind === 'outside-link') {
+        const outside = join(env.host.root, 'outside.txt');
+        writeFileSync(outside, 'outside');
+        try { symlinkSync(outside, join(env.host.storage, 'probe.txt'), 'file'); }
+        catch (error) {
+          if (!['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) throw error;
+          const outsideDir = join(env.host.root, 'outside-dir');
+          mkdirSync(outsideDir);
+          try { symlinkSync(outsideDir, join(env.host.storage, 'probe.txt'), 'junction'); }
+          catch (junctionError) {
+            if (['EPERM', 'EACCES', 'ENOTSUP'].includes(junctionError.code)) {
+              t.skip(`Cannot create symbolic link or junction: ${junctionError.code}`); return;
+            }
+            throw junctionError;
+          }
+        }
+      } else writeFileSync(join(env.host.storage, 'probe.txt'), Buffer.alloc(4 * 1024 * 1024 + 1));
+      const verifier = { primitive: 'line_set', parameters: { expectedLines: ['done'] } };
+      env.registry.generate({ recipeId: `guard-${kind}`, tool: 'runtime_write_text', effect: 'reversible_write', verifier,
+        steps: [{ id: 'only', tool: 'runtime_write_text', effect: 'reversible_write', verifier,
+          arguments: { path: '{{workspaceRoot}}/output.txt', content: 'done\n', createOnly: true },
+          next: [{ when: { kind: 'file_exists', parameters: { file: 'probe.txt' } }, goto: 'only' }] }] },
+      { toolEffects: env.toolEffects });
+      const task = { taskId: randomUUID(), recipeId: `guard-${kind}`, recipeVersion: '1', goal: 'Check a branch.',
+        scopeRef: env.authority.scopeRef, workspaceRoot: env.host.storage,
+        inputs: { inputFile: 'input.txt', outputFile: 'output.txt' }, deadlineAt: Date.now() + 60_000 };
+      const run = await schedulerFor(env).run(task, { authority: env.authority });
+      assert.notEqual(run.status, 'completed');
+      assert.equal(run.reason, kind === 'outside-link' ? 'scope_denied' : 'runtime_io_limit');
+      assert.equal(run.budgetUsage.attempts, 1);
+    } finally { await env.close(); }
+  });
+}
 
 test('two different tasks can share one generated recipe with different placeholders', async (t) => {
   const env = await pipeline(t);

@@ -23,6 +23,33 @@ import { join } from 'node:path';
 
 const sag = await import('../src/sag.js');
 
+test('countDiskFiles is bounded and skips hidden/large dirs', () => {
+	const root = mkdtempSync(join(tmpdir(), 'sag-disk-count-'));
+	try {
+		mkdirSync(join(root, 'sub'));
+		mkdirSync(join(root, '.git'));
+		writeFileSync(join(root, 'a.md'), 'a');
+		writeFileSync(join(root, 'sub', 'b.md'), 'b');
+		writeFileSync(join(root, '.git', 'hidden'), 'h');
+		assert.equal(sag.countDiskFiles(root), 2, 'hidden dir excluded, two visible files');
+		assert.equal(sag.countDiskFiles(root, { maxFiles: 1 }), null, 'over the bound must be unknown, not a number');
+		assert.equal(sag.countDiskFiles(join(root, 'missing')), null, 'unreadable root is unknown');
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('normalizeSagScope defaults to empty arrays and bounds user filters', () => {
+	assert.deepEqual(sag.normalizeSagScope(), { paths: [], exclude: [] });
+	assert.deepEqual(sag.normalizeSagScope({ paths: 'not-an-array' }), { paths: [], exclude: [] });
+	const result = sag.normalizeSagScope({
+		paths: ['  C:\\root\\docs  ', '', 42, 'x'.repeat(5000)],
+		exclude: ['C:\\root\\collide'],
+	});
+	assert.deepEqual(result.paths, ['  C:\\root\\docs  ']);
+	assert.deepEqual(result.exclude, ['C:\\root\\collide']);
+	const many = sag.normalizeSagScope({ paths: Array.from({ length: 50 }, (_, i) => `p${i}`) });
+	assert.equal(many.paths.length, 32, 'scope filters must be bounded');
+});
+
 // ——————————————————————————————————————————————
 // 不可用时如实报错，绝不假阴性
 // ——————————————————————————————————————————————
@@ -52,30 +79,38 @@ test('空查询直接拒绝，不发请求', async () => {
 	}
 });
 
-test('服务不可达时返回 network/timeout，不抛错', async () => {
-	// 端口 1 必然拒绝连接。
-	const r = await sag.sagSearch('查询', { apiKey: 'dummy', endpoint: 'http://127.0.0.1:1', timeoutMs: 800 });
+test('服务不可达时返回 network/timeout，不抛错', async (t) => {
+	t.mock.method(globalThis, 'fetch', async () => { throw new Error('offline'); });
+	const r = await sag.sagSearch('查询', { apiKey: 'dummy', endpoint: 'http://127.0.0.1', timeoutMs: 800 });
 	assert.equal(r.ok, false);
 	assert.ok(['network', 'timeout'].includes(r.reason), `应是网络/超时，实际 ${r.reason}`);
 	assert.equal(r.results, undefined, '失败时绝不能带空 results');
 });
 
-test('鉴权失败透传原因（实测：无效 key 走 HTTP 401）', async () => {
-	const r = await sag.sagSearch('查询', { apiKey: 'obviously-wrong-key', endpoint: 'http://127.0.0.1:24681', timeoutMs: 2000 });
-	// 服务可能没起（那也算如实降级），起了则报鉴权失败。
-	// 实测 2026-11-16：无效 key 返回 HTTP 401 → reason 'http_401'；
-	// 早前另一次拿到 200 + {"error":{...}}，两种都要能透传。
-	assert.equal(r.ok, false);
-	assert.ok(
-		['http_401', 'unauthorized', 'api_error', 'network', 'timeout', 'bad_response'].includes(r.reason),
-		`实际 ${r.reason}`,
-	);
-	// 无论哪种失败，都不能被读成"查到 0 条"。
-	assert.equal(r.results, undefined);
+test('returns the HTTP 401 reason from an isolated server', async () => {
+	const { createServer } = await import('node:http');
+	const server = createServer((_req, res) => {
+		res.writeHead(401);
+		res.end();
+	});
+	await new Promise((resolve, reject) => {
+		server.once('error', reject);
+		server.listen(0, '127.0.0.1', resolve);
+	});
+	try {
+		const { port } = server.address();
+		const r = await sag.sagSearch('查询', { apiKey: 'obviously-wrong-key', endpoint: `http://127.0.0.1:${port}`, timeoutMs: 2000 });
+		assert.equal(r.ok, false);
+		assert.equal(r.reason, 'http_401');
+		assert.equal(r.results, undefined);
+	} finally {
+		await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+	}
 });
 
-test('sagPing 把"在线但未授权"与"不在线"分开', async () => {
-	const p = await sag.sagPing({ apiKey: null, endpoint: 'http://127.0.0.1:1' });
+test('sagPing 把"在线但未授权"与"不在线"分开', async (t) => {
+	t.mock.method(globalThis, 'fetch', async () => { throw new Error('offline'); });
+	const p = await sag.sagPing({ apiKey: null, endpoint: 'http://127.0.0.1' });
 	assert.equal(p.online, false);
 	assert.equal(p.authorized, null);
 	// 这才是关键区分：在线但没 key ≠ 服务挂了。
@@ -85,10 +120,11 @@ test('sagPing 把"在线但未授权"与"不在线"分开', async () => {
 // 成功路径的契约
 // ——————————————————————————————————————————————
 
-test('成功时带 experimental 标记与规整的结果形状', async () => {
+test('成功时带 experimental 标记与规整的结果形状', async (t) => {
+	t.mock.method(globalThis, 'fetch', async () => { throw new Error('offline'); });
 	const r = await sag.sagSearch('测试', {
 		apiKey: 'x',
-		endpoint: 'http://127.0.0.1:1', // 不可达，本用例只验形状契约的下半段
+		endpoint: 'http://127.0.0.1',
 		timeoutMs: 300,
 	});
 	// 不可达时不产生成功形状——这条断言防止把失败包装成成功。
@@ -118,11 +154,11 @@ test('sagDataDir 指向 SAG 自己的桌面数据目录', () => {
 
 test('resolveSagApiKey：环境变量优先于配置文件', () => {
 	const saved = process.env.SAG_API_KEY;
-	process.env.SAG_API_KEY = 'sag_from_env_xxx';
+	process.env.SAG_API_KEY = 'synthetic-test-placeholder';
 	try {
 		const r = sag.resolveSagApiKey();
 		assert.equal(r.source, 'env', '环境变量应赢');
-		assert.equal(r.key, 'sag_from_env_xxx');
+		assert.equal(r.key, 'synthetic-test-placeholder');
 	} finally {
 		if (saved === undefined) delete process.env.SAG_API_KEY;
 		else process.env.SAG_API_KEY = saved;
@@ -173,8 +209,9 @@ test('显式 apiKey: null 表示"确实没有"，不回落到配置文件', () =
 // "hits > 0" proves nothing about whether a specific file is indexed. The status
 // path exists precisely to close that gap, so its failure modes are asserted.
 
-test('sagStatus 在服务不可达时如实报错，不返回空 roots', async () => {
-	const r = await sag.sagStatus({ endpoint: 'http://127.0.0.1:1', timeoutMs: 800, apiKey: 'dummy' });
+test('sagStatus 在服务不可达时如实报错，不返回空 roots', async (t) => {
+	t.mock.method(globalThis, 'fetch', async () => { throw new Error('offline'); });
+	const r = await sag.sagStatus({ endpoint: 'http://127.0.0.1', timeoutMs: 800, apiKey: 'dummy' });
 	assert.equal(r.ok, false);
 	assert.ok(['network', 'timeout', 'http_401'].includes(r.reason), `实际 ${r.reason}`);
 	assert.equal(r.roots, undefined, '失败时绝不能带空 roots 冒充"没有索引目录"');
@@ -188,59 +225,35 @@ test('sagIsIndexed 参数不全直接拒绝', async () => {
 	}
 });
 
-test('sagIsIndexed 用路径匹配而不是命中数（这是要害）', async () => {
-	// A search for a phrase that only file A contains will ALSO return other files
-	// (BM25 neighbours). If the implementation ever "fixed" itself to `hits > 0`,
-	// it would report every file as indexed. So: ask about a path that does not
-	// exist and assert it comes back false EVEN WHEN the search has hits.
-	//
-	// This MUST run against the live service to be meaningful: with an unreachable
-	// endpoint the function returns early on `ok === false` and never exercises the
-	// matching logic at all (which is exactly how a mutation to `hits > 0` survived
-	// the first version of this test on 2026-11-16).
-	const probePath = 'C:/definitely/not/a/real/memory/file-xyz.md';
-	const r = await sag.sagIsIndexed(probePath, '探针');
-	if (r.ok === false) {
-		// No service in this environment → cannot exercise matching. Skip loudly
-		// rather than pretend the assertion ran.
-		assert.ok(['network', 'timeout', 'no_key', 'http_401', 'bad_arguments'].includes(r.reason), `实际 ${r.reason}`);
-		return;
-	}
-	// The search DID return rows (neighbours) — that is the trap.
-	assert.ok(r.searched >= 0, '搜索应已执行');
-	assert.equal(r.indexed, false, '路径不存在时必须为 false —— 若实现改成"有命中就算"，这里会变红');
+test('sagIsIndexed matches paths rather than hit counts', async (t) => {
+	t.mock.method(globalThis, 'fetch', async () => Response.json({ results: [{ path: 'C:/memory/other.md', content: 'neighbour' }] }));
+	const r = await sag.sagIsIndexed('C:/memory/target.md', 'probe', { apiKey: 'dummy', endpoint: 'http://127.0.0.1' });
+	assert.deepEqual(r, { ok: true, indexed: false, searched: 1 });
 });
 
-test('sagIsIndexed 对真实存在的文件报 true（闭环的可验证性）', async () => {
-	// The counterpart assertion: the same code path must say TRUE for a file that
-	// really is indexed. Without this pair, an implementation that always returns
-	// false would pass the test above.
+test('sagIsIndexed recognizes a matching path', async (t) => {
+	t.mock.method(globalThis, 'fetch', async () => Response.json({ results: [{ path: 'C:/memory/target.md', content: 'match' }] }));
+	const r = await sag.sagIsIndexed('C:/memory/target.md', 'probe', { apiKey: 'dummy', endpoint: 'http://127.0.0.1' });
+	assert.deepEqual(r, { ok: true, indexed: true, searched: 1 });
+});
+
+test('live SAG reports an indexed memory file', { skip: process.env.DSH_TEST_LIVE_SAG !== '1' && 'Set DSH_TEST_LIVE_SAG=1 to enable live SAG tests' }, async (t) => {
 	const live = await sag.sagStatus();
-	if (!live.ok) return; // no service here
+	if (!live.ok) { t.skip(`SAG status unavailable: ${live.reason}`); return; }
 	const root = live.roots.map((x) => x.path).find((p) => /\.dsh[\\/]memory$/i.test(p));
-	if (!root) return; // this machine does not index the memory root
+	if (!root) { t.skip('SAG does not index the memory root'); return; }
 	const file = `${root.replace(/\\/g, '/')}/insights/失败被伪装成成功.md`;
 	const r = await sag.sagIsIndexed(file, '失败必须响亮');
-	if (r.ok === false) return;
-	assert.equal(r.indexed, true, `已索引的文件必须报 true（查的是 ${file}）`);
+	if (!r.ok) { t.skip(`SAG search unavailable: ${r.reason}`); return; }
+	assert.equal(r.indexed, true);
 });
 
-test('sagStatus 剥离 Windows 长路径前缀，路径可比可读', async () => {
-	// The server returns \\?\C:\... — if the prefix survived, no path would ever
-	// match the caller's and every per-file check would come back false.
-	const r = await sag.sagStatus({ apiKey: 'dummy', endpoint: 'http://127.0.0.1:1', timeoutMs: 500 });
-	if (r.ok) {
-		for (const root of r.roots) assert.ok(!root.path.startsWith('\\\\?\\'), `长路径前缀未剥离: ${root.path}`);
-	}
-	// With the real service (local dev) it must be stripped too.
-	const live = await sag.sagStatus();
-	if (live.ok) {
-		assert.ok(live.roots.length > 0, '真实服务应至少报告一个 root');
-		for (const root of live.roots) {
-			assert.ok(!root.path.includes('\\\\?\\'), `长路径前缀未剥离: ${root.path}`);
-			assert.ok(typeof root.status === 'string' && root.status.length > 0, 'root 必须带状态');
-		}
-	}
+test('sagStatus strips the Windows long path prefix', async (t) => {
+	t.mock.method(globalThis, 'fetch', async () => Response.json({ roots: [{ path: '\\\\?\\C:\\memory', status: 'ready' }] }));
+	const r = await sag.sagStatus({ apiKey: 'dummy', endpoint: 'http://127.0.0.1' });
+	assert.equal(r.ok, true);
+	assert.equal(r.roots[0].path, 'C:\\memory');
+	assert.equal(r.roots[0].status, 'ready');
 });
 
 // ——————————————————————————————————————————————
@@ -249,7 +262,7 @@ test('sagStatus 剥离 Windows 长路径前缀，路径可比可读', async () =
 
 test('startSagService 立即返回控制权，ready 最终会 settle', async () => {
 	const sw = Date.now();
-	const h = sag.startSagService({ bin: process.platform === 'win32' ? 'sag' : 'sag', timeoutMs: 4000 });
+	const h = sag.startSagService({ bin: process.execPath, timeoutMs: 4000 });
 	const took = Date.now() - sw;
 	// fire-and-forget：调用本身必须立刻返回（装载期不能被拖住 500ms+）。
 	assert.ok(took < 200, `startSagService 必须立即返回，实际 ${took}ms`);
@@ -259,11 +272,14 @@ test('startSagService 立即返回控制权，ready 最终会 settle', async () 
 });
 
 test('startSagService 对不存在的可执行文件如实报错而非抛异常', async () => {
-	const h = sag.startSagService({ bin: 'definitely-not-a-real-binary-xyz', timeoutMs: 2000 });
-	const r = await h.ready;
-	assert.equal(r.ok, false);
-	assert.ok(['spawn_failed', 'spawn_threw', 'timeout'].includes(r.reason), `实际 ${r.reason}`);
-	h.cancel();
+	const root = mkdtempSync(join(tmpdir(), 'sag-missing-bin-'));
+	try {
+		const h = sag.startSagService({ bin: join(root, 'missing'), timeoutMs: 2000 });
+		const r = await h.ready;
+		assert.equal(r.ok, false);
+		assert.ok(['spawn_failed', 'spawn_threw', 'timeout'].includes(r.reason), `实际 ${r.reason}`);
+		h.cancel();
+	} finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 // ——————————————————————————————————————————————
@@ -298,9 +314,7 @@ test('resolveSagCommand 尊重显式 bin 与环境变量', () => {
 	}
 });
 
-test('真实 PATH 上的 sag 能被拉起（服务状态真的改变）', async () => {
-	// 这条是端到端证据：不是"函数返回 true"，而是服务状态从 false 变 true。
-	// 拿不到 sag 的环境（CI）跳过，不让它变成假红。
+test('真实 PATH 上的 sag 能被拉起（服务状态真的改变）', { skip: process.env.DSH_TEST_LIVE_SAG !== '1' && 'Set DSH_TEST_LIVE_SAG=1 to enable live SAG tests' }, async (t) => {
 	const { execFileSync } = await import('node:child_process');
 	let available = true;
 	try {
@@ -308,7 +322,7 @@ test('真实 PATH 上的 sag 能被拉起（服务状态真的改变）', async 
 	} catch {
 		available = false;
 	}
-	if (!available) return; // sag 未安装：本机可跑，CI 跳过
+	if (!available) { t.skip('SAG CLI is unavailable'); return; }
 
 	const h = sag.startSagService({ timeoutMs: 15000 });
 	const r = await h.ready;

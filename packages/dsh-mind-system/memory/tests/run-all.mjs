@@ -67,6 +67,57 @@ const suites = [
 	// shards. This suite pins the compatibility contract — legacy single file
 	// still readable, both layouts read together, recall stays an EVENT.
 	'tests/usage-shard.test.js',
+	// Archive-tolerant whole-ledger readers: legacy + live + compacted sources.
+	'tests/usage-archive-readers.test.js',
+	// Rename-first compaction of closed shards: opt-in primitive, never enabled
+	// by default. Cross-process races prove appended payloads are never lost.
+	'tests/usage-compaction.test.js',
+	'tests/usage-gzip-reader.test.js',
+	'tests/usage-scan.test.js',
+	'tests/usage-report-scan.test.js',
+	'tests/usage-provenance-render.test.js',
+	'tests/daily-section-strict.test.js',
+	'tests/distill-archive-sources.test.js',
+	'tests/daily-archive-scheduler-paused.test.js',
+	'tests/daily-archive-rename-protocol.test.js',
+	'tests/skill-activation-unavailable.test.js',
+	'tests/skill-activation-route.test.js',
+	'tests/client-skill-activation.test.js',
+	'tests/client-runtime-snapshot.test.js',
+	'tests/graph-runtime-safety.test.js',
+	'tests/graph-feedback.test.js',
+	'tests/graph-feedback-sse.test.js',
+	'tests/graph-runtime-sse.test.js',
+	'tests/overview-index-presence.test.js',
+	'tests/memory-delete-unavailable.test.js',
+	'tests/delete-cross-process-races.test.js',
+	// 破坏性入口暂停（2026-11-24）：6 个入口在写入前拒绝，且整根逐字节不变。
+	'tests/destructive-entry-pause.test.js',
+	'tests/memory-delete.test.js',
+	'tests/memory-delete-tool.test.js',
+	// Legacy deletion assertions remain individually skipped while deletion is paused;
+	// validation assertions in this suite continue to run.
+	'tests/memory-delete-rename-first.test.js',
+	'tests/adoption-evidence.test.js',
+	'tests/closure-evidence.test.js',
+	'tests/closure-stream.test.js',
+	'tests/closure-overview.test.js',
+	'tests/object-trace.test.js',
+	'tests/live-flow.test.js',
+	'tests/live-flow-host.test.js',
+	'tests/live-flow-read.test.js',
+	'tests/usage-descriptor-failure.test.js',
+	'tests/usage-status-render.test.js',
+	'tests/recall-usage-unknown.test.js',
+	'tests/recall-usage-scan.test.js',
+	'tests/usage-event-store.test.js',
+	'tests/usage-record-tool.test.js',
+	'tests/recall-source-classification.test.js',
+	// Live-input topic priority: trusted source kinds must win the recall query
+	// over agent-message relays; parent-task-only agent-message still recalls.
+	'tests/recall-topic-priority.test.js',
+	'tests/recall-notification-rules.test.js',
+	'tests/recall-rule-isolation.test.js',
 	// Usage-ledger observability (2026-11-19): a failed write must leave a trace,
 	// and the frozen legacy file must be distinguishable from the live shard —
 	// otherwise "the number stopped moving" cannot be told apart from "the
@@ -86,6 +137,8 @@ const suites = [
 	'tests/dao-shape.test.js',
 	'tests/coverage.test.js',
 	'tests/schema-contract.test.js',
+	'tests/retention-inventory.test.js',
+	'tests/retention-inventory-tool.test.js',
 	'tests/check-inbox-loop.test.js',
 	'tests/inbox-concurrency.test.js',
 	'tests/inbox-multi-instance.test.js',
@@ -96,6 +149,10 @@ const suites = [
 	'tests/memory-concurrency.test.js',
 	'tests/panel-concurrency.test.js',
 	'tests/dao-archive-safety.test.js',
+	'tests/dao-delete-already-archived.test.js',
+	// Legacy dao deletion assertions are individually skipped while deletion is paused;
+	// authentication and input validation assertions continue to run.
+	'tests/dao-delete-rename-first.test.js',
 	'tests/supersede-safety.test.js',
 	'tests/rename-reference-safety.test.js',
 	'tests/resolve-safety.test.js',
@@ -149,6 +206,12 @@ const suites = [
 	'tests/capture-intent-replacement.test.js',
 	'tests/capture-intent-window-boundary.test.js',
 	'tests/downward-write-trace.test.js',
+	'tests/write-admission-context.test.js',
+	'tests/operation-context.test.js',
+	'tests/write-operation-failure.test.js',
+	'tests/operation-reader.test.js',
+	'tests/operation-tool.test.js',
+	'tests/sse-freshness.test.js',
 	'tests/capture-journal.test.js',
 	'tests/capture-mutex.test.js',
 	'tests/capture-events.test.js',

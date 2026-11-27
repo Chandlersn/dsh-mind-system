@@ -40,14 +40,34 @@
  * - 本模块**不自带触发器**（体检/钩子接入由调用方决定），只提供可测试的通道。
  * - 跨进程并发未加锁：与记忆根其余写入通道同level（同进程内按路径串行）。
  *
+ * ## 5.30.0 · rename-first primitive (`archiveDayRenameFirst`)
+ *
+ * The channel above ends in a `read` + `unlink` on the live source path, so an
+ * independent writer that appends between the final read and the unlink loses
+ * its bytes while the caller still reports success. `archiveDayRenameFirst`
+ * removes that window: it moves the directory entry with `fs.rename` (atomic on
+ * one filesystem), merges the moved bytes into the month file, and only then
+ * removes the staged copy. A writer that already holds a handle keeps writing
+ * to the same inode, now reachable at the staging path; a writer that opens the
+ * old path afterwards creates a fresh file, which is new data and is left
+ * alone. Anything this function cannot prove (already-present day with
+ * different bytes, an unsettled staged file, an unreadable archive) stops the
+ * run with `manual_reconcile_required` and keeps the bytes on disk.
+ * `AUTO_DAILY_ARCHIVE_ENABLED` stays false: this is a primitive, not a trigger.
+ *
  * @module src/daily-archive
  */
-import { readFile, readdir, stat, unlink } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { localDateStr, readIfExists, withPathLock, withWriteCommitLock, writeText } from './util.js';
 import { recordDeleteEvent } from './write-ledger.js';
+import { redactSecrets } from './secrets.js';
+
+/** Automatic scheduling is paused until cross-process deletion is safe. */
+export const AUTO_DAILY_ARCHIVE_ENABLED = false;
 
 /** 顶层每日文件名（与账本/守卫同一严格形状）。 */
 const DAILY_FILE_RE = /^\d{4}-\d{2}-\d{2}\.md$/;
@@ -106,7 +126,7 @@ function archiveHeader(month) {
 		'',
 		`> 本文件由插件每日归档通道（${TOOL}）生成并经写入账本登记：收纳 ${month} 的顶层每日记录，按 ISO 周（周一起始）分节，\`### [YYYY-MM-DD]\` 为日节（原文剥去一级标题后并入，写作时位于记忆根目录）。已存在的日节不重写；源文件在归档写入成功并完成删除配对后消失。`,
 		'',
-	].join('');
+	].join('\n');
 }
 
 /** 把待归档日按 ISO 周分组，生成追加文本（周节升序、日节升序）。 */
@@ -134,19 +154,47 @@ function appendArchiveText(existing, addition) {
 	return `${existing}\n\n${addition}`;
 }
 
-/** 从归档文本里抽取某日的日节（到下一个 `### [`/`##` 标题或文件尾）。 */
-function extractDaySection(text, date) {
+/** Parse archive boundaries without interpreting fenced code as headings. */
+function parseDaySection(text, date) {
 	const lines = String(text ?? '').split('\n');
-	let start = -1;
+	const boundaries = [];
+	const seen = new Set();
+	let fence = null;
 	for (let i = 0; i < lines.length; i++) {
-		if (new RegExp(`^###\\s*\\[${date}\\]`).test(lines[i])) { start = i; break; }
+		const line = lines[i].replace(/\r$/, '');
+		const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+		if (fence) {
+			if (marker && marker[1][0] === fence.char && marker[1].length >= fence.length && /^\s*$/.test(marker[2])) fence = null;
+			continue;
+		}
+		if (marker) { fence = { char: marker[1][0], length: marker[1].length }; continue; }
+		const day = /^###\s+\[(\d{4}-\d{2}-\d{2})\]\s*$/.exec(line);
+		if (day) {
+			if (seen.has(day[1])) return { status: 'ambiguous', reason: 'duplicate_day' };
+			seen.add(day[1]);
+			boundaries.push({ line: i, day: day[1] });
+		} else if (/^###\s*\[/.test(line)) {
+			return { status: 'ambiguous', reason: 'malformed_day_heading' };
+		} else if (/^##\s+周\s+\d{4}-W\d{2}（\d{2}-\d{2} ~ \d{2}-\d{2}）\s*$/.test(line)) {
+			boundaries.push({ line: i });
+		} else if (/^##\s+周\s+\d{4}-W/.test(line)) {
+			return { status: 'ambiguous', reason: 'malformed_week_heading' };
+		}
 	}
-	if (start < 0) return undefined;
-	let end = lines.length;
-	for (let i = start + 1; i < lines.length; i++) {
-		if (/^###\s*\[/.test(lines[i]) || /^##\s/.test(lines[i])) { end = i; break; }
-	}
-	return lines.slice(start, end).join('\n').trimEnd();
+	if (fence) return { status: 'ambiguous', reason: 'unclosed_fence' };
+	const days = boundaries.filter((entry) => entry.day).map((entry) => entry.day);
+	const index = boundaries.findIndex((entry) => entry.day === date);
+	if (index < 0) return { status: 'missing', reason: 'day_missing', days };
+	const start = boundaries[index].line;
+	const end = boundaries[index + 1]?.line ?? lines.length;
+	const section = lines.slice(start, end).join('\n').trimEnd();
+	const body = lines.slice(start + 1, end).join('\n');
+	return { status: body.trim() ? 'found' : 'empty', text: section, days };
+}
+
+function extractDaySection(text, date) {
+	const parsed = parseDaySection(text, date);
+	return parsed.status === 'found' || parsed.status === 'empty' ? parsed.text : undefined;
 }
 
 /**
@@ -265,6 +313,21 @@ export async function archiveDailyMonths(root, { today } = {}) {
 		byMonth.get(month).push({ day, name: entry.name, path: path.join(root, entry.name) });
 	}
 
+	// Check every candidate month before modifying any archive in this run.
+	for (const month of [...byMonth.keys()].sort()) {
+		const archPath = path.join(root, 'daily', `${month}.md`);
+		try {
+			const existing = await readIfExists(archPath);
+			const parsed = existing === undefined ? null : parseDaySection(existing, '');
+			if (parsed?.status === 'ambiguous') {
+				for (const s of byMonth.get(month)) result.errors.push({ day: s.day, month, stage: 'read_archive', code: 'MEMORY_ARCHIVE_AMBIGUOUS', message: `归档件 daily/${month}.md 结构不明确（${parsed.reason}），本轮未归档，源文件保留` });
+			}
+		} catch (err) {
+			for (const s of byMonth.get(month)) result.errors.push({ day: s.day, month, stage: 'read_archive', code: err?.code, message: `归档件 daily/${month}.md 读取失败（${err?.code ?? 'unknown'}），本轮未归档，源文件保留` });
+		}
+	}
+	if (result.errors.length) return result;
+
 	for (const month of [...byMonth.keys()].sort()) {
 		const sources = [];
 		for (const s of byMonth.get(month).sort((a, b) => a.day.localeCompare(b.day))) {
@@ -286,7 +349,12 @@ export async function archiveDailyMonths(root, { today } = {}) {
 				for (const s of sources) result.errors.push({ day: s.day, month, stage: 'read_archive', message: `归档件 daily/${month}.md 读取失败（${err?.code ?? 'unknown'}），本轮未归档，源文件保留` });
 				return;
 			}
-			const existingDays = new Set(existing ? [...existing.matchAll(/^###\s*\[(\d{4}-\d{2}-\d{2})\]/gm)].map((m) => m[1]) : []);
+			const parsed = existing === undefined ? null : parseDaySection(existing, '');
+			if (parsed?.status === 'ambiguous') {
+				for (const s of sources) result.errors.push({ day: s.day, month, stage: 'read_archive', code: 'MEMORY_ARCHIVE_AMBIGUOUS', message: `归档件 daily/${month}.md 结构不明确（${parsed.reason}），未归档，源文件保留` });
+				return;
+			}
+			const existingDays = new Set(parsed?.days ?? []);
 			const pending = [];
 			for (const s of sources) {
 				if (existingDays.has(s.day)) result.skipped.push({ day: s.day, reason: 'already_archived' });
@@ -326,21 +394,28 @@ export async function archiveDailyMonths(root, { today } = {}) {
  * 从按月归档里读取某一天的日节（只读）。
  * @returns {Promise<{month: string, file: string, date: string, text: string}|undefined>}
  */
-export async function readArchivedDay(root, date) {
+export async function readArchivedDayStrict(root, date) {
 	if (typeof root !== 'string' || !root.trim()) throw new TypeError('root must be a non-empty path');
-	if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) return undefined;
+	if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) return { status: 'invalid', reason: 'invalid_date' };
 	date = date.trim();
+	const parsedDate = new Date(`${date}T00:00:00.000Z`);
+	if (!Number.isFinite(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== date) return { status: 'invalid', reason: 'invalid_date' };
 	const month = date.slice(0, 7);
 	const file = path.join(root, 'daily', `${month}.md`);
 	let text;
 	try {
 		text = await readIfExists(file);
-	} catch {
-		return undefined; // 归档件状态未知时如实放弃，不猜
+	} catch (error) {
+		return { status: 'unavailable', reason: 'read_failed', code: error?.code ?? 'unknown', month, file, date };
 	}
-	if (text === undefined) return undefined;
-	const section = extractDaySection(text, date);
-	return section === undefined ? undefined : { month, file, date, text: section };
+	if (text === undefined) return { status: 'missing', reason: 'archive_missing', month, file, date };
+	return { ...parseDaySection(text, date), month, file, date };
+}
+
+export async function readArchivedDay(root, date) {
+	const result = await readArchivedDayStrict(root, date);
+	if (result.status !== 'found' && result.status !== 'empty') return undefined;
+	return { month: result.month, file: result.file, date: result.date, text: result.text };
 }
 
 /**
@@ -364,11 +439,456 @@ export async function latestArchivedDay(root) {
 			continue; // 该归档状态未知，看下一个
 		}
 		if (text === undefined) continue;
-		const days = [...text.matchAll(/^###\s*\[(\d{4}-\d{2}-\d{2})\]/gm)].map((m) => m[1]).sort();
+		const parsed = parseDaySection(text, '');
+		if (parsed.status === 'ambiguous') return undefined;
+		const days = parsed.days.sort();
 		if (!days.length) continue;
 		const section = extractDaySection(text, days[days.length - 1]);
 		if (section === undefined) continue;
 		return { month: name.slice(0, 7), file, date: days[days.length - 1], text: section };
 	}
 	return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Rename-first archive protocol (5.30.0)
+// ---------------------------------------------------------------------------
+
+/** Staging directory, inside the memory root, for moved-not-yet-merged days. */
+const STAGE_DAILY_REL = '.stage/daily-archive';
+/** Shape of a staging file name this module creates: `<date>.<uuid>.moved`. */
+const STAGED_NAME_RE = /^(\d{4}-\d{2}-\d{2})\.([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.moved$/;
+/** Upper bound on bytes merged from one staged day (a daily log, not a corpus). */
+const MAX_DAY_BYTES = 1024 * 1024;
+/** Upper bound on the archive file read back for merge (append-only month file). */
+const MAX_ARCHIVE_BYTES = 8 * 1024 * 1024;
+/** Upper bound when reading the live source for validation before the rename. */
+const MAX_SOURCE_BYTES = 1024 * 1024;
+/** How long to watch the staged file for a pre-rename handle still writing. */
+const SETTLE_MS = 120;
+/** Poll interval while watching the staged file settle. */
+const SETTLE_POLL_MS = 20;
+
+/** Structured outcome for expected conditions; never thrown. */
+function outcome(status, detail = {}) {
+	return { status, ok: status === 'archived' || status === 'already_archived', ...detail };
+}
+
+/** True when `date` is a real calendar day in YYYY-MM-DD form. */
+function isValidDate(date) {
+	if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+	const parsed = new Date(`${date}T00:00:00.000Z`);
+	return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
+}
+
+/**
+ * Convert a staged day's bytes into the text appended under `### [date]`.
+ * The strict parser treats `###`+`[...]` and `## 周 …` as structure, so a
+ * source body that contains such lines must not be spliced in unexamined:
+ * that would either create a duplicate day heading or a malformed week
+ * heading and make the whole month file `ambiguous` (unreadable for every
+ * day in it). Such a body is reported instead of guessed at.
+ *
+ * @returns {{ok: true, body: string} | {ok: false, reason: string}}
+ */
+function stagedBodyForMerge(text, date) {
+	const lines = stripH1(String(text ?? '')).replace(/\r\n/g, '\n').split('\n');
+	let fence = null;
+	for (const raw of lines) {
+		const line = raw.replace(/\r$/, '');
+		const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+		if (fence) {
+			if (marker && marker[1][0] === fence.char && marker[1].length >= fence.length && /^\s*$/.test(marker[2])) fence = null;
+			continue;
+		}
+		if (marker) { fence = { char: marker[1][0], length: marker[1].length }; continue; }
+		// A day heading of ANY date inside the body would collide with the
+		// heading this function writes; the month file must keep one section
+		// per day and the parser rejects duplicates outright.
+		if (/^###\s*\[/.test(line)) return { ok: false, reason: 'body_contains_day_heading' };
+		if (/^##\s+周\s/.test(line)) return { ok: false, reason: 'body_contains_week_heading' };
+	}
+	if (fence) return { ok: false, reason: 'body_has_unclosed_fence' };
+	const body = lines.join('\n').trimEnd();
+	return body.trim() ? { ok: true, body } : { ok: false, reason: 'body_is_empty' };
+}
+
+/**
+ * Build the exact bytes to append for one day under its ISO week section.
+ * Byte-for-byte the shape `readArchivedDayStrict` expects: an optional week
+ * heading, then `### [date]`, a blank line, the body, and a trailing blank line.
+ *
+ * @param {string} date `YYYY-MM-DD`.
+ * @param {string} body Merged body.
+ * @param {boolean} [omitWeekHeading] True when the archive's last week heading
+ *   is already this day's week: repeating it would leave two identical
+ *   `## 周 …` headings in one file (parseable, but not what the batch channel
+ *   produces, and needlessly ambiguous to a reader).
+ */
+function buildDayAddition(date, body, omitWeekHeading = false) {
+	const wk = isoWeekOf(Number(date.slice(0, 4)), Number(date.slice(5, 7)), Number(date.slice(8, 10)));
+	const key = `${wk.isoYear}-W${pad2(wk.week)}`;
+	const daySection = `### [${date}]\n\n${body}\n\n`;
+	return omitWeekHeading ? daySection : `## 周 ${key}（${date.slice(5, 10)} ~ ${date.slice(5, 10)}）\n\n${daySection}`;
+}
+
+/** The week key (`YYYY-Www`) of the last `## 周 …` heading, if it is well formed. */
+function lastWeekKeyOf(text) {
+	let last = null;
+	for (const line of String(text ?? '').split('\n')) {
+		const m = /^##\s+周\s+(\d{4}-W\d{2})（\d{2}-\d{2} ~ \d{2}-\d{2}）\s*$/.exec(line.replace(/\r$/, ''));
+		if (m) last = m[1];
+	}
+	return last;
+}
+
+/** Pick the staging file for `date`, or list every staged file for that date. */
+async function listStaged(root, date) {
+	const dir = path.join(root, ...STAGE_DAILY_REL.split('/'));
+	let names;
+	try {
+		names = await readdir(dir);
+	} catch (error) {
+		if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return { dir, entries: [] };
+		return { dir, error: error?.code ?? 'unknown', entries: [] };
+	}
+	const entries = [];
+	for (const name of names) {
+		const m = STAGED_NAME_RE.exec(name);
+		if (!m || m[1] !== date) continue;
+		entries.push({ name, path: path.join(dir, name) });
+	}
+	entries.sort((a, b) => a.name.localeCompare(b.name));
+	return { dir, entries };
+}
+
+/** Bounded read of a regular file; refuses non-files and oversized bodies. */
+async function readBounded(file, maxBytes) {
+	let info;
+	try {
+		info = await lstat(file);
+	} catch (error) {
+		if (error?.code === 'ENOENT') return { status: 'not_found' };
+		return { status: 'read_failed', code: error?.code ?? 'unknown' };
+	}
+	if (info.isSymbolicLink()) return { status: 'invalid_source', reason: 'symlink' };
+	if (!info.isFile()) return { status: 'invalid_source', reason: 'not_regular_file' };
+	if (info.size > maxBytes) return { status: 'read_failed', reason: 'too_large', bytes: info.size };
+	let text;
+	try {
+		text = await readFile(file, 'utf8');
+	} catch (error) {
+		if (error?.code === 'ENOENT') return { status: 'not_found' };
+		return { status: 'read_failed', code: error?.code ?? 'unknown' };
+	}
+	// Re-check after the read: the path may have been swapped for a link.
+	try {
+		const again = await lstat(file);
+		if (again.isSymbolicLink() || !again.isFile()) return { status: 'invalid_source', reason: 'changed_during_read' };
+		if (again.size !== info.size || again.mtimeMs !== info.mtimeMs) return { status: 'settling', text, bytes: again.size };
+	} catch (error) {
+		if (error?.code === 'ENOENT') return { status: 'not_found' };
+		return { status: 'read_failed', code: error?.code ?? 'unknown' };
+	}
+	return { status: 'ok', text, bytes: info.size };
+}
+
+/**
+ * Wait for a moved file to stop changing, then return a stable snapshot.
+ *
+ * A writer that opened the source before the rename keeps its handle on the
+ * same inode; its bytes land at the staging path. Those bytes are the whole
+ * point of this protocol, so the read is repeated: two consecutive samples
+ * with the same byte count are treated as stable. A file that never stabilises
+ * within the bounded window is reported as `settling`; the caller then KEEPS
+ * the staged file instead of merging and deleting, so those bytes are never
+ * destroyed.
+ *
+ * The residual risk is stated honestly rather than papered over: an append
+ * that arrives after the stable observation but before the eventual unlink is
+ * still possible, because Node exposes no way to prove an inode has no other
+ * open handles. The window is small and bounded (see SETTLE_MS), and the
+ * staged file is not deleted until the archive has been read back and
+ * confirmed — but this is a much smaller window, not zero.
+ *
+ * @returns {Promise<{status: string, text?: string, bytes?: number}>}
+ */
+async function settleStaged(file, maxBytes) {
+	const deadline = Date.now() + SETTLE_MS;
+	let previous = null;
+	for (;;) {
+		const read = await readBounded(file, maxBytes);
+		if (read.status !== 'ok' && read.status !== 'settling') return read;
+		const bytes = read.bytes;
+		if (previous !== null && previous === bytes) return { status: 'ok', text: read.text, bytes };
+		if (Date.now() >= deadline) return { status: 'settling', text: read.text, bytes };
+		previous = bytes;
+		await delay(SETTLE_POLL_MS);
+	}
+}
+
+/**
+ * Bounded append of one day to `daily/YYYY-MM.md` and verification of bytes.
+ *
+ * Reads what is there, refuses to touch an `ambiguous` archive, and (when the
+ * day is already present) compares the existing section to the staged bytes so
+ * a re-run cannot append a second copy. The append goes through `writeText`
+ * (atomic rename + ledger record), then the file is read back and the expected
+ * text compared byte for byte: only a confirmed match lets the caller delete.
+ *
+ * @returns {Promise<{status: string, ...}>}
+ */
+async function mergeIntoArchive(root, date, body) {
+	const month = date.slice(0, 7);
+	const archivePath = path.join(root, 'daily', `${month}.md`);
+	// The archive is written through writeText, which redacts tier-1 material
+	// before it reaches disk. Redact the body here as well so the
+	// "already present, byte-identical" comparison compares like with like
+	// instead of always seeing a difference on any day that held a credential.
+	// This mirrors the documented boundary of this module: the archive stores
+	// the redacted text, and that is by design, not data loss.
+	const archivedBody = redactSecrets(body).text;
+	const week = isoWeekOf(Number(date.slice(0, 4)), Number(date.slice(5, 7)), Number(date.slice(8, 10)));
+	const weekKey = `${week.isoYear}-W${pad2(week.week)}`;
+	return withPathLock(archivePath, async () => {
+		let existing;
+		try {
+			existing = await readIfExists(archivePath);
+			if (existing !== undefined && Buffer.byteLength(existing, 'utf8') > MAX_ARCHIVE_BYTES) {
+				return { status: 'read_failed', reason: 'archive_too_large' };
+			}
+		} catch (error) {
+			return { status: 'read_failed', code: error?.code ?? 'unknown' };
+		}
+		// An empty (or whitespace-only) archive file has no usable header; treat
+		// it as absent so the first merge writes the header rather than
+		// prepending blank lines that the strict parser would still accept but
+		// a reader would find malformed.
+		if (existing === undefined || existing.trim() === '') {
+			// NOTE: archiveHeader() joins its lines with '' (a pre-existing quirk:
+			// the intended blank-line separators do nothing), so its output ends
+			// without a newline. Appending through appendArchiveText keeps the
+			// week heading on its own line instead of gluing it onto the header's
+			// last line. The header bytes themselves are left exactly as the
+			// existing channel produces them — changing them is out of scope for
+			// this primitive, which must not alter the current channel's output.
+			const text = appendArchiveText(archiveHeader(month), buildDayAddition(date, archivedBody));
+			try {
+				await writeText(archivePath, text, { memoryRoot: root, tool: TOOL });
+			} catch (error) {
+				return { status: 'write_failed', code: error?.code ?? 'unknown', message: String(error?.message ?? error) };
+			}
+			let written;
+			try { written = await readFile(archivePath, 'utf8'); }
+			catch (error) { return { status: 'write_failed', code: error?.code ?? 'unknown', reason: 'verify_read_failed' }; }
+			if (written !== text) return { status: 'write_failed', reason: 'verify_mismatch' };
+			return { status: 'archived' };
+		}
+		const parsed = parseDaySection(existing, date);
+		if (parsed.status === 'ambiguous') {
+			return { status: 'ambiguous_archive', reason: parsed.reason };
+		}
+		const existingDays = new Set(parsed.days ?? []);
+		if (existingDays.has(date)) {
+			const section = extractDaySection(existing, date);
+			// Only a byte-identical section proves the staged file is that same
+			// content; anything else means two different versions exist and a
+			// human must decide which one to keep. Never append a second copy.
+			if (section !== undefined && section === `### [${date}]\n\n${archivedBody}`.trimEnd()) {
+				return { status: 'already_archived', comparable: true };
+			}
+			return { status: 'manual_reconcile_required', reason: 'day_present_with_different_bytes' };
+		}
+		// Reuse the existing week section when this day belongs to it: two
+		// identical week headings in one file are parseable but wrong.
+		const text = appendArchiveText(existing, buildDayAddition(date, archivedBody, lastWeekKeyOf(existing) === weekKey));
+		try {
+			await writeText(archivePath, text, { memoryRoot: root, tool: TOOL });
+		} catch (error) {
+			return { status: 'write_failed', code: error?.code ?? 'unknown', message: String(error?.message ?? error) };
+		}
+		let written;
+		try { written = await readFile(archivePath, 'utf8'); }
+		catch (error) { return { status: 'write_failed', code: error?.code ?? 'unknown', reason: 'verify_read_failed' }; }
+		if (written !== text) return { status: 'write_failed', reason: 'verify_mismatch' };
+		return { status: 'archived' };
+	});
+}
+
+/**
+ * Archive one top-level `YYYY-MM-DD.md` by RENAME FIRST, then merge.
+ *
+ * Protocol:
+ * 1. Validate the date and that the source is a regular file directly under
+ *    `root` (no symlink, no traversal, bounded size).
+ * 2. Any staging file already present for this date is a crash leftover; it is
+ *    merged instead of the live source (the moved bytes are the older, more
+ *    likely complete ones, and nothing is renamed twice for one date).
+ * 3. Otherwise `fs.rename` the source into `.stage/daily-archive/` — atomic on
+ *    one filesystem, so the entry moves and the inode keeps its bytes.
+ * 4. Settle-read the staged file (a pre-rename handle may still be writing
+ *    there) and merge it into `daily/YYYY-MM.md` under `### [YYYY-MM-DD]`.
+ * 5. Only after the archive write is read back and confirmed is the staged
+ *    file unlinked. Every other path keeps the staged file on disk.
+ *
+ * Nothing outside this function's own rename is ever deleted: the only unlink
+ * targets a staging path this call created or adopted with matching bytes.
+ *
+ * @param {string} root Memory root.
+ * @param {string} date `YYYY-MM-DD` of the day to archive.
+ * @param {object} [options]
+ * @param {() => string} [options.now] Reserved for callers that need a clock;
+ *   unused by the protocol itself (kept so the signature stays stable).
+ * @returns {Promise<{status: string, ok: boolean, date: string, month?: string,
+ *   archive?: string, staged?: string, bytes?: number, reason?: string,
+ *   code?: string, message?: string}>} `status` is one of `archived`,
+ *   `already_archived`, `manual_reconcile_required`, `ambiguous_archive`,
+ *   `invalid_source`, `not_found`, `read_failed`, `write_failed`.
+ *   `ok` is true only for `archived` / `already_archived`.
+ *   Nothing is thrown for any of these; a non-string root or a non-string
+ *   date also returns `invalid_source` rather than throwing.
+ */
+export async function archiveDayRenameFirst(root, date, options = {}) {
+	if (typeof root !== 'string' || !root.trim()) {
+		return outcome('invalid_source', { date: String(date ?? ''), reason: 'invalid_root' });
+	}
+	const trimmed = typeof date === 'string' ? date.trim() : '';
+	if (!isValidDate(trimmed)) {
+		return outcome('invalid_source', { date: typeof date === 'string' ? date : String(date ?? ''), reason: 'invalid_date' });
+	}
+	// `now` is accepted for signature stability; the protocol needs no clock.
+	void options;
+
+	const source = path.join(root, `${trimmed}.md`);
+	const month = trimmed.slice(0, 7);
+	const result = { date: trimmed, month, archive: path.join(root, 'daily', `${month}.md`) };
+
+	// Step 1: validate the source shape before touching anything.
+	let sourceInfo;
+	try {
+		sourceInfo = await lstat(source);
+	} catch (error) {
+		if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') {
+			return outcome('read_failed', { ...result, code: error?.code ?? 'unknown', reason: 'source_stat_failed' });
+		}
+		sourceInfo = undefined;
+	}
+	if (sourceInfo !== undefined) {
+		if (sourceInfo.isSymbolicLink()) return outcome('invalid_source', { ...result, reason: 'source_is_symlink' });
+		if (!sourceInfo.isFile()) return outcome('invalid_source', { ...result, reason: 'source_not_regular_file' });
+		if (sourceInfo.size > MAX_SOURCE_BYTES) {
+			return outcome('read_failed', { ...result, reason: 'source_too_large', bytes: sourceInfo.size });
+		}
+	}
+
+	// Step 2: adopt a crash leftover for this date rather than re-staging.
+	let staged;
+	const listing = await listStaged(root, trimmed);
+	if (listing.error !== undefined) {
+		return outcome('read_failed', { ...result, code: listing.error, reason: 'staging_dir_unreadable' });
+	}
+	if (listing.entries.length > 1) {
+		// Two staged copies for one date: which one is complete is not knowable
+		// here, and picking one could drop the other's bytes. Stop.
+		return outcome('manual_reconcile_required', {
+			...result,
+			reason: 'multiple_staged_copies',
+			staged: listing.entries.map((e) => e.path),
+		});
+	}
+	if (listing.entries.length === 1) {
+		staged = listing.entries[0].path;
+	} else if (sourceInfo === undefined) {
+		return outcome('not_found', result);
+	} else {
+		// Step 3: the atomic move. The source entry disappears in the same step
+		// the staged entry appears, so a concurrent appender holding an open
+		// handle keeps writing to these bytes at the new path.
+		const stageDir = listing.dir;
+		try {
+			await mkdir(stageDir, { recursive: true });
+		} catch (error) {
+			return outcome('write_failed', { ...result, code: error?.code ?? 'unknown', reason: 'staging_dir_create_failed' });
+		}
+		staged = path.join(stageDir, `${trimmed}.${randomUUID()}.moved`);
+		let renamed = false;
+		try {
+			await rename(source, staged);
+			renamed = true;
+		} catch (error) {
+			if (error?.code === 'ENOENT') return outcome('not_found', result);
+			// A failed rename may still have moved the entry (the error can be a
+			// lost acknowledgement). Only an unchanged source proves it did not.
+			let stillThere = false;
+			try { stillThere = (await lstat(source)).isFile(); } catch { stillThere = false; }
+			if (stillThere) {
+				return outcome('write_failed', { ...result, code: error?.code ?? 'unknown', reason: 'rename_failed' });
+			}
+			// The source is gone but the staging path is unknown: report, keep
+			// whatever exists, and let the next run adopt any leftover.
+			let moved = false;
+			try { moved = (await lstat(staged)).isFile(); } catch { moved = false; }
+			if (!moved) {
+				return outcome('manual_reconcile_required', {
+					...result,
+					reason: 'rename_outcome_unknown',
+					code: error?.code ?? 'unknown',
+					staged,
+				});
+			}
+			renamed = true;
+		}
+		if (!renamed) return outcome('manual_reconcile_required', { ...result, reason: 'rename_outcome_unknown', staged });
+	}
+
+	// Step 4: settle-read the moved bytes and merge them.
+	const read = await settleStaged(staged, MAX_DAY_BYTES);
+	if (read.status === 'invalid_source') {
+		return outcome('manual_reconcile_required', { ...result, staged, reason: read.reason ?? read.status });
+	}
+	if (read.status === 'not_found') {
+		// The staged file vanished between rename and read. That is not ours to
+		// recreate; the archive may or may not contain it.
+		return outcome('manual_reconcile_required', { ...result, staged, reason: 'staged_vanished' });
+	}
+	if (read.status === 'settling') {
+		return outcome('manual_reconcile_required', { ...result, staged, reason: 'staged_never_settled' });
+	}
+	if (read.status !== 'ok') {
+		return outcome('read_failed', { ...result, staged, code: read.code, reason: read.reason ?? 'staged_read_failed' });
+	}
+	const body = stagedBodyForMerge(read.text, trimmed);
+	if (!body.ok) {
+		return outcome('manual_reconcile_required', { ...result, staged, reason: body.reason });
+	}
+	const merged = await mergeIntoArchive(root, trimmed, body.body);
+	if (merged.status !== 'archived' && merged.status !== 'already_archived') {
+		return outcome(merged.status === 'ambiguous_archive' ? 'ambiguous_archive' : merged.status, {
+			...result,
+			staged,
+			...(merged.reason ? { reason: merged.reason } : {}),
+			...(merged.code ? { code: merged.code } : {}),
+			...(merged.message ? { message: merged.message } : {}),
+		});
+	}
+
+	// Step 5: bytes are confirmed in the archive; the staging copy may go.
+	// Only this exact path (created or adopted above) is unlinked.
+	try {
+		await unlink(staged);
+	} catch (error) {
+		if (error?.code !== 'ENOENT') {
+			// The archive is complete and the bytes are safe; the leftover
+			// staging file is a duplicate, and a re-run adopts it and reports
+			// already_archived. Report as archived, naming the leftover.
+			return outcome(merged.status, {
+				...result,
+				staged,
+				bytes: read.bytes,
+				stagedRemoved: false,
+				stagedCleanupCode: error?.code ?? 'unknown',
+			});
+		}
+	}
+	return outcome(merged.status, { ...result, staged, bytes: read.bytes, stagedRemoved: true });
 }

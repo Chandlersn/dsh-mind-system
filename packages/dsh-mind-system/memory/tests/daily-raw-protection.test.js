@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -71,6 +71,23 @@ test('memory_write resolve 保留历史日记并诚实报告未勾选', async (t
   assert.doesNotMatch(rendered, /✅ 已勾掉待观察项/);
 });
 
+// Recursive byte + directory snapshot: a paused rename/merge must leave the
+// whole tree exactly as it found it, including the raw daily logs it protects.
+async function snapshot(root) {
+  const files = new Map();
+  const dirs = [];
+  const walk = async (current) => {
+    for (const entry of (await readdir(current, { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const full = path.join(current, entry.name);
+      const rel = path.relative(root, full).split(path.sep).join('/');
+      if (entry.isDirectory()) { dirs.push(rel); await walk(full); }
+      else files.set(rel, await readFile(full));
+    }
+  };
+  await walk(root);
+  return { dirs: dirs.sort(), files };
+}
+
 for (const merge of [false, true]) test(`memory_rename ${merge ? '合并' : '改名'}只改派生链接并保留每日原文`, async (t) => {
   const { root, tools } = await setup(t);
   const source = path.join(root, 'functions', 'source.md');
@@ -84,19 +101,32 @@ for (const merge of [false, true]) test(`memory_rename ${merge ? '合并' : '改
   await writeFile(daily, original);
   const tool = tools.get('memory_rename');
   const args = { from: 'source', to: 'target' };
-  const result = await tool.execute(args, {});
-  assert.equal(result.mode, merge ? 'merged' : 'renamed');
-  assert.equal(await readFile(daily, 'utf8'), original);
-  assert.ok(!result.rewrittenFiles.includes('2025-12-31.md'));
-  await assert.rejects(readFile(source, 'utf8'), { code: 'ENOENT' });
-  const targetText = await readFile(target, 'utf8');
-  assert.match(targetText, /source only evidence/);
-  if (merge) assert.match(targetText, /target only evidence/);
-  assert.match(await readFile(path.join(root, 'functions', 'reference.md'), 'utf8'), /target\.md/);
-  assert.match(await readFile(path.join(root, 'insights', 'principle.md'), 'utf8'), /functions\/target\.md/);
-  assert.ok(result.danglingAfter >= 1, '原样保留的历史链接必须被真实 R10 计数');
-  assert.ok(result.warnings.some((s) => /原始证据/.test(s) && /跳过/.test(s) && /旧名/.test(s)));
-  const rendered = checkOutput(tool, args, result);
-  assert.match(rendered, /原始证据/);
+  // Rename and merge are both paused: the call refuses before any write, so the
+  // raw daily log and the derived links must all still be byte-identical. The
+  // receipt-level assertions below are unreachable while the pause holds and are
+  // kept in the comment so the intent is not lost:
+  //   result.mode === 'renamed' | 'merged'; rewrittenFiles excludes the daily log;
+  //   source unlinked; target carries both bodies; derived links point to target;
+  //   danglingAfter >= 1 with the "历史链接可能仍指向旧名" warning.
+  const before = await snapshot(root);
+  await assert.rejects(tool.execute(args, {}), (error) => error.code === 'safe_rename_unavailable' && /无损改名能力尚不可用/.test(error.message));
+  const after = await snapshot(root);
+  assert.deepEqual(after.dirs, before.dirs, '暂停不得创建任何目录');
+  assert.deepEqual([...after.files.keys()].sort(), [...before.files.keys()].sort(), '暂停不得增删文件');
+  for (const [rel, bytes] of before.files) assert.deepEqual(after.files.get(rel), bytes, `${rel} 必须逐字节不变`);
+  assert.equal(await readFile(daily, 'utf8'), original, '每日原始记录必须逐字节保留');
+  assert.equal(await readFile(source, 'utf8'), '# Source\n\nsource only evidence\n', '来源必须逐字节保留');
+  if (merge) assert.equal(await readFile(target, 'utf8'), '# Target\n\ntarget only evidence\n', '目标必须逐字节保留');
+  else await assert.rejects(readFile(target, 'utf8'), { code: 'ENOENT' }, '改名暂停时目标不得被创建');
+  // Output schema/render stay exercised even though no receipt is produced.
+  const rendered = checkOutput(tool, args, {
+    mode: 'renamed',
+    fromFile: 'functions/source.md',
+    toFile: 'functions/target.md',
+    rewrittenFiles: [],
+    danglingAfter: 1,
+    warnings: ['原始证据目录中的历史链接可能仍指向旧名'],
+  });
+  assert.match(rendered, /已重命名/);
   assert.match(rendered, /历史链接可能仍指向旧名/);
 });

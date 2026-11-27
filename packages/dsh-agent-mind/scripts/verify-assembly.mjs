@@ -136,9 +136,16 @@ await ctx2.plugin(SystemPrompt);
 ctx2.plugin(ToolsService); // ⚠️ 没有它 mind 不激活（inject 未满足）→ 编排不生效
 withTools(ctx2);
 await ctx2.plugin(mindMod);
+let waterfallToolsAvailable = false;
+ctx2.on('system-prompt/assemble', async (presentation, _context, next) => {
+  waterfallToolsAvailable = Array.isArray(presentation.tools);
+  return next();
+});
 
 // 处境未设 → 必须与基线逐字相同（判不出来就不动）
 const before = await ctx2.systemPrompt.assemble({});
+check('host exposes tools to assembly listeners', waterfallToolsAvailable,
+  'unsupported host contract: tools are provider-owned; situation-based reordering is unavailable');
 check(
   '未判出处境时工具面与不装本插件时逐字相同',
   before.tools.map((t) => t.name).join(',') === baseline.join(','),

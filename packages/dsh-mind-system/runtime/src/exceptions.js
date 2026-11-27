@@ -178,9 +178,11 @@ export class AnalysisCoordinator {
       // Probe observations are bounded task evidence; make them readable by the next analysis.
       const probeRefs = this.#store.listEvidence(taskId, { limit: 8 })
         .filter((item) => item.label.startsWith('probe:')).map((item) => item.ref);
+      const candidate = attempt?.candidate ? { ...attempt.candidate } : null;
+      if (candidate?.inputVersion === null) delete candidate.inputVersion;
       const packet = buildExceptionPackage({ task: run.task, attemptId: attempt?.attemptId ?? `unexecuted:${randomUUID()}`,
         trigger: exceptionTrigger(run, attempt), scopeSummary: scopeRef ? `Authorized scope details: ${scopeRef}` : summary,
-        candidate: attempt?.candidate ?? null, decision: null,
+        candidate, decision: null,
         executionSummary: attempt?.outcome ?? { reason: run.reason }, verification: attempt?.verification ?? null,
         recentTrace, evidenceRefs: [...(scopeRef ? [scopeRef] : []), ...(attempt?.verification?.evidenceRefs ?? []), ...probeRefs],
         putEvidence, maxBytes: this.#maxBytes });

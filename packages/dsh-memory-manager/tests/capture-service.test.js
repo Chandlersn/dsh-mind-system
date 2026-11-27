@@ -218,10 +218,8 @@ test('rename 已发生但确认丢失：保留意图，下次阻断，不删除�
   assert.deepEqual(await readFile(f.intent), intentBefore);
   assert.deepEqual(await readFile(f.file), after);
   assert.deepEqual(await readFile(f.ledger), ledgerBefore);
-  // 2026-11-13：暂存改入 .stage/ 且清理按 inode 核验——确认丢失路径上会先做
-  // 受核验清理；路径被外来文件占用时核验不等 → ftruncate 清零、路径保留、
-  // 绝不 unlink。外来内容不泄露，路径仍归插件所有。
-  assert.deepEqual(await bytesOrNull(reusedPath), Buffer.alloc(0), '替换路径内容清零（防泄露）且路径保留（不盲目删除）');
+  // A reused path belongs to another writer: preserve its exact bytes.
+  assert.deepEqual(await bytesOrNull(reusedPath), foreign, 'replacement file remains untouched');
 });
 
 for (const afterAppend of [false, true]) {

@@ -107,14 +107,23 @@ async function fixture(t, { loseLedgerAck = false } = {}) {
   return { body, status: response.status };
 }
 
-test('暂存删除实际成功后确认丢失：目标已记账，清理报 deferred', async (t) => {
+// SKIPPED, not deleted: both cases inject a lost acknowledgement AFTER the
+// archive commit (staging unlink / ledger append) to prove the receipt never
+// reports a full success for a partially confirmed operation. axiom-action
+// reject now refuses before its first side effect (safe_delete_unavailable), so
+// no commit happens and those acknowledgement states are unreachable. The
+// fixture and bodies stay intact so the intent returns when a concurrency-safe
+// delete lands.
+const ACK_LOST_POST_COMMIT_SKIP = 'safe deletion unavailable: axiom-action reject refuses before any write, so the post-commit acknowledgement states are unreachable';
+
+test('暂存删除实际成功后确认丢失：目标已记账，清理报 deferred', { skip: ACK_LOST_POST_COMMIT_SKIP }, async (t) => {
   const { body } = await fixture(t);
   assert.equal(body.code, 'MEMORY_STAGE_CLEANUP_DEFERRED');
   assert.equal(body.ledgerStatus, 'recorded');
   assert.match(body.error, /目标已提交并记账/);
 });
 
-test('账本实际追加和暂存实际删除后均丢失回执：两种状态都必须未知', async (t) => {
+test('账本实际追加和暂存实际删除后均丢失回执：两种状态都必须未知', { skip: ACK_LOST_POST_COMMIT_SKIP }, async (t) => {
   const { body } = await fixture(t, { loseLedgerAck: true });
   assert.equal(body.code, 'MEMORY_LEDGER_APPEND_FAILED');
   assert.equal(body.ledgerStatus, 'unknown');

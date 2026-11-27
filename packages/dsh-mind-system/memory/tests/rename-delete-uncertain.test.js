@@ -7,7 +7,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { readLedger } from '../src/write-ledger.js';
 
-test('memory_rename 合并后源删除确认丢失时报告真实部分提交状态', async (t) => {
+// SKIPPED, not deleted: this case injects an unlink failure AFTER the target was
+// committed, i.e. it exercises the partial-commit receipt on the merge path.
+// memory_rename now refuses before its first side effect (safe_rename_unavailable),
+// so that code path is unreachable and no receipt can be produced. The body is
+// kept intact so the intent stays visible and returns to service once a
+// concurrency-safe rename exists.
+test('memory_rename 合并后源删除确认丢失时报告真实部分提交状态', { skip: 'safe rename unavailable: the merge refuses before any write, so the post-commit partial state is unreachable' }, async (t) => {
   const home = await mkdtemp(path.join(tmpdir(), 'dsh-rename-delete-uncertain-'));
   const root = path.join(home, 'memory');
   const skills = path.join(home, 'skills');

@@ -3,8 +3,8 @@
  *
  * ## 为什么读历史文件而不是让 clis 发事件
  *
- * clis 每次 clis_run/clis_classify 已经把「四问答案 → 因果类型 → 后续信号」
- * 写进 clis-history.json（fingerprint → entries[]）。这是现成的零配合元数据：
+ * clis_run writes history to clis-history.json (fingerprint → entries[]).
+ * 这是现成的零配合元数据：
  * 消费它不需要 clis 改一行代码，未来的 clis 版本只要保持这个文件形态就
  * 自动被覆盖。「全系统能力需零配合层」。
  *
@@ -59,19 +59,48 @@ export async function readClisHistory(storageDir) {
  * @param history readClisHistory 的输出。
  * @returns {
  *   nominations: Array<{fingerprint, at, nominated_type, verdict, reason, evidence}>,
- *   misjudged: Array<{fingerprint, at, from_type, evidence}>,   // 误判线索（人工核）
+ *   misjudged: Array<{fingerprint, at, from_type, evidence}>,
+ *   quarantined: Array<{fingerprint, at, verdict, reason}>,
  *   stats: { entries, baseline, achieved, ineffective, off_contract, by_type }
  * }
+ * Identity-ambiguous entries count in entries but not in the other statistics.
+ * The records key supplies legacy fingerprints when record.fingerprint is absent.
+ * Invalid identities never reach nominations, misjudged, or the ledger cursor.
  */
+function validHistoryTime(value) {
+	if (typeof value !== 'string') return false;
+	const match = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
+	if (!match || !Number.isFinite(Date.parse(value))) return false;
+	const year = Number(match[1]);
+	const month = Number(match[2]);
+	const day = Number(match[3]);
+	const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+	return month >= 1 && month <= 12 && day >= 1 && day <= [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+}
+
 export function consumeClisHistory(history) {
 	const nominations = [];
 	const misjudged = [];
+	const quarantined = [];
 	const stats = { entries: 0, baseline: 0, achieved: 0, ineffective: 0, off_contract: 0, by_type: {} };
-	if (!history?.records) return { nominations, misjudged, stats, error: 'history_unreadable' };
+	if (!history?.records) return { nominations, misjudged, quarantined, stats, error: 'history_unreadable' };
 
 	for (const [fingerprint, record] of Object.entries(history.records)) {
-		for (const entry of record?.entries ?? []) {
+		const entries = Array.isArray(record?.entries) ? record.entries : [];
+		const counts = new Map();
+		for (const entry of entries) {
+			if (validHistoryTime(entry?.at)) counts.set(entry.at, (counts.get(entry.at) ?? 0) + 1);
+		}
+		for (const entry of entries) {
 			stats.entries++;
+			const identityReason = !fingerprint.trim() || fingerprint === 'undefined' || fingerprint === 'null' ||
+				(record.fingerprint !== undefined && record.fingerprint !== fingerprint)
+				? 'invalid_fingerprint' : !validHistoryTime(entry?.at) ? 'invalid_time' :
+					counts.get(entry.at) > 1 ? 'ambiguous_identity' : null;
+			if (identityReason) {
+				quarantined.push({ fingerprint, at: entry?.at, verdict: 'unknown', reason: identityReason });
+				continue;
+			}
 			const type = String(entry.causal_type ?? '');
 			stats.by_type[type] = (stats.by_type[type] ?? 0) + 1;
 			if (entry.baseline === true) stats.baseline++;
@@ -102,7 +131,7 @@ export function consumeClisHistory(history) {
 			}
 		}
 	}
-	return { nominations, misjudged, stats };
+	return { nominations, misjudged, quarantined, stats };
 }
 
 /**

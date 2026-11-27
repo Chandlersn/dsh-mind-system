@@ -26,6 +26,13 @@ const ok = (cond, label) => {
 	console.log(cond ? `  PASS ${label}` : `  FAIL ${label}`);
 	if (!cond) failures++;
 };
+async function assertRejectsCode(promise, code) {
+	try { await promise; } catch (error) {
+		ok(error?.code === code, `rejects with ${code} (got ${error?.code})`);
+		return;
+	}
+	ok(false, `expected rejection with ${code}`);
+}
 const root = () => mkdtempSync(path.join(tmpdir(), 'dsh-usage-shard-'));
 const line = (href, kind, t) => `${JSON.stringify({ t, href, kind })}\n`;
 const iso = (daysAgo) => new Date(Date.now() - daysAgo * 86400_000).toISOString();
@@ -140,54 +147,98 @@ const iso = (daysAgo) => new Date(Date.now() - daysAgo * 86400_000).toISOString(
 		`server.js uses usageFiles() everywhere it needs the whole ledger (${(srv.match(/usageFiles\(root\)/g) ?? []).length} sites)`);
 }
 
-// --- 9. compaction: shrink the file WITHOUT losing the exposure count ------
-// The ledger grows forever (~4.7k lines/month). Compaction folds old recall rows
-// into per-(href, day) counts. The contract: the TOTAL exposure number a reader
-// sees must be identical before and after, and read/correction must survive
-// verbatim (they are judgements, not polls).
+// --- 9. disabled compaction preserves all existing bytes -------------------
 {
 	const { compactUsage, usageArchivePath } = await import('../src/usage.js');
 	const dir = root();
-	mkdirSync(usageShardDir(dir), { recursive: true });
-	// A closed month, 200 days ago: 40 recall injections over 4 days + 2 judgements.
-	const old = new Date(Date.now() - 200 * 86400_000);
-	const oldMonth = `${old.getUTCFullYear()}-${String(old.getUTCMonth() + 1).padStart(2, '0')}.jsonl`;
-	const dayIso = (d) => new Date(old.getTime() + d * 86400_000).toISOString();
-	const rows = [];
-	for (let d = 0; d < 4; d++) for (let i = 0; i < 10; i++) rows.push(JSON.stringify({ t: dayIso(d), href: 'functions/a.md', kind: 'recall' }));
-	rows.push(JSON.stringify({ t: dayIso(0), href: 'functions/a.md', kind: 'correction', note: 'wrong' }));
-	rows.push(JSON.stringify({ t: dayIso(1), href: 'functions/b.md', kind: 'read' }));
-	writeFileSync(path.join(usageShardDir(dir), oldMonth), `${rows.join('\n')}\n`, 'utf8');
+	try {
+		const month = '2000-01';
+		const src = path.join(usageShardDir(dir), `${month}.jsonl`);
+		const archive = usageArchivePath(dir, month);
+		mkdirSync(path.dirname(archive), { recursive: true });
+		const raw = line('functions/a.md', 'recall', '2000-01-01T00:00:00Z').repeat(2)
+			+ '{bad json}\n' + '{"kind":"read","t":"invalid"}\n';
+		const existing = 'existing archive bytes\n';
+		writeFileSync(src, raw);
+		writeFileSync(archive, existing);
+		const stats = await compactUsage(dir);
+		ok(stats.disabled === true && stats.skipped.includes(month) && stats.compacted.length === 0,
+			'disabled compaction reports the skipped month');
+		ok(readFileSync(src, 'utf8') === raw, 'malformed and invalid timestamp rows survive byte-for-byte');
+		ok(readFileSync(archive, 'utf8') === existing, 'existing archive remains byte-for-byte unchanged');
+		// Same month in both locations is ambiguous during a migration; the reader
+		// must fail closed rather than silently pick one (or double-count).
+		await assertRejectsCode(usageFiles(dir), 'USAGE_AMBIGUOUS_MONTH');
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
 
-	// Baseline: what a wide read reports BEFORE compaction.
-	const before = await readUsage(dir, 400);
-	const beforeRecall = before.filter((r) => r.kind === 'recall' && r.href === 'functions/a.md').length;
-	const beforeCorr = before.filter((r) => r.kind === 'correction').length;
-	const beforeRead = before.filter((r) => r.kind === 'read').length;
-	ok(beforeRecall === 40, `baseline sees 40 recall injections (${beforeRecall})`);
+// Concurrent source mutation must never be erased by compaction.
+{
+	const { compactUsage } = await import('../src/usage.js');
+	const { appendFile } = await import('node:fs/promises');
+	const dir = root();
+	try {
+		mkdirSync(usageShardDir(dir), { recursive: true });
+		const src = path.join(usageShardDir(dir), '2000-01.jsonl');
+		const initial = line('functions/a.md', 'recall', '2000-01-01T00:00:00Z').repeat(2);
+		const added = line('functions/b.md', 'positive', '2000-01-02T00:00:00Z');
+		writeFileSync(src, initial);
+		await Promise.all([compactUsage(dir), appendFile(src, added)]);
+		ok(readFileSync(src, 'utf8') === initial + added, 'concurrent append remains in the source');
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
 
-	const stats = await compactUsage(dir, { olderThanDays: 90 });
-	ok(stats.compacted.includes(oldMonth.slice(0, 7)), `the closed month was compacted (${stats.compacted.join(',')})`);
-	ok(stats.keptRows < stats.rawRows, `compaction actually shrank the row count (${stats.rawRows} -> ${stats.keptRows})`);
-	ok(!existsSync(path.join(usageShardDir(dir), oldMonth)), 'the raw shard was removed after verification');
-	ok(existsSync(usageArchivePath(dir, oldMonth.slice(0, 7))), 'the archive file exists');
+// A filesystem error must not be reported as a successful compaction.
+{
+	const { compactUsage } = await import('../src/usage.js');
+	const dir = root();
+	try {
+		const obstruction = path.join(dir, '.usage');
+		writeFileSync(obstruction, 'not a directory');
+		let failed = false;
+		try { await compactUsage(dir); } catch { failed = true; }
+		ok(failed && readFileSync(obstruction, 'utf8') === 'not a directory',
+			'an unreadable shard directory reports failure and remains intact');
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
 
-	const after = await readUsage(dir, 400);
-	const afterRecall = after.filter((r) => r.kind === 'recall' && r.href === 'functions/a.md').length;
-	const afterCorr = after.filter((r) => r.kind === 'correction').length;
-	const afterRead = after.filter((r) => r.kind === 'read').length;
-	// THE assertion that matters: the exposure number is unchanged.
-	ok(afterRecall === beforeRecall, `recall count survives compaction exactly (${beforeRecall} -> ${afterRecall})`);
-	ok(afterCorr === beforeCorr && afterCorr === 1, `corrections are kept verbatim, not folded (${afterCorr})`);
-	ok(afterRead === beforeRead && afterRead === 1, `reads are kept verbatim (${afterRead})`);
-
-	// The archive is human-inspectable and self-describing.
-	const arch = readFileSync(usageArchivePath(dir, oldMonth.slice(0, 7)), 'utf8').split('\n').filter(Boolean);
-	const recallLines = arch.map((l) => JSON.parse(l)).filter((e) => e.kind === 'recall');
-	ok(recallLines.length === 4, `one folded recall line per (href, day) — 4 days (${recallLines.length})`);
-	ok(recallLines.every((e) => e.n === 10), 'each folded line carries n=10 injections');
-
-	rmSync(dir, { recursive: true, force: true });
+// Archive-aware consumers scan archived judgments exactly once; a same-month
+// duplicate is the unsafe state that must fail closed.
+{
+	const { usageArchivePath } = await import('../src/usage.js');
+	const { readAdoptionEvidence } = await import('../src/adoption-evidence.js');
+	const { traceObject } = await import('../src/object-trace.js');
+	const dir = root();
+	try {
+		const key = 'functions/demo.md';
+		const judgment = `${JSON.stringify({ t: '2000-01-01T00:00:00Z', href: key, kind: 'positive', note: 'confirmed' })}\n`;
+		const archive = usageArchivePath(dir, '2000-01');
+		mkdirSync(path.dirname(archive), { recursive: true });
+		writeFileSync(archive, judgment);
+		const evidence = await readAdoptionEvidence({ root: dir, objectKey: key });
+		const trace = await traceObject({ root: dir, objectKey: key });
+		ok(evidence.status === 'ok' && evidence.rows.length === 1 && evidence.rows[0].note === 'confirmed',
+			'archive-only verdict is returned by adoption evidence');
+		ok(trace.status === 'ok' && trace.hops.adoption.status === 'present'
+			&& trace.hops.adoption.evidence[0].note === 'confirmed',
+			'archive-only verdict is included in the object trace');
+		// A live shard for the SAME month makes the source ambiguous: both readers
+		// must report incomplete rather than double-count or silently pick one.
+		const raw = path.join(usageShardDir(dir), '2000-01.jsonl');
+		writeFileSync(raw, judgment);
+		const ambiguousEvidence = await readAdoptionEvidence({ root: dir, objectKey: key });
+		const ambiguousTrace = await traceObject({ root: dir, objectKey: key });
+		ok(ambiguousEvidence.status === 'incomplete' && ambiguousTrace.status === 'incomplete',
+			'same-month live+archive duplicate fails closed in both consumers');
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 }
 
 // --- 10. compaction must not touch a month still inside the window --------

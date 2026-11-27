@@ -6,6 +6,27 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { apply } from '../server.js';
 
+async function readOverview(reader) {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    assert.equal(done, false, 'stream ended before overview');
+    buffer += decoder.decode(value, { stream: true });
+    let boundary;
+    while ((boundary = buffer.search(/\r?\n\r?\n/)) !== -1) {
+      const frame = buffer.slice(0, boundary);
+      const separator = buffer.slice(boundary).match(/^\r?\n\r?\n/)[0];
+      buffer = buffer.slice(boundary + separator.length);
+      const lines = frame.split(/\r?\n/);
+      if (lines.includes('event: overview')) {
+        const data = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).replace(/^ /, '')).join('\n');
+        return JSON.parse(data);
+      }
+    }
+  }
+}
+
 test('overview and SSE read a bounded live runtime independently of the weekly report', { timeout: 30000 }, async () => {
   const home = await mkdtemp(path.join(tmpdir(), 'memory-runtime-'));
   const root = path.join(home, 'memory');
@@ -51,9 +72,7 @@ test('overview and SSE read a bounded live runtime independently of the weekly r
     const abort = new AbortController();
     const response = await fetch(`${base}/stream`, { signal: abort.signal });
     const reader = response.body.getReader();
-    let text = '';
-    while (!text.includes('\n\n')) text += new TextDecoder().decode((await reader.read()).value);
-    assert.deepEqual(JSON.parse(text.split('\n').find((line) => line.startsWith('data: ')).slice(6)).runtimeSnapshot, snapshot);
+    assert.deepEqual((await readOverview(reader)).runtimeSnapshot, snapshot);
     abort.abort();
     assert.equal(calls, 1);
     for (const state of ['disabled', 'unavailable', 'error']) {
@@ -63,9 +82,7 @@ test('overview and SSE read a bounded live runtime independently of the weekly r
     const errorAbort = new AbortController();
     const errorStream = await fetch(`${base}/stream`, { signal: errorAbort.signal });
     const errorReader = errorStream.body.getReader();
-    let errorText = '';
-    while (!errorText.includes('\n\n')) errorText += new TextDecoder().decode((await errorReader.read()).value);
-    assert.deepEqual(JSON.parse(errorText.split('\n').find((line) => line.startsWith('data: ')).slice(6)).runtimeSnapshot, { state: 'error', error: 'snapshot_failed' });
+    assert.deepEqual((await readOverview(errorReader)).runtimeSnapshot, { state: 'error', error: 'snapshot_failed' });
     errorAbort.abort();
     service = {};
     assert.deepEqual((await overview()).runtimeSnapshot, { state: 'unavailable' });

@@ -251,6 +251,13 @@ test('host identity tool discovers late peer, refuses paths and never records go
 		assert.ok(tool);
 		const request = { producerId: 'producer', eventId: 'event' };
 		assert.equal((await tool.execute(request)).code, 'runtime_evidence_unavailable');
+		const reviewTool = fakeCtx.registered.find(t => t.name === TOOL_NAMES.repairReview);
+		assert.equal((await reviewTool.execute(request)).reason, 'database_missing');
+		assert.equal((await reviewTool.execute({ ...request, filePath: 'foreign' })).reason, 'invalid_request');
+		assert.equal(existsSync(join(dir, 'mind-technical-reviews.sqlite')), false);
+		const recordTool = fakeCtx.registered.find(t => t.name === TOOL_NAMES.repairRecord);
+		assert.equal((await recordTool.execute(request)).reason, 'runtime_evidence_unavailable');
+		assert.equal(existsSync(join(dir, 'mind-technical-reviews.sqlite')), false);
 		const payload = { status: 'settled', taskId: 'task', repairId: 'repair' };
 		let calls = 0;
 		services.set('executionRuntimeEvidence', { producerId: 'producer', readRepairEvidence(args) {
@@ -268,8 +275,18 @@ test('host identity tool discovers late peer, refuses paths and never records go
 		assert.equal(result.goalProof, 'not_evaluated');
 		assert.equal(calls, 1);
 		assert.equal((await tool.execute({ ...request, runtimeFilePath: 'foreign' })).code, 'invalid_request');
+		assert.equal((await recordTool.execute({ ...request, filePath: 'foreign' })).reason, 'invalid_request');
+		assert.equal(existsSync(join(dir, 'mind-technical-reviews.sqlite')), false);
 		assert.equal((await tool.execute({ ...request, producerId: 'foreign' })).code, 'producer_unbound');
 		assert.equal(calls, 1);
+		const artifactTool = fakeCtx.registered.find(t => t.name === TOOL_NAMES.repairArtifacts);
+		assert.equal((await artifactTool.execute(request)).code, 'artifact_service_unavailable');
+		const peer = services.get('executionRuntimeEvidence');
+		peer.readRepairArtifacts = () => ({ status: 'match', ...request, payload: { changed: true }, artifacts: { status: 'match' } });
+		assert.equal((await artifactTool.execute(request)).code, 'identity_changed_during_review');
+		peer.readRepairArtifacts = () => ({ status: 'match', ...request, payload, artifacts: { status: 'match', reason: 'fixture', extra: 'x'.repeat(65536) } });
+		assert.equal((await artifactTool.execute(request)).code, 'artifact_response_limit');
+		assert.equal((await artifactTool.execute({ ...request, workspaceRoot: 'foreign' })).code, 'invalid_request');
 		services.delete('executionRuntimeEvidence');
 		assert.equal((await tool.execute(request)).code, 'runtime_evidence_unavailable');
 		assert.deepEqual(await readDecisions(dir), before);

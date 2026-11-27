@@ -78,6 +78,14 @@ async function fixture(t) {
   return { io, home, root, candidate, target, seed, text, sentinel, originalWrite, originalUnlink, originalOpen, rejectCandidate };
 }
 
+// SKIPPED, not deleted: these cases collide a real staging path (EEXIST, or a
+// partial body write) during the reject path and prove the handler never
+// unlinks a path whose ownership was not confirmed. axiom-action reject now
+// refuses before its first side effect (safe_delete_unavailable), so no staging
+// file is ever created and no collision can occur. The bodies stay intact so the
+// intent is preserved and returns when a concurrency-safe delete lands.
+const STAGING_POST_GUARD_SKIP = 'safe deletion unavailable: axiom-action reject refuses before any write, so staging collisions cannot occur';
+
 function sameDirectory(a, b) { return path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase(); }
 // 2026-11-13：暂存移入 <root>/.stage/（uuid 命名），唯一独占创建入口是
 // open(path, 'wx')。判据改为：.stage/ 目录 + `.stage-` 中缀 + `.tmp` 后缀。
@@ -101,7 +109,7 @@ async function assertOutcome(f, result, stage, before, expected) {
 }
 
 for (const variant of ['existing-file', 'existing-hardlink']) {
-  test(`暂存路径 ${variant} 碰撞：真实 EEXIST 后不能清理他人文件`, async (t) => {
+  test(`暂存路径 ${variant} 碰撞：真实 EEXIST 后不能清理他人文件`, { skip: STAGING_POST_GUARD_SKIP }, async (t) => {
     const f = await fixture(t);
     let stage;
     let before;
@@ -135,7 +143,7 @@ for (const variant of ['existing-file', 'existing-hardlink']) {
   });
 }
 
-test('暂存文件实际部分写入后抛错：不能盲目清理未知状态的路径', async (t) => {
+test('暂存文件实际部分写入后抛错：不能盲目清理未知状态的路径', { skip: STAGING_POST_GUARD_SKIP }, async (t) => {
   const f = await fixture(t);
   let stage;
   let before;

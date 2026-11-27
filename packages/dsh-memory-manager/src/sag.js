@@ -22,7 +22,7 @@
  * CLI 每次调用要 758ms（进程启动）；常驻 API 后单次 24ms。差 30 倍。
  */
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -171,6 +171,13 @@ export function startSagService(options = {}) {
  * `experimental: true` 是给下游的护栏：这批命中的是**实验层**内容，不是正典，
  * 可以作为线索、不可直接当证据引用。
  */
+/** Normalize optional SAG scope filters into bounded string arrays (pure, testable). */
+export function normalizeSagScope(options = {}) {
+	const clean = (v) => Array.isArray(v)
+		? v.filter((p) => typeof p === 'string' && p.trim() && p.length <= 4096).slice(0, 32) : [];
+	return { paths: clean(options.paths), exclude: clean(options.exclude) };
+}
+
 export async function sagSearch(query, options = {}) {
 	const q = String(query ?? '').trim();
 	if (!q) return { ok: false, reason: 'empty_query' };
@@ -181,6 +188,9 @@ export async function sagSearch(query, options = {}) {
 	const { endpoint } = options.endpoint ? { endpoint: options.endpoint } : readSagEndpoint();
 	const url = `${endpoint}/v1/search`;
 	const limit = Number.isSafeInteger(options.limit) ? Math.min(20, Math.max(1, options.limit)) : 3;
+	// Optional scope filters: SAG supports `paths` (restrict to indexed roots/subdirs)
+	// and `exclude`. Default to the previous [] so omitted callers are unchanged.
+	const { paths, exclude } = normalizeSagScope(options);
 	const controller = typeof AbortController === 'function' ? new AbortController() : null;
 	const timer = setTimeout(() => controller?.abort(), options.timeoutMs ?? 5000);
 	timer.unref?.();
@@ -188,7 +198,7 @@ export async function sagSearch(query, options = {}) {
 		const res = await fetch(url, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-			body: JSON.stringify({ query: q, mode: 'fast', paths: [], limit }),
+			body: JSON.stringify({ query: q, mode: 'fast', paths, exclude, limit }),
 			...(controller ? { signal: controller.signal } : {}),
 		});
 		if (!res.ok) return { ok: false, reason: `http_${res.status}` };
@@ -235,6 +245,34 @@ export async function sagSearch(query, options = {}) {
  * Root matching: SAG returns Windows extended-length paths (`\\?\C:\...`). The
  * prefix is stripped before comparison, otherwise every root looks unmatched.
  */
+/**
+ * Bounded, read-only count of regular files under an indexed root.
+ * Returns null when the root is unreadable, so index health can never be
+ * silently reported as "in sync" just because counting failed.
+ */
+export function countDiskFiles(rootPath, { maxFiles = 20000, skipDirs = ['.git', 'node_modules', '.next', 'target'] } = {}) {
+	try {
+		// An unreadable root must be unknown (null), NOT 0 — zero would read as
+		// "the disk really has no files", a false signal that hides a stalled index.
+		if (typeof rootPath !== 'string' || !existsSync(rootPath)) return null;
+		let count = 0;
+		const walk = (dir, depth) => {
+			if (depth > 12 || count > maxFiles) return;
+			let entries;
+			try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+			for (const e of entries) {
+				if (count > maxFiles) return;
+				if (e.isDirectory()) {
+					if (skipDirs.includes(e.name) || e.name.startsWith('.')) continue;
+					walk(join(dir, e.name), depth + 1);
+				} else if (e.isFile()) count++;
+			}
+		};
+		walk(rootPath, 0);
+		return count > maxFiles ? null : count;
+	} catch { return null; }
+}
+
 export async function sagStatus(options = {}) {
 	const key = options.apiKey === null ? null : (options.apiKey ?? resolveSagApiKey().key);
 	const { endpoint } = options.endpoint ? { endpoint: options.endpoint } : readSagEndpoint();
@@ -257,12 +295,18 @@ export async function sagStatus(options = {}) {
 		clearTimeout(timer);
 	}
 	if (body?.error) return { ok: false, reason: String(body.error.code ?? 'api_error') };
-	const roots = (Array.isArray(body?.roots) ? body.roots : []).map((r) => ({
-		// Strip the \\?\ long-path prefix so the path is comparable (and readable).
-		path: String(r?.path ?? '').replace(/^\\\\\?\\/, ''),
-		status: typeof r?.status === 'string' ? r.status : 'unknown',
-		indexedFiles: Number.isFinite(r?.indexed_files) ? r.indexed_files : null,
-	}));
+	const roots = (Array.isArray(body?.roots) ? body.roots : []).map((r) => {
+		const path = String(r?.path ?? '').replace(/^\\\\\?\\/, '');
+		const indexedFiles = Number.isFinite(r?.indexed_files) ? r.indexed_files : null;
+		const entry = { path, status: typeof r?.status === 'string' ? r.status : 'unknown', indexedFiles };
+		if (options.includeDiskCount === true && indexedFiles !== null) {
+			const diskFiles = countDiskFiles(path);
+			// null disk count is reported as unknown, never turned into "in sync".
+			entry.diskFiles = diskFiles;
+			entry.indexLag = diskFiles === null ? null : diskFiles - indexedFiles;
+		}
+		return entry;
+	});
 	return {
 		ok: true,
 		version: typeof body?.version === 'string' ? body.version : null,

@@ -150,7 +150,7 @@ test('a verified run is remembered and can be found again', async (t) => {
   });
 });
 
-test('a failed run is recorded as a failure, not as a remembered success', async (t) => {
+test('an unresolved run is neither counted as failed nor suggested as successful', async (t) => {
   await withRuntime(t, async (host) => {
     const agent = await host.agent('dynamic-caller');
     const result = await host.execute('runtime_execute', { agent, arguments: {
@@ -160,8 +160,12 @@ test('a failed run is recorded as a failure, not as a remembered success', async
         arguments: { path: '{{workspaceRoot}}/{{outputFile}}', content: 'a\nb\n', createOnly: true } },
       inputs: { inputFile: 'input.txt', outputFile: 'bad.txt' } } });
     assert.equal(result.isError, false, JSON.stringify(result.content));
-    assert.notEqual(result.value.status, 'completed');
-    assert.equal(result.value.library.succeeded, false);
+    assert.ok(['running', 'paused', 'waiting_analysis', 'waiting_human', 'reconciling'].includes(result.value.status));
+    assert.equal(result.value.library.succeeded, null);
+    const all = await host.execute('runtime_recipes', { agent, arguments: { minVerifiedRuns: 0 } });
+    const historical = all.value.entries.find((item) => item.spec.recipeId === 'remembered-wrong');
+    assert.equal(historical.verifiedRuns, 0);
+    assert.equal(historical.failedRuns, 0);
     // It stays out of the "has worked" listing, so a caller looking for a proven recipe will not find it.
     const listed = await host.execute('runtime_recipes', { agent, arguments: { goal: 'sort' } });
     const entry = listed.value.entries.find((item) => item.spec.recipeId === 'remembered-wrong');

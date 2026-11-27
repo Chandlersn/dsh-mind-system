@@ -37,13 +37,67 @@ function render(status, override = {}) {
   const overview = override.overview ?? { data: [fixture], loading: false, error: null };
   const tree = expand(React.createElement(Panel, { __apiFixtures: { '/api/memory-org/overview?v=0': overview }, initialView: { kind: 'overview' } }));
   const index = tree.findIndex((n) => typeof n === 'object' && n.props?.['data-dmo'] === 'capture-status');
-  assert.notEqual(index, -1, 'actual overview must render the capture status region');
+  assert.notEqual(index, -1, 'architecture diagnostics must render the capture status region');
   const region = tree[index];
   assert.equal(region.props.role, 'status');
   assert.equal(region.props['aria-label'], '每日采集状态');
   const text = expand(region.props.children).filter((item) => typeof item === 'string').join(' ');
   return { text, tree };
 }
+test('architecture is the default and accepts the legacy overview entry', () => {
+  for (const initialView of [undefined, { kind: 'overview' }]) {
+    const fixture = { root: 'fixture', initialized: true, counts: {}, results: [], capture: {} };
+    const tree = expand(React.createElement(Panel, { initialView, __apiFixtures: { '/api/memory-org/overview?v=0': { data: [fixture], loading: false, error: null } } }));
+    assert.ok(tree.some((n) => n?.props?.['data-dmo'] === 'arch-canvas'));
+    assert.ok(tree.some((n) => n?.props?.['data-dmo'] === 'architecture-diagnostics' && n.props.open === false));
+    assert.ok(tree.some((n) => n?.props?.['data-dmo'] === 'preview-input'));
+    const nav = tree.filter((n) => n?.props?.['data-dmo'] === 'nav-item');
+    assert.ok(nav.some((n) => expand(n.props.children).includes('架构')));
+    assert.ok(!nav.some((n) => expand(n.props.children).includes('总览')));
+    assert.ok(nav.some((n) => expand(n.props.children).includes('索引')));
+  }
+});
+
+test('diagnostics retain usage layers and hotspots without treating exposure as adoption', () => {
+  const fixture = { root: 'fixture', initialized: true, counts: {}, results: [], usage: { layers: { 实验: 3, 专项: 2, 通用: 1 }, hotspots: [{ href: 'functions/example.md', flips: 2, badRate: 0.5 }] } };
+  const tree = expand(React.createElement(Panel, { __apiFixtures: { '/api/memory-org/overview?v=0': { data: [fixture], loading: false, error: null } } }));
+  const section = tree.find((n) => n?.props?.['data-dmo'] === 'usage-diagnostics');
+  const text = expand(section.props.children).filter((n) => typeof n === 'string').join(' ');
+  assert.match(text, /实验 3 · 专项 2 · 通用 1/);
+  assert.match(text, /functions\/example\.md · 翻转 2 · 纠正声明比例 50%/);
+  assert.match(text, /召回是曝光，不证明采纳/);
+  assert.match(text, /分母为读取与纠正声明/);
+  assert.match(text, /来源未经认证/);
+  const unknown = render(undefined).tree.find((n) => n?.props?.['data-dmo'] === 'usage-diagnostics');
+  assert.match(expand(unknown.props.children).join(' '), /热点状态未知/);
+});
+
+test('health warning navigates to open diagnostics with the issue details', () => {
+  const states = [];
+  let index = 0;
+  const statefulReact = { ...React, useState: (init) => {
+    const slot = index++;
+    if (!(slot in states)) states[slot] = typeof init === 'function' ? init() : init;
+    return [states[slot], (value) => { states[slot] = typeof value === 'function' ? value(states[slot]) : value; }];
+  } };
+  const statefulInstance = moduleDefinition.factory((name) => name === 'react' ? statefulReact : undefined);
+  let StatefulPanel;
+  statefulInstance.apply({ slots: { inject(_slot, fn) { fn(); }, register(options, component) { if (options.name === 'main') StatefulPanel = component; } } });
+  {
+    const fixture = { root: 'fixture', initialized: true, counts: {}, results: [{ level: 'WARN', rule: 'R5', message: 'missing index entry' }] };
+    const props = { initialView: { kind: 'zone', zone: 'functions' }, __apiFixtures: { '/api/memory-org/overview?v=0': { data: [fixture], loading: false, error: null } } };
+    const renderPanel = () => { index = 0; return expand(statefulReact.createElement(StatefulPanel, props)); };
+    let tree = renderPanel();
+    const warning = tree.find((n) => n?.type === 'button' && expand(n.props.children).includes('体检有提示'));
+    assert.ok(warning);
+    warning.props.onClick();
+    tree = renderPanel();
+    assert.ok(tree.some((n) => n?.props?.['data-dmo'] === 'arch-canvas'));
+    assert.ok(tree.some((n) => n?.props?.['data-dmo'] === 'architecture-diagnostics' && n.props.open === true));
+    assert.ok(tree.includes('[WARN] R5: missing index entry'));
+  }
+});
+
 const base = {
   enabled: true, createdAt: 123456, hasObservations: false, resetOnNewInstance: true, saturated: false,
   observed: 0, selected: 0, scheduled: 0, confirmed: 0, duplicate: 0, failed: 0, conflict: 0, pending: 0,

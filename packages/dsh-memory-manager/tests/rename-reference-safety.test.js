@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -50,15 +50,42 @@ async function fixture(t) {
   return { root, functions, rename: () => tool.execute({ from: '来源', to: '目标' }, {}) };
 }
 
+// Recursive byte + directory snapshot: a paused merge must leave the root
+// exactly as it found it (no reference rewrite, no index rewrite, no staging).
+async function snapshot(root) {
+  const files = new Map();
+  const dirs = [];
+  const walk = async (current) => {
+    for (const entry of (await readdir(current, { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const full = path.join(current, entry.name);
+      const rel = path.relative(root, full).split(path.sep).join('/');
+      if (entry.isDirectory()) { dirs.push(rel); await walk(full); }
+      else files.set(rel, await readFile(full));
+    }
+  };
+  await walk(root);
+  return { dirs: dirs.sort(), files };
+}
+
+// Every case below asserted the RESULT of a merge. Merging is paused, so the
+// shared contract is now: refuse with the pause code and change nothing. The
+// per-case fixtures and the content each one protects are kept as they were.
+async function assertMergePaused(f) {
+  const before = await snapshot(f.root);
+  await assert.rejects(f.rename(), (error) => error.code === 'safe_rename_unavailable' && /无损改名能力尚不可用/.test(error.message));
+  const after = await snapshot(f.root);
+  assert.deepEqual(after.dirs, before.dirs, '合并暂停不得创建任何目录');
+  assert.deepEqual([...after.files.keys()].sort(), [...before.files.keys()].sort(), '合并暂停不得增删文件');
+  for (const [rel, bytes] of before.files) assert.deepEqual(after.files.get(rel), bytes, `${rel} 必须逐字节不变`);
+}
+
 test('无关功能文件不同章节里同名目标行均应保留', async (t) => {
   const f = await fixture(t);
   const file = path.join(f.functions, '无关章节.md');
   const before = '# 独立功能\n\n## 第一章\n\n| 名称 | 内容 |\n|---|---|\n| 目标 | 第一章独有数据 |\n\n## 第二章\n\n| 名称 | 内容 |\n|---|---|\n| 目标 | 第二章独有数据 |\n';
   await writeFile(file, before);
-  assert.equal((await f.rename()).mode, 'merged');
-  const after = await readFile(file, 'utf8');
-  assert.ok(after.includes('| 目标 | 第一章独有数据 |'), '第一章目标行必须保留');
-  assert.ok(after.includes('| 目标 | 第二章独有数据 |'), '第二章目标行必须保留');
+  await assertMergePaused(f);
+  assert.equal(await readFile(file, 'utf8'), before, '无关文件必须逐字节不变');
 });
 
 test('无来源引用的文件必须逐字节不变', async (t) => {
@@ -67,7 +94,7 @@ test('无来源引用的文件必须逐字节不变', async (t) => {
   // CRLF also makes line-ending changes observable independently of content.
   const before = Buffer.from('# 独立文件\r\n\r\n## 甲\r\n| 目标 | 甲表 |\r\n\r\n## 乙\r\n| 目标 | 乙表 |\r\n', 'utf8');
   await writeFile(file, before);
-  assert.equal((await f.rename()).mode, 'merged');
+  await assertMergePaused(f);
   assert.deepEqual(await readFile(file), before, '未引用来源的文件不得被去重或改写');
 });
 
@@ -77,19 +104,21 @@ test('显示文字与来源同名但指向其他文件的链接不得改名', as
   const before = '# 引用不同对象\n\n[来源](其他功能.md) 是其他对象的展示名。\n\n| 名称 | 摘要 |\n|---|---|\n| [来源](其他功能.md) | 不指向来源文件 |\n';
   await writeFile(file, before);
   await writeFile(path.join(f.functions, '其他功能.md'), '# 其他功能\n');
-  assert.equal((await f.rename()).mode, 'merged');
+  await assertMergePaused(f);
   assert.equal(await readFile(file, 'utf8'), before, '链接目的地不属于来源时应保持原文');
 });
 
 test('真实旧引用改写和目标功能索引去重仍然可用', async (t) => {
   const f = await fixture(t);
   const file = path.join(f.functions, '真正引用.md');
-  await writeFile(file, '# 真实引用\n\n请看 [旧功能](来源.md)。\n');
-  const result = await f.rename();
-  assert.equal(result.mode, 'merged');
-  assert.match(await readFile(file, 'utf8'), /\[旧功能\]\(目标\.md\)/, '旧文件目标应更新');
+  const before = '# 真实引用\n\n请看 [旧功能](来源.md)。\n';
+  await writeFile(file, before);
+  // Reference rewriting and index dedupe are post-guard: with the merge paused
+  // both are unreachable, and that must be visible as "nothing moved", not as
+  // a silent success. The case is kept so the intent is not lost.
+  await assertMergePaused(f);
+  assert.equal(await readFile(file, 'utf8'), before, '旧引用必须保持指向来源，不得提前改写');
   const index = await readFile(path.join(f.root, 'MEMORY.md'), 'utf8');
-  const rows = index.split(/\r?\n/).filter((line) => /^\|\s*\[目标\]\(functions\/目标\.md\)/.test(line));
-  assert.equal(rows.length, 1, '来源和目标合并后索引应只有一条目标行');
-  assert.doesNotMatch(index, /functions\/来源\.md/, '索引不能保留旧来源链接');
+  assert.match(index, /\[来源\]\(functions\/来源\.md\)/, '索引来源行必须原样保留');
+  assert.match(index, /\[目标\]\(functions\/目标\.md\)/, '索引目标行必须原样保留');
 });

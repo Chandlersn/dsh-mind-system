@@ -26,7 +26,7 @@ test('installed host evidence service binds identity and database, refuses paths
   const service = host.ctx.get('executionRuntimeEvidence');
   try {
     assert.ok(Object.isFrozen(service));
-    assert.deepEqual(Object.keys(service).sort(), ['producerId', 'readRepairEvidence']);
+    assert.deepEqual(Object.keys(service).sort(), ['producerId', 'readRepairArtifacts', 'readRepairEvidence']);
     assert.equal(service.producerId, query(stateDir, "SELECT value FROM runtime_metadata WHERE key='producer_id'")[0].value);
     const before = persistentBytes(stateDir);
     const request = { producerId: service.producerId, eventId: 'missing' };
@@ -150,6 +150,39 @@ test('receiver resolves an actual native repair through the service before and a
     assert.equal(reviewed.value.goalProof, 'not_evaluated');
     assert.deepEqual(persistentBytes(stateDir), before);
     assert.deepEqual(persistentBytes(valveDir), inboxBefore);
+    const request = { producerId: message.producerId, eventId: message.eventId };
+    const artifactMatch = await host.execute('valve_repair_artifacts', { agent, arguments: request });
+    assert.equal(artifactMatch.isError, false, JSON.stringify(artifactMatch));
+    assert.equal(artifactMatch.value.status, 'match', JSON.stringify(artifactMatch.value));
+    assert.equal(artifactMatch.value.artifacts.refs.length, 2);
+    assert.equal(artifactMatch.value.goalProof, 'not_evaluated');
+    assert.equal(artifactMatch.value.governanceEligible, false);
+    const firstCall = await host.execute('valve_repair_record', { agent, arguments: request });
+    assert.equal(firstCall.isError, false, JSON.stringify(firstCall.content));
+    const firstSnapshot = firstCall.value;
+    assert.equal(firstSnapshot.status, 'created', JSON.stringify(firstSnapshot));
+    assert.equal(firstSnapshot.snapshot.artifactStatus, 'match');
+    assert.equal(firstSnapshot.snapshot.goalProof, 'not_evaluated');
+    assert.equal(firstSnapshot.snapshot.principleAttribution, 'not_evaluated');
+    assert.equal(firstSnapshot.snapshot.governanceEligible, false);
+    const replay = (await host.execute('valve_repair_record', { agent, arguments: request })).value;
+    assert.equal(replay.status, 'replay');
+    assert.deepEqual(replay.snapshot, firstSnapshot.snapshot);
+    writeFileSync(output, 'tampered after verification');
+    const artifactMismatch = await host.execute('valve_repair_artifacts', { agent, arguments: request });
+    assert.equal(artifactMismatch.value.status, 'mismatch', JSON.stringify(artifactMismatch.value));
+    assert.equal(artifactMismatch.value.artifacts.refs[1].reason, 'sha256_mismatch');
+    assert.equal((await host.execute('valve_repair_record', { agent, arguments: request })).value.reason, 'technical_review_conflict');
+    const historical = await host.execute('valve_repair_review', { agent, arguments: request });
+    assert.equal(historical.isError, false, JSON.stringify(historical.content));
+    assert.equal(historical.value.status, 'available', JSON.stringify(historical.value));
+    assert.deepEqual(historical.value.snapshot, firstSnapshot.snapshot);
+    assert.equal(historical.value.snapshot.artifactStatus, 'match');
+    assert.equal(historical.value.snapshot.governanceEligible, false);
+    assert.equal(remounted.readRepairEvidence(request).status, 'match');
+    assert.equal(remounted.readRepairArtifacts({ ...request, workspaceRoot: host.root }).reason, 'invalid_request');
+    assert.deepEqual(persistentBytes(stateDir), before);
+    assert.equal(existsSync(join(valveDir, 'mind-technical-reviews.sqlite')), true);
     assert.equal(existsSync(join(valveDir, 'mind-valves.jsonl')), false);
   } finally {
     await fiber.dispose();

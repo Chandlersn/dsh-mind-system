@@ -38,6 +38,7 @@
  */
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { currentOperationId } from './operation-context.js';
 import { dirname, join, posix, relative, sep } from 'node:path';
 
 /**
@@ -113,6 +114,7 @@ export function isTracked(key) {
  * @returns {Promise<boolean>} 写失败返回 false（不阻断主流程）。
  */
 export async function recordWrite(root, entry) {
+	const requestId = currentOperationId();
 	const key = String(entry?.key ?? '').trim();
 	const hash = String(entry?.hash ?? '').trim();
 	if (!key || !hash) return false;
@@ -124,6 +126,7 @@ export async function recordWrite(root, entry) {
 			hash,
 			tool: String(entry?.tool ?? 'unknown'),
 			...(Number.isFinite(entry?.bytes) ? { bytes: entry.bytes } : {}),
+			...(requestId ? { request_id: requestId } : {}),
 		});
 		await appendFile(join(root, LEDGER_REL), `${line}\n`, 'utf8');
 		return true;
@@ -146,12 +149,13 @@ function normalizeDeleteTarget(to) {
 
 /** 追加带事务 ID 的删除意图或完成事件；失败返回 false。 */
 export async function recordDeleteEvent(root, entry) {
+	const requestId = currentOperationId();
 	const { key, op, id, tool, to } = entry ?? {};
 	if (!isTracked(key) || !['delete_intent', 'delete'].includes(op) || typeof id !== 'string' || !id || (tool !== undefined && (typeof tool !== 'string' || !tool))) return false;
 	try {
 		const target = normalizeDeleteTarget(to);
 		await mkdir(root, { recursive: true });
-		await appendFile(join(root, LEDGER_REL), `${JSON.stringify({ t: new Date().toISOString(), key, op, id, tool: tool ?? 'unknown', ...(target !== undefined ? { to: target } : {}) })}\n`, 'utf8');
+		await appendFile(join(root, LEDGER_REL), `${JSON.stringify({ t: new Date().toISOString(), key, op, id, tool: tool ?? 'unknown', ...(target !== undefined ? { to: target } : {}), ...(requestId ? { request_id: requestId } : {}) })}\n`, 'utf8');
 		return true;
 	} catch {
 		return false;

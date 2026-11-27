@@ -68,10 +68,9 @@ for (const mode of ['writeText', 'writeRenameTarget', 'panel-rename']) {
       });
       assert.equal(attempts, 1);
       assert.equal(await readFile(file, 'utf8'), '已提交内容', '故障在真实提交后');
-      // 暂存已移入 .stage/ 且创建时记录 inode：路径被外来文件占用后走
-      // ftruncate 兜底——内容清零（不泄露暂存正文）、路径保留、绝不 unlink。
-      assert.equal(await readFile(stage, 'utf8'), '', '替换路径内容清零，不泄露暂存正文');
-      assert.equal(await stat(stage).then((s) => s.isFile(), () => false), true, '路径保留待孤儿清扫');
+      // Preserve the replacement and its bytes when ownership cannot be verified.
+      assert.equal(await readFile(stage, 'utf8'), sentinel);
+      assert.equal(await stat(stage).then((s) => s.isFile(), () => false), true, '路径保留待核对');
       const ledger = await readLedger(root);
       if (lostAck) {
         assert.equal(error?.code, 'MEMORY_WRITE_COMMIT_UNKNOWN');
@@ -93,7 +92,7 @@ for (const mode of ['writeText', 'writeRenameTarget', 'panel-rename']) {
 }
 
 for (const lostAck of [false, true]) {
-  test(`panel 独占 link 后暂存路径被替换${lostAck ? '且回执丢失' : ''}：不删外来文件，内容清零保留现场`, async (t) => {
+  test(`panel 独占 link 后暂存路径被替换${lostAck ? '且回执丢失' : ''}：不删外来文件，保留现场内容`, async (t) => {
     const { root, file } = await fixture(t);
     const target = path.join(path.dirname(file), 'new.md');
     const sentinel = `其他进程的硬链接暂存哨兵-${lostAck}`;
@@ -113,10 +112,9 @@ for (const lostAck of [false, true]) {
     });
     assert.equal(calls, 1);
     assert.equal(await readFile(target, 'utf8'), '完整归档内容');
-    // 归属核验发现路径已被外来文件占用：ftruncate 兜底清空内容、路径保留
-    // 待孤儿清扫——外来文件的字节不会被当作暂存正文泄露，也绝不被 unlink。
-    assert.equal(await readFile(stage, 'utf8'), '', '替换路径只清空内容，不删除路径');
-    assert.equal(await stat(stage).then((s) => s.isFile(), () => false), true, '路径保留待孤儿清扫');
+    // Preserve the replacement and its bytes after the target is committed.
+    assert.equal(await readFile(stage, 'utf8'), sentinel);
+    assert.equal(await stat(stage).then((s) => s.isFile(), () => false), true, '路径保留待核对');
     assert.equal(error?.cleanupStatus, 'deferred');
     assert.equal(error?.stagePath, stage);
     const ledger = await readLedger(root);
@@ -154,7 +152,7 @@ test('正常提交 200 成功且 .stage/ 暂存消失（回归：旧恒 500/CLEA
   assert.deepEqual(left, [], '正常 exclusive 提交后 .stage/ 必须为空');
 });
 
-test('removeVerifiedStage：ino=0n（inode 不可用卷）走 ftruncate 兜底，绝不 unlink', async (t) => {
+test('removeVerifiedStage：ino=0n preserves the unverified file', async (t) => {
   const { root } = await fixture(t);
   const dir = stageDir(root);
   await mkdir(dir, { recursive: true });
@@ -164,12 +162,12 @@ test('removeVerifiedStage：ino=0n（inode 不可用卷）走 ftruncate 兜底�
   const outcome = await removeVerifiedStage(entry);
   assert.equal(outcome.removed, false, 'ino=0n 无法核验归属，不得报告已删除');
   assert.equal(outcome.deferred, true);
-  assert.equal(await stat(p).then((s) => s.isFile(), () => false), true, '路径保留待孤儿清扫');
-  assert.equal(await readFile(p, 'utf8'), '', '内容已 ftruncate 清零，不泄露暂存正文');
+  assert.equal(await stat(p).then((s) => s.isFile(), () => false), true, '路径保留待核对');
+  assert.equal(await readFile(p, 'utf8'), '不可核验内容');
 });
 
 for (const kind of ['file', 'hardlink', 'symlink']) {
-  test(`removeVerifiedStage：暂存路径被 ${kind} 替换——绝不 unlink，路径保留待孤儿清扫`, async (t) => {
+  test(`removeVerifiedStage：暂存路径被 ${kind} 替换——绝不 unlink，路径保留待核对`, async (t) => {
     const { root } = await fixture(t);
     const dir = stageDir(root);
     await mkdir(dir, { recursive: true });
@@ -191,19 +189,18 @@ for (const kind of ['file', 'hardlink', 'symlink']) {
     const outcome = await removeVerifiedStage(entry);
     assert.equal(outcome.removed, false, `${kind} 替换后不得报告删除成功`);
     assert.equal(outcome.deferred, true);
-    // 设计取舍（2026-11-13 规范第 1 步）：归属无法核验时 ftruncate(0) 兜底——
-    // 路径本身绝不 unlink（保留待孤儿清扫），但内容清零。file/hardlink 共享
-    // 同一 inode，清零对外可见；symlink 只保留链接路径本身。
+    // Verify the replacement and the target both retain their bytes.
     if (kind === 'symlink') {
       assert.equal(await lstat(p).then((s) => s.isSymbolicLink(), () => false), true, '符号链接路径保留');
     } else {
-      assert.equal(await stat(p).then((s) => s.isFile(), () => false), true, `${kind} 路径保留待孤儿清扫`);
-      assert.equal(await readFile(p, 'utf8'), '', `${kind} 内容已 ftruncate 清零`);
+      assert.equal(await stat(p).then((s) => s.isFile(), () => false), true, `${kind} 路径保留待核对`);
     }
+    assert.equal(await readFile(p, 'utf8'), '外来文件的宝贵字节');
+    assert.equal(await readFile(victim, 'utf8'), '外来文件的宝贵字节');
   });
 }
 
-test('孤儿清扫：超龄 .tmp 被删、新鲜文件与外来文件保留', async (t) => {
+test('Disabled sweep preserves old, fresh and unrelated files', async (t) => {
   const { root } = await fixture(t);
   const dir = stageDir(root);
   await mkdir(dir, { recursive: true });
@@ -216,15 +213,65 @@ test('孤儿清扫：超龄 .tmp 被删、新鲜文件与外来文件保留', as
   const distant = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
   await utimes(old, distant, distant);
   const result = await sweepStaleStages(root, { now: Date.now() });
-  assert.equal(result.swept, 1, '只清扫超龄孤儿');
-  await assert.rejects(stat(old), { code: 'ENOENT' }, '超龄孤儿已删除');
+  assert.deepEqual(result, { swept: 0, scanned: 2, disabled: true, reason: 'ownership-unverified' });
+  assert.equal(await readFile(old, 'utf8'), '陈旧孤儿');
   assert.equal(await readFile(fresh, 'utf8'), '新鲜暂存', '未超龄暂存保留');
   assert.equal(await readFile(other, 'utf8'), '外来文件', '非 .tmp 外来文件保留');
+});
+
+test('simulated symlink detection leaves replacement and target untouched', async (t) => {
+  const { root } = await fixture(t);
+  const entry = await createVerifiedStage(root, 'functions/link.md', 'original bytes');
+  const target = path.join(root, 'link-target.md');
+  await writeFile(target, 'target bytes');
+  let injected = 0;
+  const result = await faulted('lstat', (original) => async (file, ...args) => {
+    if (path.resolve(String(file)) === entry.path) {
+      injected++;
+      return { isSymbolicLink: () => true };
+    }
+    return original(file, ...args);
+  }, () => removeVerifiedStage(entry));
+  assert.equal(injected, 1);
+  assert.deepEqual(result, { removed: false, deferred: true, reason: 'replaced-by-symlink' });
+  assert.equal(await readFile(entry.path, 'utf8'), 'original bytes');
+  assert.equal(await readFile(target, 'utf8'), 'target bytes');
+});
+
+test('lstat failure preserves a stage hard link and its target', async (t) => {
+  const { root } = await fixture(t);
+  const entry = await createVerifiedStage(root, 'functions/linked.md', 'protected bytes');
+  const target = path.join(root, 'linked-target.md');
+  await link(entry.path, target);
+  let injected = 0;
+  const result = await faulted('lstat', (original) => async (file, ...args) => {
+    if (path.resolve(String(file)) === entry.path) {
+      injected++;
+      const error = new Error('injected lstat failure');
+      error.code = 'EACCES';
+      throw error;
+    }
+    return original(file, ...args);
+  }, () => removeVerifiedStage(entry));
+  assert.equal(injected, 1);
+  assert.deepEqual(result, { removed: false, deferred: true, reason: 'EACCES' });
+  assert.equal(await readFile(entry.path, 'utf8'), 'protected bytes');
+  assert.equal(await readFile(target, 'utf8'), 'protected bytes');
+});
+
+test('verified stage hard link is removed without modifying its target', async (t) => {
+  const { root } = await fixture(t);
+  const entry = await createVerifiedStage(root, 'functions/normal.md', 'protected bytes');
+  const target = path.join(root, 'normal-target.md');
+  await link(entry.path, target);
+  assert.deepEqual(await removeVerifiedStage(entry), { removed: true });
+  await assert.rejects(lstat(entry.path), { code: 'ENOENT' });
+  assert.equal(await readFile(target, 'utf8'), 'protected bytes');
 });
 
 test('孤儿清扫：.stage/ 不存在时静默跳过（正反例）', async (t) => {
   const { root } = await fixture(t);
   const result = await sweepStaleStages(root);
-  assert.deepEqual(result, { swept: 0, scanned: 0 });
+  assert.deepEqual(result, { swept: 0, scanned: 0, disabled: true, reason: 'ownership-unverified' });
   await assert.rejects(stat(stageDir(root)), { code: 'ENOENT' }, '清扫不得凭空创建 .stage/');
 });

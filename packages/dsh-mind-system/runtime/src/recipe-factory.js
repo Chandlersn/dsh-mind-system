@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { RuntimeContractError, requireString } from './contracts.js';
 import { buildVerifier, VERIFIER_PRIMITIVES } from './verifier-primitives.js';
 import { buildCondition, CONDITION_KINDS } from './condition-primitives.js';
@@ -161,8 +160,49 @@ function renderArguments(template, task, state) {
  * @param {object} spec The declared specification.
  * @param {{ toolEffects: Record<string,string> }} options Trusted effect declarations from the host.
  */
+const identities = new WeakMap();
+
+function canonical(value, active = new Set(), depth = 0) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number' && Number.isFinite(value)) return JSON.stringify(value);
+  if (!value || typeof value !== 'object' || depth > 64 || active.has(value)) {
+    fail('invalid_recipe_spec', 'Recipe identity must contain bounded, acyclic JSON values.');
+  }
+  const array = Array.isArray(value);
+  if (Object.getPrototypeOf(value) !== (array ? Array.prototype : Object.prototype)) {
+    fail('invalid_recipe_spec', 'Recipe identity must contain plain JSON values.');
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some((key) => typeof key !== 'string')) fail('invalid_recipe_spec', 'Recipe identity must not contain symbol keys.');
+  active.add(value);
+  let result;
+  if (array) {
+    if (keys.length !== value.length + 1 || !keys.includes('length')) fail('invalid_recipe_spec', 'Recipe identity arrays must be dense.');
+    const items = [];
+    for (let index = 0; index < value.length; index++) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value')) fail('invalid_recipe_spec', 'Recipe identity arrays must contain data values.');
+      items.push(canonical(descriptor.value, active, depth + 1));
+    }
+    result = `[${items.join(',')}]`;
+  } else {
+    result = `{${keys.sort().map((key) => {
+      const descriptor = descriptors[key];
+      if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) fail('invalid_recipe_spec', 'Recipe identity objects must contain enumerable data values.');
+      return `${JSON.stringify(key)}:${canonical(descriptor.value, active, depth + 1)}`;
+    }).join(',')}}`;
+  }
+  active.delete(value);
+  return result;
+}
+
+export function recipeIdentity(recipe) {
+  return identities.get(recipe) ?? null;
+}
+
 export function buildRecipeFromSpec(spec, { toolEffects } = {}) {
-  const checked = validateSpec(spec);
+  const checked = validateSpec(JSON.parse(canonical(spec)));
   const allowedTools = checked.allowedTools ?? [checked.tool];
   if (!Array.isArray(allowedTools) || !allowedTools.length || !allowedTools.includes(checked.tool)) {
     fail('invalid_recipe_spec', 'allowedTools must include the tool the recipe dispatches.');
@@ -222,17 +262,26 @@ export function buildRecipeFromSpec(spec, { toolEffects } = {}) {
       // The scheduler pins the verdict to the registered verifier identity, so a delegated verdict must
       // carry this identity; the step that produced it stays visible in the reason.
       //
-      // An intermediate step satisfying its own predicate is *not* the task being done: reporting
-      // goalSatisfied here would end the run after step one, which is exactly what it did before this was
-      // split out. Only the final step may claim the goal.
-      const last = step !== null && index === steps.length - 1;
+      // Resolve the branch once with the verifier's metered, scoped I/O. The scheduler snapshots the
+      // verdict before passing it to advance, so the same decision drives both completion and the cursor.
+      const branchTarget = step !== null && verdict.status === 'pass'
+        ? resolveNext(step, { task: context.task, state: context.state, io: context.io }) : null;
+      const last = step !== null && index === steps.length - 1 && branchTarget === null;
       return { ...verdict, verifierId: `${verifier.id}+steps`, verifierVersion: '1',
+        ...(step !== null && verdict.status === 'pass' ? { branchTarget } : {}),
         goalSatisfied: last ? verdict.goalSatisfied : (verdict.status === 'pass' ? false : verdict.goalSatisfied),
         reason: step === null ? verdict.reason : `${step.id}:${verdict.reason ?? verdict.status}` };
     },
   };
 
-  return Object.freeze({
+  const identitySpec = { ...checked, version: checked.version ?? '1',
+    arguments: checked.arguments ?? {}, allowedTools,
+    preconditions: preconditionIds, postconditions: postconditionIds,
+    ...(steps ? { steps: checked.steps.map((step, index) => ({ ...step,
+      id: step.id ?? `step-${index}`, arguments: step.arguments ?? {}, next: step.next ?? [] })) } : {}) };
+  const identity = canonical({ spec: identitySpec,
+    toolEffects: Object.fromEntries(tools.map((name) => [name, toolEffects[name]])) });
+  const recipe = Object.freeze({
     id: checked.recipeId,
     version: checked.version ?? '1',
     ruleVersion: `generated:${checked.recipeId}:v${checked.version ?? '1'}`,
@@ -241,7 +290,8 @@ export function buildRecipeFromSpec(spec, { toolEffects } = {}) {
     toolEffects: Object.freeze(Object.fromEntries(tools.map((name) => [name, toolEffects[name]]))),
     requiredPreconditionIds: Object.freeze(preconditionIds),
     postconditionIds: Object.freeze(postconditionIds),
-    verificationIoReserve: 5,
+    verificationIoReserve: 5 + (steps ? Math.max(...steps.map((step) => step.next.filter(
+      (rule) => rule.when && ['file_exists', 'file_sha256'].includes(rule.when.kind)).length)) : 0),
     prepare() {
       // Preparation is deliberately identity: the task already carries its inputs, and inventing state here
       // would diverge from what the caller declared. Multi-step recipes record a step cursor instead.
@@ -287,16 +337,18 @@ export function buildRecipeFromSpec(spec, { toolEffects } = {}) {
       /**
        * Advance the cursor, honouring declared branches.
        *
-       * `advance` receives no I/O capability, so conditions that need file facts read through the same
-       * workspace-scoped helper the verifiers use — but only bare filenames, and only inside the task's
-       * workspace. The chosen target is recorded in state so a run can be inspected afterwards: "why did it
-       * go that way" must be answerable from persisted data, not by re-running the branch.
+       * The verifier records its metered branch decision in the verdict passed by the scheduler.
+       * Persist the chosen target so the branch remains inspectable without re-reading the workspace.
        */
-      advance({ task, state, candidate }) {
+      advance({ state, verification }) {
         const cursor = Number.isSafeInteger(state?.step) ? state.step : 0;
         const step = steps[cursor] ?? null;
         if (step === null) return { ...state, step: cursor + 1 };
-        const chosen = resolveNext(step, { task, state });
+        if (!verification || !Object.hasOwn(verification, 'branchTarget')
+          || (verification.branchTarget !== null && !stepIds.includes(verification.branchTarget))) {
+          fail('branch_decision_unavailable', 'The verified branch decision is unavailable.');
+        }
+        const chosen = verification.branchTarget;
         // A branch target may be the current step, which expresses a retry loop; state records how many
         // times that happened so a runaway loop is visible rather than silently spinning.
         const visits = { ...(state?.visits ?? {}) };
@@ -317,6 +369,8 @@ export function buildRecipeFromSpec(spec, { toolEffects } = {}) {
     preconditions: Object.fromEntries(preconditionIds.map((id) => [id, () => ({ verdict: 'allow' })])),
     verifier: steps ? stepVerifier : verifier,
   });
+  identities.set(recipe, identity);
+  return recipe;
 }
 
 /**
@@ -326,7 +380,7 @@ export function buildRecipeFromSpec(spec, { toolEffects } = {}) {
  * a bounded, workspace-scoped reader: bare filenames only, so a branch cannot inspect anything outside the
  * task's own workspace.
  */
-function resolveNext(step, { task, state }) {
+function resolveNext(step, { task, state, io }) {
   if (!step.next || step.next.length === 0) return null;
   const workspace = task.workspaceRoot;
   const context = {
@@ -334,7 +388,7 @@ function resolveNext(step, { task, state }) {
     workspace,
     digest: (bytes) => createHash('sha256').update(bytes).digest('hex'),
     readBytes: (path, options) => {
-      try { return readFileSync(path); } catch (error) {
+      try { return io.readFileSync(path); } catch (error) {
         if (options?.allowMissing && (error?.code === 'ENOENT' || error?.code === 'ENOTDIR')) return null;
         throw error;
       }

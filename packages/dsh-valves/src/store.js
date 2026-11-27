@@ -16,8 +16,9 @@
  * （fire-and-forget），但读失败要如实报告（读不到黑名单 ≠ 黑名单为空，
  * 返回 undefined 让调用方决定降级口径）。
  */
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { appendFile, lstat, mkdir, open, readFile, realpath, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { join, resolve } from 'node:path';
 // III-4 回滚缰绳：覆盖写之前先快照，回退上限按规则计。
 import { writeSnapshot, readLatestSnapshot, canRollback, markSnapshotConsumed } from './snapshot.js';
 // III-5 越权拦截：规则库写入必须出示人工通道签发的票。
@@ -136,6 +137,86 @@ export async function readDecisions(storageDir) {
 		}
 	}
 	return out;
+}
+
+/** The governance reader has a fixed byte budget; other store consumers retain their API. */
+export const GOVERNANCE_LEDGER_MAX_BYTES = 4 * 1024 * 1024;
+
+export async function readGovernanceDecisions(storageDir, options = {}) {
+	const maxBytes = GOVERNANCE_LEDGER_MAX_BYTES;
+	const strict = options.strictIdentity === true;
+	const file = ledgerPath(storageDir);
+	const identity = (a, b, fields) => fields.every(key => typeof a[key] === 'bigint' && a[key] === b[key]);
+	const fileFields = ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'];
+	const directoryFields = ['dev', 'ino'];
+	const samePath = (a, b) => process.platform === 'win32' ? resolve(a).toLowerCase() === resolve(b).toLowerCase() : resolve(a) === resolve(b);
+	const unsafe = () => Object.assign(new Error('Unsafe or changed source'), { code: 'SOURCE_CHANGED' });
+	let handle, before, after, directoryBefore, pathBefore;
+	let bytesRead = 0;
+	const buffer = Buffer.allocUnsafe(maxBytes + 1);
+	try {
+		if (strict) {
+			directoryBefore = await lstat(storageDir, { bigint: true });
+			if (!directoryBefore.isDirectory() || directoryBefore.isSymbolicLink() || !samePath(await realpath(storageDir), storageDir)) throw unsafe();
+			try { pathBefore = await lstat(file, { bigint: true }); }
+			catch (error) {
+				if (error?.code !== 'ENOENT') throw error;
+				const directoryAfter = await lstat(storageDir, { bigint: true });
+				if (!identity(directoryBefore, directoryAfter, [...directoryFields, 'mtimeNs', 'ctimeNs']) || !samePath(await realpath(storageDir), storageDir)) throw unsafe();
+				try { await lstat(file); throw unsafe(); } catch (check) { if (check?.code !== 'ENOENT') throw check; }
+				return { entries: [], complete: true, status: 'missing', bytes_read: 0, max_bytes: maxBytes, corrupt_lines: 0, truncated: false };
+			}
+			if (!pathBefore.isFile() || pathBefore.isSymbolicLink() || !samePath(await realpath(file), file)) throw unsafe();
+		}
+		handle = await open(file, strict ? constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) : 'r');
+		before = await handle.stat(strict ? { bigint: true } : undefined);
+		if (!before.isFile() || (strict && !identity(pathBefore, before, fileFields))) throw unsafe();
+		while (bytesRead < buffer.length) {
+			const read = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+			if (read.bytesRead === 0) break;
+			bytesRead += read.bytesRead;
+		}
+		after = await handle.stat(strict ? { bigint: true } : undefined);
+		if (strict) {
+			const pathAfter = await lstat(file, { bigint: true });
+			const directoryAfter = await lstat(storageDir, { bigint: true });
+			if (pathAfter.isSymbolicLink() || !pathAfter.isFile() || !directoryAfter.isDirectory() || directoryAfter.isSymbolicLink() ||
+				!identity(before, after, fileFields) || !identity(before, pathAfter, fileFields) ||
+				!identity(directoryBefore, directoryAfter, directoryFields) ||
+				!samePath(await realpath(storageDir), storageDir) || !samePath(await realpath(file), file)) throw unsafe();
+		}
+	} catch (error) {
+		if (!strict && error?.code === 'ENOENT' && !handle) {
+			return { entries: [], complete: true, status: 'missing', bytes_read: 0, max_bytes: maxBytes, corrupt_lines: 0, truncated: false };
+		}
+		return { entries: [], complete: false, status: 'unreadable', error_code: error?.code ?? 'READ_ERROR', bytes_read: bytesRead, max_bytes: maxBytes, corrupt_lines: 0, truncated: false };
+	} finally {
+		if (handle) await handle.close().catch(() => {});
+	}
+	const truncated = bytesRead > maxBytes;
+	const changed = strict ? !identity(before, after, fileFields) : before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs;
+	let text;
+	try {
+		text = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, Math.min(bytesRead, maxBytes)));
+	} catch {
+		return { entries: [], complete: false, status: 'invalid_utf8', bytes_read: bytesRead, max_bytes: maxBytes, corrupt_lines: 0, truncated };
+	}
+	const lines = text.split('\n');
+	if (truncated) lines.pop();
+	const entries = [];
+	let corruptLines = 0;
+	for (const line of lines) {
+		if (!line.trim()) continue;
+		try {
+			const value = JSON.parse(line);
+			if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid ledger row');
+			entries.push(value);
+		} catch {
+			corruptLines++;
+		}
+	}
+	const status = changed ? 'changed_during_read' : truncated ? 'truncated' : corruptLines ? 'corrupt' : 'complete';
+	return { entries, complete: status === 'complete', status, bytes_read: bytesRead, max_bytes: maxBytes, corrupt_lines: corruptLines, truncated, terminated: text.length === 0 || text.endsWith('\n') };
 }
 
 /**

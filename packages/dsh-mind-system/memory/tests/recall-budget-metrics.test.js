@@ -50,7 +50,7 @@ async function fixture(t) {
     tools: { register: () => noop },
     systemPrompt: { getSectionOrder: () => 2900, section: () => noop },
     on(name, fn) { hooks.set(name, fn); return noop; },
-    get() { return undefined; },
+    get(name) { return name === 'valves' ? { negativeRules: async () => [], upward() {} } : undefined; },
     set(name, service) { services.set(name, service); },
     inject(_names, fn) { fn({ webServer: undefined, workspaceRegistry: undefined }); },
   };

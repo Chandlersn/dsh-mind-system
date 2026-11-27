@@ -1,0 +1,81 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, rmSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+const combined = new URL('../../clis/clis-event-store.js', import.meta.url);
+const standalone = new URL('../../dsh-clis/clis-event-store.js', import.meta.url);
+const { openClisEventStore } = await import((existsSync(combined) ? combined : standalone).href);
+import { createClisEventReceiver } from '../src/clis-event-receiver.js';
+import { apply, createRuntime } from '../index.js';
+
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+test('a stalled asynchronous peer is visible and never starts parallel retries', async () => {
+  let calls = 0;
+  let finish;
+  const pending = new Promise(resolve => { finish = resolve; });
+  const rt = createRuntime({ clisStallMs: 10, getClisOutbox: () => ({ pending: () => { calls++; return pending; }, recordReceipt() {} }) });
+  const first = rt.retryClisEvents();
+  const second = rt.retryClisEvents();
+  await wait(30);
+  assert.equal(calls, 1);
+  assert.equal(rt.clisEventStatus().state, 'stalled');
+  finish([]);
+  await Promise.all([first, second]);
+  assert.equal(rt.clisEventStatus().state, 'pending_unverified');
+  rt.dispose();
+});
+
+test('host lifecycle retries pending events, tolerates lost receipt, and rotates pages', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'clis-auto-host-'));
+  const producer = join(dir, 'producer.sqlite');
+  const store = openClisEventStore(producer);
+  const item = store.record({ eventId: randomUUID(), kind: 'clis.run.v1', payload: { baseline: true } }).event;
+  const inbox = join(dir, 'valves', 'clis-event-inbox.sqlite');
+  mkdirSync(join(dir, 'valves'));
+  let receiver = createClisEventReceiver({ filePath: inbox });
+  const first = receiver.receive({ producerId: item.producerId, eventId: item.eventId, kind: item.kind, payload: item.payload }).receipt;
+  receiver.close();
+  const services = new Map();
+  let dispose;
+  const ctx = { get: k => services.get(k), provide: (k, v) => services.set(k, v), effect: fn => { dispose = fn(); }, tools: { register() {} }, logger: () => ({ warn() {}, error() {} }) };
+  apply(ctx, { storageDir: join(dir, 'valves'), patrol: { enabled: false } }, { clisPollMs: 10, loadDefineTool: () => x => x });
+  const valves = services.get('valves');
+  await wait(25);
+  assert.equal(valves.clisEventStatus().state, 'outbox_unavailable');
+  services.set('clisEventOutbox', store);
+  await wait(40);
+  assert.equal(store.receipts(item.eventId).length, 1);
+  assert.equal(store.receipts(item.eventId)[0].receiptId, first.receiptId);
+  assert.equal(store.pending().length, 1);
+  assert.equal(valves.clisEventStatus().authenticated, false);
+  for (let i = 0; i < 24; i++) store.record({ eventId: randomUUID(), kind: 'clis.run.v1', payload: { n: i } });
+  await wait(80);
+  const rows = store.pending({ limit: 50 });
+  assert.equal(store.receipts(rows.at(-1).eventId).length, 1);
+  dispose();
+  assert.equal(valves.clisEventStatus().state, 'stopped');
+  store.close();
+  receiver = createClisEventReceiver({ filePath: inbox });
+  assert.equal(receiver.get(item.producerId, item.eventId).receiptId, first.receiptId);
+  receiver.close();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+});
+
+test('receiver persistence failure is visible and retried without dropping the event', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'clis-auto-fail-'));
+  const store = openClisEventStore(join(dir, 'producer.sqlite'));
+  const event = store.record({ eventId: randomUUID(), kind: 'clis.run.v1', payload: {} }).event;
+  const services = new Map([['clisEventOutbox', store]]);
+  let dispose;
+  const ctx = { get: k => services.get(k), provide: (k, v) => services.set(k, v), effect: fn => { dispose = fn(); }, tools: { register() {} }, logger: () => ({ warn() {}, error() {} }) };
+  apply(ctx, { storageDir: join(dir, 'producer.sqlite'), patrol: { enabled: false } }, { clisPollMs: 1000, loadDefineTool: () => x => x });
+  await wait(20);
+  assert.equal(services.get('valves').clisEventStatus().state, 'retry_failed');
+  assert.equal(store.pending()[0].eventId, event.eventId);
+  assert.equal(store.receipts(event.eventId).length, 0);
+  dispose(); store.close();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+});

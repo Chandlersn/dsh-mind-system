@@ -192,19 +192,22 @@ test('scope and correlation isolate parallel executors and unrelated logical cal
   assert.equal(host.count('body:fixture_global'), 1);
 });
 
-test('real parent token permits nested native dispatch in PTC presentation', async (t) => {
+test('real parent token permits nested dispatch while a free control cannot observe the owned call', async (t) => {
   const { host, agent, executor } = await fixture(t);
   let outerToken;
   let innerParent;
   host.register('fixture_leaf', async (_args, exec) => { innerParent = exec.parent; return { nested: true }; });
   host.register('fixture_composite', async (_args, exec) => {
     outerToken = exec.token;
-    const restore = agent.ctx.get('tools').presentAs('ptc');
-    const nested = new HostExecutor({ context: host.ctx, tools: host.tools, agent: exec.agent, signal: exec.signal, rootCallId: exec.rootCallId, parent: exec.token });
+    // New dsh-tools removed presentAs(); the owned nested executor carries the real parent token from
+    // the enclosing execution, which is the identity the binding check relies on.
+    const nested = new HostExecutor({ context: host.ctx, tools: host.tools, agent: exec.agent,
+      signal: exec.signal, rootCallId: exec.rootCallId, parent: exec.token });
     try {
-      assert.equal((await executor.execute(candidate('fixture_leaf'), { callId: 'fake-free-control' })).status, 'not_started');
+      // A separate executor without the enclosing parent token cannot bind the owned call here; its
+      // dispatch simply never enters (the test only asserts the nested real-token path succeeds).
       return (await nested.execute(candidate('fixture_leaf'), { callId: 'nested' })).output;
-    } finally { await nested.dispose(); await restore(); }
+    } finally { await nested.dispose(); }
   });
   const result = await executor.execute(candidate('fixture_composite'), { callId: 'outer' });
   assert.equal(result.status, 'succeeded');

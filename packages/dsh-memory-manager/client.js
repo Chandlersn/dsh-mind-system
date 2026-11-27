@@ -42,7 +42,6 @@ window.__ModuleLoader__.load({
 		const enc = encodeURIComponent;
 
 		const NAV = [
-			{ key: 'overview', label: '总览', icon: '⌂' },
 			// 架构图（2026-11-16 用户要求）：把五层结构、真实数据流和闭环画出来。
 			// 它的每个数字都来自 /overview 的真实 counts/usage，不画不可观测的东西。
 			{ key: 'arch', label: '架构', icon: '◈' },
@@ -195,7 +194,8 @@ window.__ModuleLoader__.load({
 /* ---- architecture DIAGRAM (SVG, 2026-11-16) ------------------------------
    A drawn graph: boxes, directed edges with arrowheads, a feedback return arc.
    Stage edges remain neutral when historical data cannot establish health. */
-.dmo-arch-svg{display:block;width:100%;height:auto;overflow:visible}
+.dmo-arch-canvas{overflow-x:auto}
+.dmo-arch-svg{display:block;width:100%;min-width:720px;height:auto;overflow:visible}
 .dmo-node .dmo-node-box{fill:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 72%,transparent);
   stroke:color-mix(in srgb,var(--dsw-alias-border-l3) 85%,transparent);stroke-width:1;transition:stroke .16s ease,fill .16s ease}
 .dmo-node.clickable{cursor:pointer}
@@ -210,13 +210,20 @@ window.__ModuleLoader__.load({
 .dmo-node-role{font-size:9.5px;fill:var(--dsw-alias-label-tertiary)}
 .dmo-edge{fill:none;stroke-width:1.6}
 .dmo-edge.business{stroke:var(--dsw-alias-state-business-primary)}
+.dmo-edge.flow-active{stroke-width:3.5;stroke-dasharray:8 6;stroke-linecap:round;animation:dmo-flow 0.7s linear infinite}
+/* Completed observations replay briefly, then retain their distinct dotted stroke. */
+.dmo-edge.flow-finished{stroke-width:3.5;stroke-linecap:round;animation:dmo-finished 0.7s linear 3}
+@keyframes dmo-flow{to{stroke-dashoffset:-14}}
+@keyframes dmo-finished{to{stroke-dashoffset:-20}}
+@media (prefers-reduced-motion:reduce){.dmo-edge.flow-active,.dmo-edge.flow-finished{animation:none}}
 .dmo-edge.ok{stroke:var(--dsw-alias-state-success-primary)}
 .dmo-edge.danger{stroke:var(--dsw-alias-state-error-primary);stroke-dasharray:5 4}
 /* Degraded-but-alive (e.g. the SAG channel answers but rejects the key): a
    warning tone so it never reads as either working or dead. */
 .dmo-edge.warn{stroke:var(--dsw-alias-state-warning-primary,var(--dsw-alias-state-business-primary));stroke-dasharray:5 4}
-.dmo-edge.muted{stroke:color-mix(in srgb,var(--dsw-alias-label-dimmed) 85%,transparent);stroke-width:1.2}
-.dmo-edge.dashed{stroke-dasharray:3 4}
+.dmo-edge.flow-finished{stroke-dasharray:5 5}
+.dmo-edge.muted{stroke:var(--dsw-alias-label-tertiary);stroke-width:2}
+.dmo-edge.dashed{stroke-dasharray:5 4}
 .dmo-edge-label{font-size:9.5px;fill:var(--dsw-alias-label-tertiary)}
 /* ---- index page: block-separated data view (2026-11-16) --------------------
    MEMORY.md holds seven blocks of different shapes. Rendering them as one run
@@ -275,6 +282,12 @@ window.__ModuleLoader__.load({
   background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 40%,transparent);opacity:.55}
 .dmo-arch-step.on{opacity:1;border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 42%,transparent);
   background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 7%,transparent)}
+.dmo-arch-step.blocked{opacity:.85;border-color:color-mix(in srgb,var(--dsw-alias-state-warning-primary) 45%,transparent);
+  background:color-mix(in srgb,var(--dsw-alias-state-warning-primary) 6%,transparent)}
+.dmo-arch-step.unknown{opacity:.55;border-style:dashed}
+.dmo-arch-step-state{font-size:10px;line-height:14px;color:var(--dsw-alias-label-tertiary)}
+.dmo-arch-step.on .dmo-arch-step-state{color:var(--dsw-alias-state-success-primary)}
+.dmo-arch-step.blocked .dmo-arch-step-state{color:var(--dsw-alias-state-warning-primary)}
 .dmo-arch-step-n{width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
   font-size:10px;line-height:1;font-variant-numeric:tabular-nums;
   background:color-mix(in srgb,var(--dsw-alias-label-primary) 10%,transparent);color:var(--dsw-alias-label-secondary)}
@@ -679,25 +692,10 @@ window.__ModuleLoader__.load({
 		 * when it carries the URL the value is returned synchronously (the UI
 		 * test renders every view without a server).
 		 */
-		/**
-		 * Freshness of the SSE channel, as three plain reads (no hook).
-		 *
-		 * WHY A MODULE BOX AND NOT A HOOK (2026-11-16, learned the hard way):
-		 * the production fake-React harness (client-action-reconcile.test.js)
-		 * allocates hooks POSITIONALLY and only replays effects whose single dep is
-		 * an /api/memory-org/ URL. Both adding a hook AND wrapping useApi in a helper
-		 * broke five real-panel tests. The channel therefore touches no hook slot:
-		 * the stream effect bumps the existing `tick`, and anyone who needs the
-		 * freshness numbers reads them here.
-		 */
-		const SSE_BOX = { payload: null, lastEventAt: null };
-
-		/** `live` is a claim about FRESHNESS, not about having opened a socket. An
-		 *  event older than 90s means the stream is dead even when no error fired
-		 *  (a suspended tab or a buffering proxy does exactly that). */
-		function sseFreshness() {
-			const ageMs = Number.isFinite(SSE_BOX.lastEventAt) ? Date.now() - SSE_BOX.lastEventAt : null;
-			return { live: ageMs !== null && ageMs < 90_000, ageMs };
+		/** Freshness is specific to a panel instance and requires a recent event. */
+		function sseFreshness(box) {
+			const ageMs = Number.isFinite(box.lastEventAt) ? Date.now() - box.lastEventAt : null;
+			return { live: ageMs !== null && ageMs >= 0 && ageMs < 90_000, ageMs };
 		}
 
 		function useApi(url, fixtures) {
@@ -711,9 +709,9 @@ window.__ModuleLoader__.load({
 				setState((s) => ({ ...s, loading: true }));
 				fetch(url, { signal: ac.signal })
 					.then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-					.then((d) => setState({ data: d, loading: false, error: null }))
+					.then((d) => { if (!ac.signal.aborted) setState({ data: d, loading: false, error: null, url }); })
 					.catch((e) => {
-						if (e?.name === 'AbortError') return;
+						if (ac.signal.aborted || e?.name === 'AbortError') return;
 						setState({ data: null, loading: false, error: String(e?.message ?? e) });
 					});
 				return () => ac.abort();
@@ -1531,7 +1529,7 @@ window.__ModuleLoader__.load({
 		const knownCount = (value) => Number.isFinite(value) ? value : null;
 		const displayCount = (value) => knownCount(value) ?? '未知';
 
-		function buildArchitecture({ counts, usage, capture, env, health, sag, cycleCoverage, runtimeSnapshot, patrolDelivery }) {
+		function buildArchitecture({ counts, usage, capture, env, health, sag, cycleCoverage, runtimeSnapshot, patrolDelivery, edgeStatus, liveFlow }) {
 			const c = counts ?? {};
 			const n = knownCount;
 			// 五个层：真实数量 + 该层在当前体系里的角色。role 是静态说明，
@@ -1556,13 +1554,18 @@ window.__ModuleLoader__.load({
 			const indexRows = n(usage?.indexRows);
 			const hasCapture = typeof capture?.enabled === 'boolean' ? capture.enabled : null;
 			// Historical stock and aggregate events do not verify any stage or loop.
+			// Architecture edges describe distinct systems and cannot establish memory-stage
+			// or closed-loop status without attributable evidence for those stages.
 			const loop = [
-				{ key: 'write', name: '写入', ok: null, detail: `${displayCount(n(c.daily))} 份原始 + ${displayCount(n(c.functions))} 个功能域 · 运行未验证` },
+				{ key: 'write', name: '写入', ok: null, detail: `${displayCount(n(c.daily))} 个日线索 + ${displayCount(n(c.functions))} 个功能域 · 运行未验证` },
 				{ key: 'distill', name: '蒸馏', ok: null, detail: `${displayCount(n(c.insights))} 条原则 / ${displayCount(n(c.dao))} 条道 · 运行未验证` },
 				{ key: 'recall', name: '召回', ok: null, detail: `索引 ${displayCount(indexRows)} 行 · 运行未验证` },
-				{ key: 'feedback', name: '反馈', ok: null, detail: `${displayCount(recallEvents)} 条召回曝光 · 正向/纠正 ${displayCount(n(usage?.verdictEvents))} 次 · 回流未验证` },
+				{ key: 'feedback', name: '反馈', ok: null, detail: `${displayCount(n(usage?.verdictEvents))} 次判定 · 回流未验证` },
 			];
 			const loopClosed = null;
+			const graphSummary = edgeStatus?.status === 'available'
+				? { status: 'available', running: edgeStatus.runningGraphCount ?? 0, total: edgeStatus.graphEdgeCount ?? 0, at: edgeStatus.at }
+				: { status: edgeStatus?.status ?? 'unknown' };
 			// 存储根：只报服务器实际解析出来的路径。
 			const roots = [
 				{ key: 'memory', name: '记忆根', path: env?.memoryRoot ?? '', active: Boolean(env?.memoryRoot) },
@@ -1576,6 +1579,9 @@ window.__ModuleLoader__.load({
 				activeLayers,
 				loop,
 				loopClosed,
+				graphSummary,
+				liveFlow,
+				graphEdges: edgeStatus?.status === 'available' && Array.isArray(edgeStatus.edges) ? edgeStatus.edges : null,
 				roots,
 				// Exposure vs. size are different facts and must never share a label:
 				// signals/recallEvents count EVENTS (recall fires once per injection),
@@ -1584,6 +1590,7 @@ window.__ModuleLoader__.load({
 				recallEvents,
 				distinctHrefs,
 				indexRows,
+				skillCount: n(c.skills),
 				verdicts: n(usage?.verdictEvents),
 				reads: n(usage?.readEvents),
 				captureOn: hasCapture,
@@ -1628,8 +1635,27 @@ window.__ModuleLoader__.load({
 		 * Nodes show server counts; structural edges show direction without claiming
 		 * that historical counts verify stage health or a closed loop.
 		 */
-		function Architecture({ model, onZone, live, lastEventAt, fallback }) {
+		const FLOW_LABELS = { e2: '每日线索 → 功能域', e3: '功能域 → 思想', e4: '思想 → 道', e6: '功能域 → 索引', e7: '思想 → 索引', e9: '能力台账 → 索引', e10: '索引匹配已进入步骤的召回候选', e11: '索引读取工具调用', e12: '召回消息插入已进入的步骤（未证明模型使用）', e14: '会话 → 使用信号记录', e15: 'SAG 搜索调用（结果返回会话）' };
+		function flowState(flow, key, now = Date.now()) {
+			const edge = Object.hasOwn(FLOW_LABELS, key) && flow?.edges && Object.hasOwn(flow.edges, key) ? flow.edges[key] : null;
+			const validTime = (value) => Number.isFinite(value) && Number.isFinite(new Date(value).getTime());
+			const expired = validTime(edge?.expiresAt) && edge.expiresAt <= now;
+			const valid = edge && validTime(edge.at) && validTime(edge.expiresAt) && edge.expiresAt > edge.at;
+			const phase = valid && !expired && ['active', 'finished', 'failed'].includes(edge.phase) ? edge.phase : 'unknown';
+			return { phase, expired: Boolean(expired), at: validTime(edge?.at) ? edge.at : null, expiresAt: validTime(edge?.expiresAt) ? edge.expiresAt : null };
+		}
+		function Architecture({ model, onZone, live, lastEventAt, flowAt, flowFeed, fallback, refreshLoading, refreshError, refreshKnown }) {
 			const m = model ?? buildArchitecture({});
+			const [expiryTick, setExpiryTick] = useState(0);
+			useEffect(() => {
+				const now = Date.now();
+				const deadlines = Object.keys(FLOW_LABELS).map((key) => flowState(m.liveFlow, key, now).expiresAt).filter((at) => at !== null && at > now);
+				if (live && Number.isFinite(lastEventAt) && lastEventAt + 90000 > now) deadlines.push(lastEventAt + 90000);
+				if (Number.isFinite(flowAt) && flowAt + 90000 > now) deadlines.push(flowAt + 90000);
+				if (!deadlines.length) return undefined;
+				const timer = setTimeout(() => setExpiryTick((n) => n + 1), Math.min(Math.min(...deadlines) - now + 1, 2147483647));
+				return () => clearTimeout(timer);
+			}, [m.liveFlow, live, lastEventAt, flowAt, expiryTick]);
 			// Freshness is part of the data, not a decoration: an event older than
 			// ~90s means the stream is likely dead even if it never emitted `error`
 			// (a killed proxy or a suspended tab does exactly that).
@@ -1637,9 +1663,16 @@ window.__ModuleLoader__.load({
 			const liveMode = Boolean(live) && ageMs !== null && ageMs < 90_000;
 			const view = {
 				...m,
+				liveFlow: Number.isFinite(flowAt) && Date.now() - flowAt >= 0 && Date.now() - flowAt < 90_000 ? m.liveFlow : undefined,
 				liveMode,
 				lastEventAge: ageMs === null ? null : Math.max(0, Math.round(ageMs / 1000)),
 				fallbackMode: Boolean(fallback) || !liveMode,
+				refreshLoading: Boolean(refreshLoading),
+				refreshError: Boolean(refreshError),
+				refreshKnown: refreshKnown === true,
+				// 'unavailable' means the server said the activity feed is absent, so
+				// the arrows cannot show current work. It is NOT proof that nothing ran.
+				flowFeed: flowFeed === 'unavailable' || (flowFeed === 'available' && Number.isFinite(flowAt) && Date.now() - flowAt >= 90_000) ? 'unavailable' : flowFeed === 'available' ? 'available' : null,
 			};
 			return renderArchitecture(view, onZone);
 		}
@@ -1672,31 +1705,6 @@ window.__ModuleLoader__.load({
 			// src / sag / ctx / gate / sig are structure, not destinations.
 		};
 
-		function RuntimeSnapshot({ snapshot, current = false }) {
-			const states = { ready: '可用', partial: '部分可用', disabled: '已禁用', unavailable: '不可用', missing: '缺失', error: '读取错误' };
-			const state = snapshot == null ? '缺失' : states[snapshot?.state] ?? '未知';
-			const runs = Array.isArray(snapshot?.runs) ? snapshot.runs : null;
-			const tasks = Array.isArray(snapshot?.registeredTasks?.taskIds) ? snapshot.registeredTasks.taskIds : null;
-			const text = (value) => typeof value === 'string' && value ? value : '未知';
-			const timestamp = (value) => Number.isFinite(value) && Number.isFinite(new Date(value).getTime()) ? new Date(value).toISOString() : text(value);
-			const truncated = (value, locallyTruncated) => value === true || locallyTruncated ? '已截断' : value === false ? '未截断' : '未知';
-			return h('div', { className: 'dmo-inset', style: { marginTop: 8 }, 'data-dmo': 'runtime-snapshot' },
-				h('div', { className: 'dmo-measure-l' }, current ? '当前运行时快照' : '周检历史运行时快照'),
-				h('div', { className: 'dmo-measure-x' }, `状态：${state}`),
-				typeof snapshot?.error === 'string' ? h('div', { className: 'dmo-measure-x' }, `错误：${snapshot.error}`) : null,
-				h('div', { className: 'dmo-measure-x' }, `运行记录截断：${truncated(snapshot?.truncated, runs?.length > 50)}`),
-				runs === null ? h('div', { className: 'dmo-measure-x' }, '运行记录：未知') : runs.length === 0 ? h('div', { className: 'dmo-measure-x' }, '快照中无运行记录') : runs.slice(0, 50).map((run, index) =>
-					h('div', { key: index, className: 'dmo-measure-x' },
-						`任务：${text(run?.taskId)} · 状态：${text(run?.status)} · 原因：${text(run?.reason)} · 注册：${run?.registered === true ? '是' : run?.registered === false ? '否' : '未知'}`,
-						h('div', null, `创建：${timestamp(run?.createdAt)} · 更新：${timestamp(run?.updatedAt)}`),
-						h('div', null, `未解决数量：${Number.isFinite(run?.unresolved?.count) ? run.unresolved.count : '未知'} · 首个尝试 ID：${text(run?.unresolved?.first?.attemptId)} · 尝试状态：${text(run?.unresolved?.first?.status)}`),
-					),
-				),
-				h('div', { className: 'dmo-measure-x' }, `已注册任务截断：${truncated(snapshot?.registeredTasks?.truncated, tasks?.length > 50)}`),
-				h('div', { className: 'dmo-measure-x' }, `已注册任务：${tasks === null ? '未知' : tasks.length === 0 ? '快照中无' : tasks.slice(0, 50).map(text).join('、')}`),
-			);
-		}
-
 		function CycleCoverage({ coverage, patrolDelivery }) {
 			const deliveryLabels = {
 				starting: '正在启动', unavailable: '投递服务不可用', unknown: '未知：数据缺失或无法读取',
@@ -1716,6 +1724,18 @@ window.__ModuleLoader__.load({
 				['治理决策', report?.governance?.decisions],
 				['跨步骤关联', report?.cross_step_correlation],
 			];
+			// A completed loop needs BOTH a real execution outcome and an observed
+			// cross-step correlation. Weekly-report success (coverage.ok) only means the
+			// patrol ran; it must never be shown as "the loop is verified".
+			const outcomeOK = report?.micro_execution?.outcome?.status === 'observed';
+			const correlationOK = report?.cross_step_correlation?.status === 'observed';
+			const missingLinks = [
+				!outcomeOK ? '执行结果' : null,
+				!correlationOK ? '跨步骤关联' : null,
+			].filter(Boolean);
+			const loopVerdict = !report ? '闭环证据未知（无周检报告）'
+				: outcomeOK && correlationOK ? '已观察到执行结果与跨步骤关联；完整闭环仍未验证'
+				: `闭环未验证：缺 ${missingLinks.join('、')} 的可观测证据`;
 			const message = status === 'unavailable' ? '周检服务不可用，无法读取覆盖报告。'
 				: status === 'missing' ? '最近一次周检没有覆盖报告。'
 				: status === 'available' && report && typeof report === 'object' && !Array.isArray(report) ? null
@@ -1730,6 +1750,7 @@ window.__ModuleLoader__.load({
 					typeof patrolDelivery?.reportId === 'string' ? h('div', { className: 'dmo-measure-x' }, `报告 ID：${patrolDelivery.reportId}`) : null,
 				),
 				h('div', { className: 'dmo-measure-x' }, `周检时间：${typeof coverage?.at === 'string' ? coverage.at : '未知'} · ${coverage?.ok === false ? '周检失败' : coverage?.ok === true ? '周检报告执行成功' : '周检结果未知'}`),
+				h('div', { className: 'dmo-measure-x', 'data-dmo': 'cycle-loop-verdict' }, loopVerdict),
 				h('div', { className: 'dmo-measure-x' }, '各项是历史观测，单项证据不证明同一工作完成闭环。'),
 				message ? h('div', { className: 'dmo-inset' }, message) : rows.map(([name, evidence]) => {
 					const state = typeof evidence?.status === 'string' ? evidence.status : 'unknown';
@@ -1743,7 +1764,6 @@ window.__ModuleLoader__.load({
 						typeof evidence?.note === 'string' ? h('div', { className: 'dmo-measure-x' }, evidence.note) : null,
 					);
 				}),
-				!message ? h(RuntimeSnapshot, { snapshot: report?.micro_execution?.runtime_snapshot }) : null,
 			);
 		}
 
@@ -1753,6 +1773,10 @@ window.__ModuleLoader__.load({
 			const stage = () => null;
 			// Historical counts do not establish stage health.
 			const tone = () => 'dmo-edge muted dashed';
+			const flowProps = (key) => {
+				const { phase, at } = flowState(m.liveFlow, key);
+				return { key: `${key}-${phase}-${at}`, 'data-dmo': `flow-edge-${key}`, className: `dmo-edge flow-${phase} ${phase === 'active' ? 'business' : phase === 'finished' ? 'warn' : phase === 'failed' ? 'danger' : 'muted dashed'}`, markerEnd: `url(#dmo-ah-${phase === 'active' ? 'b' : phase === 'finished' ? 'w' : phase === 'failed' ? 'd' : 'm'})` };
+			};
 
 			const node = (key, { x, y, w, h: bh, name, count, unit, role, tier, accent }) => {
 				const cx = x + w / 2;
@@ -1767,6 +1791,7 @@ window.__ModuleLoader__.load({
 						key, className: `dmo-node${canClick ? ' clickable' : ''}${accent ? ' accent' : ''}`,
 						'data-dmo': `arch-node-${key}`,
 						'onClick': canClick ? () => onZone(target) : undefined,
+						'onKeyDown': canClick ? (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onZone(target); } } : undefined,
 						...(canClick ? { role: 'button', tabIndex: 0 } : {}),
 					},
 					h('title', null, `${name}${tier ? `（${tier}）` : ''}：${role ?? ''}`),
@@ -1784,33 +1809,19 @@ window.__ModuleLoader__.load({
 			};
 
 			const label = (key, x, y, text) => h('text', { key, x, y, className: 'dmo-edge-label', textAnchor: 'middle' }, text);
-
-			// The second channel's edge/marker must follow its real state. Unknown is
-			// deliberately the muted style — an unreported channel is not evidence
-			// that it works.
-			const sagEdgeClass = () => {
-				if (!m.sag.known) return 'dmo-edge muted dashed';
-				// usable → solid BUSINESS (blue), the colour the legend and the
-				// comment above both promise for "通道可用（SAG）". It had drifted to
-				// 'ok' (green), so the blue legend swatch matched no edge at all and
-				// the live usable channel read as "结构方向" instead.
-				if (m.sag.usable) return 'dmo-edge business';
-				if (m.sag.online === null || (m.sag.online && m.sag.authorized === null)) return 'dmo-edge muted dashed';
-				if (m.sag.online === true && m.sag.authorized === false) return 'dmo-edge warn dashed';
-				return 'dmo-edge danger dashed';
-			};
-			const sagMarker = () => {
-				if (!m.sag.known) return 'url(#dmo-ah-m)';
-				// Arrowhead must match the edge colour, or the tip reads as a
-				// different state than the line it caps.
-				if (m.sag.usable) return 'url(#dmo-ah-b)';
-				if (m.sag.online === null || (m.sag.online && m.sag.authorized === null)) return 'url(#dmo-ah-m)';
-				if (m.sag.online === true && m.sag.authorized === false) return 'url(#dmo-ah-m)';
-				return 'url(#dmo-ah-d)';
-			};
-
 			const layers = Object.fromEntries(m.layers.map((l) => [l.key, l]));
 			const nOf = (k) => layers[k]?.count ?? null;
+			const currentFlows = Object.entries(FLOW_LABELS).flatMap(([key, name]) => {
+				const phase = flowState(m.liveFlow, key).phase;
+				const status = key === 'e9'
+					? { finished: '能力索引已写入' }[phase]
+					: key === 'e10'
+					? phase === 'finished' ? `索引匹配完成（${m.liveFlow?.edges?.e10?.source === 'cache' ? '缓存' : m.liveFlow?.edges?.e10?.source === 'disk' ? '磁盘' : '来源未知'}）` : null
+					: key === 'e12'
+					? { active: '插入事件处理中', finished: '已插入步骤，模型使用情况未知', failed: '插入失败' }[phase]
+					: { active: '调用进行中', finished: '调用结束，结果待核验', failed: '调用失败' }[phase];
+				return status ? [`${name}：${status}`] : [];
+			});
 
 			return h(
 				'div',
@@ -1832,16 +1843,23 @@ window.__ModuleLoader__.load({
 							{ className: `dmo-dot ${m.liveMode ? 'ok' : 'warn'}`, 'data-dmo': 'arch-live-badge' },
 							h('i'),
 							m.liveMode
-								? `实时推送${m.lastEventAge !== null ? ` · ${m.lastEventAge}s 前` : ''}`
-								: '轮询降级（30s）',
+								? `推送连接正常${m.lastEventAge !== null ? ` · ${m.lastEventAge}s 前` : ''}`
+								: '推送连接不可用 · 轮询（30s）',
 						),
+						// Only shown when the overview channel is healthy but the activity
+						// channel is not: otherwise the push badge already explains it, and
+						// a green push badge alone must not imply the arrows are live.
+						m.liveMode && m.flowFeed === 'unavailable'
+							? h('span', { className: 'dmo-dot warn', 'data-dmo': 'arch-flow-feed-badge' }, h('i'), '数据流活动不可用 · 箭线状态未知')
+							: null,
+						h('span', { className: `dmo-dot ${m.refreshError ? 'fail' : m.refreshLoading ? 'warn' : m.refreshKnown ? 'ok' : ''}`, 'data-dmo': 'arch-refresh-badge' }, h('i'), m.refreshError ? '数据刷新失败' : m.refreshLoading ? '数据刷新中' : m.refreshKnown ? '数据刷新成功' : '数据刷新状态未知'),
 						h('span', { className: `dmo-dot ${m.health.fail > 0 ? 'fail' : m.health.warn > 0 ? 'warn' : m.health.fail === null || m.health.warn === null ? '' : 'ok'}` }, h('i'), m.health.fail > 0 ? `FAIL ${m.health.fail}` : m.health.warn > 0 ? `WARN ${m.health.warn}` : m.health.fail === null || m.health.warn === null ? '体检状态未知' : '体检正常'),
 						h('span', { className: `dmo-dot ${m.captureOn === false ? 'warn' : ''}` }, h('i'), m.captureOn === true ? '采集已配置启用' : m.captureOn === false ? '采集未启用' : '采集状态未知'),
 					),
 				),
 				h(
 					'div',
-					{ className: 'dmo-card', 'data-dmo': 'arch-canvas' },
+					{ className: 'dmo-card dmo-arch-canvas', 'data-dmo': 'arch-canvas' },
 					// The diagram itself.
 					h(
 						'svg',
@@ -1849,8 +1867,9 @@ window.__ModuleLoader__.load({
 						h('defs', null, [
 							h('marker', { key: 'mb', id: 'dmo-ah-b', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '5', markerHeight: '5', orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'var(--dsw-alias-state-business-primary)' })),
 							h('marker', { key: 'mo', id: 'dmo-ah-ok', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '5', markerHeight: '5', orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'var(--dsw-alias-state-success-primary)' })),
+							h('marker', { key: 'mw', id: 'dmo-ah-w', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '5', markerHeight: '5', orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'var(--dsw-alias-state-warning-primary,var(--dsw-alias-state-business-primary))' })),
 							h('marker', { key: 'md', id: 'dmo-ah-d', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '5', markerHeight: '5', orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'var(--dsw-alias-state-error-primary)' })),
-							h('marker', { key: 'mm', id: 'dmo-ah-m', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '5', markerHeight: '5', orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'var(--dsw-alias-label-dimmed)' })),
+							h('marker', { key: 'mm', id: 'dmo-ah-m', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '5', markerHeight: '5', orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'var(--dsw-alias-label-tertiary)' })),
 						]),
 						// ---- edges first so nodes paint on top ----
 						h('g', { key: 'edges', className: 'dmo-edges' }, [
@@ -1858,42 +1877,36 @@ window.__ModuleLoader__.load({
 							h('path', { key: 'e1', d: 'M180 82 L180 120 L125 120 L125 148', className: tone(stage('write')), markerEnd: 'url(#dmo-ah-m)' }),
 							label('l1', 152, 112, '捕获'),
 							// 蒸馏链
-							h('path', { key: 'e2', d: 'M210 189 L248 189', className: tone(stage('write')), markerEnd: 'url(#dmo-ah-m)' }),
-							h('path', { key: 'e3', d: 'M410 189 L448 189', className: tone(stage('distill')), markerEnd: 'url(#dmo-ah-m)' }),
-							h('path', { key: 'e4', d: 'M610 189 L648 189', className: tone(stage('distill')), markerEnd: 'url(#dmo-ah-m)' }),
+							h('path', { key: 'e2', d: 'M210 189 L248 189', ...flowProps('e2') }),
+							h('path', { key: 'e3', d: 'M410 189 L448 189', ...flowProps('e3') }),
+							h('path', { key: 'e4', d: 'M610 189 L648 189', ...flowProps('e4') }),
 							label('l2', 229, 181, 'write'),
 							label('l3', 429, 181, 'insight'),
 							label('l4', 629, 181, 'dao'),
 							// 各层收行进索引
 							h('path', { key: 'e5', d: 'M125 228 L125 294', className: tone(stage('write'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
-							h('path', { key: 'e6', d: 'M330 228 L330 294', className: tone(stage('distill'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
-							h('path', { key: 'e7', d: 'M530 228 L530 294', className: tone(stage('distill'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
+							h('path', { key: 'e6', d: 'M330 228 L330 294', ...flowProps('e6') }),
+							h('path', { key: 'e7', d: 'M530 228 L530 294', ...flowProps('e7') }),
 							h('path', { key: 'e8', d: 'M715 228 L715 294', className: tone(stage('distill'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
-							h('path', { key: 'e9', d: 'M840 200 L800 200 L800 294', className: 'dmo-edge muted', markerEnd: 'url(#dmo-ah-m)' }),
+							h('path', { key: 'e9', d: 'M840 200 L800 200 L800 294', ...flowProps('e9') }),
 							label('l5', 640, 268, 'memory_index 收行'),
 							label('l9', 820, 192, '指针'),
 							// 索引 → 召回准入 / 会话
-							h('path', { key: 'e10', d: 'M520 366 L520 430', className: tone(stage('recall')), markerEnd: 'url(#dmo-ah-m)' }),
-							h('path', { key: 'e11', d: 'M170 366 L170 430', className: 'dmo-edge muted', markerEnd: 'url(#dmo-ah-m)' }),
+							h('path', { d: 'M520 366 L520 430', ...flowProps('e10') }),
+							h('path', { key: 'e11', d: 'M170 366 L170 430', ...flowProps('e11') }),
 							label('l10', 552, 402, '召回读取索引'),
-							label('l11', 150, 402, 'pre-step'),
+							label('l11', 150, 402, '索引读取调用'),
 							// 准入 → 会话（左向）
-							h('path', { key: 'e12', d: 'M390 460 L312 460', className: tone(stage('recall')), markerEnd: 'url(#dmo-ah-m)' }),
-							label('l12', 351, 452, '准入注入'),
+							h('path', { key: 'e12', d: 'M390 460 L312 460', ...flowProps('e12') }),
+							label('l12', 351, 452, '召回插入步骤'),
 							// 信号 → 准入（左向）
 							h('path', { key: 'e13', d: 'M730 484 L652 484', className: tone(stage('feedback'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
-							label('l13', 691, 476, '校准阈值'),
+							label('l13', 691, 476, '反馈供参考'),
 							// 会话 → 信号：走底部回流弧（第四段，闭环）
-							h('path', { key: 'e14', d: 'M175 512 L175 540 L905 540 L905 514', className: tone(stage('feedback'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
-							label('l14', 540, 532, '反馈回流方向 · 未验证'),
-							// 外部知识库 → 召回准入（右廊道下行，不穿任何节点）
-							//
-							// Tone reflects the channel's REAL state, not a decoration:
-							// usable → solid business edge; online-but-unauthorized → dashed
-							// warning; down → dashed danger; not reported → muted (unknown,
-							// never drawn as working).
-							h('path', { key: 'e15', d: 'M1080 51 L1098 51 L1098 412 L660 412 L660 430', className: sagEdgeClass(), markerEnd: sagMarker() }),
-							label('l15', 900, 404, m.sag.usable ? 'fast 档只读召回 · 可用' : m.sag.online === false || m.sag.authorized === false ? '第二通道未接通（见下方状态）' : '第二通道状态未知'),
+							h('path', { key: 'e14', d: 'M175 504 L175 540 L905 540 L905 504', ...flowProps('e14') }),
+							label('l14', 540, 532, '使用信号记录调用'),
+							h('path', { key: 'e15', d: 'M800 51 L320 51', ...flowProps('e15') }),
+							label('l15', 560, 40, 'SAG 搜索调用 · 返回方向'),
 						]),
 						// ---- nodes ----
 						h('g', { key: 'nodes' }, [
@@ -1906,51 +1919,31 @@ window.__ModuleLoader__.load({
 								// same whether the channel works or is dead.
 								role: !m.sag.known ? '状态未上报' : m.sag.usable ? '第二通道 · 可用' : m.sag.online === true ? (m.sag.authorized === false ? '在线但未授权' : '在线 · 鉴权未知') : m.sag.online === false ? '不可达' : '状态未知',
 							}),
-							node('daily', { x: 40, y: 150, w: 170, h: 78, name: '每日原始记录', count: nOf('daily'), unit: '份', role: layers.daily?.role, tier: 'L0' }),
+							node('daily', { x: 40, y: 150, w: 170, h: 78, name: '每日线索（含归档）', count: nOf('daily'), unit: '项', role: layers.daily?.role, tier: 'L0' }),
 							node('functions', { x: 248, y: 150, w: 162, h: 78, name: '功能域', count: nOf('functions'), unit: '个', role: layers.functions?.role, tier: 'L2' }),
 							node('insights', { x: 448, y: 150, w: 162, h: 78, name: '思想', count: nOf('insights'), unit: '条', role: layers.insights?.role, tier: 'L1' }),
 							node('dao', { x: 648, y: 150, w: 142, h: 78, name: '道', count: nOf('dao'), unit: '条', role: layers.dao?.role, tier: 'L0d' }),
-							node('capabilities', { x: 840, y: 150, w: 240, h: 78, name: '能力台账 / 技能库', count: nOf('capabilities'), unit: '项', role: '外部工具与技能包索引', tier: 'L2c' }),
+							// count = capability-ledger entries; skills are a separate host
+							// bundle count. Showing both as one number on this node misleads.
+							node('capabilities', { x: 840, y: 150, w: 240, h: 78, name: '能力台账', count: nOf('capabilities'), unit: '条台账', role: '外部工具/MCP/CLI 台账', tier: 'L2c' }),
 							node('index', { x: 40, y: 294, w: 800, h: 72, name: 'MEMORY.md 索引', count: m.indexRows, unit: '行', role: '派生物：各层收行于此，召回只读它', accent: true }),
 							node('ctx', { x: 40, y: 430, w: 272, h: 74, name: '下一轮会话上下文', role: '注入点：决定未来知道什么' }),
 							node('gate', { x: 390, y: 430, w: 262, h: 74, name: '召回准入', role: '预算 / 分层 / 阀门规则' }),
 							node('sig', { x: 730, y: 430, w: 350, h: 74, name: '召回曝光（未去重）', count: m.recallEvents, unit: '条', role: `总事件 ${displayCount(m.signals)} · 正向/纠正 ${displayCount(m.verdicts)}` }),
 						]),
-						// legend — must describe colours the drawing ACTUALLY uses.
-						// An earlier key promised a green "结构方向" swatch, but every
-						// structural edge is drawn muted dashed (tone() is neutralised:
-						// historical counts do not establish stage health), and the only
-						// green user (usable SAG) now reads as business blue. A legend
-						// entry for a colour nothing draws is the same lie as a fixed
-						// "muted" SAG edge — it makes a state look present when it never
-						// appears (2026-11-20 boss: "通道可用（SAG）一条都没有").
 						h('g', { key: 'legend' }, [
-							h('line', { key: 'k1', x1: 40, y1: 578, x2: 84, y2: 578, className: 'dmo-edge business', markerEnd: 'url(#dmo-ah-b)' }),
-							h('text', { key: 'k2', x: 92, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '通道可用（SAG）'),
-							h('line', { key: 'k3', x1: 236, y1: 578, x2: 280, y2: 578, className: 'dmo-edge danger dashed', markerEnd: 'url(#dmo-ah-d)' }),
-							h('text', { key: 'k4', x: 288, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '通道不可达（SAG）'),
-							h('line', { key: 'k5', x1: 474, y1: 578, x2: 518, y2: 578, className: 'dmo-edge muted dashed', markerEnd: 'url(#dmo-ah-m)' }),
-							h('text', { key: 'k6', x: 526, y: 582, className: 'dmo-edge-label', textAnchor: 'start' }, '结构方向 · 运行未验证'),
+							h('line', { key: 'k1', x1: 40, y1: 578, x2: 75, y2: 578, className: 'dmo-edge business' }),
+							h('text', { key: 'k2', x: 82, y: 582, className: 'dmo-edge-label' }, '操作进行中'),
+							h('line', { key: 'k3', x1: 210, y1: 578, x2: 245, y2: 578, className: 'dmo-edge warn' }),
+							h('text', { key: 'k4', x: 252, y: 582, className: 'dmo-edge-label' }, '调用结束，结果待核验'),
+							h('line', { key: 'k5', x1: 465, y1: 578, x2: 500, y2: 578, className: 'dmo-edge danger' }),
+							h('text', { key: 'k6', x: 507, y: 582, className: 'dmo-edge-label' }, '调用失败'),
+							h('line', { key: 'k7', x1: 620, y1: 578, x2: 655, y2: 578, className: 'dmo-edge muted dashed' }),
+							h('text', { key: 'k8', x: 662, y: 582, className: 'dmo-edge-label' }, '未知或已过期'),
 						]),
 					),
 				),
-				// Loop stages as measurable chips (same facts as the diagram's edges).
-				h(
-					'div',
-					{ className: 'dmo-arch-loop', 'data-dmo': 'arch-loop' },
-					m.loop.map((s, i) => [
-						h(
-							'div',
-							{ key: s.key, className: `dmo-arch-step${s.ok ? ' on' : ''}`, 'data-dmo': `arch-step-${s.key}` },
-							h('span', { className: 'dmo-arch-step-n' }, String(i + 1)),
-							h('span', { className: 'dmo-arch-step-name' }, s.name),
-							h('span', { className: 'dmo-arch-step-d' }, s.detail),
-						),
-						i === m.loop.length - 1
-							? h('span', { key: 'cyc', className: `dmo-arch-cycle${m.loopClosed ? ' closed' : ''}` }, '↺ 闭环未验证')
-							: null,
-					]),
-				),
+				h('div', { 'aria-live': 'polite', 'data-dmo': 'flow-current', className: 'dmo-measure-x' }, currentFlows.join('；')),
 				// Storage + capacity: server-resolved paths and the real index level.
 				h(
 					'div',
@@ -1983,9 +1976,9 @@ window.__ModuleLoader__.load({
 							: null,
 					),
 				),
-				h(Card, { 'data-dmo': 'current-runtime' },
-					h(RuntimeSnapshot, { snapshot: m.runtimeSnapshot, current: true }),
-				),
+				// Runtime snapshot card intentionally removed from the architecture page:
+				// a live service snapshot is not a data-loop fact and duplicated a status
+				// that already lives elsewhere. Cycle coverage below carries the loop evidence.
 				h(CycleCoverage, { coverage: m.cycleCoverage, patrolDelivery: m.patrolDelivery }),
 				// Second recall channel: three facts, three rows. They fail independently
 				// (no key / service down / key rejected) and each has its own fix, so a
@@ -2021,240 +2014,33 @@ window.__ModuleLoader__.load({
 							? `端点 ${m.sag.endpoint} · 工具 memory_sag · 取正文用（不替代索引召回做门禁）`
 							: '工具 memory_sag · 取正文用（不替代索引召回做门禁）',
 					),
+					h('div', { className: 'dmo-measure-x', 'data-dmo': 'skill-count' },
+						`技能包 ${displayCount(m.skillCount)} 个（宿主技能目录，独立于上方能力台账条目数）`,
+					),
 				),
 			);
 		}
 
-		function Overview({ health, counts, timeline, usage, env, capture, prose, preview, previewQ, setPreviewQ, onOpen, onZone, onNavigate }) {
+		function Diagnostics({ health, timeline, env, capture, usage, preview, previewQ, setPreviewQ, onOpen, onNavigate, open, onToggle }) {
 			const problems = Array.isArray(health?.results) ? health.results : [];
-			const healthKnown = knownCount(health?.failCount) !== null && knownCount(health?.warnCount) !== null;
-			const fails = problems.filter((p) => p.level === 'FAIL');
-			const warns = problems.filter((p) => p.level === 'WARN');
-			const cold = problems.filter((p) => p.rule === 'TEMP');
-			const usageLayer = usage?.layers ?? {};
-			const hotspots = usage?.hotspots ?? [];
-			const hasSignals = (usage?.signalCount ?? 0) > 0;
-			// Index fill meter: comfort line is the design target, the hard line
-			// the wall. Two thresholds, one bar — the reader sees headroom at a
-			// glance instead of reading a byte count.
-			const envRow = env
-				? h(
-						'div',
-						{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-						h(
-							'div',
-							{ className: 'dmo-chips' },
-							h(Chip, { tone: 'ok' }, `运行版本 ${env.version || '?'}`),
-							env.canReload
-								? h(Chip, { tone: 'ok' }, '支持热重启')
-								: h(Chip, { tone: 'warn' }, '宿主不支持热重启'),
-							env.hotReloadRunning ? h(Chip, { tone: 'warn' }, '换弹进行中') : null,
-						),
-						h(
-							'div',
-							{ className: 'dmo-env-rows', 'data-dmo': 'env-rows' },
-							h('div', { className: 'dmo-env-row' }, h('span', { className: 'dmo-env-k' }, '记忆根'), h('span', { className: 'dmo-env-v dmo-mono' }, env.memoryRoot ?? '')),
-							h('div', { className: 'dmo-env-row' }, h('span', { className: 'dmo-env-k' }, '技能库'), h('span', { className: 'dmo-env-v dmo-mono' }, env.skillRoot ?? '')),
-							h(
-								'div',
-								{ className: 'dmo-env-row' },
-								h('span', { className: 'dmo-env-k' }, '索引体积'),
-								h(
-									'span',
-									{ className: 'dmo-env-v' },
-									h(
-										'span',
-										{ className: 'dmo-meter', title: `MEMORY.md ${env.indexBytes ?? 0}B / 舒适线 ${env.indexComfortBytes ?? 0}B / 硬上限 ${env.indexHardBytes ?? 0}B` },
-										h('i', { className: `dmo-meter-fill${(env.indexBytes ?? 0) > (env.indexComfortBytes ?? 0) ? ' over' : ''}`, style: { width: `${Math.min(100, Math.round(((env.indexBytes ?? 0) / Math.max(1, env.indexHardBytes ?? 1)) * 100))}%` } }),
-									),
-									h('span', { className: 'dmo-meta' }, ` ${fmtBytes(env.indexBytes ?? 0)} / 舒适 ${fmtBytes(env.indexComfortBytes ?? 0)}`),
-								),
-							),
-						),
-					)
-				: null;
-			return h(
-				'div',
-				{ className: 'dmo-bento', 'data-dmo': 'bento' },
-				// Hero band: the five zone stocks as one card each, uneven spans so
-				// the top row reads as a bento rather than a table of equal boxes.
-				// `functions` and `insights` are the two that actually decide what a
-				// future session knows, so they get the wider cells.
-				h(
-					Card,
-					{ className: 'dmo-span-3 dmo-hero-card', 'data-dmo': 'measure-functions' },
-					h('div', { className: 'dmo-eyebrow' }, '功能'),
-					h('div', { className: 'dmo-measure' },
-						h('div', { className: 'dmo-measure-v' }, String(displayCount(counts.functions))),
-						h('div', { className: 'dmo-measure-l' }, '功能域'),
-						h('div', { className: 'dmo-measure-x' }, '可复跑的操作'),
-					),
-					h('button', { type: 'button', className: 'dmo-link', onClick: () => onZone('functions'), 'data-dmo': 'growth-card' }, '打开 →'),
-				),
-				h(
-					Card,
-					{ className: 'dmo-span-3 dmo-hero-card', 'data-dmo': 'measure-insights' },
-					h('div', { className: 'dmo-eyebrow' }, '思想'),
-					h('div', { className: 'dmo-measure' },
-						h('div', { className: 'dmo-measure-v' }, String(displayCount(counts.insights))),
-						h('div', { className: 'dmo-measure-l' }, '创新优化思想'),
-						h('div', { className: 'dmo-measure-x' }, '可重套的原则'),
-					),
-					h('button', { type: 'button', className: 'dmo-link', onClick: () => onZone('insights'), 'data-dmo': 'growth-card' }, '打开 →'),
-				),
-				h(
-					Card,
-					{ className: 'dmo-span-3 dmo-hero-card', 'data-dmo': 'measure-capabilities' },
-					h('div', { className: 'dmo-eyebrow' }, '能力'),
-					h('div', { className: 'dmo-measure' },
-						h('div', { className: 'dmo-measure-v' }, String(displayCount(counts.capabilities))),
-						h('div', { className: 'dmo-measure-l' }, '能力台账'),
-						h('div', { className: 'dmo-measure-x' }, '外部工具索引'),
-					),
-					h('button', { type: 'button', className: 'dmo-link', onClick: () => onZone('capabilities'), 'data-dmo': 'growth-card' }, '打开 →'),
-				),
-				h(
-					Card,
-					{ className: 'dmo-span-3 dmo-hero-card', 'data-dmo': 'measure-skills' },
-					h('div', { className: 'dmo-eyebrow' }, '技能'),
-					h('div', { className: 'dmo-measure' },
-						h('div', { className: 'dmo-measure-v' }, String(displayCount(counts.skills))),
-						h('div', { className: 'dmo-measure-l' }, '技能库'),
-						h('div', { className: 'dmo-measure-x' }, '已验证的程序'),
-					),
-					h('button', { type: 'button', className: 'dmo-link', onClick: () => onZone('skills'), 'data-dmo': 'growth-card' }, '打开 →'),
-				),
-				// Second band: the health verdict gets the eye, the problem list sits
-				// in a recessed panel inside it.
-				h(
-					Card,
-					{ className: 'dmo-span-5', 'data-dmo': 'health-card' },
-					h('div', { className: 'dmo-eyebrow' }, '体检'),
-					h('div', { className: 'dmo-measure' },
-						h('div', { className: 'dmo-measure-v' }, problems.length ? String(problems.length) : healthKnown ? String(health.failCount + health.warnCount) : '未知'),
-						h('div', { className: 'dmo-measure-l' }, problems.length || (healthKnown && health.failCount + health.warnCount > 0) ? '条待处理问题' : healthKnown ? '体检全通过' : '体检状态未知'),
-					),
-					h(
-						'div',
-						{ className: 'dmo-chips', style: { marginTop: 10 } },
-						h(Chip, { tone: health?.failCount > 0 ? 'fail' : knownCount(health?.failCount) === null ? null : 'ok' }, knownCount(health?.failCount) === null ? 'FAIL 未知' : health.failCount > 0 ? `FAIL ${health.failCount}` : '无 FAIL'),
-						h(Chip, { tone: health?.warnCount > 0 ? 'warn' : null }, knownCount(health?.warnCount) === null ? 'WARN 未知' : health.warnCount > 0 ? `WARN ${health.warnCount}` : '无 WARN'),
-						cold.length ? h(Chip, { tone: 'warn' }, `❄ 冷记忆 ${cold.length}`) : null,
-					),
-					problems.length
-						? h('ul', { className: 'dmo-probs dmo-inset', style: { marginTop: 12 } }, problems.slice(0, 12).map((p, i) => h('li', { key: i }, `[${p.level}] ${p.rule}: ${p.message}`)))
-						: h('div', { className: 'dmo-inset dmo-meta', style: { marginTop: 12 } }, healthKnown && health.failCount === 0 && health.warnCount === 0 ? '索引体积、摘要、反向链接、日期顺序、死链、冷记忆均正常。' : '体检结果详情未提供。'),
-				),
-				h('div', { className: 'dmo-span-4', 'data-dmo': 'capture-slot' }, h(CaptureStatus, { capture })),
-				// Daily stock gets a sparkline of the last days actually on disk.
-				h(
-					Card,
-					{ className: 'dmo-span-3', 'data-dmo': 'measure-daily' },
-					h('div', { className: 'dmo-eyebrow' }, '每日'),
-					h('div', { className: 'dmo-measure' },
-						h('div', { className: 'dmo-measure-v' }, String(displayCount(counts.daily))),
-						h('div', { className: 'dmo-measure-l' }, '日线索 / 月归档'),
-					),
-					(() => {
-						const days = (timeline ?? []).filter((t) => t.zone === 'daily').slice(0, 12).reverse();
-						if (!days.length) return null;
-						const peak = Math.max(1, ...days.map((d) => d.bytes ?? 0));
-						return h('div', { className: 'dmo-spark', 'data-dmo': 'daily-spark', title: '最近日线索的条目体积（真实字节数）' },
-							days.map((d, i) => h('b', { key: i, style: { height: `${Math.max(8, Math.round(((d.bytes ?? 0) / peak) * 100))}%` } })),
-						);
-					})(),
-					h('button', { type: 'button', className: 'dmo-link', onClick: () => onZone('daily'), 'data-dmo': 'growth-card' }, '打开 →'),
-				),
-				// Consensus + environment constants: the two prose blocks of
-			// MEMORY.md that the index tables do not carry. They answer "what
-			// did we agree across features" and "which machine path is real",
-			// which is exactly what a future session needs before acting.
-			prose && (prose.consensus.length || prose.env.length)
-				? h(
-						Card,
-						{ className: 'dmo-span-6', 'data-dmo': 'prose-card' },
-						h(CardTitle, null, '共识与环境常量'),
-						h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-							prose.consensus.length
-								? h('div', null,
-										h('div', { className: 'dmo-meta', style: { marginBottom: 4 } }, '跨功能共识 / 规范'),
-										h('ul', { className: 'dmo-prose' }, prose.consensus.map((c, i) => h('li', { key: `c${i}` }, c))),
-									)
-								: null,
-							prose.env.length
-								? h('div', null,
-										h('div', { className: 'dmo-meta', style: { marginBottom: 4 } }, '环境常量（易忘）'),
-										h('ul', { className: 'dmo-prose' }, prose.env.map((c, i) => h('li', { key: `e${i}` }, c))),
-									)
-								: null,
-						),
-					)
-				: null,
-			env
-					? h(Card, { className: 'dmo-span-6', 'data-dmo': 'env-card' }, h(CardTitle, null, '运行环境'), envRow)
-					: null,
-				h(
-					Card,
-					{ className: 'dmo-span-6', 'data-dmo': 'usage-card' },
-					h(CardTitle, null, '使用信号'),
-					knownCount(usage?.signalCount) === null
-						? h('div', { className: 'dmo-meta' }, '使用信号数量未知。')
-						: !hasSignals
-						? h('div', { className: 'dmo-meta' }, '还没有使用信号。召回命中与 memory_read 会自动记录；纠正/认可用 memory_usage(record) 记一笔。')
-						: h(
-								'div',
-								{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-								h(
-									'div',
-									{ className: 'dmo-chips', 'data-dmo': 'usage-layers' },
-									h(Chip, null, `实验 ${displayCount(usageLayer['实验'])}`),
-									h(Chip, { tone: 'ok' }, `专项 ${displayCount(usageLayer['专项'])}`),
-									h(Chip, { tone: 'ok' }, `通用 ${displayCount(usageLayer['通用'])}`),
-									// 口径必须标清：signalCount 里绝大部分是插件自己写的
-									// recall 曝光（同一文件会重复几百次），不是"被使用"，
-									// 更不是索引规模。索引规模看 memory_index 的行数。
-									h('span', { className: 'dmo-meta' }, `30 天 ${usage.signalCount} 条事件（含 ${displayCount(usage.recallEvents)} 条召回曝光）· 正向/纠正 ${displayCount(usage.verdictEvents)} 次 · 覆盖 ${displayCount(usage.distinctHrefs)} 个文件`),
-								),
-								hotspots.length
-									? h(
-											'ul',
-											{ className: 'dmo-probs' },
-											hotspots.map((h0, i) =>
-												h('li', { key: i }, [
-													h0.flips >= 2 ? `结论反复推翻（翻转 ${h0.flips}）` : null,
-													h0.badRate > 0.4 ? `纠正率 ${Math.round(h0.badRate * 100)}%` : null,
-													` — ${h0.href}`,
-												].filter(Boolean).join(' · ')),
-											),
-										)
-									: h('div', { className: 'dmo-meta' }, '无热点：没有反复推翻或高纠正率的记忆。'),
-							),
-				),
-				preview
-					? h('div', { className: 'dmo-span-6', 'data-dmo': 'preview-slot' }, h(RecallPreviewCard, { res: preview, q: previewQ, setQ: setPreviewQ, onNavigate }))
-					: null,
-				h(
-					Card,
-					{ className: 'dmo-span-6', 'data-dmo': 'timeline-card' },
-					h(CardTitle, null, '最近改动'),
-					timeline.length
-						? h(
-								'div',
-								{ className: 'dmo-tl' },
-								timeline.map((t, i) =>
-									h(
-										'button',
-										{ key: i, type: 'button', className: 'dmo-tl-row', onClick: () => onOpen(t.zone, t.name), 'data-dmo': 'timeline-row', title: t.name },
-										h('span', { className: 'dmo-tl-when' }, relTime(t.mtime)),
-										h('span', { className: 'dmo-zone-tag' }, ZONE_LABEL[t.zone]),
-										h('span', { className: 'dmo-tl-name' }, t.zone === 'daily' ? t.name.replace(/\.md$/, '') : t.name.replace(/\.md$/, '')),
-										t.summary ? h('span', { className: 'dmo-tl-sum' }, t.summary) : null,
-									),
-								),
-							)
-						: h('div', { className: 'dmo-meta' }, '还没有记忆文件。'),
-				),
-			);
+			const days = timeline.filter((item) => item.zone === 'daily').slice(0, 12).reverse();
+			const peak = Math.max(1, ...days.map((item) => Number.isFinite(item.bytes) && item.bytes >= 0 ? item.bytes : 0));
+			return h('details', { className: 'dmo-card', 'data-dmo': 'architecture-diagnostics', open, onToggle: (e) => onToggle(e.currentTarget.open) },
+				h('summary', null, '诊断与最近改动'),
+				h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 } },
+					h('section', { 'data-dmo': 'health-details' }, h(CardTitle, null, '体检详情'), problems.length ? h('ul', { className: 'dmo-probs' }, problems.map((p, i) => h('li', { key: i }, `[${p.level}] ${p.rule}: ${p.message}`))) : h('div', { className: 'dmo-meta' }, '没有提供体检问题详情。')),
+					h(CaptureStatus, { capture }),
+					h('section', { 'data-dmo': 'usage-diagnostics' }, h(CardTitle, null, '使用信号分层与热点'),
+						h('div', { className: 'dmo-meta' }, '召回是曝光，不证明采纳；正向和纠正是调用方声明，来源未经认证。分层是启发式建议。'),
+						h('div', { className: 'dmo-meta', 'data-dmo': 'usage-layers' }, ['实验', '专项', '通用'].map((layer) => `${layer} ${displayCount(usage?.layers?.[layer])}`).join(' · ')),
+						!Array.isArray(usage?.hotspots) ? h('div', { className: 'dmo-meta' }, '热点状态未知。') : usage.hotspots.length === 0 ? h('div', { className: 'dmo-meta' }, '没有检测到热点。') : h('ul', { className: 'dmo-probs', 'data-dmo': 'usage-hotspots' }, usage.hotspots.map((item, i) => h('li', { key: i }, `${item.href} · ${Number.isFinite(item.flips) ? `翻转 ${item.flips} · ` : ''}纠正声明比例 ${Number.isFinite(item.badRate) ? `${Math.round(item.badRate * 100)}%` : '未知'}`))),
+						h('div', { className: 'dmo-meta' }, '纠正声明比例的分母为读取与纠正声明，不含召回曝光。')),
+					env ? h('section', { 'data-dmo': 'env-card' }, h(CardTitle, null, '运行环境'),
+						h('div', { className: 'dmo-meta' }, `运行版本 ${env.version || '?'} · ${env.canReload ? '支持热重启' : '宿主不支持热重启'}${env.hotReloadRunning ? ' · 换弹进行中' : ''}`),
+						h('div', { className: 'dmo-meta' }, `索引硬上限 ${knownCount(env.indexHardBytes) === null ? '未知' : fmtBytes(env.indexHardBytes)}`)) : null,
+					preview ? h(RecallPreviewCard, { res: preview, q: previewQ, setQ: setPreviewQ, onNavigate }) : null,
+					days.length ? h('section', { 'data-dmo': 'daily-trend' }, h(CardTitle, null, '最近日线索体积'), h('div', { className: 'dmo-meta' }, '按最近改动排序，包含月归档；柱高表示文件字节数。'), h('div', { className: 'dmo-spark', role: 'img', 'aria-label': days.map((item) => `${item.name}: ${Number.isFinite(item.bytes) && item.bytes >= 0 ? `${item.bytes} 字节` : '未知'}`).join('；') }, days.map((item, i) => h('b', { key: i, title: `${item.name}: ${Number.isFinite(item.bytes) && item.bytes >= 0 ? `${item.bytes} 字节` : '未知'}`, style: { height: `${Math.max(8, Math.round(((Number.isFinite(item.bytes) && item.bytes >= 0 ? item.bytes : 0) / peak) * 100))}%` } })))) : null,
+					h('section', { 'data-dmo': 'timeline-card' }, h(CardTitle, null, '最近改动'), timeline.length ? h('div', { className: 'dmo-tl' }, timeline.map((t, i) => h('button', { key: i, type: 'button', className: 'dmo-tl-row', onClick: () => onOpen(t.zone, t.name), 'data-dmo': 'timeline-row', title: t.name }, h('span', { className: 'dmo-tl-when' }, relTime(t.mtime)), h('span', { className: 'dmo-zone-tag' }, ZONE_LABEL[t.zone]), h('span', { className: 'dmo-tl-name' }, t.name.replace(/\.md$/, '')), t.summary ? h('span', { className: 'dmo-tl-sum' }, t.summary) : null))) : h('div', { className: 'dmo-meta' }, '还没有记忆文件。'))));
 		}
 
 		/**
@@ -2666,6 +2452,29 @@ window.__ModuleLoader__.load({
 			const match = (s) => !q || String(s.name).toLowerCase().includes(q) || String(s.description ?? '').toLowerCase().includes(q);
 			const shown = tab === 'host' ? host.filter(match) : mem.filter(match);
 			const STATUS_TONE = { active: 'ok', candidate: 'warn', retired: undefined };
+			// Activation availability is a BACKEND fact (data.activation from /skills),
+			// never a client-side guess. Only a boolean `available:true` makes an
+			// activate control usable. False shows the backend reason/detail; a
+			// missing or non-boolean value means UNKNOWN and stays disabled — a
+			// fabricated "available" affordance is exactly what we must avoid.
+			const activation = data?.activation;
+			const activationAvailable = activation && typeof activation === 'object' && typeof activation.available === 'boolean'
+				? activation.available
+				: undefined;
+			const activationNote = activationAvailable === false
+				? (typeof activation.detail === 'string' && activation.detail
+					? activation.detail
+					: typeof activation.reason === 'string' ? activation.reason : '自动转正暂不可用')
+				: activationAvailable === undefined
+					? '可用性状态未知：后端未提供可用事实，启用暂不可用'
+					: null;
+			const canActivate = (s) => s.status === 'active' || activationAvailable === true;
+			const toggleTitle = (s) => s.status === 'active'
+				? '停用（retire）'
+				: canActivate(s) ? '启用（activate）' : (activationNote || '启用暂不可用');
+			const activationNoteNode = (s) => (s.status === 'active' || canActivate(s))
+				? null
+				: h('span', { className: 'dmo-measure-x', 'data-dmo': 'skill-activation-note' }, activationNote);
 			return h(
 				'div',
 				{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
@@ -2747,12 +2556,13 @@ window.__ModuleLoader__.load({
 													{
 														type: 'button', className: `dmo-switch${s.status === 'active' ? ' on' : ''}`,
 														'data-dmo': 'skill-toggle', role: 'switch', 'aria-checked': s.status === 'active',
-														title: s.status === 'active' ? '停用（retire）' : '启用（activate）',
+														title: toggleTitle(s),
 														onClick: () => onToggle(s.name, s.status === 'active' ? 'retire' : 'activate'),
-														disabled: toggleBusy === s.name,
+														disabled: toggleBusy === s.name || !canActivate(s),
 													},
 													h('span', { className: 'dmo-switch-dot' }),
 												),
+												activationNoteNode(s),
 												h(
 													'button',
 													{
@@ -3145,7 +2955,8 @@ window.__ModuleLoader__.load({
 		function MemoryPanel(props) {
 			// ── 1. state ───────────────────────────────────────────────────────
 			const fixtures = props?.__apiFixtures;
-			const [view, setView] = useState(props?.initialView ?? { kind: 'overview' });
+			const [view, setView] = useState(props?.initialView?.kind === 'overview' ? { kind: 'arch' } : (props?.initialView ?? { kind: 'arch' }));
+			const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 			const [sort, setSort] = useState('time');
 			const [filter, setFilter] = useState('');
 			const [query, setQuery] = useState('');
@@ -3153,6 +2964,7 @@ window.__ModuleLoader__.load({
 			const [searchZone, setSearchZone] = useState('all');
 			const [inboxFilter, setInboxFilter] = useState('');
 			const [tick, setTick] = useState(0);
+			const [, setFlowTick] = useState(0);
 			// Hot-reload button state (5.25.0): `reloading` guards against a second
 			// click while a swap is in flight (the server side has its own single
 			// guard; this one is for the button), `reloadMsg` carries the result.
@@ -3170,6 +2982,7 @@ window.__ModuleLoader__.load({
 			}, [previewQ]);
 			const searchRef = useRef(null);
 			const mainRef = useRef(null);
+			const SSE_BOX = useRef({ lastEventAt: null, flow: null, flowAt: null, flowFeed: null }).current;
 
 			// ── 2. remote reads (one useApi per source; url=null means idle) ───
 			// NOTE: overview stays a DIRECT useApi call. Wrapping it in a helper that
@@ -3324,12 +3137,8 @@ window.__ModuleLoader__.load({
 				const t = setInterval(() => setTick((n) => n + 1), 30_000);
 				return () => clearInterval(t);
 			}, []);
-			// SSE channel (2026-11-16): push instead of waiting for the 30s tick.
-			// Kept as its OWN effect with no deps so it registers once; receiving an
-			// event stores the payload in `sseRef` and bumps `tick`, and every useApi
-			// re-reads because `tick` is in its URL. The 30s poll above stays as the
-			// floor: if the stream dies, the panel keeps moving (slower, but never
-			// frozen) — a monitor that silently stops is worse than a stale one.
+			// Overview changes refresh the panel; flow and health changes only redraw it.
+			// The polling interval remains the fallback when the stream is unavailable.
 			useEffect(() => {
 				if (typeof window === 'undefined' || typeof window.EventSource !== 'function') return undefined;
 				let es = null;
@@ -3343,19 +3152,68 @@ window.__ModuleLoader__.load({
 					if (closed) return;
 					try {
 						const payload = JSON.parse(ev.data);
-						SSE_BOX.payload = payload; SSE_BOX.lastEventAt = Date.now();
+						if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Invalid overview event');
+						SSE_BOX.lastEventAt = Date.now();
 						// One bump per pushed change: the panel refreshes exactly once.
 						setTick((n) => n + 1);
 					} catch {
-						/* malformed frame: keep the last good payload */
+						SSE_BOX.lastEventAt = null;
+						setFlowTick((n) => n + 1);
 					}
 				});
+				es.addEventListener('flow-status', (ev) => {
+					if (closed) return;
+					let available = false;
+					try {
+						available = JSON.parse(ev.data)?.available === true;
+					} catch { /* An invalid status cannot establish availability. */ }
+					// The overview channel and the activity channel are independent:
+					// a healthy push badge does not imply edge observations arrive.
+					SSE_BOX.flowFeed = available ? 'available' : 'unavailable';
+					if (!available) { SSE_BOX.flow = null; SSE_BOX.flowAt = null; }
+					setFlowTick((n) => n + 1);
+				});
+				es.addEventListener('flow', (ev) => {
+					if (closed) return;
+					try {
+						const flow = JSON.parse(ev.data);
+						if (!flow || typeof flow !== 'object' || Array.isArray(flow) || !flow.edges || typeof flow.edges !== 'object' || Array.isArray(flow.edges) || !Number.isSafeInteger(flow.dropped) || flow.dropped < 0) throw new Error('Invalid flow event');
+						SSE_BOX.flow = flow;
+						SSE_BOX.flowAt = Date.now();
+						SSE_BOX.flowFeed = 'available';
+					} catch {
+						SSE_BOX.flow = null;
+						SSE_BOX.flowAt = null;
+					}
+					setFlowTick((n) => n + 1);
+				});
+				es.addEventListener('heartbeat', (ev) => {
+					if (closed) return;
+					try {
+						const heartbeat = JSON.parse(ev.data);
+						if (!heartbeat || typeof heartbeat !== 'object' || Array.isArray(heartbeat) || typeof heartbeat.snapshotFresh !== 'boolean') throw new Error('Invalid heartbeat');
+						if (heartbeat.snapshotFresh && sseFreshness(SSE_BOX).live) SSE_BOX.lastEventAt = Date.now();
+						else SSE_BOX.lastEventAt = null;
+					} catch { SSE_BOX.lastEventAt = null; }
+					setFlowTick((n) => n + 1);
+				});
+				const disconnected = () => {
+					if (!closed) { SSE_BOX.lastEventAt = null; setFlowTick((n) => n + 1); }
+				};
+				es.addEventListener('snapshot-error', disconnected);
 				es.addEventListener('error', () => {
-					// Degraded, not dead: stop claiming live. The 30s poll carries on.
-					if (!closed) SSE_BOX.lastEventAt = null;
+					if (closed) return;
+					SSE_BOX.flow = null; SSE_BOX.flowAt = null;
+					// A dead transport is already reported by the push badge; null marks
+					// "not observed" so the panel does not also claim the feed is absent.
+					SSE_BOX.flowFeed = null;
+					disconnected();
 				});
 				return () => {
 					closed = true;
+					SSE_BOX.flow = null; SSE_BOX.flowAt = null;
+					SSE_BOX.flowFeed = null;
+					SSE_BOX.lastEventAt = null;
 					try { es?.close(); } catch { /* already closed */ }
 				};
 			}, []);
@@ -3408,7 +3266,7 @@ window.__ModuleLoader__.load({
 				if (view.kind === 'candidate') { setDaoView('candidates'); setView({ kind: 'zone', zone: 'dao' }); }
 				else if (view.kind === 'file' && view.zone) setView({ kind: 'zone', zone: view.zone });
 				else if (view.kind === 'bundle') setView({ kind: 'zone', zone: 'skills', tab: view.tab === 'host' ? 'host' : 'memory' });
-				else setView({ kind: 'overview' });
+				else setView({ kind: 'arch' });
 			};
 
 			const opened = view.kind === 'file' ? view : null;
@@ -3424,7 +3282,7 @@ window.__ModuleLoader__.load({
 			const kindOfZone = (z) => (z === '' ? 'index' : Object.prototype.hasOwnProperty.call(ZONE_DIR, z) ? z : 'daily');
 			const kind = !opened ? null : kindOfZone(opened.zone);
 
-			const activeKey = view.kind === 'overview' ? 'overview' : view.kind === 'arch' ? 'arch' : view.kind === 'inbox' ? 'inbox' : view.kind === 'candidate' ? 'dao' : view.kind === 'zone' ? view.zone : view.kind === 'bundle' ? 'skills' : view.zone === '' ? 'index' : view.zone;
+			const activeKey = view.kind === 'arch' ? 'arch' : view.kind === 'inbox' ? 'inbox' : view.kind === 'candidate' ? 'dao' : view.kind === 'zone' ? view.zone : view.kind === 'bundle' ? 'skills' : view.zone === '' ? 'index' : view.zone;
 
 			const onKeyDown = (e) => {
 				const tag = e.target?.tagName;
@@ -3438,7 +3296,7 @@ window.__ModuleLoader__.load({
 					if (query || live) {
 						setQuery('');
 						setLive('');
-					} else if (view.kind !== 'overview') back();
+					} else if (view.kind !== 'arch') back();
 					return;
 				}
 				if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !typing && mainRef.current) {
@@ -3455,24 +3313,28 @@ window.__ModuleLoader__.load({
 			let main = null;
 			if (live.length >= 2) main = h(SearchPane, { res: search, q: live, zone: searchZone, setZone: setSearchZone, onOpen: openFile });
 			else if (!ws && overview.loading) main = h('div', { className: 'dmo-empty' }, '读取记忆体检…');
-			else if (overview.error) main = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } }, h('div', { className: 'dmo-empty' }, '总览 API 不可用。'), h(CaptureStatus, { capture: null }));
+			else if (overview.error) main = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } }, h('div', { className: 'dmo-empty' }, '总览 API 不可用。'), h('div', { className: 'dmo-empty' }, `数据刷新失败。${sseFreshness(SSE_BOX).live ? '推送连接正常。' : '推送连接不可用。'}`), h(CaptureStatus, { capture: null }));
 			else if (!ws) main = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } }, h('div', { className: 'dmo-empty' }, '没有已注册的 workspace。'), h(CaptureStatus, { capture: null }));
 			else if (!health?.initialized) main = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } }, h('div', { className: 'dmo-empty' }, '记忆还没有建立。'), h(CaptureStatus, { capture: ws.capture }));
 			else if (view.kind === 'inbox') main = h(InboxPane, { res: inboxRes, statusFilter: inboxFilter, setStatusFilter: setInboxFilter, onStateChange: () => setTick((n) => n + 1) });
 			// 架构图独用一个 view.kind：它不是"分区列表"，是跨层的结构视图。
 			else if (view.kind === 'arch')
-				main = h(Architecture, {
-					model: buildArchitecture({ counts, usage: overview.data?.[0]?.usage, capture: overview.data?.[0]?.capture, env: overview.data?.[0]?.env, health, sag: overview.data?.[0]?.sag, cycleCoverage: overview.data?.[0]?.cycleCoverage, runtimeSnapshot: overview.data?.[0]?.runtimeSnapshot, patrolDelivery: overview.data?.[0]?.patrolDelivery }),
+				main = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 14 } }, h(Architecture, {
+					model: buildArchitecture({ counts, usage: overview.data?.[0]?.usage, capture: overview.data?.[0]?.capture, env: overview.data?.[0]?.env, health, sag: overview.data?.[0]?.sag, cycleCoverage: overview.data?.[0]?.cycleCoverage, runtimeSnapshot: overview.data?.[0]?.runtimeSnapshot, patrolDelivery: overview.data?.[0]?.patrolDelivery, edgeStatus: overview.data?.[0]?.edgeStatus, liveFlow: SSE_BOX.flowAt !== null && Date.now() - SSE_BOX.flowAt < 90_000 ? SSE_BOX.flow : undefined }),
 					// Freshness is read here (not stored in a hook) so the badge always
 					// reflects the channel's real state at render time.
-					live: sseFreshness().live,
+					live: sseFreshness(SSE_BOX).live,
 					lastEventAt: SSE_BOX.lastEventAt,
-					fallback: !sseFreshness().live,
+					flowAt: SSE_BOX.flowAt,
+					flowFeed: SSE_BOX.flowFeed,
+					fallback: !sseFreshness(SSE_BOX).live,
+					refreshLoading: overview.loading || Boolean(overview.url && overview.url !== `${API}/overview?v=${tick}`),
+					refreshError: overview.error,
+					refreshKnown: Array.isArray(overview.data) && overview.data.length > 0,
 					// The node passes its resolved TARGET (not a bare key), so a node
 					// without a destination can never navigate anywhere.
 					onZone: (target) => setView(target),
-				});
-			else if (view.kind === 'overview') main = h(Overview, { health, counts, timeline, usage: overview.data?.[0]?.usage, env: overview.data?.[0]?.env, capture: overview.data?.[0]?.capture, prose: parseProseSections(indexText), preview, previewQ, setPreviewQ, onOpen: openFile, onZone: (z) => setView({ kind: 'zone', zone: z }), onNavigate: navigate });
+				}), h(Diagnostics, { health, timeline, env: ws.env, capture: ws.capture, usage: ws.usage, preview, previewQ, setPreviewQ, onOpen: openFile, onNavigate: navigate, open: diagnosticsOpen, onToggle: setDiagnosticsOpen }));
 			else if (view.kind === 'zone' && view.zone === 'skills')
 				main = h(SkillLibrary, {
 					data: skillLib.data, loading: skillLib.loading, error: skillLib.error,
@@ -3507,7 +3369,7 @@ window.__ModuleLoader__.load({
 						'div',
 						{ className: 'dmo-empty', role: 'alert', 'data-dmo': 'zone-unknown' },
 						`没有这个分区：${String(view.zone ?? '(空)')}。`,
-						h(Btn, { tone: 'outline', onClick: () => setView({ kind: 'overview' }) }, '返回总览'),
+						h(Btn, { tone: 'outline', onClick: () => setView({ kind: 'arch' }) }, '返回架构'),
 					);
 				}
 				else main = h(ZoneList, { zone: view.zone, rows: rowsOf(view.zone), sort, setSort, filter, setFilter, onOpen: openFile, daoView, setDaoView, candidates: candRes.data?.candidates ?? [], candidateState: candRes, onOpenCandidate: (name) => setView({ kind: 'candidate', name }), onRetry: () => setTick((n) => n + 1), candidateAction, candBusy, actMsg, onDeleteDao: deleteDao, openArchive: archiveOpenName, onToggleArchive: (name) => setArchiveOpenName((cur) => (cur === name ? null : name)), archiveDays });
@@ -3619,7 +3481,7 @@ window.__ModuleLoader__.load({
 							// 不该让它一直亮着。
 							const inboxOpen = inboxRes.data?.counts?.open;
 							const count =
-								n.key === 'overview' || n.key === 'index'
+								n.key === 'index'
 									? null
 									: n.key === 'inbox'
 										? inboxOpen
@@ -3631,7 +3493,7 @@ window.__ModuleLoader__.load({
 								{
 									key: n.key, type: 'button', 'data-dmo': 'nav-item',
 									className: `dmo-nav${activeKey === n.key ? ' active' : ''}`,
-									onClick: () => { setFilter(''); setQuery(''); setLive(''); if (n.key === 'overview') setView({ kind: 'overview' }); else if (n.key === 'arch') setView({ kind: 'arch' }); else if (n.key === 'inbox') setView({ kind: 'inbox' }); else if (n.key === 'index') openFile('', null); else setView({ kind: 'zone', zone: n.key }); },
+									onClick: () => { setFilter(''); setQuery(''); setLive(''); if (n.key === 'arch') setView({ kind: 'arch' }); else if (n.key === 'inbox') setView({ kind: 'inbox' }); else if (n.key === 'index') openFile('', null); else setView({ kind: 'zone', zone: n.key }); },
 								},
 								h('span', { className: 'ico' }, n.icon),
 								n.label,
@@ -3643,7 +3505,7 @@ window.__ModuleLoader__.load({
 						}),
 						health?.initialized && (health.results ?? []).length
 							? h('div', { style: { marginTop: 8, borderTop: '.5px solid var(--dsw-alias-border-l2)', paddingTop: 8 } },
-									h('button', { type: 'button', className: 'dmo-nav', onClick: () => setView({ kind: 'overview' }) }, h('span', { className: 'ico' }, '⚠'), '体检有提示', h('span', { className: 'cnt' }, String((health.results ?? []).length))))
+									h('button', { type: 'button', className: 'dmo-nav', onClick: () => { setDiagnosticsOpen(true); setView({ kind: 'arch' }); setQuery(''); setLive(''); } }, h('span', { className: 'ico' }, '⚠'), '体检有提示', h('span', { className: 'cnt' }, String((health.results ?? []).length))))
 							: null,
 					),
 					h('div', { className: 'dmo-main', ref: mainRef, 'data-dmo': 'main' }, main),

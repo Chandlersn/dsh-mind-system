@@ -70,6 +70,46 @@ export async function relevantNegativeRules(ctx, userText) {
  *   skill_coverage?, scenario_coverage?, anti_example_count?, predict_rate?, candidate_id? }
  * @returns 阀门判定；服务不在时 undefined。
  */
+/**
+ * Bookkeeping-only adoption trace: forward a caller-declared positive/correction
+ * signal to a governance-visible ledger. Neither the caller's user identity nor
+ * actual adoption is authenticated by this bridge. This does NOT nominate, admit
+ * or change any rule, and never feeds threshold calibration. Never throws, never
+ * blocks the write that already happened.
+ *
+ * @param ctx Cordis context.
+ * @param {{objectKey:string, kind:'positive'|'correction', note?:string}} signal
+ * @returns {boolean|undefined} true/false from the ledger, undefined if valves absent.
+ */
+export async function recordAdoption(ctx, signal = {}) {
+	try {
+		const valves = probeValves(ctx);
+		if (!valves || typeof valves.recordAdoptionSignal !== 'function') return undefined;
+		return await valves.recordAdoptionSignal({
+			objectKey: typeof signal.objectKey === 'string' ? signal.objectKey : null,
+			kind: signal.kind,
+			note: typeof signal.note === 'string' ? signal.note : '',
+		});
+	} catch {
+		return undefined;
+	}
+}
+
+/** Forward once, preferring the correlated interface when available. */
+export async function recordCorrelatedAdoption(ctx, signal) {
+	const valves = probeValves(ctx);
+	if (valves && typeof valves.recordCorrelatedAdoptionSignal === 'function') {
+		try {
+			const result = await valves.recordCorrelatedAdoptionSignal(signal);
+			return ['appended', 'unconfirmed', 'invalid'].includes(result) ? result : 'unconfirmed';
+		} catch {
+			return 'unconfirmed';
+		}
+	}
+	const legacy = await recordAdoption(ctx, signal);
+	return legacy === true ? 'legacy_unlinked' : 'unknown';
+}
+
 export function recordUpwardWrite(ctx, entry) {
 	try {
 		const valves = probeValves(ctx);
@@ -92,10 +132,9 @@ export function recordUpwardWrite(ctx, entry) {
  * verification runs wrote to it. `dailyCount` could not grow no matter how much
  * real work happened.
  *
- * WHAT COUNTS AS DAILY HERE: a real tool call made by an agent while doing real
- * work. It is NOT a self-assessment of quality — the entry carries only the
- * layer transition and the write target class, so the ledger records "a
- * downward admission was evaluated", not "this content was correct".
+ * DAILY is a compatibility assertion made by this bridge, not verified task
+ * provenance. Optional write_context labels that origin basis explicitly and
+ * records only admission identity; execution and adoption remain not_observed.
  *
  * NON-BLOCKING BY CONSTRUCTION: the return value is never used to refuse the
  * write. A gate that can block writes would turn a bookkeeping feature into a
@@ -105,7 +144,7 @@ export function recordUpwardWrite(ctx, entry) {
  * undefined and the write proceeds untouched.
  *
  * @param ctx Cordis context.
- * @param {{tool: string, layer?: string, target?: string}} input
+ * @param {{tool: string, layer?: string, target?: string, write_context?: object}} input
  * @returns the valve decision, or undefined when unavailable.
  */
 export function recordDownwardWrite(ctx, input = {}) {
@@ -122,10 +161,9 @@ export function recordDownwardWrite(ctx, input = {}) {
 		const next = `L${rank + 1}`;
 		return valves.downward(layer, next, {
 			constraints: [String(input.target ?? input.tool ?? 'memory_write')],
-			// Explicitly daily: this is ordinary work, not verification. Without
-			// this the row would default to daily anyway, but stating it keeps the
-			// intent visible to anyone reading the ledger.
+			// Retain legacy daily classification as a bridge assertion, not proof.
 			origin: 'daily',
+			...(input.write_context === undefined ? {} : { write_context: input.write_context }),
 		});
 	} catch {
 		// Bookkeeping must never break a real write.

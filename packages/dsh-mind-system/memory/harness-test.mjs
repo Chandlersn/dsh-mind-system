@@ -35,6 +35,7 @@ console.log('exports:', Object.keys(mod).join(','), '| inject:', mod.inject.join
 const registered = [];
 const noop = () => {};
 const fakeCtx = {
+	get: (name) => name === 'valves' ? { upward() {}, negativeRules() { return []; } } : undefined,
 	tools: { register: (d) => (registered.push(d), noop) },
 	on: (name, listener) => {
 		if (name === 'agent/pre-step') globalThis.__preStepListener = listener;
@@ -457,41 +458,68 @@ ok(foldedFile.content.includes('## ['), 'kept blocks remain');
 const w11 = await T.memory_write.execute({ feature: '折叠目标', title: '折叠后新块', summary: '折叠后编号不撞名', result: 'done' }, exec);
 ok(w11.appendedHeading.includes('补5'), `post-fold tag continues the sequence: ${w11.appendedHeading}`);
 
-// 9) rename: bare rename rewrites references everywhere
+// 9) rename: bare rename rewrites references everywhere — PAUSED.
+// memory_rename refuses before its first side effect because a concurrent
+// lossless rename cannot be guaranteed (safe_rename_unavailable). The assertions
+// below therefore prove the refusal AND that nothing moved: source bytes, target
+// absence, reference text, index row and write ledger all unchanged. The former
+// result-shape assertions are kept in the comment so the intent stays visible:
+//   r1.mode === 'renamed'; r1.danglingAfter === 0; references rewritten to the
+//   new name; old file gone; index row renamed.
 await T.memory_write.execute({ feature: '旧名功能', title: '重命名前', summary: '将被重命名', result: 'done' }, exec);
 await T.memory_write.execute(
 	{ feature: '测试功能', title: '引用旧名', summary: '含旧名相关链接', related: ['旧名功能'], result: 'done' },
 	exec,
 );
 await T.memory_index.execute({ zone: 'functions', name: '旧名功能', summary: '将被重命名的功能' }, exec);
-const r1 = await T.memory_rename.execute({ from: '旧名功能', to: '新名功能' }, exec);
-ok(r1.mode === 'renamed', `rename mode: ${r1.mode}`);
-ok(r1.danglingAfter === 0, `dangling after rename: ${r1.danglingAfter}`);
-const refFile = await T.memory_read.execute({ kind: 'function', name: '测试功能' }, exec);
-ok(refFile.content.includes('新名功能.md') && !refFile.content.includes('旧名功能.md'), 'references rewritten to new name');
-const oldGone = await T.memory_read.execute({ kind: 'function', name: '旧名功能' }, exec);
-ok(!oldGone.found, 'old file gone after rename');
-const newIdx = await T.memory_read.execute({ kind: 'index' }, exec);
-ok(newIdx.content.includes('新名功能'), 'index row renamed');
+const renameSourcePath = path.join(root, 'functions', '旧名功能.md');
+const renameTargetPath = path.join(root, 'functions', '新名功能.md');
+const renameRefPath = path.join(root, 'functions', '测试功能.md');
+const renameSourceBefore = await readFile(renameSourcePath);
+const renameRefBefore = await readFile(renameRefPath, 'utf8');
+const renameIndexBefore = await readFile(path.join(root, 'MEMORY.md'));
+let renameError;
+try {
+	await T.memory_rename.execute({ from: '旧名功能', to: '新名功能' }, exec);
+} catch (error) {
+	renameError = error;
+}
+ok(renameError?.code === 'safe_rename_unavailable' && /无损改名能力尚不可用/.test(renameError.message), `rename refuses before any write (${renameError?.code})`);
+ok(await statExists(renameSourcePath) && !await statExists(renameTargetPath), 'rename left the source in place and created no target');
+ok((await readFile(renameSourcePath)).equals(renameSourceBefore), 'rename left the source byte-identical');
+ok(await readFile(renameRefPath, 'utf8') === renameRefBefore && !renameRefBefore.includes('新名功能.md'), 'references were not rewritten to the new name');
+ok((await readFile(path.join(root, 'MEMORY.md'))).equals(renameIndexBefore), 'index row was not renamed');
 
-// 10) merge: fold 待并入 into 测试功能
+// 10) merge: fold 待并入 into 测试功能 — PAUSED for the same reason.
+// Former assertions: r2.mode === 'merged'; r2.danglingAfter === 0; merged blocks
+// appended to the target; the merged source row removed from the index.
 await T.memory_write.execute({ feature: '待并入', title: '并入前块', summary: '将被合并', result: 'done' }, exec);
 await T.memory_index.execute({ zone: 'functions', name: '待并入', summary: '将被合并的功能' }, exec);
-const r2 = await T.memory_rename.execute({ from: '待并入', to: '测试功能' }, exec);
-ok(r2.mode === 'merged', `merge mode: ${r2.mode}`);
-ok(r2.danglingAfter === 0, `dangling after merge: ${r2.danglingAfter}`);
-const mergedFile = await T.memory_read.execute({ kind: 'function', name: '测试功能' }, exec);
-ok(mergedFile.content.includes('并入前块'), 'merged blocks appended to target');
-const mergedIdx = await T.memory_read.execute({ kind: 'index' }, exec);
-ok(!mergedIdx.content.includes('| 待并入 |'), 'merged source row removed from index');
+const mergeSourcePath = path.join(root, 'functions', '待并入.md');
+const mergeTargetPath = path.join(root, 'functions', '测试功能.md');
+const mergeSourceBefore = await readFile(mergeSourcePath);
+const mergeTargetBefore = await readFile(mergeTargetPath);
+const mergeIndexBefore = await readFile(path.join(root, 'MEMORY.md'));
+let mergeError;
+try {
+	await T.memory_rename.execute({ from: '待并入', to: '测试功能' }, exec);
+} catch (error) {
+	mergeError = error;
+}
+ok(mergeError?.code === 'safe_rename_unavailable' && /memory_rename 合并/.test(mergeError.message), `merge refuses before any write (${mergeError?.code})`);
+ok((await readFile(mergeSourcePath)).equals(mergeSourceBefore), 'merge left the source byte-identical');
+ok((await readFile(mergeTargetPath)).equals(mergeTargetBefore), 'merge left the target byte-identical (no blocks appended)');
+ok((await readFile(path.join(root, 'MEMORY.md'))).equals(mergeIndexBefore), 'merge left the index byte-identical (source row kept)');
 {
-	const { readLedger, contentHash } = await import('./src/write-ledger.js');
+	const { readLedger } = await import('./src/write-ledger.js');
 	const ledger = await readLedger(root);
-	ok(ledger?.get('functions/旧名功能.md')?.op === 'delete' && ledger.get('functions/旧名功能.md').to === 'functions/新名功能.md', 'rename records completed source deletion and destination');
-	ok(ledger?.get('functions/待并入.md')?.op === 'delete' && ledger.get('functions/待并入.md').to === 'functions/测试功能.md', 'merge records completed source deletion and destination');
-	ok(ledger?.get('functions/新名功能.md')?.hash === contentHash(await readFile(path.join(root, 'functions', '新名功能.md'), 'utf8')), 'rename destination content matches recorded hash');
+	// The areas were written, so a `write` row exists; what must NOT exist is a
+	// delete (or delete-intent) row for a rename/merge that never ran.
+	const deleteOps = (key) => ['delete', 'delete_intent'].includes(ledger?.get(key)?.op);
+	ok(!deleteOps('functions/旧名功能.md'), `paused rename recorded no source deletion in the ledger (${ledger?.get('functions/旧名功能.md')?.op ?? 'absent'})`);
+	ok(!deleteOps('functions/待并入.md'), `paused merge recorded no source deletion in the ledger (${ledger?.get('functions/待并入.md')?.op ?? 'absent'})`);
 	const report = await T.memory_check.execute({}, exec);
-	ok(!report.results.some((r) => r.rule === 'R26' && /(?:旧名功能|待并入)\.md.*不存在/.test(r.message)), 'R26 does not flag completed rename or merge as unexplained loss');
+	ok(!report.results.some((r) => r.rule === 'R10' && /(?:旧名功能|待并入)\.md/.test(r.message) && r.level === 'FAIL'), 'R10 reports no dangling link where the old name still exists');
 }
 
 // 11) full check now passes (no FAIL)
@@ -577,7 +605,7 @@ if (typeof ps === 'function') {
 		nextEnter,
 	);
 	const mixedText = mixed.messages?.[0]?.content?.[0]?.text ?? '';
-	ok(mixed.kind === 'enter' && !mixedText.includes('insights/闭环验证.md') && mixedText.includes('无引用功能'), `cited row dropped, uncited kept (${mixed.messages?.length} msgs)`);
+	ok(mixed.kind === 'enter' && !mixedText.includes('](insights/闭环验证.md)') && mixedText.includes('](functions/无引用功能.md)'), `cited row dropped, uncited kept (${mixed.messages?.length} msgs)`);
 }
 
 // 14) distillation gate (R14): a block is a conclusion, not a process log —
@@ -934,7 +962,7 @@ await US.execute({ action: 'record', href: 'functions/翻转域.md', kind: 'posi
 const rep2 = await US.execute({ action: 'report', days: 30 }, exec);
 const flipItem = rep2.items.find((i) => i.href === 'functions/翻转域.md');
 ok(flipItem && flipItem.flips >= 2, `usage report counts verdict flips (${flipItem?.flips})`);
-ok(rep2.warnings.some((w) => w.includes('反复推翻')), 'a flip warning surfaces for unstable conclusions');
+ok(rep2.warnings.some((w) => w.includes('functions/翻转域.md') && /声明信号出现 \d+ 次翻转/.test(w)), 'a flip warning surfaces for the declared signal');
 
 // 20) capability ledger: a CLI/MCP tool the agent actually used gets recorded
 // once (one file per tool, updated in place) with its exact invocation,
@@ -1578,17 +1606,35 @@ ok(ownThrew, 'crystallize refuses to overwrite a foreign (non-agent_created) bun
 // file but is NOT a usage signal, so the skill's evidence base stays empty.
 await T.memory_write.execute({ feature: '闸门零信号源', title: 't', summary: 's', change: 'c', result: 'done' }, exec);
 await T.memory_skill.execute({ action: 'crystallize', name: 'gate-skill', summary: '闸门回归', when: '闸门回归', procedure: ['一', '二'], verification: 'v', sources: ['闸门零信号源'] }, exec);
-let gateThrew = false;
-try {
-	await T.memory_skill.execute({ action: 'activate', name: 'gate-skill' }, exec);
-} catch (e) {
-	gateThrew = /转正需要证据/.test(String(e?.message));
+const gateFile = path.join(skillRoot, 'gate-skill', 'SKILL.md');
+const gateBefore = await readFile(gateFile, 'utf8');
+for (const note of ['', 'Caller claims prior success']) {
+	let gateThrew = false;
+	try {
+		await T.memory_skill.execute({ action: 'activate', name: 'gate-skill', ...(note ? { note } : {}) }, exec);
+	} catch (e) {
+		gateThrew = e?.code === 'verified_skill_execution_unavailable';
+	}
+	ok(gateThrew && await readFile(gateFile, 'utf8') === gateBefore, 'activation rejects unverified execution and preserves the candidate');
 }
-ok(gateThrew, 'activate without evidence throws (the ⭐ gate is mechanical)');
-// The explicit-carrier path: a note carries it, visibly warned, and the same
-// call again with the note flips the status.
-const gateNote = await T.memory_skill.execute({ action: 'activate', name: 'gate-skill', note: '2026-10-21 会话里按此程序跑通一次' }, exec);
-ok(gateNote.status === 'active' && gateNote.warnings.some((w) => w.includes('仅凭 note')), 'note-carried activation works and declares its weak evidence');
+// Seed an existing active bundle only in the disposable skill root. This is a
+// fixture for downstream lifecycle and bridge behavior, not execution evidence.
+async function seedExistingActive(name) {
+	if (path.dirname(skillRoot) !== path.resolve(tmpdir())) throw new Error('skill root is not an isolated temp directory');
+	const skillFile = path.join(skillRoot, name, 'SKILL.md');
+	const text = await readFile(skillFile, 'utf8');
+	if (!/^status: candidate$/m.test(text)) throw new Error(`unexpected fixture status: ${name}`);
+	await writeFile(skillFile, text.replace(/^status: candidate$/m, 'status: active'), 'utf8');
+	const indexFile = path.join(root, 'MEMORY.md');
+	const index = await readFile(indexFile, 'utf8');
+	let count = 0;
+	const changed = index.split('\n').map((line) => {
+		if (line.startsWith(`| [${name}](`) && /\| candidate \|$/.test(line)) { count++; return line.replace(/\| candidate \|$/, '| active |'); }
+		return line;
+	}).join('\n');
+	if (count !== 1) throw new Error(`unexpected index fixture count for ${name}: ${count}`);
+	await writeFile(indexFile, changed, 'utf8');
+}
 // Re-crystallization archives the superseded body before overwriting it —
 // receipts promised "git is the archive" while the skill store is NOT a repo.
 const reCry = await T.memory_skill.execute({ action: 'crystallize', name: 'bundle-path-skill', summary: '包路径回归（重结晶）', when: '包路径回归', procedure: ['一', '二'], verification: '写入宿主包', sources: ['测试功能'] }, exec);
@@ -1607,8 +1653,8 @@ ok(!sk2.candidates.some((c) => c.href === 'functions/分离延迟重启.md'), 'a
 const qTok = mod.tokensOf('detached restart 宿主');
 const rowsCand = mod.matchIndexRows(skIdx.content, qTok);
 ok(!rowsCand.some((r) => r.zone === 'skill'), 'candidate skill is filtered out of recall');
-const skAct = await T.memory_skill.execute({ action: 'activate', name: 'detached-restart', note: '真实任务照做成功（本会话）' }, exec);
-ok(skAct.status === 'active', 'activate flips lifecycle to active');
+await seedExistingActive('detached-restart');
+ok((await readFile(skCry.file, 'utf8')).includes('status: active'), 'the isolated existing active fixture is available');
 const idxAfterAct = (await T.memory_read.execute({ kind: 'index' }, exec)).content;
 const rowsActive = mod.matchIndexRows(idxAfterAct, qTok);
 ok(rowsActive.some((r) => r.zone === 'skill' && r.name === 'detached-restart'), 'active skill is recallable (identified by bundle dir name)');
@@ -1632,19 +1678,29 @@ for (const a of [
 	}
 }
 ok(skThrew === 3, `crystallize/activate validate their inputs (${skThrew}/3)`);
-// delete (5.21.0): removes BOTH the file and the index row — a lingering row
-// would be a dangling pointer the next recall trusts. Also refuses a name that
-// is not there (400, not a silent success).
+// delete (5.21.0) — PAUSED: removing BOTH the file and the index row is a
+// path-based delete, so it now refuses before its first side effect
+// (safe_delete_unavailable). The assertions below prove the refusal and that
+// neither the bundle nor its index row moved. Former assertions, kept for intent:
+//   delOk.status === 'deleted' && delOk.items.length === 0; the skill file is
+//   gone; the index row is gone with it. Refusing an absent name still throws in
+//   both worlds (the missing-bundle error precedes the guard).
 await T.memory_skill.execute(
 	{ action: 'crystallize', name: 'to-delete-skill', summary: '删除断言', when: '删除回归', procedure: ['一', '二'], verification: '文件与行俱消', sources: ['测试功能'] },
 	exec,
 );
-const delOk = await T.memory_skill.execute({ action: 'delete', name: 'to-delete-skill' }, exec);
-ok(delOk.status === 'deleted' && delOk.items.length === 0, 'delete reports the terminal status');
-const gone = !(await statExists(path.join(skillRoot, 'to-delete-skill/SKILL.md')));
-ok(gone, 'the skill file is gone');
-const idxAfterDel = await readFile(path.join(root, 'MEMORY.md'), 'utf8');
-ok(!idxAfterDel.includes('| [待删技能]'), 'the index row is gone with it');
+const deleteBundlePath = path.join(skillRoot, 'to-delete-skill', 'SKILL.md');
+const deleteBundleBefore = await readFile(deleteBundlePath);
+const idxBeforeSkillDel = await readFile(path.join(root, 'MEMORY.md'));
+let skillDeleteError;
+try {
+	await T.memory_skill.execute({ action: 'delete', name: 'to-delete-skill' }, exec);
+} catch (error) {
+	skillDeleteError = error;
+}
+ok(skillDeleteError?.code === 'safe_delete_unavailable' && /memory_skill\(delete\)/.test(skillDeleteError.message), `skill delete refuses before any write (${skillDeleteError?.code})`);
+ok(await statExists(deleteBundlePath) && (await readFile(deleteBundlePath)).equals(deleteBundleBefore), 'the skill bundle is byte-identical after the paused delete');
+ok((await readFile(path.join(root, 'MEMORY.md'))).equals(idxBeforeSkillDel), 'the index row survives the paused delete');
 let delThrew = false;
 try {
 	await T.memory_skill.execute({ action: 'delete', name: '不存在技能abc' }, exec);
@@ -1718,7 +1774,7 @@ ok(!('hostName' in T.memory_skill.parameters) && !('bundlePath' in T.memory_skil
 	const provider = providers[0];
 	const listed = await provider.list({});
 	ok(listed.every((c) => c.name !== pubName), 'candidate is NOT published to the host');
-	await T.memory_skill.execute({ action: 'activate', name: pubName, note: '桥接回归跑通' }, exec);
+	await seedExistingActive(pubName);
 	const listed2 = await provider.list({});
 	const row = listed2.find((c) => c.name === pubName);
 	ok(!!row && row.invocation.modelInvocable === true && row.source === 'custom' && row.rank > 600, 'an active owned bundle publishes with rank above bundled (user wins ties)');
@@ -1737,7 +1793,7 @@ ok(!('hostName' in T.memory_skill.parameters) && !('bundlePath' in T.memory_skil
 		{ action: 'crystallize', name: privName, summary: '内部作用域回归', when: '内部用', procedure: ['一', '二'], verification: '作用域可读', sources: ['测试功能'] },
 		exec,
 	);
-	await T.memory_skill.execute({ action: 'activate', name: privName }, exec);
+	await seedExistingActive(privName);
 	const privText = await readFile(path.join(skillRoot, privName, 'SKILL.md'), 'utf8');
 	ok(privText.includes('scope: global') && privText.includes('agent_created: true') && privText.includes('status: active'), 'template writes agent_created/status/scope');
 	ok(!privText.includes('scope_project'), 'global scope carries no scope_project');
@@ -1762,7 +1818,7 @@ ok(!('hostName' in T.memory_skill.parameters) && !('bundlePath' in T.memory_skil
 		{ action: 'crystallize', name: 'alpha-project-skill', summary: '只适用甲', when: '甲项目', procedure: ['一', '二'], verification: '路由过滤', sources: ['测试功能'], scope: 'project', scopeProject: 'alpha-proj' },
 		exec,
 	);
-	await T.memory_skill.execute({ action: 'activate', name: 'alpha-project-skill' }, exec);
+	await seedExistingActive('alpha-project-skill');
 	const listAlpha = await T.memory_skill.execute({ action: 'list', project: 'alpha-proj' }, exec);
 	ok(listAlpha.items.some((i) => i.name === 'alpha-project-skill'), 'the project filter keeps its own project skill');
 	const item = listAlpha.items.find((i) => i.name === 'alpha-project-skill');

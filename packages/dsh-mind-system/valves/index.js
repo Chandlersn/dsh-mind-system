@@ -23,7 +23,8 @@
  * memory 通过 ctx.get('valves') 运行时探测本服务——缺了照常工作（N4 降级）。
  */
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import {
@@ -36,6 +37,7 @@ import { mergeThresholds, canCalibrate, MIN_CALIBRATION_SAMPLES, DEFAULT_LAYERS,
 import {
 	appendDecision,
 	readDecisions,
+	readGovernanceDecisions,
 	summarizeDecisions,
 	readNegativeRules,
 	confirmNegativeRule,
@@ -73,10 +75,18 @@ import { nominateFromDisk } from './src/nominate.js';
 import { check as checkBudget, DEFAULT_BUDGET } from './src/budget.js';
 import { readClisHistory, consumeClisHistory, criterionEvidenceFromInsights, collideNoteToCandidate } from './src/clis-bridge.js';
 import { governanceRound, referenceCoverage, validateClassification } from './src/governance.js';
+import { adoptionCandidates } from './src/adoption-consumer.js';
 import { collectCycleCoverage, COVERAGE_VERSION } from './src/cycle-coverage.js';
 import { createRepairEventReceiver } from './src/repair-event-receiver.js';
+import { createClisEventReceiver } from './src/clis-event-receiver.js';
 import { readRepairEventPage } from './src/repair-event-review.js';
 import { createRepairIdentityResolver } from './src/repair-identity-resolver.js';
+import { createTechnicalReviewStore } from './src/technical-review-store.js';
+import { readTechnicalReview } from './src/technical-review-read.js';
+import { isDeepStrictEqual } from 'node:util';
+import { normalizeWriteContext } from './src/write-context.js';
+import { validateCorrelatedAdoption } from './src/correlated-adoption.js';
+import { readCorrelation, createCorrelationPeerGate } from './src/correlation-read.js';
 
 export const name = 'valves';
 
@@ -195,6 +205,22 @@ function bucketOf(key) {
 /** 供服务消费方与测试读取的运行时句柄。 */
 let runtime;
 
+function adoptionReport(adoption) {
+	return {
+		adoption_pending: adoption.items.length,
+		adoption_truncated: adoption.truncated,
+		adoption_candidates: adoption.items,
+		adoption_count_scope: 'current_page',
+		adoption_read_completeness: adoption.read_completeness,
+		adoption_ambiguous_correlation_rows: adoption.ambiguous_correlation_rows ?? null,
+		adoption_ambiguous_correlation_ids: adoption.ambiguous_correlation_ids ?? null,
+		adoption_correlation_count_scope: adoption.correlation_count_scope ?? 'unknown',
+		adoption_unambiguous_page_keys: adoption.unambiguous_page_keys ?? null,
+		adoption_unambiguous_count_scope: adoption.unambiguous_count_scope ?? 'unknown',
+		adoption_note: 'adoption_pending counts current page rows, not people or distinct events. Correlation counts describe provided entries only; unambiguous keys are observations, not proof of uniqueness, governance eligibility or authenticated adoption. Scan completeness and independent attribution remain unknown.',
+	};
+}
+
 /**
  * 建运行时：把 storageDir/thresholds 绑定进一组带记账的操作。
  * 每次阀门评估**两侧都落账**：allow/accept/human_gate/downgrade → admitted，
@@ -214,6 +240,21 @@ export function createRuntime(options = {}) {
 	// receives a repair event leaves no empty database behind.
 	const repairEventsPath = join(storageDir, 'mind-repair-events.sqlite');
 	let repairReceiverInstance = null;
+	let clisReceiverInstance = null;
+	let technicalReviewStore = null;
+	const clisInboxPath = join(storageDir, 'clis-event-inbox.sqlite');
+	const clisReceiver = () => {
+		if (!clisReceiverInstance) {
+			mkdirSync(storageDir, { recursive: true });
+			clisReceiverInstance = createClisEventReceiver({ filePath: clisInboxPath });
+		}
+		return clisReceiverInstance;
+	};
+	let clisDeliveryStatus = { state: 'not_started', authenticated: false, governanceEligible: false };
+	let clisCursor = 0;
+	let clisStopped = false;
+	let clisFlight = null;
+	let clisWatchdog = null;
 	const repairReceiver = () => {
 		if (repairReceiverInstance === null) {
 			mkdirSync(storageDir, { recursive: true });
@@ -224,7 +265,9 @@ export function createRuntime(options = {}) {
 
 	const record = (gate, direction, decision, input) => {
 		const outcome = decision.action === 'deny' || decision.action === 'reject' ? 'skipped' : 'admitted';
+		const writeContext = normalizeWriteContext(input?.write_context);
 		void appendDecision(storageDir, {
+			...(writeContext ? { write_context: writeContext } : {}),
 			gate,
 			direction,
 			outcome,
@@ -258,6 +301,112 @@ export function createRuntime(options = {}) {
 		storageDir,
 		thresholds,
 		layers,
+		clisEventStatus() { return { ...clisDeliveryStatus, cursor: clisCursor }; },
+		async retryClisEvents() {
+			if (clisStopped) return;
+			if (clisFlight) return clisFlight;
+			clisFlight = (async () => {
+				try {
+					if (clisReceiverInstance) clisReceiverInstance.recover();
+					else if (statSync(clisInboxPath, { throwIfNoEntry: false })) clisReceiver();
+				} catch {
+					clisDeliveryStatus = { state: 'outbox_or_receiver_error', authenticated: false, governanceEligible: false };
+					return;
+				}
+				let outbox;
+				try { outbox = options.getClisOutbox?.(); } catch { /* Optional service is not ready. */ }
+				if (!outbox || typeof outbox.pending !== 'function' || typeof outbox.recordReceipt !== 'function') {
+					clisDeliveryStatus = { state: 'outbox_unavailable', authenticated: false, governanceEligible: false };
+					return;
+				}
+				clisDeliveryStatus = { state: 'running', authenticated: false, governanceEligible: false };
+				clisWatchdog = setTimeout(() => {
+					if (clisStopped) return;
+					clisDeliveryStatus = { state: 'stalled', authenticated: false, governanceEligible: false };
+					try { outbox.reportTransport?.(clisDeliveryStatus); } catch { /* Status remains available in valves. */ }
+				}, options.clisStallMs ?? 5000);
+				clisWatchdog.unref?.();
+				try {
+					const rows = await outbox.pending({ after: clisCursor, limit: 20 });
+					if (!Array.isArray(rows)) throw new Error('invalid_outbox_page');
+					if (!rows.length) clisCursor = 0;
+					const started = Date.now();
+					let attempted = 0;
+					let failed = 0;
+					let feedbackError = typeof outbox.recordFeedback === 'function' ? null : 'producer_feedback_unsupported';
+					for (const event of rows) {
+						if (clisStopped || Date.now() - started >= 1000) break;
+						try {
+							const received = await clisReceiver().receive({ producerId: event.producerId, eventId: event.eventId, kind: event.kind, payload: event.payload });
+							const receipt = received.receipt;
+							await outbox.recordReceipt({ receiptId: receipt.receiptId, eventId: event.eventId, evidence: receipt });
+							if (typeof outbox.recordFeedback === 'function') {
+								const result = clisReceiver().consumption(event.producerId, event.eventId);
+								await outbox.recordFeedback({ schemaVersion: 1, producerId: result.producerId, eventId: result.eventId, receiptId: receipt.receiptId, classification: result.classification });
+							}
+						} catch (error) { failed++; feedbackError = error?.code ?? 'return_path_failed'; }
+						attempted++;
+						clisCursor = event.sequence;
+					}
+					clisDeliveryStatus = { state: failed ? 'retry_failed' : 'pending_unverified', attempted, failed, feedbackError, authenticated: false, governanceEligible: false };
+				} catch { clisDeliveryStatus = { state: 'outbox_or_receiver_error', authenticated: false, governanceEligible: false }; }
+				clearTimeout(clisWatchdog);
+				clisWatchdog = null;
+				if (clisStopped) clisDeliveryStatus = { state: 'stopped', authenticated: false, governanceEligible: false };
+				try { outbox.reportTransport?.(clisDeliveryStatus); } catch { /* Status remains available in valves. */ }
+			})();
+			try { await clisFlight; } finally { clisFlight = null; }
+		},
+		/**
+		 * Bookkeeping-only adoption trace (caller/user-action, e.g. memory_usage
+		 * positive/correction). Records a caller-declared signal for later review;
+		 * it does NOT authenticate the caller, nominate, admit, confirm or change any
+		 * rule, and it is explicitly excluded from the daily calibration pool.
+		 * Governance eligibility stays false until independent attribution exists.
+		 */
+		async recordAdoptionSignal(signal = {}) {
+			const decision = { action: 'noted', reason: 'adoption_signal_not_a_verdict' };
+			// A random event identifier prevents same-millisecond object collisions.
+			const at = new Date().toISOString();
+			const objectKey = typeof signal.objectKey === 'string' && signal.objectKey ? signal.objectKey : null;
+			return appendDecision(storageDir, {
+				t: at,
+				gate: 'adoption_nomination',
+				direction: 'up',
+				outcome: 'admitted',
+				action: decision.action,
+				reason: decision.reason,
+				candidate_id: objectKey ? `adoption:${objectKey}@${at}#${randomUUID()}` : undefined,
+				origin: 'adoption',
+				adoption: {
+					objectKey,
+					kind: signal.kind === 'correction' ? 'correction' : signal.kind === 'positive' ? 'positive' : null,
+					note: typeof signal.note === 'string' ? signal.note.slice(0, 2048) : null,
+					provenance: 'caller/user-action',
+					goalProof: 'not_evaluated',
+					principleAttribution: 'not_evaluated',
+					governanceEligible: false,
+				},
+			});
+		},
+		/** Append a caller-declared trace; correlation does not imply idempotency. */
+		async recordCorrelatedAdoptionSignal(input) {
+			const signal = validateCorrelatedAdoption(input);
+			if (!signal) return 'invalid';
+			const at = new Date().toISOString();
+			try {
+				const written = await (options.appendAdoptionDecision ?? appendDecision)(storageDir, {
+					t: at, gate: 'adoption_nomination', direction: 'up', outcome: 'admitted',
+					action: 'noted', reason: 'adoption_signal_not_a_verdict',
+					candidate_id: `adoption:${signal.objectKey}@${at}#${randomUUID()}`,
+					correlationId: signal.eventId, origin: 'adoption',
+					adoption: { objectKey: signal.objectKey, kind: signal.kind, note: signal.note,
+						provenance: 'caller/user-action', goalProof: 'not_evaluated',
+						principleAttribution: 'not_evaluated', governanceEligible: false },
+				});
+				return written === true ? 'appended' : 'unconfirmed';
+			} catch { return 'unconfirmed'; }
+		},
 		/**
 		 * Durable, passive receiver for runtime `repair_finished` events.
 		 *
@@ -286,6 +435,50 @@ export function createRuntime(options = {}) {
 				}).resolve(args);
 			} catch { return unavailable('runtime_evidence_unavailable'); }
 		},
+		resolveRepairArtifacts(args = {}) {
+			const identity = this.resolveRepairEvent(args);
+			if (identity.status !== 'match') return identity;
+			const unavailable = (code) => ({ ...identity, status: 'unknown', code });
+			try {
+				const service = options.getEvidenceService?.();
+				if (typeof service?.readRepairArtifacts !== 'function') return unavailable('artifact_service_unavailable');
+				const review = service.readRepairArtifacts(args);
+				if (review?.status !== 'match' || review.producerId !== identity.producerId || review.eventId !== identity.eventId
+					|| !isDeepStrictEqual(review.payload, identity.payload)) return unavailable('identity_changed_during_review');
+				if (!['match', 'mismatch', 'unknown', 'error'].includes(review.artifacts?.status)) return unavailable('artifact_reader_contract');
+				const result = { ...identity, status: review.artifacts.status, code: `artifacts_${review.artifacts.reason}`,
+					attestation: 'record_and_current_bytes', artifacts: review.artifacts };
+				if (Buffer.byteLength(JSON.stringify(result)) > 64 * 1024) return unavailable('artifact_response_limit');
+				return result;
+			} catch { return unavailable('artifact_review_failed'); }
+		},
+		readTechnicalReview(args = {}) {
+			if (!args || typeof args !== 'object' || Array.isArray(args) || Reflect.ownKeys(args).length !== 2
+				|| !Object.hasOwn(args, 'producerId') || !Object.hasOwn(args, 'eventId')) {
+				return { status: 'error', reason: 'invalid_request', goalProof: 'not_evaluated', principleAttribution: 'not_evaluated', governanceEligible: false };
+			}
+			return readTechnicalReview({ filePath: resolve(storageDir, 'mind-technical-reviews.sqlite'), producerId: args.producerId, eventId: args.eventId });
+		},
+		recordTechnicalReview(args = {}) {
+			const initial = this.resolveRepairEvent(args);
+			if (initial.status !== 'match') return { status: 'not_recorded', reason: initial.code, goalProof: 'not_evaluated', principleAttribution: 'not_evaluated', governanceEligible: false };
+			try {
+				if (!technicalReviewStore) {
+					mkdirSync(storageDir, { recursive: true });
+					technicalReviewStore = createTechnicalReviewStore({ filePath: join(storageDir, 'mind-technical-reviews.sqlite'), resolveEvidence: request => {
+						const identity = this.resolveRepairEvent(request);
+						const reviewed = this.resolveRepairArtifacts(request);
+						if (identity.status !== 'match' || !isDeepStrictEqual(reviewed.payload, identity.payload)
+							|| !reviewed.artifacts || typeof reviewed.artifacts !== 'object') throw new Error('identity_changed');
+						return { identity, artifacts: reviewed.artifacts };
+					} });
+				}
+				return technicalReviewStore.review(args);
+			} catch (error) {
+				const allowed = new Set(['technical_review_conflict', 'technical_review_resolver_error', 'invalid_technical_evidence', 'invalid_technical_review_request', 'corrupt_technical_review']);
+				return { status: 'not_recorded', reason: allowed.has(error?.code) ? error.code : 'technical_review_database_error', goalProof: 'not_evaluated', principleAttribution: 'not_evaluated', governanceEligible: false };
+			}
+		},
 		repairEventStatus() {
 			if (repairReceiverInstance === null && !existsSync(repairEventsPath)) {
 				return { path: repairEventsPath, received: 0, ready: false };
@@ -294,11 +487,19 @@ export function createRuntime(options = {}) {
 			return { path: repairEventsPath, received: receiver.count(), ready: true };
 		},
 		dispose() {
+			clisStopped = true;
+			clearTimeout(clisWatchdog);
+			clisWatchdog = null;
+			clisDeliveryStatus = { state: 'stopped', authenticated: false, governanceEligible: false };
+			try { clisReceiverInstance?.close(); } catch { /* Preserve disposal of remaining services. */ }
+			clisReceiverInstance = null;
 			try { repairReceiverInstance?.close(); } catch { /* closing twice is not an error worth raising */ }
 			repairReceiverInstance = null;
+			try { technicalReviewStore?.close(); } catch { /* Preserve disposal of remaining services. */ }
+			technicalReviewStore = null;
 		},
 		downward(from, to, data) {
-			return record(`downward_${from}_${to}`, 'down', admitDownward(from, to, data, { layers, thresholds }), { from, to, origin: data?.origin, principle_refs: data?.principle_refs });
+			return record(`downward_${from}_${to}`, 'down', admitDownward(from, to, data, { layers, thresholds }), { from, to, origin: data?.origin, principle_refs: data?.principle_refs, write_context: data?.write_context });
 		},
 		upward(from, to, candidate) {
 			return record(`upward_${from}_${to}`, 'up', admitUpward(from, to, candidate, { layers, thresholds }), {
@@ -690,7 +891,7 @@ export function createRuntime(options = {}) {
 			const entries = await readDecisions(storageDir);
 			if (entries === undefined) {
 				reportFinding(PROBE_CODES.storeUnreadable, 'warn', '判定账本读取失败（mind-valves.jsonl）。');
-				return { error: 'ledger_unreadable' };
+				return { error: 'ledger_unreadable', clis_event_flow: this.clisEventStatus() };
 			}
 			const rules = await readNegativeRules(storageDir);
 			if (rules === undefined) {
@@ -709,6 +910,7 @@ export function createRuntime(options = {}) {
 			const calib = canCalibrate(summary.calibration);
 			return {
 				...summary,
+				clis_event_flow: this.clisEventStatus(),
 				negative_rules: rules === undefined ? null : rules.length,
 				negative_store: rules === undefined ? 'unreadable' : 'ok',
 				last_patrol: {
@@ -798,9 +1000,17 @@ export function createRuntime(options = {}) {
 			const history = await readClisHistory(storageDir);
 			const consumed = consumeClisHistory(history);
 			if (consumed.error) return consumed;
-			const ledger = await readDecisions(storageDir);
+			const ledger = await readGovernanceDecisions(storageDir);
+			const { entries, ...ledgerRead } = ledger;
+			if (!ledger.complete) {
+				return {
+					error: ledger.status === 'unreadable' ? 'ledger_unreadable' : 'ledger_incomplete',
+					ledger_read: ledgerRead,
+					ledger_write: { status: 'not_attempted' },
+				};
+			}
 			const seen = new Set(
-				(ledger ?? [])
+				entries
 					.filter((e) => e?.gate === 'clis_nomination' && e.candidate_id)
 					.map((e) => e.candidate_id),
 			);
@@ -809,19 +1019,30 @@ export function createRuntime(options = {}) {
 				const key = `${n.fingerprint}@${n.at}`;
 				if (seen.has(key)) continue;
 				seen.add(key);
+				const write = options.clisTraceAppendDecision ?? appendDecision;
+				let written = false;
+				try {
+					written = await write(storageDir, {
+						gate: 'clis_nomination',
+						direction: 'trace',
+						outcome: n.verdict === 'accepted' ? 'admitted' : 'skipped',
+						action: n.verdict,
+						reason: n.reason,
+						candidate_id: key,
+						nominated_type: n.nominated_type,
+						origin: 'nomination',
+					});
+				} catch { /* A rejected append does not establish whether bytes were written. */ }
+				if (written !== true) {
+					return {
+						error: 'ledger_write_failed_or_unconfirmed', ledger_read: ledgerRead,
+						ledger_write: { status: 'failed_or_unconfirmed', confirmed_appends: recorded, candidate_id: key },
+						retry_note: 'The failed append may have written bytes. Concurrent calls can also append duplicates; inspect the ledger before retrying.',
+					};
+				}
 				recorded++;
-				void appendDecision(storageDir, {
-					gate: 'clis_nomination',
-					direction: 'trace',
-					outcome: n.verdict === 'accepted' ? 'admitted' : 'skipped',
-					action: n.verdict,
-					reason: n.reason,
-					candidate_id: key,
-					nominated_type: n.nominated_type,
-					origin: 'nomination',
-				});
 			}
-			return { ...consumed, newly_recorded: recorded };
+			return { ...consumed, ledger_read: ledgerRead, ledger_write: { status: recorded ? 'appended' : 'not_needed', confirmed_appends: recorded }, newly_recorded: recorded };
 		},
 		/**
 		 * II-3：真实 insights 覆盖数据喂 criterion 五门。
@@ -861,23 +1082,44 @@ export function createRuntime(options = {}) {
 		 * 那会把没被用过的原则也判 uncertain 刷屏）。结果落账 gate=governance。
 		 */
 		async govern(input = {}) {
-			// III-3：受检原则数 + 反例总数都算批量规模；超限整批终止。
 			const principles = Array.isArray(input.principles) ? input.principles : [];
+			const ledger = await readGovernanceDecisions(storageDir);
+			const { entries, ...ledgerRead } = ledger;
+			// Unattributed adoption signals remain read-only candidates, including on partial reads.
+			const adoption = input.consume_adoption === true
+				? adoptionCandidates(entries, { limit: input.adoption_limit }) : undefined;
+			if (!ledger.complete) {
+				if (ledger.status === 'unreadable') reportFinding(PROBE_CODES.storeUnreadable, 'warn', '治理循环读账本失败。');
+				return {
+					error: ledger.status === 'unreadable' ? 'ledger_unreadable' : 'ledger_incomplete',
+					ledger_read: ledgerRead,
+					ledger_write: { status: 'not_attempted' },
+					principle_reports: [], redefinition_proposals: [], human_gate_required: true,
+					terminated_by: 'ledger_incomplete',
+					...(adoption ? adoptionReport(adoption) : {}),
+				};
+			}
+			// Budget only explicitly supplied principles and counterexamples.
 			const antiTotal = principles.reduce((n, p) => n + (Array.isArray(p?.anti_examples) ? p.anti_examples.length : 0), 0);
 			const budgetCheck = checkBudget({ items: principles.length, rows: principles.length + antiTotal });
 			if (!budgetCheck.ok) {
-				return { terminated_by: budgetCheck.code, budget: budgetCheck.detail, principle_reports: [], redefinition_proposals: [], human_gate_required: true };
-			}
-			const entries = await readDecisions(storageDir);
-			if (entries === undefined) {
-				reportFinding(PROBE_CODES.storeUnreadable, 'warn', '治理循环读账本失败。');
-				return { error: 'ledger_unreadable' };
+				return { terminated_by: budgetCheck.code, budget: budgetCheck.detail, ledger_read: ledgerRead, ledger_write: { status: 'not_attempted' }, principle_reports: [], redefinition_proposals: [], human_gate_required: true, ...(adoption ? adoptionReport(adoption) : {}) };
 			}
 			const result = governanceRound(
-				{ ...input, entries },
+				{ ...input, entries, principles },
 				{ thresholds, layers, windowDays: input.window_days, minSampleSize: input.min_sample_size },
 			);
-			void appendDecision(storageDir, {
+			result.ledger_read = ledgerRead;
+			if (input.read_clis_candidates === true) {
+				try {
+					result.clis_review = clisReceiverInstance ? clisReceiverInstance.reviewCandidates({ after: input.clis_after, limit: input.clis_limit })
+						: { status: statSync(clisInboxPath, { throwIfNoEntry: false }) ? 'unavailable' : 'missing', items: [], next: null };
+				} catch (error) {
+					result.clis_review = { status: 'unavailable', reason: error?.code ?? 'read_failed' };
+				}
+			}
+			if (adoption) Object.assign(result, adoptionReport(adoption));
+			const written = await appendDecision(storageDir, {
 				gate: 'governance',
 				direction: 'governance',
 				outcome: result.human_gate_required ? 'skipped' : 'admitted',
@@ -885,13 +1127,14 @@ export function createRuntime(options = {}) {
 				reason: result.redefinition_proposals.map((p) => p.principle_id).join('+') || result.terminated_by,
 				origin: input.origin ?? 'daily',
 			});
+			result.ledger_write = { status: written ? 'appended' : 'failed_or_unconfirmed' };
 			return result;
 		},
 	};
 }
 
 /** 工具名。 */
-export const TOOL_NAMES = { check: 'valve_check', confirm: 'valve_confirm', metrics: 'valve_metrics', nominate: 'valve_nominate', govern: 'valve_govern', repairEvents: 'valve_repair_events', repairIdentity: 'valve_repair_identity' };
+export const TOOL_NAMES = { check: 'valve_check', confirm: 'valve_confirm', metrics: 'valve_metrics', nominate: 'valve_nominate', govern: 'valve_govern', repairEvents: 'valve_repair_events', repairIdentity: 'valve_repair_identity', repairArtifacts: 'valve_repair_artifacts', repairRecord: 'valve_repair_record', repairReview: 'valve_repair_review', correlation: 'valve_usage_correlation' };
 
 export function apply(ctx, config = {}, overrides = {}) {
 	const logger = overrides.logger ?? ctx.logger?.('valves');
@@ -910,7 +1153,10 @@ export function apply(ctx, config = {}, overrides = {}) {
 		thresholds,
 		layers: config?.layers,
 		getEvidenceService: () => ctx.get?.('executionRuntimeEvidence'),
+		getClisOutbox: () => ctx.get?.('clisEventOutbox'),
 	});
+	const correlationStorageDir = runtime.storageDir;
+	const correlationPeerGate = createCorrelationPeerGate(overrides.correlationPeerGateOptions);
 	// III-6 语义层的 embedder 是**可选 peer**：配置里给了函数才用，
 	// 缺了就是 degraded（N4：附加能力缺了要降级，主流程不依赖它）。
 	const semanticEmbedder = typeof config?.embedder === 'function' ? config.embedder : undefined;
@@ -1171,7 +1417,12 @@ export function apply(ctx, config = {}, overrides = {}) {
 	}
 	// Cordis owns effects; an event named dispose does not release plugin resources.
 	const ownedRuntime = runtime;
+	void ownedRuntime.retryClisEvents();
+	const clisTimer = setInterval(() => { void ownedRuntime.retryClisEvents(); }, overrides.clisPollMs ?? 30000);
+	clisTimer.unref?.();
 	const release = () => {
+		correlationPeerGate.dispose();
+		clearInterval(clisTimer);
 		for (const t of patrolTimers) {
 			try { clearInterval(t); } catch { /* ignore */ }
 		}
@@ -1388,6 +1639,68 @@ export function apply(ctx, config = {}, overrides = {}) {
 		async execute(args) { return runtime.resolveRepairEvent(args); },
 	});
 
+	const repairArtifactsTool = defineTool({
+		name: TOOL_NAMES.repairArtifacts,
+		description: 'Read-only repair evidence review: compare the received event to host-bound producer records, then rehash referenced files within the host workspace with byte limits. Supply only producerId/eventId. A match proves current bytes only, never goal satisfaction or principle attribution.',
+		parameters: {
+			producerId: { type: 'string', required: true, description: 'Exact producer identity from a received event.' },
+			eventId: { type: 'string', required: true, description: 'Exact immutable event identity from the same receipt.' },
+		},
+		output: { schema: { type: 'json' }, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v) }] },
+		async execute(args) { return runtime.resolveRepairArtifacts(args); },
+	});
+
+	const repairReviewTool = defineTool({
+		name: TOOL_NAMES.repairReview,
+		description: 'Read one previously persisted technical review by exact event identity. This read does not recheck current files or create a missing database. A historical review is not goal proof, principle attribution, or governance consumption.',
+		parameters: {
+			producerId: { type: 'string', required: true, description: 'Exact producer identity from a received event.' },
+			eventId: { type: 'string', required: true, description: 'Exact immutable event identity from the same receipt.' },
+		},
+		output: { schema: { type: 'json' }, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v) }] },
+		async execute(args) { return runtime.readTechnicalReview(args); },
+	});
+
+	const correlationTool = defineTool({
+		name: TOOL_NAMES.correlation,
+		description: 'Compare bounded declared memory and receiver records for one correlation ID. Peer provenance is unverified; results do not authenticate the producer or caller, prove a goal, or establish governance eligibility.',
+		parameters: {
+			correlationId: { type: 'string', required: true, description: 'Lowercase UUIDv4 correlation ID.' },
+		},
+		output: { schema: {
+			type: 'object', additionalProperties: false,
+			properties: {
+				status: { type: 'string', enum: ['compared', 'not_observed', 'duplicate', 'incomplete'] },
+				receiver: { type: 'object', additionalProperties: false, properties: {
+					status: { type: 'string', enum: ['observed', 'not_observed', 'duplicate', 'incomplete', 'error'] },
+					scope: { type: 'string', enum: ['unknown', 'selected_sources_complete'] }, sourceState: { type: 'string', enum: ['unknown', 'present', 'absent'] },
+				} },
+				memory: { type: 'object', additionalProperties: false, properties: {
+					status: { type: 'string', enum: ['observed', 'not_observed', 'duplicate', 'incomplete', 'error'] },
+					scope: { type: 'string', enum: ['unknown', 'selected_sources_complete'] }, sourceState: { type: 'string', enum: ['unknown', 'present', 'absent'] },
+				} },
+				comparison: { type: 'object', additionalProperties: false, properties: {
+					objectKey: { type: 'string', enum: ['match', 'mismatch', 'unknown'] }, kind: { type: 'string', enum: ['match', 'mismatch', 'unknown'] }, note: { type: 'string', enum: ['match', 'mismatch', 'unknown'] },
+				} },
+				snapshot: { type: 'string', const: 'unknown' }, peerProvenance: { type: 'string', const: 'unverified', required: true },
+				goalProof: { type: 'string', const: 'not_evaluated' }, principleAttribution: { type: 'string', const: 'not_evaluated' },
+				governanceEligible: { type: 'boolean', const: false }, reason: { type: 'string', enum: ['invalid_id'] },
+			},
+		}, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v) }] },
+		async execute(args) { return readCorrelation(correlationStorageDir, () => ctx.get?.('memoryUsageCorrelation'), args?.correlationId, correlationPeerGate); },
+	});
+
+	const repairRecordTool = defineTool({
+		name: TOOL_NAMES.repairRecord,
+		description: 'Persist one immutable technical review after rechecking a received repair event against host-bound records and current files. This writes a local review database. Replays are idempotent; conflicting observations are refused. It does not prove the goal, attribute a principle, or consume evidence for governance.',
+		parameters: {
+			producerId: { type: 'string', required: true, description: 'Exact producer identity from a received event.' },
+			eventId: { type: 'string', required: true, description: 'Exact immutable event identity from the same receipt.' },
+		},
+		output: { schema: { type: 'json' }, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v) }] },
+		async execute(args) { return runtime.recordTechnicalReview(args); },
+	});
+
 	const nominateTool = defineTool({
 		name: TOOL_NAMES.nominate,
 		description:
@@ -1495,6 +1808,11 @@ export function apply(ctx, config = {}, overrides = {}) {
 			window_days: { type: 'number', description: '覆盖率统计窗口（天）；缺省全量。' },
 			min_sample_size: { type: 'number', description: '覆盖率最小样本数（缺省 10，暂定）。' },
 			origin: { type: 'string', enum: ['daily', 'verification', 'drill'], description: '本轮治理判定的样本标记（缺省 daily）。' },
+			read_clis_candidates: { type: 'boolean', description: 'Read caller-declared CLIS failures pending review. Principle attribution is unknown.' },
+			clis_after: { type: 'number', description: 'Continuation from the previous CLIS review page.' },
+			clis_limit: { type: 'number', description: 'CLIS review page size (1–100, default 50).' },
+			consume_adoption: { type: 'boolean', description: 'Return unverified adoption rows and scoped observed correlation counts; no caller authentication, governance eligibility, counterexample injection or consumption cursor.' },
+			adoption_limit: { type: 'number', description: 'Maximum adoption rows in the current page (1–100, default 50); adoption_pending counts rows, not distinct events.' },
 		},
 		output: { schema: { type: 'json' }, render: (_a, v) => [{ type: 'text', text: JSON.stringify(v, null, 2) }] },
 		async execute(args) {
@@ -1506,7 +1824,7 @@ export function apply(ctx, config = {}, overrides = {}) {
 		},
 	});
 
-	for (const tool of [checkTool, confirmTool, metricsTool, nominateTool, governTool, repairEventsTool, repairIdentityTool]) {
+	for (const tool of [checkTool, confirmTool, metricsTool, nominateTool, governTool, repairEventsTool, repairIdentityTool, repairArtifactsTool, repairRecordTool, repairReviewTool, correlationTool]) {
 		ctx.tools.register(tool);
 		facts.registeredTools.push(tool.name ?? '(unnamed)');
 	}

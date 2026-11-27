@@ -80,6 +80,44 @@ test('runtime.clisTrace：首跑全量落账、二跑幂等（账本当游标）
 	}
 });
 
+test('invalid and ambiguous identities stay outside nominations and the ledger cursor', async () => {
+	const { createRuntime } = await import('../index.js');
+	const { readFileSync } = await import('node:fs');
+	const dir = mkdtempSync(join(tmpdir(), 'dsh-clisb-isolated-'));
+	try {
+		const history = hist({
+			'': { entries: [entry()] },
+			undefined: { entries: [entry()] },
+			mismatch: { fingerprint: 'different', entries: [entry()] },
+			invalid: { entries: [entry({ at: undefined, signal_type: 'type_misjudged' }), entry({ at: '' }), entry({ at: 'not-a-date' }), entry({ at: '2026-02-30T00:00:00Z' })] },
+			duplicate: { entries: [entry(), entry({ signal_type: 'type_misjudged' })] },
+			valid: { fingerprint: 'valid', entries: [entry(), entry({ at: '2026-11-02T00:00:00Z', baseline: false })] },
+		});
+		writeFileSync(join(dir, 'clis-history.json'), JSON.stringify(history));
+		const runtime = createRuntime({ storageDir: dir });
+		const first = await runtime.clisTrace();
+		assert.equal(first.quarantined.length, 9);
+		assert.deepEqual(first.quarantined.map((item) => item.reason), [
+			'invalid_fingerprint', 'invalid_fingerprint', 'invalid_fingerprint',
+			'invalid_time', 'invalid_time', 'invalid_time', 'invalid_time',
+			'ambiguous_identity', 'ambiguous_identity',
+		]);
+		assert.equal(first.misjudged.length, 0);
+		assert.equal(first.newly_recorded, 2);
+		assert.ok(first.nominations.every((item) => item.fingerprint === 'valid' && item.reason === 'in_contract_traceable'));
+		const ledgerPath = join(dir, 'mind-valves.jsonl');
+		const firstLedger = readFileSync(ledgerPath, 'utf8');
+		const rows = firstLedger.trim().split('\n').map(JSON.parse);
+		assert.deepEqual(rows.map((row) => row.candidate_id), ['valid@2026-11-01T00:00:00Z', 'valid@2026-11-02T00:00:00Z']);
+		const replay = await runtime.clisTrace();
+		assert.equal(replay.newly_recorded, 0);
+		assert.equal(replay.quarantined.length, 9);
+		assert.equal(readFileSync(ledgerPath, 'utf8'), firstLedger);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 const insightText = (sources, superseded = false) => `${superseded ? '> ⚠️ 已被取代 → x\n' : ''}# 主题
 
 ## 核心原则

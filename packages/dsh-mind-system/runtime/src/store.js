@@ -1,13 +1,41 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { isAbsolute, normalize } from 'node:path';
 import { validateRepairAction } from './analyzer.js';
-import { RuntimeContractError, jsonSnapshot, requireString, validateBudget, validateCandidate, validateTask, validateTaskProvenance, validateVerification } from './contracts.js';
+import { buildRecipeFromSpec, recipeIdentity } from './recipe-factory.js';
+import { RuntimeContractError, jsonSnapshot, requireString, validateAcceptanceContract, validateBudget, validateCandidate, validateTask, validateTaskProvenance, validateVerification } from './contracts.js';
 
 const error = (code, message) => new RuntimeContractError(code, message);
 const sha256 = (raw) => createHash('sha256').update(raw, 'utf8').digest('hex');
 const EVIDENCE_LIMIT = 4 * 1024 * 1024;
 const READ_LIMIT = 32 * 1024;
+const INT64_MIN = -(1n << 63n);
+const INT64_MAX = (1n << 63n) - 1n;
+
+export function validateBindingPage(limit, cursor) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw error('invalid_snapshot_limit', 'Pagination requires an explicit integer limit from 1 to 100.');
+  if (typeof cursor !== 'string' || cursor.length > 64) throw error('invalid_binding_cursor', 'Invalid binding cursor.');
+  if (cursor === '') return null;
+  const match = /^v1:(0|-?[1-9][0-9]*):(0|-?[1-9][0-9]*)$/.exec(cursor);
+  if (!match) throw error('invalid_binding_cursor', 'Invalid binding cursor.');
+  const high = BigInt(match[1]);
+  const after = BigInt(match[2]);
+  if (high < INT64_MIN || high >= INT64_MAX || after < INT64_MIN || after > high) throw error('invalid_binding_cursor', 'Invalid binding cursor.');
+  return { high, after };
+}
+
+// Never let node:sqlite decode identity-bearing TEXT: embedded NUL truncates its result.
+const boundedText = (column, alias, limit) => `typeof(${column}) AS ${alias}_type,
+  CASE WHEN typeof(${column}) = 'text' AND length(CAST(${column} AS BLOB)) <= ${limit}
+  THEN CAST(${column} AS BLOB) END AS ${alias}`;
+function decodeBoundedText(row, name) {
+  if (row[`${name}_type`] !== 'text' || !row[name]) throw new Error('Invalid stored text');
+  const bytes = row[name];
+  const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  if (text.includes('\0') || !Buffer.from(text, 'utf8').equals(Buffer.from(bytes))) throw new Error('Invalid stored text');
+  return text;
+}
 
 // Inspect descriptors to avoid silently dropping JSON data or executing getters.
 function storageSnapshot(value, visiting = new Set(), depth = 0) {
@@ -42,6 +70,22 @@ function storageSnapshot(value, visiting = new Set(), depth = 0) {
   return result;
 }
 
+export function validateAuthoritySnapshot(input) {
+  const value = storageSnapshot(input);
+  const invalid = () => { throw error('invalid_authority_snapshot', 'Invalid native authority snapshot.'); };
+  if (!value || Array.isArray(value) || typeof value !== 'object'
+    || Object.keys(value).length !== 4 || !['schemaVersion', 'scopeRef', 'workspaceRoot', 'allowedTools'].every((key) => Object.hasOwn(value, key))
+    || value.schemaVersion !== 1) invalid();
+  const validText = (s, max) => typeof s === 'string' && s.trim() === s && s.length > 0
+    && Buffer.byteLength(s) <= max && s.isWellFormed() && !s.includes('\0');
+  if (!validText(value.scopeRef, 1024) || !validText(value.workspaceRoot, 4096)
+    || !isAbsolute(value.workspaceRoot) || normalize(value.workspaceRoot) !== value.workspaceRoot
+    || !Array.isArray(value.allowedTools) || value.allowedTools.length < 1 || value.allowedTools.length > 128
+    || value.allowedTools.some((name) => !validText(name, 256))
+    || new Set(value.allowedTools).size !== value.allowedTools.length) invalid();
+  return { schemaVersion: 1, scopeRef: value.scopeRef, workspaceRoot: value.workspaceRoot, allowedTools: [...value.allowedTools] };
+}
+
 /**
  * Column list for `repairs`, shared by the initial schema and the in-place rebuild below.
  * Keeping one source means adding a permitted CHECK value can never desynchronize the two, which is
@@ -62,6 +106,22 @@ export class RuntimeStore {
   #db;
   #now;
 
+  /** Identify the SQLite-reported main database path without exposing it. */
+  getStoreIdentity() {
+    try {
+      const rows = this.#db.prepare('PRAGMA database_list').all();
+      const file = rows.find((row) => row.name === 'main')?.file;
+      if (file === '') return { status: 'unavailable', reason: 'in_memory' };
+      if (typeof file !== 'string' || !isAbsolute(file) || Buffer.byteLength(file, 'utf8') > 4096) {
+        return { status: 'unavailable', reason: 'sqlite_path_unavailable' };
+      }
+      return { status: 'available', identity: sha256(`sqlite-main-path-v1\0${file}`),
+        provenance: 'sqlite_database_list_main_path_sha256', pathSemantics: 'sqlite_reported_path_not_file_identity' };
+    } catch {
+      return { status: 'unavailable', reason: 'sqlite_identity_read_failed' };
+    }
+  }
+
   constructor(filename, { now = Date.now } = {}) {
     this.#now = now;
     this.#db = new DatabaseSync(filename);
@@ -81,6 +141,19 @@ export class RuntimeStore {
         recovery_reads_used INTEGER NOT NULL DEFAULT 0,
         compensations_used INTEGER NOT NULL DEFAULT 0,
         recovery_started_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS recipe_run_bindings (
+        task_id TEXT PRIMARY KEY NOT NULL REFERENCES runs(task_id),
+        recipe_id TEXT NOT NULL, recipe_version TEXT NOT NULL, identity_json TEXT NOT NULL,
+        origin_json TEXT NOT NULL
+      );
+      CREATE TRIGGER IF NOT EXISTS recipe_run_bindings_no_update BEFORE UPDATE ON recipe_run_bindings
+        BEGIN SELECT RAISE(ABORT, 'Recipe run bindings are immutable'); END;
+      CREATE TRIGGER IF NOT EXISTS recipe_run_bindings_no_delete BEFORE DELETE ON recipe_run_bindings
+        BEGIN SELECT RAISE(ABORT, 'Recipe run bindings are immutable'); END;
+      CREATE TABLE IF NOT EXISTS acceptance_bindings (
+        task_id TEXT PRIMARY KEY NOT NULL REFERENCES runs(task_id),
+        native_ref TEXT NOT NULL, contract_json TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS attempts (
         attempt_id TEXT PRIMARY KEY NOT NULL, task_id TEXT NOT NULL REFERENCES runs(task_id),
@@ -168,6 +241,10 @@ export class RuntimeStore {
       if (!columns.has(name)) this.#db.exec(`ALTER TABLE runs ADD COLUMN ${name} ${declaration}`);
     }
     this.#transaction(() => {
+      const bindingColumns = this.#db.prepare('PRAGMA table_info(acceptance_bindings)').all();
+      if (!bindingColumns.some((column) => column.name === 'authority_json')) {
+        this.#db.exec('ALTER TABLE acceptance_bindings ADD COLUMN authority_json TEXT');
+      }
       const analysisColumns = this.#db.prepare('PRAGMA table_info(analyses)').all();
       if (!analysisColumns.some((column) => column.name === 'consumed_at')) {
         this.#db.exec('ALTER TABLE analyses ADD COLUMN consumed_at INTEGER');
@@ -205,7 +282,7 @@ export class RuntimeStore {
    * Run a scoped operation against the underlying database handle.
    *
    * Exposes the handle to one callback instead of returning it, so an extension (the recipe library) can
-   * keep its tables in this same file — one database, one lifecycle — without any caller holding a handle
+   * keep its tables in this same file 鈥?one database, one lifecycle 鈥?without any caller holding a handle
    * that outlives the store or bypasses its invariants.
    */
   withDatabase(operation) {
@@ -283,17 +360,275 @@ export class RuntimeStore {
     }
   }
 
-  createRun(input) {
+  /** Bindings are supplied only by trusted host callers; this store is not a trust boundary. */
+  createRun(input, { acceptanceBinding, recipeBinding } = {}) {
+    let binding;
+    if (acceptanceBinding !== undefined) {
+      const value = storageSnapshot(acceptanceBinding);
+      if (!value || Array.isArray(value) || typeof value !== 'object'
+        || ![2, 3].includes(Object.keys(value).length) || !Object.hasOwn(value, 'nativeRef') || !Object.hasOwn(value, 'contract')
+        || Object.keys(value).some((key) => !['nativeRef', 'contract', 'authority'].includes(key))) {
+        throw error('invalid_acceptance_binding', 'A native reference and acceptance contract are required.');
+      }
+      requireString(value.nativeRef, 'nativeRef');
+      if (!value.nativeRef.isWellFormed() || value.nativeRef.includes('\0')) throw error('invalid_acceptance_binding', 'Invalid native reference.');
+      binding = { nativeRef: value.nativeRef, contract: validateAcceptanceContract(value.contract),
+        authority: value.authority === undefined || value.authority === null ? null : validateAuthoritySnapshot(value.authority) };
+    }
     const task = validateTask(input);
     const now = this.#now();
     if (task.deadlineAt <= now) throw error('budget_exceeded', 'The task deadline has already elapsed.');
     return this.#transaction(() => {
+      if (recipeBinding !== undefined) {
+        try {
+          const { recipeId, version, identity } = recipeBinding;
+          if (recipeId !== task.recipeId || version !== task.recipeVersion || typeof identity !== 'string') throw new Error();
+          const key = `${recipeId}:${version}`;
+          if (!key.isWellFormed() || key.includes('\0')) throw new Error();
+          const row = this.#db.prepare(`SELECT ${boundedText('recipe_key', 'recipe_key', 8193)},
+            ${boundedText('spec_json', 'spec', 65536)}, ${boundedText('identity_json', 'identity', 65536)}
+            FROM recipe_library WHERE recipe_key = ? AND CAST(recipe_key AS BLOB) = CAST(? AS BLOB)`).get(key, key);
+          if (!row || decodeBoundedText(row, 'recipe_key') !== key || decodeBoundedText(row, 'identity') !== identity) throw new Error();
+          const spec = JSON.parse(decodeBoundedText(row, 'spec'));
+          const saved = JSON.parse(identity);
+          const reconstructed = buildRecipeFromSpec(spec, { toolEffects: saved.toolEffects });
+          if (reconstructed.id !== recipeId || reconstructed.version !== version || recipeIdentity(reconstructed) !== identity) throw new Error();
+        } catch {
+          throw error('recipe_identity_unverifiable', 'Generated recipe identity is unavailable or does not match the library.');
+        }
+      }
       this.#db.prepare(`INSERT INTO runs
         (task_id, task_json, status, version, created_at, updated_at) VALUES (?, ?, 'running', 0, ?, ?)`)
         .run(task.taskId, JSON.stringify(task), now, now);
+      if (recipeBinding !== undefined) this.#db.prepare(`INSERT INTO recipe_run_bindings
+        (task_id, recipe_id, recipe_version, identity_json, origin_json) VALUES (?, ?, ?, ?, ?)`)
+        .run(task.taskId, recipeBinding.recipeId, recipeBinding.version, recipeBinding.identity,
+          JSON.stringify(Object.hasOwn(task, 'origin') ? { kind: 'declared', value: task.origin } : { kind: 'unknown' }));
       this.#event(task.taskId, null, 'run_created', { task });
+      if (binding) this.#db.prepare('INSERT INTO acceptance_bindings (task_id, native_ref, contract_json, authority_json) VALUES (?, ?, ?, ?)')
+        .run(task.taskId, binding.nativeRef, JSON.stringify(binding.contract), binding.authority === null ? null : JSON.stringify(binding.authority));
       return this.getRun(task.taskId);
     });
+  }
+
+  /** Report only future bindings and the current run state; origin is caller-declared. */
+  getRecipeOutcome(taskId) {
+    requireString(taskId, 'taskId');
+    if (!taskId.isWellFormed() || taskId.includes('\0') || Buffer.byteLength(taskId) > 4096) {
+      return { coverage: 'unavailable', independentGoalProof: false };
+    }
+    const hasLibrary = !!this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'recipe_library'").get();
+    const row = this.#db.prepare(`SELECT ${boundedText('r.task_id', 'run_id', 4096)},
+      ${boundedText('r.task_json', 'task', 65536)}, ${boundedText('r.status', 'status', 4096)}, r.version,
+      ${boundedText('b.task_id', 'binding_id', 4096)}, ${boundedText('b.recipe_id', 'recipe_id', 4096)},
+      ${boundedText('b.recipe_version', 'recipe_version', 4096)}, ${boundedText('b.identity_json', 'identity', 65536)},
+      ${boundedText('b.origin_json', 'origin', 4096)},
+      ${hasLibrary ? `${boundedText('l.recipe_key', 'library_key', 8193)}, ${boundedText('l.identity_json', 'library_identity', 65536)}, ${boundedText('l.spec_json', 'spec', 65536)}` : "NULL AS library_key_type, NULL AS library_identity_type, NULL AS spec_type"}
+      FROM runs r LEFT JOIN recipe_run_bindings b ON b.task_id = r.task_id
+      ${hasLibrary ? "LEFT JOIN recipe_library l ON l.recipe_key = CASE WHEN length(CAST(b.recipe_id AS BLOB)) <= 4096 AND length(CAST(b.recipe_version AS BLOB)) <= 4096 THEN b.recipe_id || ':' || b.recipe_version END" : ''}
+      WHERE r.task_id = ? AND CAST(r.task_id AS BLOB) = CAST(? AS BLOB)`).get(taskId, taskId);
+    if (!row) throw error('run_not_found', 'The requested run does not exist.');
+    try {
+      if (decodeBoundedText(row, 'run_id') !== taskId) throw new Error();
+      if (row.binding_id_type === 'null') return { coverage: 'unbound', independentGoalProof: false };
+      if (decodeBoundedText(row, 'binding_id') !== taskId) throw new Error();
+      const recipeId = decodeBoundedText(row, 'recipe_id');
+      const recipeVersion = decodeBoundedText(row, 'recipe_version');
+      if (decodeBoundedText(row, 'library_key') !== `${recipeId}:${recipeVersion}`) throw new Error();
+      const identityRaw = decodeBoundedText(row, 'identity');
+      const task = validateTask(JSON.parse(decodeBoundedText(row, 'task')));
+      const origin = JSON.parse(decodeBoundedText(row, 'origin'));
+      const expectedOrigin = Object.hasOwn(task, 'origin') ? { kind: 'declared', value: task.origin } : { kind: 'unknown' };
+      const spec = JSON.parse(decodeBoundedText(row, 'spec'));
+      const identity = JSON.parse(identityRaw);
+      const status = decodeBoundedText(row, 'status');
+      const recipe = buildRecipeFromSpec(spec, { toolEffects: identity.toolEffects });
+      if (task.taskId !== taskId || task.recipeId !== recipeId || task.recipeVersion !== recipeVersion
+        || recipe.id !== recipeId || recipe.version !== recipeVersion
+        || decodeBoundedText(row, 'library_identity') !== identityRaw || recipeIdentity(recipe) !== identityRaw
+        || !isDeepStrictEqual(origin, expectedOrigin) || !Number.isSafeInteger(row.version) || row.version < 0
+        || !['running', 'completed', 'waiting_analysis', 'waiting_human', 'reconciling', 'failed', 'cancelled', 'paused'].includes(status)) throw new Error();
+      return { coverage: 'bound', recipeId, recipeVersion,
+        origin, status, version: row.version, independentGoalProof: false };
+    } catch {
+      return { coverage: 'unavailable', independentGoalProof: false };
+    }
+  }
+
+  /** Read a rowid-bounded page; membership relies on the documented append-only assumptions. */
+  pageRecipeOutcomes({ limit, cursor } = {}) {
+    const position = validateBindingPage(limit, cursor);
+    const basis = { origins: 'caller_declared', counts: 'current_run_statuses',
+      membership: 'conditional_append_only_no_vacuum_replace_or_explicit_rowid',
+      statusSnapshot: 'per_page', independentGoalProof: false, productionVerification: false, cursorProvesCompleteness: false };
+    if (this.#db.isTransaction) return { coverage: 'unavailable', reason: 'snapshot_transaction_nested', limit, basis };
+    try {
+      this.#db.exec('BEGIN');
+      // Require the expected table shape and immutable triggers within the same read snapshot.
+      const schema = this.#db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name IN ('recipe_run_bindings','recipe_run_bindings_no_update','recipe_run_bindings_no_delete')").all();
+      const table = schema.find((item) => item.type === 'table' && item.name === 'recipe_run_bindings');
+      const triggers = ['update', 'delete'].every((kind) => schema.some((item) => item.type === 'trigger'
+        && item.tbl_name === 'recipe_run_bindings' && item.name === `recipe_run_bindings_no_${kind}`
+        && new RegExp(`BEFORE\\s+${kind}\\s+ON\\s+recipe_run_bindings[\\s\\S]*RAISE\\s*\\(\\s*ABORT`, 'i').test(item.sql)));
+      const columns = this.#db.prepare('PRAGMA table_info(recipe_run_bindings)').all();
+      if (!table || /WITHOUT\s+ROWID/i.test(table.sql) || columns.some((column) => ['rowid', '_rowid_', 'oid'].includes(column.name.toLowerCase())) || !triggers) {
+        this.#db.exec('ROLLBACK');
+        return { coverage: 'unavailable', reason: 'membership_environment_unavailable', limit, basis };
+      }
+      const maximum = this.#db.prepare('SELECT CAST(MAX(rowid) AS TEXT) AS high FROM recipe_run_bindings').get().high;
+      if (maximum !== null && BigInt(maximum) === INT64_MAX) {
+        this.#db.exec('ROLLBACK');
+        return { coverage: 'unavailable', reason: 'rowid_exhausted', limit, basis };
+      }
+      const high = position ? position.high : maximum === null ? null : BigInt(maximum);
+      if (position && (maximum === null || BigInt(maximum) < high)) {
+        this.#db.exec('ROLLBACK');
+        return { coverage: 'unavailable', reason: 'membership_environment_unavailable', limit, basis };
+      }
+      const rows = high === null ? [] : position
+        ? this.#db.prepare(`SELECT CAST(b.rowid AS TEXT) AS rowid, ${boundedText('b.task_id', 'task_id', 4096)}
+          FROM recipe_run_bindings b WHERE b.rowid > ? AND b.rowid <= ? ORDER BY b.rowid LIMIT ?`).all(position.after, high, limit + 1)
+        : this.#db.prepare(`SELECT CAST(b.rowid AS TEXT) AS rowid, ${boundedText('b.task_id', 'task_id', 4096)}
+          FROM recipe_run_bindings b WHERE b.rowid <= ? ORDER BY b.rowid LIMIT ?`).all(high, limit + 1);
+      const groups = new Map();
+      let unavailable = 0;
+      const observations = rows.slice(0, limit).map((row) => {
+        let taskId, outcome;
+        try { taskId = decodeBoundedText(row, 'task_id'); outcome = this.getRecipeOutcome(taskId); } catch { outcome = null; }
+        if (outcome?.coverage !== 'bound') {
+          unavailable++;
+          return { rowid: row.rowid, coverage: 'unavailable' };
+        }
+        const key = JSON.stringify([outcome.recipeId, outcome.recipeVersion]);
+        if (!groups.has(key)) groups.set(key, { recipeId: outcome.recipeId, recipeVersion: outcome.recipeVersion, origins: {} });
+        const group = groups.get(key);
+        const origin = outcome.origin.kind === 'declared' ? outcome.origin.value : 'unknown';
+        group.origins[origin] ??= {};
+        group.origins[origin][outcome.status] = (group.origins[origin][outcome.status] ?? 0) + 1;
+        return { rowid: row.rowid, taskId, ...outcome };
+      });
+      const truncated = rows.length > limit;
+      const nextCursor = truncated ? `v1:${high}:${observations.at(-1).rowid}` : null;
+      this.#db.exec('COMMIT');
+      return { coverage: unavailable ? 'partial_unavailable' : 'available', limit, scanned: observations.length,
+        truncated, unavailable, rangeExhausted: !truncated, snapshotHighWatermark: high === null ? null : String(high),
+        nextCursor, basis, observations, groups: [...groups.values()] };
+    } catch {
+      if (this.#db.isTransaction) this.#db.exec('ROLLBACK');
+      return { coverage: 'unavailable', reason: 'snapshot_unavailable', limit, basis };
+    }
+  }
+
+  /** Summarize a bounded prefix of new bindings in one SQLite read snapshot. */
+  summarizeRecipeOutcomes({ limit = 100 } = {}) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw error('invalid_snapshot_limit', 'Snapshot limit must be an integer from 1 to 100.');
+    }
+    const basis = { origins: 'caller_declared', counts: 'current_run_statuses',
+      independentGoalProof: false, productionVerification: false };
+    if (this.#db.isTransaction) return { coverage: 'unavailable', reason: 'snapshot_transaction_nested', limit, basis };
+    try {
+      this.#db.exec('BEGIN');
+      const rows = this.#db.prepare(`SELECT ${boundedText('b.task_id', 'task_id', 4096)}
+        FROM recipe_run_bindings b ORDER BY b.task_id LIMIT ?`).all(limit + 1);
+      const groups = new Map();
+      let unavailable = 0;
+      for (const row of rows.slice(0, limit)) {
+        let outcome;
+        try { outcome = this.getRecipeOutcome(decodeBoundedText(row, 'task_id')); } catch { unavailable++; continue; }
+        if (outcome.coverage !== 'bound') { unavailable++; continue; }
+        const key = JSON.stringify([outcome.recipeId, outcome.recipeVersion]);
+        if (!groups.has(key)) groups.set(key, { recipeId: outcome.recipeId, recipeVersion: outcome.recipeVersion, origins: {} });
+        const group = groups.get(key);
+        const origin = outcome.origin.kind === 'declared' ? outcome.origin.value : 'unknown';
+        group.origins[origin] ??= {};
+        group.origins[origin][outcome.status] = (group.origins[origin][outcome.status] ?? 0) + 1;
+      }
+      this.#db.exec('COMMIT');
+      return { coverage: unavailable ? 'partial_unavailable' : 'available', limit,
+        scanned: Math.min(rows.length, limit), truncated: rows.length > limit, unavailable, basis, groups: [...groups.values()] };
+    } catch {
+      if (this.#db.isTransaction) this.#db.exec('ROLLBACK');
+      return { coverage: 'unavailable', reason: 'snapshot_unavailable', limit, basis };
+    }
+  }
+
+  /** Read the persisted recovery identity in one SQLite statement without changing the run. */
+  getRecoveryIdentitySnapshot(taskId) {
+    try {
+      requireString(taskId, 'taskId');
+      if (!taskId.isWellFormed() || taskId.includes('\0') || Buffer.byteLength(taskId) > 4096) throw new Error();
+      const row = this.#db.prepare(`SELECT ${boundedText('r.task_id', 'run_id', 4096)},
+        ${boundedText('r.task_json', 'task', 65536)}, r.version,
+        ${boundedText('b.task_id', 'binding_id', 4096)},
+        ${boundedText('b.native_ref', 'ref', 4096)}, ${boundedText('b.contract_json', 'contract', 4096)},
+        ${boundedText('b.authority_json', 'authority', 65536)}
+        FROM runs r LEFT JOIN acceptance_bindings b ON b.task_id = r.task_id
+          AND CAST(b.task_id AS BLOB) = CAST(r.task_id AS BLOB)
+        WHERE r.task_id = ? AND CAST(r.task_id AS BLOB) = CAST(? AS BLOB)`).get(taskId, taskId);
+      if (!row) return { coverage: 'missing' };
+      if (decodeBoundedText(row, 'run_id') !== taskId || !Number.isSafeInteger(row.version) || row.version < 0) throw new Error();
+      const storedTask = JSON.parse(decodeBoundedText(row, 'task'));
+      const task = validateTask(storedTask);
+      if (!isDeepStrictEqual(task, storedTask) || task.taskId !== taskId) throw new Error();
+      const validStrings = (value) => {
+        if (typeof value === 'string') return value.isWellFormed() && !value.includes('\0');
+        if (value && typeof value === 'object') return Object.entries(value).every(([key, item]) => validStrings(key) && validStrings(item));
+        return true;
+      };
+      if (!validStrings(task)) throw new Error();
+      if (row.binding_id_type === 'null') return { coverage: 'unbound', task, version: row.version };
+      if (decodeBoundedText(row, 'binding_id') !== taskId) throw new Error();
+      const nativeRef = decodeBoundedText(row, 'ref');
+      requireString(nativeRef, 'nativeRef');
+      const contractRaw = decodeBoundedText(row, 'contract');
+      const contract = validateAcceptanceContract(JSON.parse(contractRaw));
+      if (JSON.stringify(contract) !== contractRaw) throw new Error();
+      let authority = null;
+      if (row.authority_type !== 'null') {
+        const authorityRaw = decodeBoundedText(row, 'authority');
+        authority = validateAuthoritySnapshot(JSON.parse(authorityRaw));
+        if (JSON.stringify(authority) !== authorityRaw) throw new Error();
+      }
+      return { coverage: 'bound', task, version: row.version, binding: { nativeRef, contract, authority } };
+    } catch {
+      return { coverage: 'unavailable' };
+    }
+  }
+
+  /** Return stored binding data to trusted callers; this does not establish acceptance or goal proof. */
+  getAcceptanceBinding(taskId) {
+    requireString(taskId, 'taskId');
+    const row = this.#db.prepare(`SELECT typeof(native_ref) AS ref_type, typeof(contract_json) AS contract_type,
+      length(CAST(native_ref AS BLOB)) AS ref_bytes, length(CAST(contract_json AS BLOB)) AS contract_bytes,
+      CASE WHEN length(CAST(native_ref AS BLOB)) <= 4096 THEN CAST(native_ref AS BLOB) END AS ref,
+      CASE WHEN length(CAST(contract_json AS BLOB)) <= 4096 THEN CAST(contract_json AS BLOB) END AS contract,
+      typeof(authority_json) AS authority_type, length(CAST(authority_json AS BLOB)) AS authority_bytes,
+      CASE WHEN length(CAST(authority_json AS BLOB)) <= 65536 THEN CAST(authority_json AS BLOB) END AS authority
+      FROM acceptance_bindings WHERE task_id = ?`).get(taskId);
+    if (!row) return null;
+    try {
+      if (row.ref_type !== 'text' || row.contract_type !== 'text' || !row.ref || !row.contract
+        || row.ref_bytes > 4096 || row.contract_bytes > 4096) throw new Error();
+      const decoder = new TextDecoder('utf-8', { fatal: true });
+      const nativeRef = decoder.decode(row.ref);
+      requireString(nativeRef, 'nativeRef');
+      if (!nativeRef.isWellFormed() || nativeRef.includes('\0')) throw new Error();
+      const raw = decoder.decode(row.contract);
+      const parsed = JSON.parse(raw);
+      const contract = validateAcceptanceContract(parsed);
+      if (JSON.stringify(contract) !== raw) throw new Error();
+      let authority = null;
+      if (row.authority_type !== 'null') {
+        if (row.authority_type !== 'text' || !row.authority || row.authority_bytes > 65536) throw new Error();
+        const authorityRaw = decoder.decode(row.authority);
+        authority = validateAuthoritySnapshot(JSON.parse(authorityRaw));
+        if (JSON.stringify(authority) !== authorityRaw) throw new Error();
+      }
+      return { nativeRef, contract, authority };
+    } catch {
+      throw error('invalid_acceptance_binding', 'Stored acceptance binding is corrupt or unsupported.');
+    }
   }
 
   /** Read bounded persisted facts without opening another connection or changing the store. */
@@ -381,6 +716,19 @@ export class RuntimeStore {
     if (fence === undefined) return;
     if (!Number.isSafeInteger(fence) || row.fence !== fence) {
       throw error('stale_owner', 'The writer fence was superseded by a newer owner.');
+    }
+  }
+
+  /** Read one database snapshot immediately before host dispatch. */
+  assertDispatchAllowed(taskId, attemptId, { fence } = {}) {
+    if (!Number.isSafeInteger(fence) || fence < 0) throw error('stale_owner', 'An explicit dispatch fence is required.');
+    const row = this.#db.prepare(`SELECT r.status AS run_status, r.fence, r.task_json, a.status AS attempt_status
+      FROM runs r LEFT JOIN attempts a ON a.task_id = r.task_id AND a.attempt_id = ?
+      WHERE r.task_id = ?`).get(attemptId, taskId);
+    if (!row || row.fence !== fence) throw error('stale_owner', 'The dispatch fence was superseded.');
+    if (row.run_status !== 'running' || row.attempt_status !== 'started'
+      || this.#now() >= JSON.parse(row.task_json).deadlineAt) {
+      throw error('dispatch_not_allowed', 'Dispatch is frozen, unstarted, or past its deadline.');
     }
   }
 
@@ -603,6 +951,10 @@ export class RuntimeStore {
    * current when the run paused; a changed template or authorization is refused instead of resumed blind.
    */
   resumeRun(taskId, { expectedVersion, environment, requireEnvironment = true } = {}) {
+    if (this.getAcceptanceBinding(taskId)) throw error('acceptance_recovery_unavailable', 'Bound task resume is unavailable.');
+    if (this.#db.prepare('SELECT 1 FROM recipe_run_bindings WHERE task_id = ?').get(taskId)) {
+      throw error('recipe_recovery_unavailable', 'Recipe-bound task resume is unavailable until identity drift can be checked.');
+    }
     return this.#transaction(() => {
       const row = this.#row(taskId);
       this.#version(row, expectedVersion);
@@ -700,7 +1052,7 @@ export class RuntimeStore {
 
   /**
    * Record a business cursor checkpoint. The environment and evidence are stored with it because a
-   * checkpoint is only meaningful as "this state, under these conditions, proven by this fact" — a bare
+   * checkpoint is only meaningful as "this state, under these conditions, proven by this fact" 鈥?a bare
    * state blob could be replayed into a context it was never verified in.
    */
   recordCheckpoint(taskId, input, { expectedVersion } = {}) {
@@ -716,7 +1068,7 @@ export class RuntimeStore {
    *
    * Why the split exists: `recordOutcome` must commit the settled attempt, the business state and the
    * checkpoint together. Calling the public `recordCheckpoint` from inside that transaction would open a
-   * nested BEGIN (SQLite refuses it) or, worse, quietly commit a second time — leaving exactly the
+   * nested BEGIN (SQLite refuses it) or, worse, quietly commit a second time 鈥?leaving exactly the
    * half-settled state this consolidation removes.
    */
   #insertCheckpoint(taskId, input) {
@@ -748,7 +1100,7 @@ export class RuntimeStore {
   /**
    * Restore the business cursor to a recorded checkpoint. This is the write half of rollback: the caller
    * must already have planned it (environment comparison, effect class) and the store re-checks the facts
-   * it owns — that the run is the same run, that the target checkpoint exists for this task, and that the
+   * it owns 鈥?that the run is the same run, that the target checkpoint exists for this task, and that the
    * run is in a state where restoring is meaningful. It never invents a compensated state.
    */
   restoreCheckpoint(taskId, checkpointId, { expectedVersion } = {}) {
@@ -812,8 +1164,10 @@ export class RuntimeStore {
       this.#version(row, expectedVersion);
       const unresolved = this.listUnresolved(taskId);
       if (!unresolved.length) return this.getRun(taskId);
+      if (row.status === 'reconciling' && row.owner_id === null && row.owner_expires_at === null
+        && unresolved.every((item) => item.status === 'unknown')) return this.getRun(taskId);
       this.#db.prepare("UPDATE attempts SET status = 'unknown' WHERE task_id = ? AND status IN ('reserved', 'started')").run(taskId);
-      this.#db.prepare("UPDATE runs SET status = 'reconciling', version = version + 1, updated_at = ? WHERE task_id = ?")
+      this.#db.prepare("UPDATE runs SET status = 'reconciling', fence = fence + 1, owner_id = NULL, owner_expires_at = NULL, version = version + 1, updated_at = ? WHERE task_id = ?")
         .run(this.#now(), taskId);
       this.#event(taskId, null, 'recovery_required', { attemptIds: unresolved.map((item) => item.attemptId) });
       return this.getRun(taskId);
@@ -877,11 +1231,9 @@ export class RuntimeStore {
     });
   }
 
-  /**
-   * Resolve one frozen attempt with explicit external evidence. Reconciliation never invents success:
-   * it records whether the business effect exists and leaves the goal to a later verified step.
-   */
+  /** Reconciliation is unavailable until per-attempt terminal evidence is authenticated by the host. */
   reconcileAttempt(taskId, attemptId, { expectedVersion, resolution, evidenceRef, note = null } = {}) {
+    if (this.getAcceptanceBinding(taskId)) throw error('acceptance_recovery_unavailable', 'Bound task reconciliation is unavailable.');
     requireString(attemptId, 'attemptId');
     requireString(evidenceRef, 'reconciliation evidence reference');
     if (!['applied', 'absent'].includes(resolution)) {
@@ -896,25 +1248,7 @@ export class RuntimeStore {
       if (!['started', 'unknown', 'reserved'].includes(attempt.status)) {
         throw error('invalid_attempt_state', 'Only unresolved work may be reconciled.');
       }
-      // Charge the recovery reserve before doing any work: reconciliation is recovery, not business.
-      this.#chargeRecoveryWithinTx(taskId, { column: 'recovery_reads_used',
-        limitName: 'maxRecoveryReads', kind: 'recoveryRead' });
-      const status = resolution === 'applied' ? 'reconciled_applied' : 'reconciled_absent';
-      const outcome = { status: resolution === 'applied' ? 'succeeded' : 'failed',
-        reconciled: true, resolution, evidenceRef, ...(note === null ? {} : { note }),
-        error: { code: `reconciled_${resolution}`, message: 'Reconciled from external evidence; this is not goal verification.' } };
-      const verification = validateVerification({ status: 'unknown', progress: 'unknown', goalSatisfied: null,
-        verifierId: 'runtime-reconciliation', verifierVersion: '1', evidenceRefs: [evidenceRef],
-        reason: `reconciled_${resolution}` });
-      this.#db.prepare('UPDATE attempts SET status = ?, outcome_json = ?, verification_json = ? WHERE attempt_id = ?')
-        .run(status, JSON.stringify(outcome), JSON.stringify(verification), attemptId);
-      const remaining = this.#db.prepare("SELECT count(*) AS count FROM attempts WHERE task_id = ? AND status IN ('reserved', 'started', 'unknown')")
-        .get(taskId).count;
-      const nextStatus = remaining ? 'reconciling' : 'waiting_analysis';
-      this.#db.prepare('UPDATE runs SET status = ?, reason = ?, version = version + 1, updated_at = ? WHERE task_id = ?')
-        .run(nextStatus, remaining ? 'reconciliation_incomplete' : `reconciled_${resolution}`, this.#now(), taskId);
-      this.#event(taskId, attemptId, 'attempt_reconciled', { resolution, evidenceRef, remaining });
-      return this.getRun(taskId);
+      throw error('reconciliation_unavailable', 'Authenticated per-attempt terminal evidence is unavailable.');
     });
   }
 
@@ -1105,6 +1439,10 @@ export class RuntimeStore {
   }
 
   startRepair(taskId, analysisId, { expectedVersion, signature, repairId = randomUUID() } = {}) {
+    if (this.getAcceptanceBinding(taskId)) throw error('acceptance_recovery_unavailable', 'Bound task repair is unavailable.');
+    if (this.#db.prepare('SELECT 1 FROM recipe_run_bindings WHERE task_id = ?').get(taskId)) {
+      throw error('recipe_recovery_unavailable', 'Recipe-bound task repair is unavailable until identity drift can be checked.');
+    }
     requireString(analysisId, 'analysisId');
     requireString(repairId, 'repairId');
     // The trusted runtime supplies this stable signature, never the analyzer response.
@@ -1180,8 +1518,7 @@ export class RuntimeStore {
    * Cross-task repair evidence grouped by repair signature.
    *
    * This is the only read path that spans tasks, and it exists so a pattern can be justified by many
-   * independent runs instead of one task repairing itself. It returns signatures only — no pattern text —
-   * so nothing here can authorize a rule; the resolver still needs a confirmed approval and a registered
+   * independent runs instead of one task repairing itself. It returns signatures only 鈥?no pattern text 鈥?   * so nothing here can authorize a rule; the resolver still needs a confirmed approval and a registered
    * body. `independentTasks` is counted by DISTINCT task id, which is what makes self-repair worthless
    * as evidence.
    */

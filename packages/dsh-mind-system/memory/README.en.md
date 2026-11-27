@@ -12,7 +12,7 @@ will **re-apply** is distilled into `insights/`, whatever is **re-run and verifi
 callable procedure in `skills/`, the index keeps a single line per row, and every session starts with that
 discipline injected into its system prompt.
 
-- fifteen memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a read-only Web panel
+- seventeen memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
 - Mechanical lint rules (R0–R28 plus temperature analysis; rule numbers grow, so no fixed count is claimed), so rot gets detected instead of remembered
 - **Capability ledger**: every EXTERNAL CLI / MCP / local tool you used is filed in `capabilities/` — look before
@@ -271,23 +271,23 @@ Only server-side changes need "a new physical directory + a new package name" (s
 When renaming the package, disable the old bundle before enabling the new one so same-named tools are not
 registered twice.
 
-Configure it in the profile's `cordis.yml` when needed:
+Configure it in the profile's `cordis.yml` when needed. Replace the angle-bracketed placeholders with absolute paths on your machine; omit optional settings you do not use:
 
 ```yml
 - id: memory-manager
   name: 'dsh-memory-manager'
   config:
-    memoryRoot: C:/Users/you/.dsh/memory   # default ~/.dsh/memory
+    memoryRoot: '<absolute-path-to-memory-root>' # default ~/.dsh/memory
     newFeatureGraceDays: 3                 # cold-memory grace window, in days
     maxIndexBytes: 10240                   # index comfort line
     maxIndexHardBytes: 15360               # index hard cap
     maxFunctionBytes: 30720                # function-file cap
-    dshRoot: D:/dsh                        # usually unnecessary, see below
+    dshRoot: '<absolute-path-to-DSH-installation>' # usually unnecessary, see below
     federation:                            # optional three-tier federation (single root otherwise)
-      root: D:/fed/memory                  # federation layer root
+      root: '<absolute-path-to-federation-root>'
       projects:
-        - { key: printpress, root: 'D:/dev/new-tools/.memory' }
-        - { key: toolbox,    root: 'D:/rustbuild/.memory' }
+        - { key: project-a, root: '<absolute-path-to-project-a-memory>' }
+        - { key: project-b, root: '<absolute-path-to-project-b-memory>' }
 ```
 
 ### Federation mode (three tiers, optional)
@@ -401,7 +401,7 @@ DSH_INSTALL_DIR=<dsh install dir> npm test   # harness-test.mjs + api-test.mjs +
 
 - `harness-test.mjs`: captures the tool definitions with a fake ctx and runs the full loop on a temp memory
   root (write / read / insight / fold / rename / check / recall)
-- `api-test.mjs`: drives the panel HTTP handlers with stub req/res and asserts against the real global memory root
+- `api-test.mjs`: drives the panel HTTP handlers with stub req/res and asserts against a temporary DSH root and separate temporary memory roots
 - `ui-test.mjs`: injects a **minimal React shim** (createElement + static hooks) into the panel, renders the
   six views to markup and asserts (index-table navigation, iteration-block folding, zone summary/sort/filter,
   daily month grouping, internal link resolution); pure parsing logic is tested directly via

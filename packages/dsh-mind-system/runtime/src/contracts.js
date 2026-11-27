@@ -96,6 +96,35 @@ export function validateTaskProvenance(input) {
   return result;
 }
 
+/** Validate the narrow data shape reserved for a future host-owned acceptance binding. */
+export function validateAcceptanceContract(input) {
+  const invalid = () => { throw new RuntimeContractError('invalid_acceptance_contract', 'Invalid acceptance contract.'); };
+  const exact = (object, keys) => {
+    if (!object || typeof object !== 'object' || Array.isArray(object)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(object))) invalid();
+    const actual = Reflect.ownKeys(object);
+    if (actual.length !== keys.length || actual.some((key) => typeof key !== 'string' || !keys.includes(key))) invalid();
+    const result = {};
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(object, key);
+      if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) invalid();
+      result[key] = descriptor.value;
+    }
+    return result;
+  };
+  const contract = exact(input, ['schemaVersion', 'predicate', 'output']);
+  const predicate = exact(contract.predicate, ['id', 'version']);
+  const output = exact(contract.output, ['path', 'sha256']);
+  if (contract.schemaVersion !== 1 || predicate.id !== 'file_sha256' || predicate.version !== 1
+    || typeof output.path !== 'string' || output.path.length > 512
+    || !/^[a-zA-Z0-9_./-]+$/.test(output.path)
+    || output.path.split('/').some((part) => !part || part === '.' || part === '..'
+      || part.endsWith('.') || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))
+    || typeof output.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(output.sha256)) invalid();
+  return { schemaVersion: 1, predicate: { id: 'file_sha256', version: 1 },
+    output: { path: output.path, sha256: output.sha256 } };
+}
+
 export function validateTask(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new RuntimeContractError('invalid_task', 'A task object is required.');

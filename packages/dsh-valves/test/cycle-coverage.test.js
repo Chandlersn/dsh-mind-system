@@ -32,6 +32,31 @@ test('coverage distinguishes observations, corrupt evidence and read errors', as
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('recall coverage preserves corrupt, absent and observed source distinctions', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cycle-recall-integrity-'));
+  const memoryRoot = join(root, 'memory');
+  const storageDir = join(root, 'storages');
+  try {
+    await mkdir(join(memoryRoot, '.usage', 'archive'), { recursive: true });
+    await mkdir(storageDir);
+    const read = async () => (await collectCycleCoverage({ storageDir, memoryRoot })).memory.recall;
+    assert.deepEqual(await read(), { status: 'unknown', reason: 'no_recall_evidence' });
+    await writeFile(join(memoryRoot, '.usage.jsonl'), '{broken\nnull\n');
+    assert.deepEqual(await read(), { status: 'incomplete', observed: false, reason: 'invalid_records' });
+    await writeFile(join(memoryRoot, '.usage', '2026-11.jsonl'), row({ kind: 'recall', href: 'functions/x.md' }));
+    assert.deepEqual(await read(), { status: 'incomplete', observed: true, reason: 'invalid_records' });
+    await writeFile(join(memoryRoot, '.usage.jsonl'), '');
+    assert.deepEqual(await read(), { status: 'observed' });
+    await writeFile(join(memoryRoot, '.usage', 'archive', '2025-01.jsonl'), '{broken\n');
+    assert.deepEqual(await read(), { status: 'incomplete', observed: true, reason: 'invalid_records' });
+    await mkdir(join(memoryRoot, '.usage', '2025-02.jsonl'));
+    const failure = await read();
+    assert.equal(failure.status, 'error');
+    assert.equal(failure.observed, true);
+    assert.notEqual(failure.reason, 'no_recall_evidence');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('automatic patrol exposes report write failures for no input and normal input', async () => {
   for (const principles of [[], [{ id: 'example', refs: 0 }]]) {
     const root = await mkdtemp(join(tmpdir(), 'cycle-patrol-write-failure-'));

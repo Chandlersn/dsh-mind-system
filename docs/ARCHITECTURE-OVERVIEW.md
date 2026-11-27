@@ -1,6 +1,8 @@
 # 双循环执行运行时 · 系统架构图
 
 > 状态截至 2026-11-18。图中标注区分「已实现并验证」与「未接通 / 未验证」，不把计划画成现状。
+>
+> **2026-11-25 运行事实更新（外部证据：活动库 + `npm run verify-graph`）**：下方全景图第 24/28 行标注的「❌ 无 / 未接通 dsh-execution-runtime」已过期——运行时现已作为第六成员装配进合成包并加载，活动库 `D:\dsh\.execution-runtime\runtime.sqlite` 有 21 次运行（10 完成 / 3 失败 / 2 reconciling / 6 waiting_analysis）、14 次 attempt、10 个检查点。第 102 行「真实样本数 = 0」仍然成立：`analyses=0`、`repairs=0`，自成长闭环（异常→分析→修复→跨任务模式→闸门生效）在活动库没有走通过，根因是远端分析默认关闭且需显式外发授权。第 0 层（经验沉淀）是设计图，不是运行图。逐条边状态由 `npm run verify-graph` 机器核验，主图 20 条边全部有核验锚点（24 项检查）；当前 12/20 条图边有运行证据（15/24 项检查 running，含 agent-mind 处境判断 1874 条样本、agent→CLIS 采纳 64 条、agent→memory 真实 read 230 条）（执行→运行库/派发/验收、执行→分析提案、阀门负向规则/决策账本/周检/召回探针、记忆→收件箱、CLIS 三段自动链路）、1 条 `blocked_by_review`（分析提案→修复执行：proposed=1、automatic=0、review_or_evidence=1）、1 条 `design_only`（修复→跨任务候选）、7 条 `unknown`（模型决策/可选桥接，本地库无法归因）。关键更新（2026-11-25）：异常分析已改为复用宿主 `ctx.get('llm')`，活动库已产生真实 `proposed` 分析记录；该提案是 gather_evidence+需人工复核，按设计不可自动执行，故修复链如实标为 `blocked_by_review` 而非笼统缺口。
 
 ---
 

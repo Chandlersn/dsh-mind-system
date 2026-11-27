@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { link, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -40,6 +40,23 @@ async function fixture(t) {
 
 const targetText = '# 目标功能\n\n## 当前状态摘要（截至 2026-11-10）\n\n- 目标摘要保持不变。\n\n## [2026-11-10] 目标迭代\n\n- 目标原有结论。\n';
 
+// Recursive byte + directory snapshot: the paused merge must leave the root
+// exactly as it found it (no target write, no source unlink, no staging dir).
+async function snapshot(root) {
+	const files = new Map();
+	const dirs = [];
+	const walk = async (current) => {
+		for (const entry of (await readdir(current, { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+			const full = path.join(current, entry.name);
+			const rel = path.relative(root, full).split(path.sep).join('/');
+			if (entry.isDirectory()) { dirs.push(rel); await walk(full); }
+			else files.set(rel, await readFile(full));
+		}
+	};
+	await walk(root);
+	return { dirs: dirs.sort(), files };
+}
+
 for (const [label, sourceText] of [
 	['仅有早期演化', '# 来源功能\n\n## 早期演化（2 块已折叠）\n\n- [2026-10-18] 早期结论甲\n- [2026-10-19] 早期结论乙\n'],
 	['含自定义章节与摘要', '# 来源功能\n\n## 当前状态摘要（截至 2026-11-09）\n\n- 来源独有状态。\n\n## 自定义章节\n\n保留这段自定义内容与格式。\n\n## [2026-11-09] 来源迭代\n\n- 来源独有结论。\n'],
@@ -50,14 +67,35 @@ for (const [label, sourceText] of [
 		const target = path.join(f.functions, '目标.md');
 		await writeFile(source, sourceText, 'utf8');
 		await writeFile(target, targetText, 'utf8');
-		const result = await f.rename('来源', '目标');
-		assert.equal(result.mode, 'merged');
-		const output = await readFile(target, 'utf8');
-		assert.ok(output.includes(targetText.trimEnd()), '目标原文必须保留');
-		assert.ok(output.includes(sourceText), '来源完整原文必须保留，不能只抽取迭代块');
-		await assert.rejects(readFile(source), { code: 'ENOENT' }, '合并成功后来源才可移除');
+		// Merging is paused (safe_rename_unavailable): refuse before any write and
+		// leave both files byte-identical, so neither side can lose content.
+		const before = await snapshot(f.root);
+		await assert.rejects(f.rename('来源', '目标'), (error) => error.code === 'safe_rename_unavailable' && /无损改名能力尚不可用/.test(error.message));
+		const after = await snapshot(f.root);
+		assert.deepEqual(after.dirs, before.dirs, '合并暂停不得创建任何目录');
+		assert.deepEqual([...after.files.keys()].sort(), [...before.files.keys()].sort(), '合并暂停不得增删文件');
+		assert.equal(await readFile(target, 'utf8'), targetText, '目标原文必须逐字节保留');
+		assert.equal(await readFile(source, 'utf8'), sourceText, '来源原文必须逐字节保留');
 	});
 }
+
+test('distinct files with rounded inode collision reach the paused merge refusal', { skip: process.platform !== 'win32' }, async (t) => {
+	const f = await fixture(t);
+	const seen = new Map();
+	let pair;
+	for (let i = 0; i < 5000 && !pair; i++) {
+		const slug = `inode-${i}`;
+		const file = path.join(f.functions, `${slug}.md`);
+		await writeFile(file, slug);
+		const [numberStat, exactStat] = await Promise.all([stat(file), stat(file, { bigint: true })]);
+		const previous = seen.get(numberStat.ino);
+		if (previous && previous.exact !== exactStat.ino && previous.dev === exactStat.dev) pair = [previous.slug, slug];
+		seen.set(numberStat.ino, { slug, exact: exactStat.ino, dev: exactStat.dev });
+	}
+	if (!pair) return t.skip('filesystem did not provide a rounded inode collision');
+	await assert.rejects(f.rename(...pair), (error) => error.code === 'safe_rename_unavailable');
+	for (const slug of pair) assert.equal(await readFile(path.join(f.functions, `${slug}.md`), 'utf8'), slug);
+});
 
 test('拒绝合并同一物理文件的硬链接且两个名字的字节不变', async (t) => {
 	const f = await fixture(t);

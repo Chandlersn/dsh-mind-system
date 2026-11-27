@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -49,6 +49,20 @@ async function setup(t, options = {}) {
     executor, tools: host.tools, validateArguments, ...options.schedulerOptions, ...overrides });
   return { host, store, executor, authority, task, makeScheduler };
 }
+
+test('native authority expansion is refused before run or dispatch', async (t) => {
+  const env = await setup(t);
+  const nativeAuthority = { schemaVersion: 1, scopeRef: env.authority.scopeRef,
+    workspaceRoot: realpathSync(env.host.storage), allowedTools: ['runtime_write_json'] };
+  const nativeBinding = { nativeRef: env.task.taskId, contract: { schemaVersion: 1,
+    predicate: { id: 'file_sha256', version: 1 }, output: { path: 'output.json', sha256: 'a'.repeat(64) } } };
+  const scheduler = env.makeScheduler({ nativeTask: env.task, nativeBinding, nativeAuthority });
+  await assert.rejects(() => scheduler.run(env.task, { authority: { ...env.authority,
+    allowedTools: ['runtime_write_json', 'unexpected_tool'] } }), { code: 'native_authority_drift' });
+  assert.equal(env.store.snapshotRuns().runs.length, 0);
+  assert.equal(env.host.count('json_write'), 0);
+  assert.equal(existsSync(join(env.host.storage, 'output.json')), false);
+});
 
 test('registered recipe completes through the real pipeline with independently verified files and no analysis', async (t) => {
   const env = await setup(t);

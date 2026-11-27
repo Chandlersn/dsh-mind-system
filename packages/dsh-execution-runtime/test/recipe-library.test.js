@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { RuntimeStore } from '../src/store.js';
 import { createRecipeLibrary } from '../src/recipe-library.js';
 import { buildRecipeFromSpec } from '../src/recipe-factory.js';
+import { createExecuteTool } from '../src/dynamic-tools.js';
 
 /**
  * The library remembers specifications that worked, so a later task does not have to re-describe them.
@@ -75,19 +76,48 @@ test('re-recording refreshes the goal but keeps the usage history', async (t) =>
 test('only verified completion counts as success', async (t) => {
   await withLibrary(t, async ({ library }) => {
     library.record(spec(), { toolEffects });
-    // Everything that is not a verified completion must count against the recipe, including the states
-    // that merely mean "nothing was proven".
-    for (const status of ['waiting_analysis', 'blocked', 'reconciling', 'failed']) {
-      library.recordOutcome({ recipeKey: 'sorted-lines:1', status, taskId: `task-${status}` });
+    for (const status of ['running', 'paused', 'waiting_analysis', 'waiting_human', 'reconciling',
+      'blocked', 'future_terminal', '', undefined, null, 42]) {
+      assert.deepEqual(library.recordOutcome({ recipeKey: 'sorted-lines:1', status, taskId: 'unknown' }),
+        { succeeded: null });
+    }
+    assert.equal(library.read('sorted-lines:1').failedRuns, 0);
+    for (const status of ['failed', 'cancelled']) {
+      assert.deepEqual(library.recordOutcome({ recipeKey: 'sorted-lines:1', status, taskId: `task-${status}` }),
+        { succeeded: false });
     }
     const failed = library.read('sorted-lines:1');
     assert.equal(failed.verifiedRuns, 0);
-    assert.equal(failed.failedRuns, 4);
+    assert.equal(failed.failedRuns, 2);
 
     library.recordOutcome({ recipeKey: 'sorted-lines:1', status: 'completed', taskId: 'task-ok' });
     const after = library.read('sorted-lines:1');
     assert.equal(after.verifiedRuns, 1);
-    assert.equal(after.failedRuns, 4, 'A later success does not erase earlier failures.');
+    assert.equal(after.failedRuns, 2, 'A later success does not erase earlier failures.');
+  });
+});
+
+test('standalone execute reports synthetic unknown statuses without counting them', async (t) => {
+  await withLibrary(t, async ({ store, library, root }) => {
+    let status;
+    const tool = createExecuteTool({ store, library, toolEffects,
+      mount: { scopeRef: 'test', workspaceRoot: root, allowedTools: ['runtime_write_text'] },
+      schedulerFor: () => ({ run: async (task) => ({ task, status }) }) });
+    const args = { taskId: 'synthetic', goal: 'Write lines', recipe: spec(), inputs: {} };
+    for (status of [undefined, 'future_status', 'blocked', 'waiting_analysis']) {
+      const result = await tool.execute(args, { agent: {} });
+      assert.equal(result.library.succeeded, null);
+      const entry = library.read('sorted-lines:1');
+      assert.equal(entry.verifiedRuns, 0);
+      assert.equal(entry.failedRuns, 0);
+    }
+    for (const [next, succeeded] of [['failed', false], ['cancelled', false], ['completed', true]]) {
+      status = next;
+      const result = await tool.execute(args, { agent: {} });
+      assert.equal(result.library.succeeded, succeeded);
+    }
+    assert.equal(library.read('sorted-lines:1').verifiedRuns, 1);
+    assert.equal(library.read('sorted-lines:1').failedRuns, 2);
   });
 });
 

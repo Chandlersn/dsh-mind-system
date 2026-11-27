@@ -252,7 +252,11 @@ export function apply(ctx) {
       // 这条路径包括 ambiguous：判定照常记录，但不据此引导。
       if (situation === SITUATIONS.unknown) return result;
       try {
+        // Current hosts keep tool declarations outside the presentation waterfall.
+        // Do not claim guidance when this listener cannot see or change tools.
+        if (!Array.isArray(result.tools) || result.tools.length === 0) return result;
         const arranged = arrangeTools(result.tools, situation, { park: PARK_ENABLED });
+        if (!arranged.some((tool, index) => tool !== result.tools[index])) return result;
         situations.recordGuidance(agent, {
           situation,
           tools: Array.isArray(arranged) ? arranged.length : 0,

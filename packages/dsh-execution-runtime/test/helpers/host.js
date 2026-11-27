@@ -10,14 +10,16 @@ import { pathToFileURL } from 'node:url';
 const hostRoot = path.resolve(process.env.DSH_SEAM_HOST_ROOT ?? 'D:/dsh');
 const hostRequire = createRequire(pathToFileURL(path.join(hostRoot, 'package.json')));
 export const installed = {};
-for (const name of ['cordis', 'dsh-system-prompt', 'dsh-tools', 'dsh-scope']) {
+for (const name of ['cordis', 'dsh-system-prompt', 'dsh-tools', 'dsh-scope',
+  'dsh-tool-executor-native', 'dsh-tool-executor-ptc']) {
   const id = `@deepseek-ai/${name}`;
   const entry = hostRequire.resolve(id);
   installed[name] = { entry, ...JSON.parse(readFileSync(hostRequire.resolve(`${id}/package.json`), 'utf8')) };
 }
 const load = (name) => import(pathToFileURL(installed[name].entry).href);
-const [{ Context }, { SystemPrompt }, { ToolRuntime }, { createScope }] = await Promise.all([
+const [{ Context }, { SystemPrompt }, { ToolRuntime }, { createScope }, nativeExecutor, ptcExecutor] = await Promise.all([
   load('cordis'), load('dsh-system-prompt'), load('dsh-tools'), load('dsh-scope'),
+  load('dsh-tool-executor-native'), load('dsh-tool-executor-ptc'),
 ]);
 export { Context, ToolRuntime };
 
@@ -39,6 +41,9 @@ export async function installNodePtc(host) {
     await host.ctx.plugin(plugin, config).await();
   }
   assert.equal(host.ctx.get('ptcRuntime').language, 'typescript');
+  // Mount the PTC executor now that ptcRuntime is available (native was mounted in createHost).
+  await host.ctx.plugin({ name: 'fixture-ptc-executor', inject: ptcExecutor.inject, apply: ptcExecutor.apply },
+    { maxSubCallsPerMinute: 1024, maxParallelSubCalls: 10 }).await();
 }
 
 /** Bound observation waits without abandoning the execution under observation. */
@@ -98,7 +103,12 @@ export async function createHost(t, { mode = 'native' } = {}) {
     }
   });
   await ctx.plugin(SystemPrompt, { includeHarnessIdentity: false, includeRuntimeContext: false }).await();
-  await ctx.plugin(ToolRuntime, { mode }).await();
+  // New dsh-tools removed the `mode` config; the executor is a separate plugin.
+  // Native can mount immediately; PTC needs ptcRuntime, installed later by installNodePtc().
+  await ctx.plugin(ToolRuntime, {}).await();
+  if (mode === 'native') {
+    await ctx.plugin({ name: 'fixture-native-executor', inject: nativeExecutor.inject, apply: nativeExecutor.apply }, {}).await();
+  } else if (mode !== 'ptc') throw new Error(`Unsupported fixture tool mode: ${mode}`);
   const tools = ctx.get('tools');
   assert.ok(Context.is(ctx));
   assert.ok(tools instanceof ToolRuntime);
@@ -134,12 +144,30 @@ export async function createHost(t, { mode = 'native' } = {}) {
       });
     },
     execute(name, options = {}) {
+      // New dsh-tools dispatches a batch: { calls: [{ id, name, arguments: JSON }], signal, agent }.
+      // The batch block drops rootCallId/parent, so replay them through an owned pre-execute hook to
+      // preserve the legacy single-call exec shape the fixtures assert on.
+      const callId = options.callId ?? `seam-${++serial}`;
       const input = {
-        callId: `seam-${++serial}`, name, arguments: {},
+        calls: [{ id: callId, name, arguments: JSON.stringify(options.arguments ?? {}) }],
         signal: options.signal ?? this.controller().signal,
-        ...options,
+        ...(options.agent === undefined ? {} : { agent: options.agent }),
+        ...(options.toolSet === undefined ? {} : { toolSet: options.toolSet }),
       };
-      const work = tools.execute(input);
+      let removeTrace;
+      if (options.rootCallId !== undefined || options.parent !== undefined) {
+        removeTrace = ctx.on('tools/pre-execute', (exec, next) => {
+          if (exec.callId === callId) {
+            if (options.rootCallId !== undefined && exec.rootCallId !== options.rootCallId) exec.rootCallId = options.rootCallId;
+            if (options.parent !== undefined && exec.parent !== options.parent) exec.parent = options.parent;
+          }
+          return next();
+        }, { prepend: true, global: true });
+      }
+      const work = tools.execute(input).then((batch) => {
+        const settled = batch.results.find((row) => row.callId === callId);
+        return settled?.result ?? { isError: true, content: [{ type: 'text', text: `No result for tool call ${callId}` }] };
+      }).finally(() => { if (removeTrace) removeTrace(); });
       active.add(work);
       work.finally(() => active.delete(work)).catch(() => {});
       return work;

@@ -9,7 +9,13 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 // Exercise the real registered handler through an isolated local HTTP server.
-test('已提交归档后暂存硬链接清理失败，必须报告部分完成而非成功', async (t) => {
+// SKIPPED, not deleted: this case injects an unlink failure on the STAGING file
+// after the archive was committed, to prove the receipt reports "partially done"
+// with a deferred cleanup instead of success. axiom-action reject now refuses
+// before its first side effect (safe_delete_unavailable), so no archive commit
+// and no staging cleanup are reachable. The body stays intact so the intent is
+// preserved and returns when a concurrency-safe delete lands.
+test('已提交归档后暂存硬链接清理失败，必须报告部分完成而非成功', { skip: 'safe deletion unavailable: axiom-action reject refuses before any write, so the post-commit staging cleanup is unreachable' }, async (t) => {
   const io = fs.promises;
   const home = await io.mkdtemp(path.join(tmpdir(), 'panel-stage-cleanup-'));
   const root = path.join(home, 'memory');

@@ -189,6 +189,9 @@ const fixtures = {
 	// (agent_created ⇒ crystallized, else system), never storage.
 	'/api/memory-org/skills?v=0': {
 		data: {
+			// activation is a backend fact: available=true makes activate usable.
+			// The false/unknown variants are rendered by overriding this fixture.
+			activation: { available: true, reason: '', detail: '' },
 			memory: [
 				{ name: 'detached-restart', description: '会话跑在宿主内时用分离进程延迟重启', status: 'active', scope: 'global', scopeProject: '', kind: 'memory', dir: 'C:/x/.dsh/skills/detached-restart', files: [{ rel: '', name: 'SKILL.md', bytes: 4056 }, { rel: 'scripts/restart-relay.mjs', name: 'restart-relay.mjs', bytes: 5127 }] },
 				{ name: 'draft-skill', description: '一个还没转正的候选', status: 'candidate', scope: 'project', scopeProject: 'demo', kind: 'memory', dir: 'C:/x/.dsh/skills/draft-skill', files: [{ rel: '', name: 'SKILL.md', bytes: 300 }] },
@@ -413,59 +416,64 @@ const clickByText = (nodes, text) => nodes.find((node) => node.type === 'button'
 	ok(['no_delivery_source_connected', 'EACCES', 'generic_tracked_write_does_not_identify_distillation', 'index_file_only', 'invalid_records', 'no_shared_cycle_identity_established'].every((s) => available.includes(s)), 'report retains reasons, scope and errors');
 	ok(available.includes('周检失败') && available.includes('已观察到历史证据') && available.includes('单项证据不证明同一工作完成闭环') && available.includes('受追踪的功能域写入：是'), 'observations and tracked writes do not claim cycle proof');
 	ok(arch({ status: 'available', report: {} }).includes('状态：未知'), 'missing evidence fields remain unknown');
+	// 2026-11-24 (boss): the architecture page shows NO runtime snapshot —
+	// neither the live one nor the one stored inside the weekly report. Keep
+	// these as negative regressions (task/attempt/timestamp/truncation ids must
+	// stay absent) while proving loop evidence and weekly status remain visible.
 	const snapshot = (runtime_snapshot) => arch({ status: 'available', report: { micro_execution: { runtime_snapshot } } });
+	const loopAndWeekly = (html) => html.includes('data-dmo="cycle-coverage"')
+		&& html.includes('data-dmo="cycle-loop-verdict"') && html.includes('闭环未验证')
+		&& html.includes('周检时间：') && html.includes('定时投递')
+		&& html.includes('记忆召回') && html.includes('跨步骤关联');
 	const ready = snapshot({ state: 'ready', runs: [{ taskId: 'task-one', status: 'running', reason: 'waiting', createdAt: 'created-time', updatedAt: 'updated-time', unresolved: { count: 2, first: { attemptId: 'attempt-one', status: 'pending' } }, registered: true }], truncated: true, registeredTasks: { taskIds: ['task-one', 'task-two'], truncated: false } });
-	ok(['运行时快照', '状态：可用', 'task-one', 'running', 'waiting', '创建：created-time', '更新：updated-time', '未解决数量：2', '首个尝试 ID：attempt-one', '尝试状态：pending', '注册：是', '运行记录截断：已截断', '已注册任务截断：未截断', 'task-two'].every((s) => ready.includes(s)), 'runtime snapshot renders task evidence and truncation');
+	ok(!ready.includes('data-dmo="runtime-snapshot"') && !['task-one', 'task-two', 'attempt-one', 'created-time', 'updated-time', 'waiting', 'pending', '运行记录截断', '已注册任务截断'].some((s) => ready.includes(s)) && loopAndWeekly(ready), 'runtime snapshot task evidence is not rendered; loop evidence and weekly status remain');
 	const numericTime = snapshot({ state: 'ready', runs: [{ taskId: 'dated', createdAt: 0, updatedAt: 1000 }], truncated: false, registeredTasks: { taskIds: [], truncated: false } });
-	ok(numericTime.includes('创建：1970-01-01T00:00:00.000Z') && numericTime.includes('更新：1970-01-01T00:00:01.000Z'), 'runtime epoch milliseconds render as timestamps');
+	ok(!numericTime.includes('dated') && !numericTime.includes('1970-01-01T00:00:00.000Z') && loopAndWeekly(numericTime), 'runtime snapshot timestamps are not rendered on the architecture page');
 	const empty = snapshot({ state: 'ready', runs: [], truncated: false, registeredTasks: { taskIds: [], truncated: false } });
-	ok(empty.includes('快照中无运行记录') && empty.includes('已注册任务：快照中无') && !empty.includes('任务已完成'), 'empty runtime snapshot does not infer task completion');
-	ok(snapshot({ state: 'unavailable' }).includes('状态：不可用') && snapshot({ state: 'disabled' }).includes('状态：已禁用') && snapshot({ state: 'error' }).includes('状态：读取错误'), 'runtime unavailability states are distinct');
+	ok(!empty.includes('快照中无运行记录') && !empty.includes('已注册任务：快照中无') && !empty.includes('任务已完成') && loopAndWeekly(empty), 'empty runtime snapshot leaves no card and infers no completion');
+	const unavailable = snapshot({ state: 'unavailable' });
+	ok(!unavailable.includes('状态：不可用') && !unavailable.includes('状态：已禁用') && !unavailable.includes('状态：读取错误') && loopAndWeekly(unavailable), 'runtime snapshot state labels are not rendered on the architecture page');
 	const partial = snapshot({ state: 'partial', runs: [{ taskId: 'partial-task', unresolved: { count: 0, first: null }, registered: false }], truncated: false, registeredTasks: { taskIds: [], truncated: true } });
-	ok(['状态：部分可用', 'partial-task', '状态：未知', '注册：否', '未解决数量：0', '首个尝试 ID：未知', '已注册任务截断：已截断'].every((s) => partial.includes(s)) && !partial.includes('任务已完成'), 'partial snapshot retains unknown fields without inferring completion');
+	ok(!partial.includes('partial-task') && !partial.includes('已注册任务截断：已截断') && !partial.includes('任务已完成') && loopAndWeekly(partial), 'partial snapshot identifiers stay hidden without inferring completion');
 	const bounded = snapshot({ state: 'ready', runs: Array.from({ length: 51 }, (_, i) => ({ taskId: `run-${i}` })), truncated: false, registeredTasks: { taskIds: Array.from({ length: 51 }, (_, i) => `registered-${i}`), truncated: false } });
-	ok(!bounded.includes('run-50') && !bounded.includes('registered-50') && bounded.includes('运行记录截断：已截断') && bounded.includes('已注册任务截断：已截断'), 'client bounds both runtime lists and reports local truncation');
+	ok(!bounded.includes('run-50') && !bounded.includes('registered-50') && !bounded.includes('运行记录截断') && !bounded.includes('已注册任务截断') && loopAndWeekly(bounded), 'no runtime task list renders, so no truncation label appears');
 	const weekly = { status: 'available', at: 'weekly-date', report: { micro_execution: { runtime_snapshot: { state: 'unavailable', runs: [{ taskId: 'weekly-task' }] } } } };
 	const noCurrent = arch(weekly);
-	const currentSection = (html) => html.slice(html.indexOf('data-dmo="current-runtime"'), html.indexOf('data-dmo="cycle-coverage"'));
-	ok(currentSection(noCurrent).includes('当前运行时快照') && currentSection(noCurrent).includes('状态：缺失') && !currentSection(noCurrent).includes('weekly-task'), 'missing current service is explicit and does not reuse weekly data');
-	const late = arch(weekly, { state: 'ready', runs: [{ taskId: 'current-task', updatedAt: 'current-date', unresolved: { count: 1, first: { attemptId: 'current-attempt', status: 'started' } } }], truncated: true, registeredTasks: { taskIds: ['current-task'], truncated: false } });
-	const current = currentSection(late);
-	const historical = late.slice(late.indexOf('data-dmo="cycle-coverage"'));
-	ok(['状态：可用', 'current-task', 'current-date', 'current-attempt', '未解决数量：1', '运行记录截断：已截断'].every((s) => current.includes(s)) && !current.includes('weekly-date') && !current.includes('weekly-task'), 'late current service renders its own task evidence without the weekly date');
-	ok(['周检历史运行时快照', 'weekly-date', 'weekly-task', '状态：不可用'].every((s) => historical.includes(s)) && !historical.includes('current-task') && !historical.includes('current-date'), 'current service does not overwrite the historical weekly snapshot');
-	for (const [state, label] of [['disabled', '已禁用'], ['unavailable', '不可用'], ['missing', '缺失'], ['error', '读取错误']]) {
-		const section = currentSection(arch(weekly, { state, error: state === 'error' ? 'snapshot_failed' : undefined }));
-		ok(section.includes(`状态：${label}`) && (state !== 'error' || section.includes('snapshot_failed')), `current runtime ${state} is explicit`);
-	}
-	ok(!current.includes('任务已完成') && !current.includes('停滞'), 'current evidence does not assert success or a stall');
+	ok(!noCurrent.includes('data-dmo="current-runtime"') && !noCurrent.includes('当前运行时快照'), 'architecture page no longer renders a current runtime snapshot card');
+	const withCurrent = arch(weekly, { state: 'ready', runs: [{ taskId: 'current-task', updatedAt: 'current-date', unresolved: { count: 1, first: { attemptId: 'current-attempt', status: 'started' } } }], truncated: true, registeredTasks: { taskIds: ['current-task'], truncated: false } });
+	ok(!withCurrent.includes('current-task') && !withCurrent.includes('current-attempt') && withCurrent.includes('weekly-date'), 'current runtime task evidence stays hidden while weekly status survives');
+	const historical = withCurrent.slice(withCurrent.indexOf('data-dmo="cycle-coverage"'));
+	ok(!historical.includes('weekly-task') && !historical.includes('current-task') && !historical.includes('周检历史运行时快照') && historical.includes('周检时间：weekly-date'), 'weekly report runtime snapshot identifiers are not rendered');
+	ok(historical.includes('data-dmo="cycle-loop-verdict"') && historical.includes('闭环未验证'), 'loop verdict is stated from evidence, not from patrol success');
+	ok(!historical.includes('任务已完成') && !historical.includes('停滞'), 'evidence does not assert success or a stall');
 }
 
-// --- overview ---------------------------------------------------------------
+// --- architecture and diagnostics -------------------------------------------
 const overview = render({ kind: 'overview' });
-// 10 = 总览/架构/索引/功能/思想/道/能力/技能/每日/收件箱。
+// Nine destinations: architecture, index, six zones and inbox.
 // 「道」是 5.29.6 加的（能写不能看等于半个功能）；「架构」是 2026-11-16 加的
 // （用户要求：真实架构 + 数据流 + 闭环，不是插图）。
 // 断言写成"每一项都在"而不是只数个数：数量变了要能说清多了哪一项。
-const NAV_KEYS = ['overview', 'arch', 'index', 'functions', 'insights', 'dao', 'capabilities', 'skills', 'daily', 'inbox'];
+const NAV_KEYS = ['arch', 'index', 'functions', 'insights', 'dao', 'capabilities', 'skills', 'daily', 'inbox'];
 ok(count(overview, 'data-dmo="nav-item"') === NAV_KEYS.length, `rail has ${NAV_KEYS.length} destinations (${count(overview, 'data-dmo="nav-item"')})`);
 ok(overview.includes('功能') && overview.includes('思想') && overview.includes('每日') && overview.includes('索引') && overview.includes('能力') && overview.includes('技能') && overview.includes('道') && overview.includes('架构'), 'rail labels for every zone (including 道 and 架构)');
-ok(count(overview, 'data-dmo="growth-card"') === 5, `overview shows all five zone count cards (${count(overview, 'data-dmo="growth-card"')})`);
+ok(overview.includes('data-dmo="arch-canvas"') && !overview.includes('data-dmo="growth-card"'), 'architecture replaces duplicate overview stock cards');
 ok(overview.includes('能力台账') && overview.includes('技能库'), 'the added capability/skill cards label their zones');
-ok(overview.includes('WARN 1') && overview.includes('冷记忆 1'), 'health chips carry the warning and the cold count');
+ok(overview.includes('WARN 1') && overview.includes('体检有提示'), 'health warning remains actionable');
 ok(overview.includes('[WARN] TEMP: functions/beta.md 冷记忆'), 'the health list renders every problem from overview.results');
 // 月/周折叠口径变更（2026-11）：counts.daily 含归档月（3 日 + 1 月归档 = 4）。
 ok(overview.includes('2 功能 · 1 思想 · 0 道 · 0 能力 · 1 技能 · 4 日线索'), 'header summarises every zone (daily count includes archive months)');
 // Consensus + environment constants (5.28.0): the two prose blocks of MEMORY.md
 // that the index tables do not carry are surfaced on the overview.
-ok(overview.includes('共识与环境常量') && overview.includes('跨功能共识 / 规范') && overview.includes('环境常量（易忘）'), 'the overview surfaces consensus and env constants');
-ok(overview.includes('索引行摘要只说「这是什么」') && overview.includes('记忆根：C:/x/memory'), 'prose bullets render from MEMORY.md');
+const indexPage = render({ kind: 'file', zone: '', name: null });
+ok(indexPage.includes('决策共识') && indexPage.includes('环境常量'), 'the index surfaces consensus and environment constants');
+ok(indexPage.includes('索引行摘要只说「这是什么」') && indexPage.includes('C:/x/memory'), 'index prose renders from MEMORY.md');
 // Environment card (5.26.0): the overview answers "which build runs, where do
 // the stores live, how full is the index" from the server's own truth.
 ok(overview.includes('运行环境') && overview.includes('5.26.0'), 'the env card names the running version');
 ok(overview.includes('支持热重启'), 'the env card reports the reload capability');
 ok(overview.includes('记忆根') && overview.includes('技能库') && overview.includes('C:/x/.dsh/skills'), 'the env card names both roots');
-ok(overview.includes('dmo-meter') && overview.includes('索引体积'), 'the index fill meter renders');
+ok(overview.includes('dmo-meter') && overview.includes('索引容量'), 'the architecture index fill meter renders');
 // The recall self-check card is on the overview: empty query explains itself.
 ok(overview.includes('召回自检') && overview.includes('至少 2 个字'), 'the recall-preview card invites input');
 // Hot reload (5.25.0): the header offers the in-place server-half swap button.
@@ -476,8 +484,9 @@ const tl = overview.slice(overview.indexOf('data-dmo="timeline-row"'));
 ok(tl.indexOf('2026-10-18') < tl.indexOf('beta'), 'timeline is newest-first');
 ok(overview.includes('alpha 已稳定'), 'timeline rows carry the index one-line summary');
 ok(overview.includes('刚刚') || overview.includes('分钟前'), 'timeline shows relative time');
+ok(overview.includes('data-dmo="daily-trend"') && overview.includes('2026-10-18.md:') && overview.includes('字节'), 'daily volume trend retains dated byte observations');
 // Missing usage data must not be presented as an explicitly empty history.
-ok(overview.includes('使用信号数量未知'), 'usage card reports missing signal counts as unknown');
+ok(overview.includes('热点状态未知') && overview.includes('实验 未知'), 'diagnostics report missing usage data as unknown');
 ok(count(overview, 'dmo-card') >= 3, `overview renders health + usage + timeline cards (${count(overview, 'dmo-card')})`);
 // with usage data, the layer histogram + hotspots render
 const overviewWithUsage = serialize(
@@ -490,10 +499,10 @@ const overviewWithUsage = serialize(
 	}),
 );
 ok(overviewWithUsage.includes('实验 2') && overviewWithUsage.includes('专项 1'), 'usage card renders the layer histogram');
-ok(overviewWithUsage.includes('30 天 12 条事件'), 'usage card counts EVENTS, not "signals" (exposure wording fixed 2026-11-16)');
-ok(overviewWithUsage.includes('召回曝光') && overviewWithUsage.includes('正向/纠正') && !overviewWithUsage.includes('采纳'), 'the usage line distinguishes exposure and verdicts without claiming adoption');
-ok(overviewWithUsage.includes('结论反复推翻（翻转 2）'), 'hotspots name flip-heavy memories');
-ok(overviewWithUsage.includes('纠正率 50%'), 'hotspots name high correction rates');
+ok(overviewWithUsage.includes('分层是启发式建议'), 'usage layers are described as heuristic suggestions');
+ok(overviewWithUsage.includes('召回是曝光，不证明采纳') && overviewWithUsage.includes('来源未经认证'), 'usage distinguishes exposure from adoption and unauthenticated declarations');
+ok(overviewWithUsage.includes('functions/beta.md · 翻转 2'), 'hotspots name flip-heavy memories');
+ok(overviewWithUsage.includes('纠正声明比例 50%') && overviewWithUsage.includes('分母为读取与纠正声明'), 'hotspots show correction ratios and denominator');
 
 // Verify the complete panel header and health card with missing versus zero data.
 {
@@ -504,7 +513,7 @@ ok(overviewWithUsage.includes('纠正率 50%'), 'hotspots name high correction r
 	const missing = panel({ initialized: true });
 	const zero = panel({ initialized: true, counts: { functions: 0, insights: 0, dao: 0, capabilities: 0, skills: 0, daily: 0 }, failCount: 0, warnCount: 0, results: [] });
 	ok(missing.includes('未知 功能 · 未知 思想') && missing.includes('FAIL 未知') && missing.includes('WARN 未知') && missing.includes('体检状态未知') && !missing.includes('体检全通过'), 'missing panel counts and health remain unknown in header and card');
-	ok(zero.includes('0 功能 · 0 思想') && zero.includes('无 FAIL') && zero.includes('无警告') && zero.includes('体检全通过'), 'explicit zero panel counts and health render as zero and healthy');
+	ok(zero.includes('0 功能 · 0 思想') && zero.includes('无 FAIL') && zero.includes('无警告') && zero.includes('体检正常'), 'explicit zero panel counts and health render as zero and healthy');
 }
 
 // --- zone list --------------------------------------------------------------
@@ -673,7 +682,29 @@ ok(count(skillMem, 'data-dmo="skill-toggle"') === 2, 'every crystallized row car
 // the class the renderer derives it from: exactly one switch is ON (active),
 // the other stays default (candidate).
 ok(count(skillMem, 'dmo-switch on') === 1, 'exactly one switch renders ON (the active skill)');
-ok(count(skillMem, 'title="停用（retire）"') === 1 && count(skillMem, 'title="启用（activate）"') === 1, 'switch titles reflect each row\'s lifecycle');
+// Switch titles reflect lifecycle AND the backend activation fact (not a
+// client-side guess). Default fixture has available:true → normal titles.
+ok(count(skillMem, 'title="停用（retire）"') === 1 && count(skillMem, 'title="启用（activate）"') === 1, 'with available:true, switch titles reflect each row\'s lifecycle');
+{
+	const skillsData = fixtures['/api/memory-org/skills?v=0'].data;
+	const renderSkills = (activation) => {
+		const data = activation === undefined
+			? { ...skillsData, activation: undefined }
+			: { ...skillsData, activation };
+		return serialize(FakeReact.createElement(T.SkillLibrary, {
+			data, loading: false, error: null, tab: 'memory', onTab() {}, onOpenMemory() {}, onOpenHost() {},
+			onToggle() {}, onDelete() {}, actMsg: '', toggleBusy: '', filter: '', setFilter() {},
+		}));
+	};
+	const detail = '宿主尚无绑定技能版本和任务的独立执行验收证据';
+	const falseView = renderSkills({ available: false, reason: 'verified_skill_execution_unavailable', detail });
+	ok(falseView.includes(`title="${detail}`) && falseView.includes(detail) && falseView.includes('data-dmo="skill-activation-note"'), 'available:false disables activate with the backend detail as title and visible reason');
+	ok(falseView.includes('title="停用（retire）"'), 'available:false keeps the active row\'s retire title');
+	const unknownView = renderSkills(undefined);
+	ok(unknownView.includes('title="可用性状态未知') && unknownView.includes('data-dmo="skill-activation-note"'), 'missing activation renders an explicit unknown title and note, never a fake "启用" affordance');
+	const nonBoolView = renderSkills({ available: 'yes', reason: '', detail: '不可信文案' });
+	ok(nonBoolView.includes('title="可用性状态未知') && !nonBoolView.includes('不可信文案'), 'non-boolean availability stays unknown and does not show untrusted detail');
+}
 ok(count(skillMem, 'data-dmo="skill-delete"') === 2, 'every crystallized row carries a delete button');
 ok(count(skillHost, 'data-dmo="skill-toggle"') === 0 && count(skillHost, 'data-dmo="skill-delete"') === 0, 'system rows carry no lifecycle controls');
 // ONE renderer for ONE store: opening a bundle from either tab gives the same
@@ -984,7 +1015,7 @@ ok(count(searchView, 'data-dmo="search-zone"') === 8, `search includes all eight
 }
 {
 	const searchFixtures = { ...fixtures, '/api/memory-org/search?q=%E6%8A%80%E8%83%BD': { data: { hits: [{ zone: 'skills', name: 'detached-restart/SKILL.md', line: 2, snippet: '技能' }] }, loading: false, error: null } };
-	const { nodes, changes } = panelWithState({ kind: 'overview' }, searchFixtures, { 3: '技能', 4: '技能' });
+	const { nodes, changes } = panelWithState({ kind: 'overview' }, searchFixtures, { 4: '技能', 5: '技能' });
 	const hit = nodes.find((node) => node.type === 'button' && node.props?.['data-dmo'] === 'row' && textOf(node).includes('detached-restart'));
 	hit?.props?.onClick?.();
 	const nav = changes.find((c) => c.slot === 0)?.value;
@@ -1154,7 +1185,7 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 	// 渲染层：这是**画出来的图**，不是卡片行——断言节点、连线和箭头都在
 	const archHtml = serialize(FakeReact.createElement(T.Architecture, { model }));
 	ok(count(archHtml, 'data-dmo="arch-node-') >= 9, `diagram draws every layer + context node (${count(archHtml, 'data-dmo="arch-node-')})`);
-	ok(count(archHtml, 'data-dmo="arch-step-') === 4, `architecture renders four loop stages (${count(archHtml, 'data-dmo="arch-step-')})`);
+	ok(!archHtml.includes('data-dmo="arch-loop"') && !archHtml.includes('data-dmo="flow-activity"'), 'repetitive loop and flow activity panels are hidden');
 	ok(archHtml.includes('dmo-arch-svg') && archHtml.includes('<svg'), 'the diagram is an SVG drawing, not a row of cards');
 	ok((archHtml.match(/marker-end=/g) ?? []).length >= 10, `edges carry arrowheads (${(archHtml.match(/marker-end=/g) ?? []).length})`);
 	ok(archHtml.includes('dmo-edge'), 'edges are stroked paths');
@@ -1175,12 +1206,10 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 }
 
 // --- second recall channel (SAG) in the diagram (2026-11-16) -----------------
-// The SAG edge already existed, but it was a FIXED muted line: usable and dead
-// looked identical. These assertions lock the four states apart, because
-// "draw it the same either way" is exactly how a dead channel stays invisible.
+// Service status belongs to the SAG node and card; the edge shows observed flow.
 {
 	const base = {
-		counts: { daily: 4, functions: 2, insights: 1, dao: 1, capabilities: 1 },
+		counts: { daily: 4, functions: 2, insights: 1, dao: 1, capabilities: 1, skills: 7 },
 		usage: { signalCount: 10, recallEvents: 8, readEvents: 2, verdictEvents: 1, distinctHrefs: 3, indexRows: 5 },
 		env: { memoryRoot: 'r', skillRoot: 's' },
 		health: { failCount: 0, warnCount: 0 },
@@ -1192,7 +1221,10 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 	const usableHtml = serialize(FakeReact.createElement(T.Architecture, { model: usable }));
 	ok(usableHtml.includes('arch-node-sag'), 'the SAG node is drawn');
 	ok(usableHtml.includes('第二通道 · 可用'), `the SAG node states the channel works (${usableHtml.includes('第二通道 · 可用')})`);
-	ok(usableHtml.includes('fast 档只读召回 · 可用'), 'the SAG edge is labelled as usable');
+	ok(usableHtml.includes('SAG 搜索调用 · 返回方向') && usableHtml.includes('第二通道 · 可用'), 'the search call and service availability are labelled separately');
+	ok(usableHtml.includes('技能包 7 个') && !usableHtml.includes('技能库 7 项') && usableHtml.includes('条台账') && usableHtml.includes('每日线索（含归档）'), 'skill count is its own fact, distinct from the capability ledger, and daily includes archives');
+	ok(usableHtml.includes('反馈供参考') && !usableHtml.includes('校准阈值'), 'feedback does not claim automatic threshold calibration');
+	ok(elements(FakeReact.createElement(T.Architecture, { model: usable })).some((node) => node.type === 'path' && node.props?.d === 'M800 51 L320 51'), 'on-demand SAG connects to the session rather than the automatic gate');
 	ok(count(usableHtml, 'data-dmo="sag-configured"') === 1 && count(usableHtml, 'data-dmo="sag-online"') === 1 && count(usableHtml, 'data-dmo="sag-authorized"') === 1,
 		'three independent status rows are rendered');
 	ok(!usableHtml.includes('<div class="dmo-dot fail"'), 'a usable channel shows no failing dots');
@@ -1202,14 +1234,13 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 	ok(unauth.sag.usable === false, 'online-but-unauthorized is NOT usable');
 	const unauthHtml = serialize(FakeReact.createElement(T.Architecture, { model: unauth }));
 	ok(unauthHtml.includes('在线但未授权'), 'the node names the degraded state');
-	ok(unauthHtml.includes('dmo-edge warn'), 'the edge uses the warning tone, not the success tone');
 	ok(unauthHtml.includes('被拒：重新签发 key'), 'the failing row says how to fix it');
 
 	// Unknown authorization must not be reported as a rejected key.
 	const authUnknown = T.buildArchitecture({ ...base, sag: { configured: true, online: true, authorized: null } });
 	const authUnknownHtml = serialize(FakeReact.createElement(T.Architecture, { model: authUnknown }));
 	ok(authUnknown.sag.authorized === null && authUnknownHtml.includes('在线 · 鉴权未知') && !authUnknownHtml.includes('被拒：重新签发 key'), 'unknown authorization stays unknown without a rejection claim');
-	const authUnknownEdge = elements(FakeReact.createElement(T.Architecture, { model: authUnknown })).find((node) => node.type === 'path' && node.props?.d === 'M1080 51 L1098 51 L1098 412 L660 412 L660 430');
+	const authUnknownEdge = elements(FakeReact.createElement(T.Architecture, { model: authUnknown })).find((node) => node.type === 'path' && node.props?.d === 'M800 51 L320 51');
 	ok(authUnknownEdge?.props.className.includes('muted') && authUnknownEdge.props.markerEnd === 'url(#dmo-ah-m)', 'unknown authorization has a neutral edge and arrowhead');
 
 	// 3) service down
@@ -1217,7 +1248,6 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 	ok(down.sag.usable === false, 'a down service is not usable');
 	const downHtml = serialize(FakeReact.createElement(T.Architecture, { model: down }));
 	ok(downHtml.includes('不可达'), 'the node says unreachable');
-	ok(downHtml.includes('dmo-edge danger'), 'the edge goes to the danger tone');
 	ok(downHtml.includes('不可达：sag api start'), 'the failing row names the start command');
 
 	// 4) server never reported the field — unknown must NOT be drawn as working
@@ -1229,26 +1259,21 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 	ok(unknownHtml.includes('服务器未上报 SAG 状态'), 'the card explains why it is unknown');
 	ok(unknownHtml.includes('dmo-edge muted'), 'unknown keeps the muted style, not the success style');
 
-	// LEGEND HONESTY (2026-11-20, boss: 「架构图上，通道可用（SAG）一条都没有」).
-	// The legend is static: it promises colours. A swatch for a tone that NO
-	// state ever draws is the same class of lie as the fixed-muted SAG edge this
-	// file already guards against -- it makes an absent state look documented.
-	// Collect every edge class across all four channel states, then require each
-	// legend swatch to appear among them.
-	const edgeClasses = (model) => elements(FakeReact.createElement(T.Architecture, { model }))
-		.filter((n) => n.type === 'path' && typeof n.props?.className === 'string' && n.props.className.includes('dmo-edge'))
-		.map((n) => n.props.className);
-	const drawn = new Set([usable, unauth, down, unknown].flatMap(edgeClasses));
-	ok([...drawn].some((c) => c.includes('business')), 'a usable channel draws a business-coloured edge (it had drifted to green ok, so the blue legend swatch matched nothing)');
-	const sagEdgeOf = (model) => edgeClasses(model).find((c) => c.includes('business') || c.includes('danger') || c.includes('warn'));
-	ok(sagEdgeOf(usable)?.includes('business'), 'usable tone is business, not ok');
+	// Service availability alone must never imply that a query is in progress.
+	const sagEdgeOf = (model, flowAt) => elements(FakeReact.createElement(T.Architecture, { model, flowAt }))
+		.find((n) => n.props?.['data-dmo'] === 'flow-edge-e15');
+	for (const service of [usable, unauth, down, unknown]) {
+		ok(sagEdgeOf(service)?.props.className.includes('flow-unknown'), 'service state alone leaves query activity unknown');
+	}
+	const now = Date.now();
+	for (const [phase, tone] of [['active', 'business'], ['finished', 'warn'], ['failed', 'danger']]) {
+		const flowing = T.buildArchitecture({ ...base, sag: { configured: true, online: false, authorized: false }, liveFlow: { edges: { e15: { phase, at: now, expiresAt: now + 10000 } } } });
+		ok(sagEdgeOf(flowing, now)?.props.className.includes(`flow-${phase} ${tone}`), `${phase} query event draws its legend tone regardless of service status`);
+		ok(sagEdgeOf(flowing, now - 90_000)?.props.className.includes('flow-unknown'), `${phase} query event becomes unknown when flow data is stale`);
+	}
 	const legendSwatches = elements(FakeReact.createElement(T.Architecture, { model: usable }))
 		.filter((n) => n.type === 'line' && typeof n.props?.className === 'string' && n.props.className.includes('dmo-edge'));
-	ok(legendSwatches.length >= 3, `legend still carries its swatches (${legendSwatches.length})`);
-	for (const swatch of legendSwatches) {
-		ok([...drawn].some((c) => c === swatch.props.className),
-			`legend swatch "${swatch.props.className}" is a tone some state actually draws`);
-	}
+	ok(legendSwatches.length === 4, `legend carries the four flow states (${legendSwatches.length})`);
 
 	// CARD PROP FORWARDING (real-host bug, 2026-11-16): Card used to accept only
 	// {children, tight, className} and silently drop everything else, so every
@@ -1268,16 +1293,16 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 	// its own freshness.
 	const liveHtml = serialize(FakeReact.createElement(T.Architecture, { model: usable, live: true, lastEventAt: Date.now() - 3000, fallback: false }));
 	ok(liveHtml.includes('data-dmo="arch-live-badge"'), 'the live badge is rendered');
-	ok(liveHtml.includes('实时推送'), `a recent pushed event reads as live (${liveHtml.includes('实时推送')})`);
+	ok(liveHtml.includes('推送连接正常'), `a recent pushed event reads as live (${liveHtml.includes('推送连接正常')})`);
 	ok(!liveHtml.includes('轮询降级'), 'live mode does not claim to be degraded');
 
 	// A stale stream (older than 90s) must NOT read as live even if the flag says so.
 	const staleHtml = serialize(FakeReact.createElement(T.Architecture, { model: usable, live: true, lastEventAt: Date.now() - 120_000, fallback: false }));
-	ok(staleHtml.includes('轮询降级'), 'a stale event turns the badge into the polling fallback');
+	ok(staleHtml.includes('推送连接不可用'), 'a stale event turns the badge into the polling fallback');
 
 	// No SSE at all (EventSource unavailable / server without the route).
 	const pollHtml = serialize(FakeReact.createElement(T.Architecture, { model: usable, live: false, lastEventAt: null, fallback: true }));
-	ok(pollHtml.includes('轮询降级（30s）'), 'without a stream the badge states the real cadence');
+	ok(pollHtml.includes('推送连接不可用 · 轮询（30s）'), 'without a stream the badge states the real cadence');
 }
 
 // --- diagram navigation must never dead-end (2026-11-16 user report) ---------

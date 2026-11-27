@@ -191,9 +191,8 @@ export async function writeText(p, content, options = {}) {
 				const err = new MemoryWriteCommitUnknown(p, cause); err.ledgerStatus = 'not_attempted'; throw err;
 			}
 			await recordTrackedWrite(p, text, options?.memoryRoot, options?.tool);
-			// Verified-stage cleanup: rename consumes the stage (ENOENT → removed);
-			// a replaced path is truncated (content zeroed, path kept) rather than
-			// unlinked, and never deleted unless the inode matches our record.
+			// Verified-stage cleanup: rename consumes the stage (ENOENT → removed).
+			// A path with unknown ownership is left untouched for investigation.
 			let cleanup = null;
 			if (stageEntry) {
 				try { cleanup = await removeVerifiedStage(stageEntry); }
@@ -213,7 +212,7 @@ export async function writeText(p, content, options = {}) {
 				}
 			}
 			if (cleanup && !cleanup.removed) {
-				const err = new Error(`目标已写入并记账（${p}），暂存清理 deferred（${cleanup.reason ?? 'unknown'}）：内容已清零，路径 ${tmp} 保留待孤儿清扫；请核对。`);
+				const err = new Error(`目标已写入并记账（${p}），暂存清理 deferred（${cleanup.reason ?? 'unknown'}）：路径 ${tmp} 的归属或内容未确认；请核对，不要盲目处理。`);
 				err.code = 'MEMORY_STAGE_CLEANUP_DEFERRED'; err.fileWritten = true; err.ledgerStatus = 'recorded'; err.cleanupStatus = 'deferred'; err.stagePath = tmp;
 				throw err;
 			}

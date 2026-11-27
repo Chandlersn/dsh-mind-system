@@ -1,8 +1,10 @@
 import { RuntimeContractError, requireString, TASK_ORIGINS, validateTaskProvenance } from './contracts.js';
-import { buildRecipeFromSpec, createRecipeRegistry } from './recipe-factory.js';
+import { buildRecipeFromSpec, createRecipeRegistry, recipeIdentity } from './recipe-factory.js';
 import { describePrimitives, VERIFIER_PRIMITIVES } from './verifier-primitives.js';
 import { describeConditions } from './condition-primitives.js';
 import { readKnowledge, writeKnowledge } from './knowledge.js';
+import { classifyRunOutcome } from './recipe-library.js';
+import { validateBindingPage } from './store.js';
 
 /**
  * The tool that lets a caller describe a task at runtime instead of naming a pre-registered template.
@@ -62,7 +64,7 @@ const SPEC_PARAMETERS = {
  * @param {object} [input.registry] Optional pre-built registry.
  */
 export function createExecuteTool({ store, schedulerFor, toolEffects, mount, registry = null,
-  library = null }) {
+  library = null, analyzeRun = null }) {
   requireString(mount?.scopeRef, 'mount.scopeRef');
   requireString(mount?.workspaceRoot, 'mount.workspaceRoot');
   const recipes = registry ?? createRecipeRegistry();
@@ -74,7 +76,10 @@ export function createExecuteTool({ store, schedulerFor, toolEffects, mount, reg
       + 'acceptance is decided by one of the built-in verifier primitives (' + VERIFIER_PRIMITIVES.join(', ')
       + '). Caller-chosen: goal, inputs, tool, arguments, and which primitive parameterizes success. '
       + 'Host-chosen: workspace, scope, and each tool\'s trusted effect. Dispatch stays inside the host '
-      + 'pipeline, so unknown side effects stay frozen for reconciliation.',
+      + 'pipeline, so unknown side effects stay frozen for reconciliation. Dynamic analysis is disabled unless '
+      + 'the host explicitly enables it. When enabled, it may send task goals, scope, paths, arguments, outcomes '
+      + 'and evidence references to the configured external provider; no redaction is guaranteed. Analysis '
+      + 'records proposals only and shares the task deadline and the host provider timeout.',
     parameters: SPEC_PARAMETERS,
     output: { schema: { type: 'object' },
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] },
@@ -94,35 +99,50 @@ export function createExecuteTool({ store, schedulerFor, toolEffects, mount, reg
           fail('authority_denied', `The mount does not allow ${name}.`);
         }
       }
-      let recipe;
-      try {
-        recipe = recipes.generate(recipeSpec, { toolEffects });
-      } catch (error) {
-        // A duplicate id is not an error for the caller: the same specification reused across tasks is a
-        // normal case, and regenerating an identical spec must not be blocked by its own earlier record.
-        if (error?.code !== 'duplicate_recipe') throw error;
-        recipe = recipes.get(`${recipeSpec.recipeId}:${recipeSpec.version ?? '1'}`);
+      const candidate = buildRecipeFromSpec(recipeSpec, { toolEffects });
+      for (const name of candidate.allowedTools) {
+        if (!mount.allowedTools.includes(name)) fail('authority_denied', `The mount does not allow ${name}.`);
       }
-      generated.add(`${recipe.id}:${recipe.version}`);
+      const key = `${candidate.id}:${candidate.version}`;
+      const existing = recipes.get(key);
+      if (existing && (recipeIdentity(existing) === null || recipeIdentity(existing) !== recipeIdentity(candidate))) {
+        fail('recipe_identity_collision', `Recipe ${key} has a different or unverified identity.`);
+      }
+      const known = library ? library.assertIdentity(key, recipeIdentity(candidate)) : false;
+      if (library && !known) library.record(recipeSpec, { goalPattern: args.goal, toolEffects });
+      const recipe = existing ?? recipes.register(candidate);
+      generated.add(key);
 
       const taskId = typeof args?.taskId === 'string' && args.taskId ? args.taskId : `dynamic:${Date.now()}`;
       const task = { taskId, recipeId: recipe.id, recipeVersion: recipe.version, goal: args.goal,
         scopeRef: mount.scopeRef, workspaceRoot: mount.workspaceRoot,
         inputs: args.inputs, deadlineAt: Date.now() + deadlineMs, ...provenance };
       const scheduler = schedulerFor(exec.agent, recipes);
-      const run = await scheduler.run(task, { authority: { scopeRef: mount.scopeRef,
-        workspaceRoot: mount.workspaceRoot, allowedTools: mount.allowedTools, agent: exec.agent } });
+      const authority = { scopeRef: mount.scopeRef, workspaceRoot: mount.workspaceRoot,
+        allowedTools: mount.allowedTools, agent: exec.agent };
+      let run = await scheduler.run(task, { authority, signal: exec.signal });
+      let analysis = null;
+      if (run.status === 'waiting_analysis') {
+        if (typeof analyzeRun !== 'function') analysis = { status: 'analysis_unavailable' };
+        else {
+          try { analysis = await analyzeRun({ taskId, authority, signal: exec.signal }); }
+          catch { analysis = { status: 'analysis_unavailable' }; }
+        }
+        // Refresh the run after analysis when it is backed by the store. A scheduler may be supplied
+        // without a persisted run (test fixtures, embedded callers); in that case keep the scheduler's
+        // returned state instead of failing a task that already settled.
+        try { run = store.getRun(taskId); } catch { /* Keep the scheduler's run state. */ }
+      }
 
       // Record what was learned only *after* the run settled, and only through the same counters the
       // library uses for everyone. Recording before the outcome would let a failing recipe look proven.
       let libraryNote = null;
       if (library) {
         try {
-          const key = `${recipe.id}:${recipe.version}`;
-          const known = library.read(key);
-          if (known === null) library.record(recipeSpec, { goalPattern: args.goal, toolEffects });
-          library.recordOutcome({ recipeKey: key, status: run.status, taskId: run.task.taskId });
-          libraryNote = { recipeKey: key, reused: known !== null, succeeded: run.status === 'completed' };
+          library.assertIdentity(key, recipeIdentity(recipe));
+          const succeeded = classifyRunOutcome(run.status);
+          if (succeeded !== null) library.recordOutcome({ recipeKey: key, status: run.status, taskId: run.task.taskId });
+          libraryNote = { recipeKey: key, reused: known, succeeded };
         } catch (error) {
           // A library problem must not fail a run that already happened: the work is done either way, and
           // reporting a task failure because bookkeeping failed would be a false negative.
@@ -132,32 +152,45 @@ export function createExecuteTool({ store, schedulerFor, toolEffects, mount, reg
 
       return { taskId: run.task.taskId, status: run.status, reason: run.reason,
         recipe: `${recipe.id}@${recipe.version}`, verifier: recipe.verifier.id,
-        budgetUsage: run.budgetUsage, library: libraryNote };
+        budgetUsage: run.budgetUsage, library: libraryNote, ...(analysis === null ? {} : { analysis }) };
     },
   };
 }
 
-/** A read-only tool so a caller can find recipes that already worked instead of re-describing them. */
-export function createLibraryTool({ library }) {
+/** Read historical recipes and their selected-verifier counts as retrieval hints. */
+export function createLibraryTool({ library, store }) {
   return {
     name: 'runtime_recipes',
     description: 'List recipe specifications that have been used before, ordered by how often they were '
-      + 'verified. Given a goal, suggests the closest recorded specifications. Everything returned is data '
-      + 'to inspect and pass back to runtime_execute — a recorded specification is never auto-run, and '
-      + '"it worked before" is not an acceptance argument: the same verifier runs again on the next use.',
+      + 'verified by the selected verifier. These mixed-origin counts are retrieval heuristics, not production evidence. '
+      + 'Given a goal, suggests the closest recorded specifications. Each reuseStatus reports '
+      + 'identity_unverifiable or identity_verified_requires_admission; the latter is not execution permission. '
+      + 'Historical entries are data for inspection, never auto-run. Current host authority, identity and '
+      + 'verification still apply to any later runtime_execute call. Counts include all origins; their historical '
+      + 'origin split is unknown. Success means completion under the selected verifier; updates may be lost or '
+      + 'duplicated, and counts do not independently prove the goal. Each entry exposes this in countBasis. '
+      + 'Optional bindingLimit requests a separate bounded snapshot of current statuses of new validated bindings, '
+      + 'grouped by exact recipe id and version and caller-declared origin; truncation and unavailable rows are explicit. '
+      + 'With bindingCursor and an explicit bindingLimit, page by rowid within a high watermark; empty cursor starts. '
+      + 'Membership assumes immutable no-delete bindings, normal implicit rowid insertion, no VACUUM, exhaustion, explicit rowids or database/schema replacement. '
+      + 'The caller controls cursor position; it proves neither completeness, provenance nor goals. Statuses use a per-page snapshot and can change across pages. '
+      + 'This is not independent goal proof or production verification.',
     parameters: {
       type: 'object',
       properties: {
         goal: { type: 'string', description: 'Optional goal text; returns the closest recorded recipes.' },
         minVerifiedRuns: { type: 'number',
-          description: 'Only recipes verified at least this many times; defaults to 1.' },
+          description: 'Minimum historical selected-verifier completion count across all origins; defaults to 1.' },
         limit: { type: 'number', description: 'Maximum entries returned; defaults to 10.' },
+        bindingLimit: { type: 'number', description: 'Optional bound-run snapshot limit, an integer from 1 to 100.' },
+        bindingCursor: { type: 'string', description: 'Opt into rowid pagination: empty string starts; use nextCursor to continue. Requires bindingLimit.' },
       },
       additionalProperties: false,
     },
     output: { schema: { type: 'object' },
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] },
     async execute(args) {
+      if (args?.bindingCursor !== undefined) validateBindingPage(args.bindingLimit, args.bindingCursor);
       if (!library) return { available: false, reason: 'The recipe library is not mounted.' };
       const limit = Number.isSafeInteger(args?.limit) && args.limit > 0 ? Math.min(args.limit, 50) : 10;
       // A goal asks "what fits this"; without one it is simply "what has worked".
@@ -165,8 +198,15 @@ export function createLibraryTool({ library }) {
         ? library.suggest(args.goal, { limit })
         : library.list({ minVerifiedRuns: Number.isSafeInteger(args?.minVerifiedRuns)
           ? Math.max(0, args.minVerifiedRuns) : 1, limit });
-      return { available: true, matched: typeof args?.goal === 'string' && Boolean(args.goal.trim()),
+      const result = { available: true, matched: typeof args?.goal === 'string' && Boolean(args.goal.trim()),
         count: entries.length, entries };
+      if (args?.bindingCursor !== undefined) result.bindingSummary = store?.pageRecipeOutcomes
+        ? store.pageRecipeOutcomes({ limit: args.bindingLimit, cursor: args.bindingCursor })
+        : { coverage: 'unavailable', reason: 'store_unavailable' };
+      else if (args?.bindingLimit !== undefined) result.bindingSummary = store?.summarizeRecipeOutcomes
+        ? store.summarizeRecipeOutcomes({ limit: args.bindingLimit })
+        : { coverage: 'unavailable', reason: 'store_unavailable' };
+      return result;
     },
   };
 }

@@ -26,6 +26,47 @@ import {
 
 // packages/clis-plugin/src/index.ts
 import { join as join5 } from "node:path";
+import { mkdirSync, statSync } from "node:fs";
+import { openClisEventStore, newClisEventId, readClisFeedback } from "./clis-event-store.js";
+
+function createEventOutbox() {
+  let store;
+  let lastError = null;
+  let transport = { state: "not_observed" };
+  let closed = false;
+  const dir = join5(process.env.DSH_HOME ?? join5(homedir(), ".dsh"), "storages");
+  const filePath = join5(dir, "clis-events.sqlite");
+  const open = () => {
+    if (closed) throw new Error("outbox_closed");
+    if (!store) {
+      mkdirSync(dir, { recursive: true });
+      store = openClisEventStore(filePath);
+    }
+    return store;
+  };
+  const run = (fn) => {
+    try { const value = fn(open()); lastError = null; return value; }
+    catch (error) { lastError = error?.code ?? "event_store_unavailable"; throw error; }
+  };
+  return {
+    record(payload) { return run(s => s.record({ eventId: newClisEventId(), kind: "clis.run.v1", payload })); },
+    pending(options) { return run(s => s.pending(options)); },
+    recordReceipt(receipt) { return run(s => s.recordReceipt(receipt)); },
+    recordFeedback(feedback) { return run(s => s.recordFeedback(feedback)); },
+    feedback(producerId, eventId) {
+      if (closed) return { status: 'outbox_closed' };
+      try {
+        if (!statSync(filePath, { throwIfNoEntry: false })) return { status: 'store_missing' };
+        return readClisFeedback(filePath, producerId, eventId);
+      } catch (error) { return { status: 'unavailable', reason: error?.code ?? 'feedback_read_failed' }; }
+    },
+    reportTransport(status) { transport = { ...status }; },
+    status() { return { available: closed || lastError !== null ? false : store ? true : null, lastError, delivery: "pending_unverified", authenticatedReceipts: false, transport }; },
+    close() { closed = true; store?.close(); store = undefined; },
+  };
+}
+
+function safeEnum(value, allowed) { return allowed.includes(value) ? value : "unknown"; }
 
 // packages/clis-plugin/src/history.ts
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -1909,9 +1950,19 @@ function questionParams() {
   }
   return params;
 }
-function registerTools(ctx, healthSources = () => []) {
+function registerTools(ctx, healthSources = () => [], eventOutbox) {
   const defineTool = getDefineTool();
   const history = new ClisHistoryStore();
+  toolRuntime(ctx).register(defineTool({
+    name: 'clis_event_feedback',
+    description: 'Read the technical consumption classification returned to CLIS for one producer and event. Human adoption and principle attribution remain unknown.',
+    parameters: {
+      producerId: { type: 'string', required: true, description: 'Producer UUID from clis_run.' },
+      eventId: { type: 'string', required: true, description: 'Event UUID from the same run.' }
+    },
+    output: { schema: { type: 'json' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }] },
+    async execute({ producerId, eventId }) { return eventOutbox.feedback(producerId, eventId); }
+  }));
   toolRuntime(ctx).register(
     defineTool({
       name: "clis_run",
@@ -2011,7 +2062,24 @@ function registerTools(ctx, healthSources = () => []) {
           result.classification?.causal_type ?? "unknown"
         );
         const priorFailuresAfter = ClisHistoryStore.failures(afterRecord);
+        let eventStatus;
+        try {
+          const recorded = eventOutbox.record({
+            schemaVersion: 1,
+            source: "clis_run",
+            baseline: prior === void 0,
+            feedback: lastOutcome === "achieved" || lastOutcome === "failed"
+              ? { outcome: lastOutcome, association: prior ? "prior_history" : "no_prior_history" }
+              : { outcome: lastOutcome === "not_tried" ? "not_tried" : "not_provided", association: "none" },
+            causalType: safeEnum(result.classification?.causal_type, ["structural_duality", "cyclic", "unidirectional", "nested", "unknown"]),
+            planSignal: safeEnum(result.signal?.signal_type, ["effective", "ineffective", "type_misjudged", "unknown"]),
+          });
+          eventStatus = { status: "persisted_pending", producerId: recorded.event.producerId, eventId: recorded.event.eventId, authenticated: false };
+        } catch {
+          eventStatus = { status: "persistence_failed", error: eventOutbox.status().lastError };
+        }
         return toToolJson({
+          event: { ...eventStatus, outbox: eventOutbox.status() },
           problem_key: key,
           outcome: result.outcome,
           causal_type: result.classification?.causal_type,
@@ -2367,9 +2435,9 @@ function summarizeReading(s) {
     return `\u8BC4\u4F30\u4E86 ${s.evaluated} \u6B21\u4F46\u4E00\u6B21\u4E5F\u6CA1\u4ECB\u5165\uFF1A\u5168\u90E8\u88AB\u95F8\u95E8\u62E6\u4E0B\uFF0C\u5C5E\u653E\u884C\u72B6\u6001\uFF0C\u4E0D\u662F\u6545\u969C\u3002`;
   }
   if (s.adoptionRate !== null && s.adoptionRate >= 0.3) {
-    return `\u91C7\u7528\u7387\u5065\u5EB7\uFF08${(s.adoptionRate * 100).toFixed(0)}%\uFF09\uFF1B\u6F0F\u5224\u7387 ${((s.missRate ?? 0) * 100).toFixed(0)}% \u8BF4\u660E\u95F8\u95E8\u5728\u8FC7\u6EE4\u800C\u975E\u5931\u660E\u3002`;
+    return `匹配调用率 ${(s.adoptionRate * 100).toFixed(0)}%；跳过率 ${((s.missRate ?? 0) * 100).toFixed(0)}%。匹配仅表示同一 agent 在提示后 30 分钟内调用了 CLIS，无法证明提示被看到或信任。`;
   }
-  return `\u91C7\u7528\u7387\u504F\u4F4E\uFF08${s.adoptionRate === null ? "n/a" : `${(s.adoptionRate * 100).toFixed(0)}%`}\uFF09\uFF1A\u63D0\u793A\u88AB\u770B\u89C1\u4F46\u6CA1\u88AB\u4FE1\u4EFB\u3002\u4F18\u5148\u68C0\u67E5\u63AA\u8F9E\u662F\u5426\u592A\u50CF\u547D\u4EE4\u3001\u89E6\u53D1\u65F6\u673A\u662F\u5426\u592A\u9891\u7E41\u3002`;
+  return `匹配调用率 ${s.adoptionRate === null ? "n/a" : `${(s.adoptionRate * 100).toFixed(0)}%`}。匹配仅表示同一 agent 在提示后 30 分钟内调用了 CLIS，无法证明提示被看到或信任。`;
 }
 
 // packages/clis-plugin/src/index.ts
@@ -2396,7 +2464,12 @@ function apply(ctx) {
     const known = collected.map((item) => item.plugin);
     return [...collected, ...scanKnownProbes(ctx, known)];
   };
-  registerTools(ctx, sources);
+  const eventOutbox = createEventOutbox();
+  try {
+    if (typeof ctx.provide === "function") ctx.provide("clisEventOutbox", eventOutbox);
+    else if (typeof ctx.set === "function") ctx.set("clisEventOutbox", eventOutbox);
+  } catch { /* The tool still reports local persistence independently. */ }
+  registerTools(ctx, sources, eventOutbox);
   registerPromptSection(ctx);
   const emitSignal = ctx.emit;
   try {
@@ -2441,7 +2514,7 @@ function apply(ctx) {
   const globalFlags = globalThis;
   if (globalFlags[HOT_RELOAD_KEY] !== true) {
     const host2 = ctx;
-    if (host2.loader !== void 0) {
+    if (host2.get?.("loader") !== void 0) {
       const here = import.meta.url.replace(/^file:\/\/\//u, "").replace(/\//gu, "\\");
       const installDir = here.slice(0, here.lastIndexOf("\\"));
       startHotReload(ctx, installDir, {
@@ -2454,7 +2527,7 @@ function apply(ctx) {
   }
   const host = ctx;
   if (typeof host.effect === "function") {
-    host.effect(() => disposeListen);
+    host.effect(() => () => { disposeListen?.(); eventOutbox.close(); });
   }
 }
 export {

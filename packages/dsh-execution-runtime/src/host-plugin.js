@@ -19,7 +19,7 @@
  * - The probe reports only what was actually wired. `disabled` and `not_configured` are states, not
  *   failures to hide, and a green probe never implies that work is possible.
  */
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -40,10 +40,21 @@ import { createInterventionPolicy } from './intervention.js';
 import { createWriteTools, createReplaceTool } from './write-tools.js';
 import { createRecipeLibrary } from './recipe-library.js';
 import { Analyzer } from './analyzer.js';
+import { makeHostLlmAnalyzer } from './host-llm-analyzer.js';
+import { AnalysisCoordinator } from './exceptions.js';
 import { jsonNormalizeRecipe } from '../recipes/json-normalize.js';
 import { jsonNormalizeRepairPolicy } from '../recipes/json-repair.js';
 import { csvNormalizeRecipe } from '../recipes/csv-normalize.js';
-import { validateTask } from './contracts.js';
+import { validateTask, validateAcceptanceContract } from './contracts.js';
+import { validateAuthoritySnapshot } from './store.js';
+
+const freezeTree = (value) => {
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) freezeTree(child);
+    Object.freeze(value);
+  }
+  return value;
+};
 
 export const name = 'execution-runtime';
 export const inject = ['tools'];
@@ -141,13 +152,13 @@ function makeExecutor(ctx, agent) {
 }
 
 /**
- * Build an analyzer from explicit host configuration, or return null.
+ * Build an analyzer from explicit HTTP configuration, or return null.
  *
- * The transport is HTTP-and-key based rather than "whatever client happens to be around": analysis sends a
- * task's exception package to a remote model, and that has to be a deliberate, visible configuration
- * decision. A missing endpoint or key means analysis is off 鈥?not degraded into a guess.
+ * An explicit endpoint+model+apiKey remains a valid override: when the host deliberately supplies all three,
+ * that transport wins over the host LLM service. Without them this returns null so the host-LLM path can be
+ * selected by the caller. It never degrades into a guess.
  */
-function makeAnalyzer(config) {
+function makeExplicitAnalyzer(config) {
   if (!config || typeof config !== 'object') return null;
   const endpoint = typeof config.endpoint === 'string' ? config.endpoint.trim() : '';
   const model = typeof config.model === 'string' ? config.model.trim() : '';
@@ -159,12 +170,33 @@ function makeAnalyzer(config) {
     timeoutMs,
     // The analyzer passes a quoted, untrusted data blob; the transport must not add instructions of its own.
     invoke: async ({ instructions, input, signal }) => {
-      const response = await fetch(endpoint, { method: 'POST', signal,
+      const controller = new AbortController();
+      const combined = AbortSignal.any([signal, controller.signal]);
+      const response = await fetch(endpoint, { method: 'POST', signal: combined,
         headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({ model, messages: [{ role: 'system', content: instructions },
           { role: 'user', content: JSON.stringify(input) }] }) });
-      if (!response.ok) throw new Error(`analysis transport failed: ${response.status}`);
-      const raw = await response.text();
+      if (!response.ok) { controller.abort(); throw new Error('analysis transport failed'); }
+      const reader = response.body?.getReader?.();
+      if (!reader) { controller.abort(); throw new Error('analysis response stream unavailable'); }
+      const chunks = [];
+      let size = 0;
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (!(value instanceof Uint8Array) || (size += value.byteLength) > 65_536) {
+            controller.abort();
+            throw new Error('analysis response exceeds byte limit');
+          }
+          chunks.push(value);
+        }
+      } catch (error) {
+        controller.abort();
+        void reader.cancel().catch(() => {});
+        throw error;
+      } finally { reader.releaseLock(); }
+      const raw = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, size));
       // Preserve raw proposal bytes for strict validation, including duplicate-key detection.
       let envelope;
       try { envelope = JSON.parse(raw); } catch { return raw; }
@@ -339,13 +371,26 @@ function failureText(result) {
 
 export async function apply(ctx, config = {}) {
   const logger = optional(ctx, 'logger')?.('execution-runtime') ?? null;
-  const base = { enabled: config?.enabled === true, loadError: null, recipes: [], tasks: 0, patterns: false };
+  const base = { enabled: config?.enabled === true, loadError: null, recipes: [], tasks: 0, rejectedAcceptanceTasks: 0, patterns: false };
   facts = base;
   disposeInner = null;
   let store = null;
   let registeredTasks = [];
   let disposeStatus = null;
   let stopOutbox = null;
+  const operationalStatus = () => {
+    const analysis = ['disabled', 'configured', 'configured_explicit'].includes(base.analysis) ? base.analysis : 'unknown';
+    const states = ['identity_unavailable', 'receiver_unavailable', 'dispatching', 'pending', 'ready', 'error'];
+    const state = states.includes(base.outbox?.state) ? base.outbox.state : 'unknown';
+    const pass = base.outbox?.lastPass;
+    const keys = ['attempted', 'acknowledged', 'duplicates', 'retried', 'skipped'];
+    const valid = pass && keys.every((key) => Number.isSafeInteger(pass[key]) && pass[key] >= 0)
+      && typeof pass.unavailable === 'boolean';
+    return { analysis: { configuration: analysis, invocation: 'unknown' },
+      outbox: { startup: state === 'identity_unavailable' ? 'unavailable' : state === 'unknown' ? 'unknown' : 'started',
+        state, lastPass: valid ? { ...Object.fromEntries(keys.map((key) => [key, pass[key]])),
+          unavailable: pass.unavailable } : null } };
+  };
   const statusService = Object.freeze({
     snapshot({ limit = 100 } = {}) {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
@@ -356,7 +401,7 @@ export async function apply(ctx, config = {}) {
       if (base.state !== 'ready' || store === null) return { state: 'unavailable' };
       try {
         const result = store.snapshotRuns({ limit });
-        return { state: 'ready', ...result, outbox: { ...base.outbox },
+        return { state: 'ready', ...result, ...operationalStatus(),
           registeredTasks: { taskIds: registeredTasks.slice(0, limit), truncated: registeredTasks.length > limit },
           runs: result.runs.map((run) => ({ ...run, registered: registeredTasks.includes(run.taskId) })) };
       } catch {
@@ -400,20 +445,46 @@ export async function apply(ctx, config = {}) {
     // Task factories are native closures: each returns the prepared task plus the authority it may use, and
     // the runtime refuses anything the factory does not grant. They are declared in host config because a
     // model must never widen its own authority.
-    const tasks = {};
+    const tasks = Object.create(null);
+    const registrations = new Map();
     for (const entry of Array.isArray(config?.tasks) ? config.tasks : []) {
       try {
-        const template = validateTask(entry);
+        const template = freezeTree(validateTask(entry));
+        let acceptanceBinding;
+        let canonicalRoot;
+        if (Object.hasOwn(entry, 'acceptanceContract')) {
+          const contract = validateAcceptanceContract(entry.acceptanceContract);
+          canonicalRoot = realpathSync(template.workspaceRoot);
+          if (canonicalRoot !== realpathSync(config?.workspaceRoot ?? process.cwd())) {
+            throw new Error('Acceptance task workspace must match the host workspace.');
+          }
+          acceptanceBinding = Object.freeze({ nativeRef: template.taskId,
+            contract: Object.freeze({ ...contract, predicate: Object.freeze(contract.predicate), output: Object.freeze(contract.output) }) });
+        }
         const autoRepair = entry.autoRepair === true;
-        tasks[entry.taskId] = async ({ agent }) => {
+        const allowedTools = freezeTree(structuredClone(Array.isArray(entry.allowedTools) ? entry.allowedTools : []));
+        let authority = null;
+        if (acceptanceBinding) {
+          try {
+            authority = freezeTree(validateAuthoritySnapshot({ schemaVersion: 1, scopeRef: template.scopeRef,
+              workspaceRoot: canonicalRoot, allowedTools }));
+          } catch { /* Invalid authority remains unavailable to diagnosis and dispatch. */ }
+        }
+        const registration = freezeTree({ task: template, autoRepair, acceptanceBinding: acceptanceBinding ?? null,
+          authority, canonicalRoot: canonicalRoot ?? null });
+        registrations.set(template.taskId, registration);
+        tasks[template.taskId] = async ({ agent }) => {
           // A fresh executor per call: the caller identity is the one the host handed to this invocation.
           const scoped = new HostExecutor({ context: ctx, tools: ctx.tools, agent });
           executors.push(scoped);
-          return { task: template, autoRepair, authority: { scopeRef: template.scopeRef, workspaceRoot: template.workspaceRoot,
-            allowedTools: Array.isArray(entry.allowedTools) ? entry.allowedTools : [],
-            agent } };
+          return { task: registration.task, autoRepair: registration.autoRepair,
+            ...(registration.acceptanceBinding ? { acceptanceBinding: registration.acceptanceBinding } : {}),
+            authority: { scopeRef: registration.task.scopeRef, workspaceRoot: registration.task.workspaceRoot, allowedTools, agent } };
         };
-      } catch (error) { logger?.warn?.(`skipped task ${entry?.taskId}: ${error?.code ?? error?.message}`); }
+      } catch (error) {
+        if (entry && typeof entry === 'object' && Object.hasOwn(entry, 'acceptanceContract')) base.rejectedAcceptanceTasks++;
+        logger?.warn?.(`skipped task ${entry?.taskId}: ${error?.code ?? error?.message}`);
+      }
     }
     registeredTasks = Object.keys(tasks).sort();
     base.tasks = registeredTasks.length;
@@ -431,17 +502,54 @@ export async function apply(ctx, config = {}) {
       automation: config?.automation ?? null });
     base.patterns = true;
 
-    // Analysis needs a reasoning transport. It stays off unless the host explicitly supplies one, because
-    // a coordinator without a provider would only manufacture "unavailable" records. The deterministic
-    // path keeps working either way.
-    const analyzer = makeAnalyzer(config?.analysis);
-    base.analysis = analyzer === null ? 'disabled' : 'configured';
+    // Analysis needs a reasoning transport. Explicit HTTP config still wins as an override; otherwise the
+    // host's own LLM service is used, so no separate endpoint/model/apiKey is required. With neither, the
+    // deterministic path keeps working and analysis stays explicitly off.
+    const analysisConfig = config?.analysis;
+    const timeoutMs = Number.isSafeInteger(analysisConfig?.timeoutMs) && analysisConfig.timeoutMs > 0
+      ? Math.min(analysisConfig.timeoutMs, 120_000) : 30_000;
+    const explicitAnalyzer = makeExplicitAnalyzer(analysisConfig);
+    const hostLlm = analysisConfig?.enabled === false ? null : optional(ctx, 'llm');
+    const hostLlmAvailable = hostLlm !== null && typeof hostLlm?.prepareCall === 'function';
+    let analyzer = null;
+    let analysisMode = 'disabled';
+    if (explicitAnalyzer !== null) {
+      analyzer = explicitAnalyzer;
+      analysisMode = 'configured_explicit';
+    } else if (hostLlmAvailable) {
+      try {
+        const invoke = makeHostLlmAnalyzer({ llm: hostLlm, agent: config?.agent ?? null });
+        analyzer = new Analyzer({ timeoutMs, invoke });
+        analysisMode = 'configured';
+      } catch { /* A malformed host service leaves analysis off rather than failing the whole mount. */ }
+    }
+    base.analysis = analysisMode;
+    const allowDynamicAnalysis = analysisConfig?.allowDynamic === true;
+    // The dynamic path receives the caller's agent per invocation; build its analyzer at that point so the
+    // LLM route follows the current caller. An explicit HTTP transport is agent-independent and is reused.
+    const dynamicAnalyzerFor = (agent) => {
+      if (analysisMode === 'configured_explicit') return analyzer;
+      if (analysisMode !== 'configured') return null;
+      try {
+        return new Analyzer({ timeoutMs,
+          invoke: makeHostLlmAnalyzer({ llm: hostLlm, agent: agent ?? config?.agent ?? null }) });
+      } catch { return null; }
+    };
 
     // Only native tasks can use the existing replacement policy. The host owns the replacement tool.
     const nativeRecipes = recipes.map((recipe) => recipe === jsonNormalizeRecipe
       ? { ...recipe, repairPolicy: jsonNormalizeRepairPolicy } : recipe);
+    const getRegistrationSnapshot = (taskId) => {
+      const registration = registrations.get(taskId);
+      if (!registration?.acceptanceBinding || !registration.authority) return null;
+      try {
+        if (realpathSync(registration.task.workspaceRoot) !== registration.canonicalRoot) return null;
+        return registration;
+      } catch { return null; }
+    };
     const inner = createExecutionRuntimePlugin({ store, recipes: nativeRecipes, tasks,
-      validateArguments: supplied, owner: ctx, resolvePattern, analyzer });
+      validateArguments: supplied, owner: ctx, resolvePattern, analyzer, getRegistrationSnapshot,
+      getOperationalStatus: operationalStatus });
     // Delegate with the host ctx: that is the ctx whose `tools` service must receive the registrations.
     const innerDispose = inner.apply(ctx);
     if (typeof innerDispose === 'function') mountedDisposers.push(innerDispose);
@@ -455,14 +563,15 @@ export async function apply(ctx, config = {}) {
     const mount = { scopeRef: config?.scopeRef ?? 'execution-runtime',
       workspaceRoot: config?.workspaceRoot ?? process.cwd(),
       allowedTools: Object.keys(toolEffects) };
+    // The host creates the library using this store's own database handle. Fix the binding mode at
+    // assembly time; later missing or changed rows must fail in the store's atomic identity check.
+    const library = store?.withDatabase ? store.withDatabase((db) => createRecipeLibrary({ db })) : null;
+    const bindGeneratedRecipes = library !== null;
+    base.recipeLibrary = bindGeneratedRecipes;
     const schedulerFactory = (agent, registry) => new RuntimeScheduler({ store,
       executor: makeExecutor(ctx, agent), tools: ctx.tools,
       recipes: registry.list().map((key) => registry.get(key)),
-      validateArguments: supplied });
-    // The library lives in the same database as the runs, so one file carries both what happened and what
-    // was learned. It is created through the store's scoped accessor rather than holding the handle.
-    const library = store?.withDatabase ? store.withDatabase((db) => createRecipeLibrary({ db })) : null;
-    base.recipeLibrary = library !== null;
+      validateArguments: supplied, bindGeneratedRecipes });
 
     // The knowledge channel is opt-in: it reaches outside the runtime into the SAG index, which is a
     // deployment decision, not a default. When it is not configured the tool still registers but refuses
@@ -514,8 +623,16 @@ export async function apply(ctx, config = {}) {
 
     const dynamicTools = [
       createExecuteTool({ store, schedulerFor: schedulerFactory, toolEffects, mount,
-        registry: dynamicRegistry, library }),
-      createLibraryTool({ library }),
+        registry: dynamicRegistry, library, analyzeRun: async ({ taskId, authority, signal }) => {
+          if (!allowDynamicAnalysis) return { status: 'analysis_disabled' };
+          const scopedAnalyzer = dynamicAnalyzerFor(authority.agent);
+          if (scopedAnalyzer === null) return { status: 'analysis_unavailable' };
+          const coordinator = new AnalysisCoordinator({ store, analyzer: scopedAnalyzer, agent: authority.agent, resolvePattern });
+          const result = await coordinator.analyze(taskId, { authority, signal });
+          return { status: result.status, analysisId: result.analysisId ?? null,
+            route: coordinator.lastRoute?.route ?? null };
+        } }),
+      createLibraryTool({ library, store }),
       createKnowledgeTool({ adapter: knowledge.adapter, endpoint: knowledge.endpoint }),
       createPatternTool({ valveWriter: valve.writer, patterns: Array.isArray(config?.patterns) ? config.patterns : [],
         reason: valve.reason }),
@@ -552,6 +669,12 @@ export async function apply(ctx, config = {}) {
           }
           if (request.producerId !== producerId) return refusal('mismatch', 'producer_id_mismatch');
           return readRepairEvidence({ runtimeFilePath, producerId, eventId: request.eventId });
+        },
+        readRepairArtifacts(request) {
+          const identity = evidenceService.readRepairEvidence(request);
+          if (identity.status !== 'match') return identity;
+          return { ...identity, artifacts: readArtifactEvidence({ workspaceRoot: mount.workspaceRoot,
+            evidenceRefs: identity.payload.evidence.evidenceRefs }) };
         },
       });
       // Publish before the first dispatch so a receiver can resolve evidence during delivery.
@@ -661,13 +784,18 @@ export const healthProbe = {
       findings.push({ code: 'execution-runtime.no-tasks', severity: 'info',
         message: 'Ready, but no task is declared: runtime_run will refuse until one is configured.' });
     }
+    const acceptanceDegraded = facts.state === 'ready' && facts.rejectedAcceptanceTasks > 0;
+    if (acceptanceDegraded) {
+      findings.push({ code: 'execution-runtime.acceptance-unavailable', severity: 'warn',
+        message: `${facts.rejectedAcceptanceTasks} task(s) with acceptance contracts were not registered.` });
+    }
     const outboxDegraded = facts.state === 'ready'
       && ['error', 'receiver_unavailable', 'identity_unavailable'].includes(facts.outbox?.state);
     if (outboxDegraded) {
       findings.push({ code: 'execution-runtime.outbox-unavailable', severity: 'warn',
         message: `Repair event delivery is unavailable: ${facts.outbox.state}.` });
     }
-    return { plugin: 'execution-runtime', status: facts.state === 'failed' ? 'error' : outboxDegraded ? 'degraded' : 'ok',
+    return { plugin: 'execution-runtime', status: facts.state === 'failed' ? 'error' : outboxDegraded || acceptanceDegraded ? 'degraded' : 'ok',
       findings, facts: { ...facts } };
   },
 };

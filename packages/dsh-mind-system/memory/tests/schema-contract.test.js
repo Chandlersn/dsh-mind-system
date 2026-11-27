@@ -65,6 +65,15 @@ const completeSelfCheck = {
 // 各 action 分支的代表性返回形状（逐字对照 server.js 里的 return / items.push）。
 // 新增分支时必须在这里补一条，否则该分支不会被契约覆盖。
 const SAMPLES = {
+	memory_delete: {
+		deleted: { deleted: true, source: 'functions/foo.md', archive: 'functions/_deleted/foo.md', layer: 'L2', warnings: ['index note'] },
+	},
+	memory_read: {
+		// object_trace serializes its trace into `content`; the required envelope is
+		// unchanged, so this sample guards that a new read branch cannot break the host validator.
+		object_trace: { found: true, path: 'object-trace', content: '{"status":"ok"}', listing: [] },
+		adoption_evidence: { found: false, path: 'adoption-evidence', content: '{"status":"ok","rows":[]}', listing: [] },
+	},
 	memory_capability: {
 		list: { action: 'list', items: [{ name: 'x', kind: 'cli', summary: 's', invocation: 'i', updated: '2026-01-01' }], warnings: [] },
 		read: { action: 'read', file: 'p', items: [], content: 'text', warnings: [] },

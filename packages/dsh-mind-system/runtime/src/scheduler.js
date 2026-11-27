@@ -4,6 +4,9 @@ import { validateRepairAction } from './analyzer.js';
 import { createProbeRegistry, probeIo, runEvidenceProbe } from './probes.js';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { isDeepStrictEqual } from 'node:util';
+import { validateAuthoritySnapshot } from './store.js';
+import { recipeIdentity } from './recipe-factory.js';
 import { admitCandidate } from './admission.js';
 import { selectUniqueRuleFallback } from './decision-client.js';
 import { RuntimeContractError, failureCode, jsonSnapshot, requireString, validateCandidate, validateTask, validateVerification } from './contracts.js';
@@ -57,6 +60,7 @@ function registerRecipe(input) {
 export class RuntimeScheduler {
   #store;
   #recipes = new Map();
+  #recipeIdentities = new Map();
   #executor;
   #tools;
   #validateArguments;
@@ -67,14 +71,27 @@ export class RuntimeScheduler {
   #monotonicNow;
   #active = new Set();
   #probes = [];
+  #nativeBinding;
+  #nativeTask;
+  #bindGeneratedRecipes;
 
   constructor({ store, recipes, executor, tools, validateArguments, decisionClient = null,
-    decisionPolicy = null, admission = admitCandidate, probes = [], now = Date.now, monotonicNow = () => performance.now() }) {
+    decisionPolicy = null, admission = admitCandidate, probes = [], now = Date.now, monotonicNow = () => performance.now(),
+    nativeBinding = undefined, nativeTask = undefined, nativeAuthority = undefined, bindGeneratedRecipes = false }) {
     if (!store || !executor || typeof executor.execute !== 'function' || !Array.isArray(recipes)
       || typeof admission !== 'function' || typeof validateArguments !== 'function') {
       fail('invalid_runtime', 'Store, registered recipes, executor, admission and argument validation are required.');
     }
+    if (typeof bindGeneratedRecipes !== 'boolean') fail('invalid_runtime', 'Recipe binding mode must be a boolean.');
+    this.#bindGeneratedRecipes = bindGeneratedRecipes;
     this.#store = store;
+    this.#nativeTask = nativeTask === undefined ? undefined : snapshot(validateTask(nativeTask));
+    if ((nativeBinding === undefined) !== (this.#nativeTask === undefined)
+      || (nativeBinding === undefined) !== (nativeAuthority === undefined)) fail('invalid_runtime', 'Native binding, task and authority must be supplied together.');
+    this.#nativeBinding = nativeBinding === undefined ? undefined : snapshot({ ...nativeBinding,
+      authority: validateAuthoritySnapshot(nativeAuthority) });
+    if (this.#nativeBinding && (this.#nativeBinding.nativeRef !== this.#nativeTask.taskId
+      || this.#nativeBinding.authority.scopeRef !== this.#nativeTask.scopeRef)) fail('native_task_drift', 'Native binding and task must match.');
     this.#executor = executor;
     this.#tools = tools;
     this.#validateArguments = validateArguments;
@@ -88,7 +105,10 @@ export class RuntimeScheduler {
       const recipe = registerRecipe(input);
       const key = `${recipe.id}:${recipe.version}`;
       if (this.#recipes.has(key)) fail('duplicate_recipe', 'A recipe version may be registered only once.');
+      const identity = recipeIdentity(input);
+      if (identity === null && input.ruleVersion.startsWith('generated:')) fail('recipe_identity_unverifiable', 'Generated recipe identity is unavailable.');
       this.#recipes.set(key, recipe);
+      if (identity !== null) this.#recipeIdentities.set(key, identity);
     }
   }
 
@@ -96,15 +116,18 @@ export class RuntimeScheduler {
 
   async repair(taskId, analysisId, options) {
     requireString(analysisId, 'analysisId');
+    if (this.#store.getAcceptanceBinding?.(taskId)) fail('acceptance_recovery_unavailable', 'Bound task repair is unavailable.');
+    const recipeOutcome = this.#store.getRecipeOutcome?.(taskId);
+    if (recipeOutcome && recipeOutcome.coverage !== 'unbound') {
+      fail('recipe_recovery_unavailable', 'Recipe-bound task repair is unavailable until identity drift can be checked.');
+    }
     return this.#run(this.#store.getRun(taskId).task, options, analysisId);
   }
 
-  /**
-   * Resolve frozen attempts from external evidence. This never dispatches work and never marks a goal
-   * complete; it only converts unknown effects into applied/absent so a later verified step may run.
-   */
+  /** Reject caller-declared reconciliation until the host can authenticate terminal attempt evidence. */
   reconcile(taskId, { authority, signal = new AbortController().signal, resolutions } = {}) {
     const run = this.#store.getRun(taskId);
+    if (this.#store.getAcceptanceBinding?.(taskId)) fail('acceptance_recovery_unavailable', 'Bound task reconciliation is unavailable.');
     if (!authority || authority.scopeRef !== run.task.scopeRef || !authority.agent
       || authority.agent !== this.#executor.agent) {
       fail('authority_agent_mismatch', 'Reconciliation requires the explicit task caller.');
@@ -122,12 +145,9 @@ export class RuntimeScheduler {
       if (typeof item.evidenceRef !== 'string' || !item.evidenceRef || item.evidenceRef.length > 1024) {
         fail('invalid_reconciliation', 'Every resolution needs a bounded external evidence reference.');
       }
+      if (!['applied', 'absent'].includes(item.resolution)) fail('invalid_reconciliation', 'Invalid reconciliation resolution.');
     }
-    for (const item of resolutions) {
-      this.#store.reconcileAttempt(taskId, item.attemptId, { ...({ expectedVersion: this.#store.getRun(taskId).version }),
-        resolution: item.resolution, evidenceRef: item.evidenceRef, note: item.note ?? null });
-    }
-    return this.#store.getRun(taskId);
+    fail('reconciliation_unavailable', 'Authenticated per-attempt terminal evidence is unavailable.');
   }
 
   /** Bounded persisted repair state for the next candidate decision; does not start or resume work. */
@@ -143,6 +163,7 @@ export class RuntimeScheduler {
 
   async #run(input, { authority, signal = new AbortController().signal, decisionMode = 'rules' } = {}, repairAnalysisId = null) {
     const task = snapshot(validateTask(input));
+    if (this.#nativeTask && JSON.stringify(task) !== JSON.stringify(this.#nativeTask)) fail('native_task_drift', 'The native task changed.');
     const baseRecipe = this.#recipes.get(`${task.recipeId}:${task.recipeVersion}`);
     if (!baseRecipe) fail('recipe_not_registered', 'The task recipe version is not registered.');
     let recipe = baseRecipe;
@@ -163,6 +184,11 @@ export class RuntimeScheduler {
     if (fs.realpathSync(task.workspaceRoot) !== root) fail('scope_denied', 'The task workspace is outside the authorized root.');
     const trustedAuthority = Object.freeze({ ...authority, workspaceRoot: root,
       allowedTools: Object.freeze([...authority.allowedTools]) });
+    if (this.#nativeBinding) {
+      const actual = validateAuthoritySnapshot({ schemaVersion: 1, scopeRef: trustedAuthority.scopeRef,
+        workspaceRoot: root, allowedTools: trustedAuthority.allowedTools });
+      if (!isDeepStrictEqual(actual, this.#nativeBinding.authority)) fail('native_authority_drift', 'Native authority changed before dispatch.');
+    }
     if (!['rules', 'provider'].includes(decisionMode)) fail('invalid_decision_mode', 'An explicit supported decision mode is required.');
     if (!(signal instanceof AbortSignal)) fail('invalid_runtime', 'A caller-owned AbortSignal is required.');
     if (this.#active.has(task.taskId)) fail('run_in_progress', 'This task is already executing.');
@@ -180,6 +206,12 @@ export class RuntimeScheduler {
       else timer = setTimeout(armDeadline, Math.max(1, Math.min(2_147_483_647, deadlineMono - this.#monotonicNow())));
     };
     const current = () => this.#store.getRun(task.taskId);
+    const checkNativeBinding = () => {
+      if (this.#nativeBinding && (!isDeepStrictEqual(this.#store.getAcceptanceBinding(task.taskId), this.#nativeBinding)
+        || !isDeepStrictEqual(current().task, this.#nativeTask))) {
+        fail('native_binding_drift', 'Persisted native binding or task changed.');
+      }
+    };
     const version = () => ({ expectedVersion: current().version, ...(fence === undefined ? {} : { fence }) });
     const check = () => {
       if (expired()) fail('budget_exceeded', 'The runtime deadline has elapsed.');
@@ -267,7 +299,9 @@ export class RuntimeScheduler {
         created = true;
         if (proposal.kind === 'abort') return reservation.run;
       } else {
-        this.#store.createRun(task);
+        const identity = this.#recipeIdentities.get(`${task.recipeId}:${task.recipeVersion}`);
+        this.#store.createRun(task, { ...(this.#nativeBinding === undefined ? {} : { acceptanceBinding: this.#nativeBinding }),
+          ...(!this.#bindGeneratedRecipes || identity === undefined ? {} : { recipeBinding: { recipeId: baseRecipe.id, version: baseRecipe.version, identity } }) });
         created = true;
       }
       // Single writer: take a fenced lease so any previously running worker loses write authority.
@@ -418,6 +452,7 @@ export class RuntimeScheduler {
         const verificationReservation = { remaining: recipe.verificationIoReserve };
         if (verificationReservation.remaining) charge('ioOperations', verificationReservation.remaining);
         observe('verification_reserved', { verifierId: recipe.verifier.id, ioOperations: verificationReservation.remaining });
+        checkNativeBinding();
         const reserved = this.#store.reserveAttempt(task.taskId, candidate, version());
         attemptId = reserved.attemptId;
         this.#store.markStarted(task.taskId, attemptId, version());
@@ -429,7 +464,9 @@ export class RuntimeScheduler {
               const repeated = await admissionFor(candidate, 'dispatch_admission');
               check();
               if (repeated.verdict !== 'allow') fail('dispatch_admission_denied', 'The selected action no longer satisfies admission.');
-            } });
+              checkNativeBinding();
+            },
+            finalDispatchGate: () => { check(); this.#store.assertDispatchAllowed(task.taskId, attemptId, { fence }); } });
         } catch (failure) {
           outcome = { status: 'outcome_unknown', error: { code: 'executor_unavailable', message: 'The executor failed without an authoritative outcome.' } };
         }

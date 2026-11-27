@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Memory Manager",
-    "description": "Function-area long-term memory for the DeepSeek Harness: fourteen memory tools, a pre-step recall hook, and a read-only Web panel."
+    "description": "Function-area long-term memory for the DeepSeek Harness: seventeen memory tools, a pre-step recall hook, and a Web panel."
   }
 }

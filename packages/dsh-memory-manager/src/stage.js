@@ -1,27 +1,19 @@
 /**
- * 受核验的暂存文件（2026-11-13，MEMORY_PANEL_CLEANUP_UNKNOWN 发布阻断修复）。
+ * Verified stage files record their identity from the creation handle. Cleanup
+ * compares that identity with lstat before unlinking, and leaves unverified paths
+ * and their contents untouched. Age alone does not prove ownership.
  *
- * 面板 exclusive 提交用 link() 把暂存硬链接到目标；提交后暂存路径仍在，
- * 而 unlink 按路径操作——路径可能已被外来文件替换，直接删会误伤别人。
- * 这里的判据：**先拿句柄记录暂存的 (dev, ino)，清理前 lstat 核验路径仍指向
- * 同一个文件对象才 unlink**。删的必是自己创建的那个 inode；不匹配、ino 不可用
- * 或路径消失时退 ftruncate(0) 兜底（内容清零、路径保留待孤儿清扫），
- * 绝不 unlink 陌生 inode。dev/ino 判据与 src/capture-journal.js、
- * src/capture-mutex.js 的既有先例同级。
- *
- * 残余边界（如实）：lstat 与 unlink 之间存在微秒级 TOCTOU 窗口，同目录活动
- * 攻击者无法用 Node 公共 API 完全消除；ino=0 的卷退化为空残留（内容不可读、
- * 路径待清扫），不丢安全性。未来方向：Linux O_TMPFILE 分支或 native 句柄删除。
+ * An attacker can replace a path between lstat and unlink. Node's public API
+ * cannot eliminate this race. Unverifiable files remain intact for review.
  *
  * @module src/stage
  */
 import path from 'node:path';
 import { mkdir, open, lstat, unlink, readdir } from 'node:fs/promises';
-import { truncateSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
 const STAGE_DIR = '.stage';
-/** 孤儿清扫阈值：暂存生命周期远短于此；超过即视为崩溃遗留。 */
+/** Retained for callers that reference the previous age threshold. */
 export const STAGE_ORPHAN_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** .stage/ 目录绝对路径（不创建）。 */
@@ -72,7 +64,7 @@ export async function createVerifiedStage(root, key, text) {
  * @param {{path: string, dev: bigint, ino: bigint}} entry createVerifiedStage 的返回值。
  * @returns {Promise<{removed: boolean, deferred?: boolean, reason?: string}>}
  *   removed=true 已删除（或路径已不存在）；deferred=true 归属无法核验，
- *   已 ftruncate(0) 清空内容并保留路径待孤儿清扫。
+ *   the unverified path and its contents are left untouched.
  */
 export async function removeVerifiedStage(entry) {
 	const p = String(entry?.path ?? '');
@@ -85,19 +77,16 @@ export async function removeVerifiedStage(entry) {
 		st = await lstat(p, { bigint: true });
 	} catch (error) {
 		if (error?.code === 'ENOENT') return { removed: true };
-		// lstat 本身失败：无法核验归属，也不冒险删——清空内容兜底。
-		await truncateQuiet(p);
+		// Ownership is unknown; preserve the path and its contents.
 		return { removed: false, deferred: true, reason: error?.code ?? 'lstat-unknown' };
 	}
 	if (st.isSymbolicLink()) {
-		await truncateQuiet(p);
 		return { removed: false, deferred: true, reason: 'replaced-by-symlink' };
 	}
 	// 双侧都是 bigint：句柄侧记录与核验读数同精度，比较才可靠。
 	const sameInode = entry.ino !== undefined && entry.ino !== 0n &&
 		st.ino === entry.ino && st.dev === entry.dev;
 	if (!sameInode) {
-		await truncateQuiet(p);
 		return { removed: false, deferred: true, reason: 'inode-mismatch-or-unavailable' };
 	}
 	try {
@@ -109,29 +98,13 @@ export async function removeVerifiedStage(entry) {
 	}
 }
 
-/** ftruncate(0) 兜底：内容清零但保留路径，失败静默（孤儿清扫是最后一道）。 */
-async function truncateQuiet(p) {
-	try { truncateSync(p, 0); } catch { /* 路径可能已消失或不可写；孤儿清扫兜底 */ }
-}
-
-/** 扫描 .stage/ 中超龄孤儿（一次性清扫；失败忽略）。 */
-export async function sweepStaleStages(root, { now = Date.now() } = {}) {
+/** List candidate paths without deleting: age does not establish ownership. */
+export async function sweepStaleStages(root, _options = {}) {
 	const dir = stageDir(root);
-	let names;
 	try {
-		names = (await readdir(dir)).filter((n) => n.endsWith('.tmp'));
-	} catch {
-		return { swept: 0, scanned: 0 };
+		const names = (await readdir(dir)).filter((n) => n.endsWith('.tmp'));
+		return { swept: 0, scanned: names.length, disabled: true, reason: 'ownership-unverified' };
+	} catch (error) {
+		return { swept: 0, scanned: 0, disabled: true, reason: 'ownership-unverified', ...(error?.code === 'ENOENT' ? {} : { scanError: error?.code ?? 'unknown' }) };
 	}
-	let swept = 0;
-	for (const n of names) {
-		try {
-			const st = await lstat(path.join(dir, n));
-			if (now - st.mtimeMs > STAGE_ORPHAN_MS) {
-				await unlink(path.join(dir, n));
-				swept++;
-			}
-		} catch { /* 单个失败不影响其余 */ }
-	}
-	return { swept, scanned: names.length };
 }

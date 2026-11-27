@@ -46,7 +46,7 @@ const recipe = (candidate) => ({ ...jsonNormalizeRecipe, allowedTools: ['runtime
     source: { recipeId: 'json-normalize', version: '1' } }],
   preconditions: { 'workspace-scope': async () => ({ verdict: 'allow' }) } });
 
-test('a crash-like unknown effect stays frozen until explicit reconciliation', async (t) => {
+test('a crash-like unknown effect stays frozen when reconciliation is unavailable', async (t) => {
   const env = await fixture(t, { postFailure: true });
   const run = await env.scheduler.run(env.task, { authority: env.authority });
   assert.equal(run.status, 'reconciling');
@@ -56,17 +56,13 @@ test('a crash-like unknown effect stays frozen until explicit reconciliation', a
   const recovered = env.store.recoverRun(env.task.taskId, { expectedVersion: run.version });
   assert.equal(recovered.status, 'reconciling');
   assert.equal(env.store.listUnresolved(env.task.taskId)[0].status, 'unknown');
-  const next = env.scheduler.reconcile(env.task.taskId, { authority: env.authority,
-    resolutions: [{ attemptId: unresolved[0].attemptId, resolution: 'applied', evidenceRef: 'file:output.json#sha256:fixture' }] });
-  assert.equal(next.status, 'waiting_analysis');
-  assert.equal(next.reason, 'reconciled_applied');
-  assert.equal(env.store.listUnresolved(env.task.taskId).length, 0);
-  const attempt = env.store.getLatestAttempt(env.task.taskId);
-  assert.equal(attempt.status, 'reconciled_applied');
-  assert.equal(attempt.outcome.reconciled, true);
-  assert.equal(attempt.verification.status, 'unknown', 'Reconciliation is not goal verification.');
-  assert.equal(attempt.verification.goalSatisfied, null);
-  assert.equal(env.host.count('business_write'), 1, 'Reconciliation must not replay the write.');
+  const before = env.store.getRun(env.task.taskId);
+  assert.throws(() => env.scheduler.reconcile(env.task.taskId, { authority: env.authority,
+    resolutions: [{ attemptId: unresolved[0].attemptId, resolution: 'applied', evidenceRef: 'file:output.json#sha256:fixture' }] }),
+  { code: 'reconciliation_unavailable' });
+  assert.deepEqual(env.store.getRun(env.task.taskId), before);
+  assert.equal(env.store.listUnresolved(env.task.taskId)[0].status, 'unknown');
+  assert.equal(env.host.count('business_write'), 1);
 });
 
 test('reconciliation cannot invent success, skip frozen attempts or replay work', async (t) => {
@@ -87,7 +83,7 @@ test('reconciliation cannot invent success, skip frozen attempts or replay work'
   assert.equal(env.host.count('business_write'), 1);
 });
 
-test('an unknown write stays claimed until reconciliation resolves it', async (t) => {
+test('an unknown write stays frozen without claiming an unverified effect', async (t) => {
   const env = await fixture(t, { postFailure: true });
   const candidate = { candidateId: 'write-once', toolName: 'runtime_write_json', progressKey: 'created',
     arguments: { path: join(env.host.storage, 'output.json'), content: '[]', createOnly: true },
@@ -101,12 +97,12 @@ test('an unknown write stays claimed until reconciliation resolves it', async (t
   // The effect is unknown, so it is not yet claimed as applied; the frozen attempt already blocks new work.
   assert.equal(env.store.idempotencyClaimed(env.task.taskId, 'write-unique-1', 'runtime_write_json'), false);
   const { attemptId } = env.store.listUnresolved(env.task.taskId)[0];
-  env.scheduler.reconcile(env.task.taskId, { authority: env.authority,
-    resolutions: [{ attemptId, resolution: 'applied', evidenceRef: 'file:output.json#sha256:fixture' }] });
-  // Once reconciled as applied, the key is permanently claimed even though the goal was never verified.
-  assert.equal(env.store.idempotencyClaimed(env.task.taskId, 'write-unique-1', 'runtime_write_json'), true);
-  assert.equal(env.store.getLatestAttempt(env.task.taskId).status, 'reconciled_applied');
-  assert.equal(env.host.count('business_write'), 1, 'Reconciliation must not replay the effect.');
+  assert.throws(() => env.scheduler.reconcile(env.task.taskId, { authority: env.authority,
+    resolutions: [{ attemptId, resolution: 'applied', evidenceRef: 'file:output.json#sha256:fixture' }] }),
+  { code: 'reconciliation_unavailable' });
+  assert.equal(env.store.idempotencyClaimed(env.task.taskId, 'write-unique-1', 'runtime_write_json'), false);
+  assert.equal(env.store.getLatestAttempt(env.task.taskId).status, 'unknown');
+  assert.equal(env.host.count('business_write'), 1);
 });
 
 test('reserving a verified applied effect again is refused by the guard itself', async (t) => {
@@ -169,4 +165,28 @@ test('ordinary runs without an idempotency key are unaffected', async (t) => {
   assert.equal(env.store.getLatestAttempt(env.task.taskId).verification.goalSatisfied, true);
   assert.equal(readFileSync(join(env.host.storage, 'output.json'), 'utf8').replace(/\s+/g, ''),
     '[{"id":"a","name":"Alpha"}]');
+});
+
+test('legacy unbound reserved, started and unknown attempts reject both declared outcomes without mutation', async (t) => {
+  for (const state of ['reserved', 'started', 'unknown']) {
+    const env = await fixture(t);
+    const task = { ...env.task, taskId: randomUUID() };
+    env.store.createRun(task);
+    const candidate = { candidateId: 'direct', toolName: 'runtime_write_json', progressKey: 'created',
+      arguments: { path: join(env.host.storage, 'output.json'), content: '[]', createOnly: true },
+      preconditionIds: ['workspace-scope'], postconditionIds: jsonNormalizeRecipe.postconditionIds,
+      effect: 'reversible_write', source: { recipeId: 'json-normalize', version: '1' } };
+    const attempt = env.store.reserveAttempt(task.taskId, candidate, { expectedVersion: env.store.getRun(task.taskId).version });
+    if (state !== 'reserved') env.store.markStarted(task.taskId, attempt.attemptId, { expectedVersion: env.store.getRun(task.taskId).version });
+    if (state === 'unknown') env.store.recoverRun(task.taskId, { expectedVersion: env.store.getRun(task.taskId).version });
+    const snapshot = () => ({ run: env.store.getRun(task.taskId), attempts: env.store.listUnresolved(task.taskId), events: env.store.readEvents(task.taskId) });
+    const before = snapshot();
+    assert.equal(before.attempts[0].status, state);
+    for (const resolution of ['absent', 'applied']) {
+      assert.throws(() => env.store.reconcileAttempt(task.taskId, attempt.attemptId,
+        { expectedVersion: before.run.version, resolution, evidenceRef: 'forged:terminal' }),
+      { code: 'reconciliation_unavailable' });
+      assert.deepEqual(snapshot(), before);
+    }
+  }
 });

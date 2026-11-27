@@ -15,7 +15,7 @@ import { join } from 'node:path';
 //
 // A version makes staleness observable: a report whose coverage version differs
 // from the current one is recomputed rather than trusted.
-export const COVERAGE_VERSION = 2;
+export const COVERAGE_VERSION = 3;
 
 // These sources establish observations, not completeness or success of a cycle.
 //
@@ -78,7 +78,9 @@ async function recallEvidence(root) {
   const observed = results.some((r) => r.status === 'observed' || r.observed === true);
   const error = results.find((r) => r.status === 'error');
   if (listingError || error) return { status: 'error', observed, reason: listingError ?? error.reason };
-  if (results.some((r) => r.status === 'incomplete')) return { status: 'incomplete', observed, reason: 'invalid_records' };
+  if (results.some((r) => r.status === 'incomplete' || r.reason === 'no_readable_records')) {
+    return { status: 'incomplete', observed, reason: 'invalid_records' };
+  }
   return observed ? { status: 'observed' } : { status: 'unknown', reason: 'no_recall_evidence' };
 }
 

@@ -7,6 +7,7 @@ import { RuntimeStore } from '../src/store.js';
 import { RuntimeScheduler } from '../src/scheduler.js';
 import { createExecuteTool } from '../src/dynamic-tools.js';
 import { createRecipeRegistry } from '../src/recipe-factory.js';
+import { createRecipeLibrary } from '../src/recipe-library.js';
 import { validateTask } from '../src/contracts.js';
 
 const malformed = [
@@ -66,7 +67,8 @@ function dynamic(f, realScheduler = false) {
   const agent = {};
   let schedulerCalls = 0;
   let dispatches = 0;
-  const tool = createExecuteTool({ store: f.store, registry, toolEffects: { fixture: 'read' },
+  const library = realScheduler ? f.store.withDatabase((db) => createRecipeLibrary({ db })) : null;
+  const tool = createExecuteTool({ store: f.store, registry, library, toolEffects: { fixture: 'read' },
     mount: { scopeRef: 'fixture', workspaceRoot: f.root, allowedTools: ['fixture'] },
     schedulerFor() {
       schedulerCalls++;

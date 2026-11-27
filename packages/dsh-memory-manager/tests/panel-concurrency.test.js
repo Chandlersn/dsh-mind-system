@@ -129,10 +129,12 @@ test('authenticated dao-action waits for the complete memory_write root transact
     releaseFeature.resolve();
     const [written, deleted] = await Promise.all([toolPromise, panelPromise]);
     assert.match(written.appendedHeading, /并发写入/);
-    assert.equal(deleted.status, 200, `panel should succeed: ${deleted.body}`);
+    // The panel joins the root transaction and then refuses the unsafe delete.
+    assert.equal(deleted.status, 503, `panel must report the pause: ${deleted.body}`);
+    assert.equal(JSON.parse(deleted.body).code, 'safe_delete_unavailable');
     assert.match(await original.readFile.call(io, fn, 'utf8'), /并发写入/);
-    assert.match(await original.readFile.call(io, archive, 'utf8'), /正式道原文/);
-    await assert.rejects(original.stat.call(io, dao), { code: 'ENOENT' });
+    assert.equal(await original.readFile.call(io, dao, 'utf8'), sourceDao);
+    await assert.rejects(original.stat.call(io, archive), { code: 'ENOENT' });
   } finally {
     watchingPanel = false;
     releaseFeature.resolve();

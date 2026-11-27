@@ -60,9 +60,9 @@ test('declared sources must resolve on disk and are persisted in the block', asy
   assert.deepEqual(result.sourceDays, ['2026-11-17', '2026-11-18', '2026-11-19']);
   assert.equal(result.sourceDaysUndeclared, false);
   const text = await readFile(path.join(root, 'functions', 'provenance.md'), 'utf8');
-  assert.match(text, /- \*\*素材\*\*：2026-11-17、2026-11-18、2026-11-19（仅检查声明的每日文件存在且非空）/);
+  assert.match(text, /- \*\*素材\*\*：2026-11-17、2026-11-18、2026-11-19（仅检查调用方声明的顶层每日文件或归档日节非空，未核验相关性、真实性或是否读过）/);
   const rendered = tool.output.render(args, result);
-  assert.match(rendered.map((b) => b.text).join('\n'), /声明的素材日（仅检查文件存在且非空）/);
+  assert.match(rendered.map((b) => b.text).join('\n'), /调用方声明的素材日（仅检查顶层文件或归档日节非空，未核验相关性和真实性）/);
 });
 
 test('a source that does not exist is refused and leaves no block behind', async (t) => {
@@ -71,7 +71,7 @@ test('a source that does not exist is refused and leaves no block behind', async
   const tool = tools.get('memory_write');
   await assert.rejects(
     () => tool.execute({ ...base, sources: ['2026-11-17', '2026-11-18', '2026-11-30'] }, {}),
-    /2026-11-30.*伪造证据/s,
+    /2026-11-30: missing/,
   );
   await assert.rejects(() => readFile(path.join(root, 'functions', 'provenance.md'), 'utf8'), /ENOENT/);
 });
@@ -138,13 +138,13 @@ test('fewer than three days needs an explicit, labelled exception', async (t) =>
   const tool = tools.get('memory_write');
   const warned = await tool.execute({ ...base, sources: ['2026-11-19'] }, {});
   assert.ok(warned.warnings.some((w) => /<3/.test(w)), 'two-day write must warn, not silently pass');
-  assert.match(await readFile(path.join(root, 'functions', 'provenance.md'), 'utf8'), /素材\*\*：2026-11-19（仅检查声明的每日文件存在且非空；声明少于 3 天）/);
+  assert.match(await readFile(path.join(root, 'functions', 'provenance.md'), 'utf8'), /素材\*\*：2026-11-19（仅检查调用方声明的顶层每日文件或归档日节非空，未核验相关性、真实性或是否读过；声明少于 3 天）/);
 
   const excepted = { ...base, feature: 'excepted', sources: ['2026-11-19'], cadenceException: '当日踩坑因果：重复踩同一个坑' };
   const result = await tool.execute(excepted, {});
   assert.equal(result.cadenceException, excepted.cadenceException);
   const text = await readFile(path.join(root, 'functions', 'excepted.md'), 'utf8');
-  assert.match(text, /仅检查声明的每日文件存在且非空/);
+  assert.match(text, /仅检查调用方声明的顶层每日文件或归档日节非空，未核验相关性、真实性或是否读过/);
   assert.match(text, /（豁免：当日踩坑因果：重复踩同一个坑；调用方声明，未经核验）/);
   assert.doesNotMatch(text, /未声明/);
   const rendered = tool.output.render(excepted, result).map((b) => b.text).join('\n');

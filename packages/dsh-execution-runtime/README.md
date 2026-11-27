@@ -11,6 +11,20 @@
 - `RuntimeStore`：SQLite事务、版本CAS、预算预留和不可改事件。结果、验证与下一业务游标在同一事务提交，防止结果已记账而游标未推进。旧阶段0数据库补齐新增列和有界预算默认值。
 - JSON模板：准备、候选生成、两次前置检查和独立验证均接入计量的只读I/O。工具只负责创建文件；Verifier重新读取源文件和产物，不使用工具自报的验证结果。
 
+## 配方历史与复用状态
+
+`runtime_recipes` 返回历史规格供检查，不自动执行。每条的 `reuseStatus` 为 `identity_unverifiable`（身份缺失、损坏或与规格不符，当前身份检查会拒绝复用）或 `identity_verified_requires_admission`（持久身份一致，仍需当前宿主权限、可信副作用声明、注册表身份及运行时验证；不保证可执行）。历史记录不因此删除。规格 JSON 损坏时返回明确错误 `recipe_library_corrupt`，不会伪装成空结果。
+
+`read`、`list` 和 `suggest` 的每条记录都带 `countBasis`：`origins: "all_origins"`、`historicalOriginSplit: "unknown"`、`success: "selected_verifier_completion"`、`failure: "failed_or_cancelled_historical_other_statuses_possible"`、`updateReliability: "updates_may_be_lost_or_duplicated"`、`taskUnique: false`、`productionEvidence: false`、`independentGoalProof: false`。既有 `verifiedRuns` 和 `failedRuns` 是跨全部来源的聚合，历史来源拆分未知；完成由生产者选定的 verifier 判定。新计数只将 `failed` 和 `cancelled` 记为失败，未解决及未知状态不计成败；旧规则可能已将其他状态记入历史失败数，无法拆分或修正。记账可能丢失或重复，不能作为目标独立达成证明。排序和筛选仍使用原有计数。
+
+`runtime_status` 的 `recipeOutcome.coverage` 仅根据实际持久绑定报告：同一宿主数据库中成功原子绑定的生成配方为 `bound`；无库、独立库、原生模板和历史未绑定运行是 `unbound`；已绑定记录无法核实时为 `unavailable`。不会通过配方 key 推断绑定，绑定也不证明目标独立达成。
+
+`runtime_recipes` 可选传入 `bindingLimit`（1–100）读取独立的 `bindingSummary`：按任务 ID 顺序扫描新增绑定的有界前缀，以同一 SQLite 读取快照、逐条复用 `getRecipeOutcome` 校验后，按精确配方 ID、版本、调用者声明的来源及当前状态计数。`truncated` 表示尚有未扫描绑定；`partial_unavailable` 和 `unavailable` 明确表示存在无法核实的行或快照，不能把缺失计数解释为零。历史未绑定任务不回填，嵌套事务不保证快照时返回 unavailable；结果不证明目标达成或生产验证。该摘要不影响历史计数和排序，且与配方列表分别读取。
+
+分页需同时传 `bindingLimit`（1–100）和 `bindingCursor`：空字符串开始，之后使用返回的 `nextCursor`；`null` 表示所给游标之后的范围已读完，`rangeExhausted` 不证明先前范围已读取。游标为 `v1:<high>:<after>`，两个位置是规范的有符号 64 位十进制字符串。首次读取在一个事务中取得行号高水位和第一页，后续页各自使用新的读取快照，仅扫描 `(after, high]`；预读行不消费。每条 `observations` 提供行号和可核实的任务、配方、来源及当前状态，损坏行标为 unavailable 并仍推进游标；`groups` 只统计本页可核实行。重试同一游标的状态可以变化，跨页状态不是全局原子快照；partial/unavailable 不能解释为零。
+
+成员稳定性依赖绑定表不可修改、不可删除，且只使用正常隐式 rowid 插入；不允许 VACUUM、最大 rowid 耗尽、显式 rowid 插入、数据库或 schema 替换。SQLite 默认设置下 `INSERT OR REPLACE` 可绕过删除触发器并移动行号，因此外部写入也不得替换已有绑定；现有触发器检查不能证明没有发生替换。无法确认必要表结构或触发器、检测到 rowid 耗尽时返回 unavailable；这些检查不能证明外部操作遵守假设。游标由调用者控制，可以跳页或伪造位置，不能证明扫描完整、来源真实或目标达成。只传 `bindingLimit` 时保留旧的按任务 ID 排序的汇总。
+
 ## 嵌入契约
 
 构造调度器时注入`store`、可信注册的`recipes`、`executor`、可见的`tools`与`validateArguments`。后者必须使用宿主支持的真实schema校验函数，返回错误字符串数组；不能以“无校验器”为放行条件。可选注入`decisionClient`与显式版本的`decisionPolicy`。
@@ -34,6 +48,8 @@ I/O计数是文件读取、lstat和realpath等逻辑能力调用，不是操作�
 `Analyzer({invoke,timeoutMs,maxResponseBytes})`使用显式注入的可信模型传输；`invoke({instructions,input,signal})`返回原始JSON文本。这里没有自动选择提供者或扫描凭据。指令与不可信异常数据分离，修正结果只接受四种互斥分支：retry_with、gather_evidence、rollback_to、abort。目标/授权字段、混合分支、重复键、伪造证据、数组伪装kind以及不完整候选均拒绝。
 
 `AnalysisCoordinator({store,analyzer,agent})`将同一Agent和任务授权绑定到分析。`runWithAnalysis({scheduler,coordinator,task,options})`先走正常调度，再按状态决定是否分析；已完成、拒绝和未知副作用不会被直接送入普通修复。提议只保存到数据库，当前没有修正执行入口。
+
+动态 `runtime_execute` 分析默认关闭；仅宿主配置 `analysis.allowDynamic: true` 且提供 endpoint、model 和 apiKey 后启用。任务输入不能开启该选项。启用后异常包可能将目标、授权范围与工作区路径、工具参数、结果和证据引用发送至配置的外部服务；不保证脱敏。动态分析仅保存提案，不自动派发修复。HTTP 响应按实际字节流限制为 65536 字节，超限中止传输；有效提案另受分析器自身 16KiB 上限约束。
 
 异常包最多16KiB、最近3条事件身份；过大字段保存为任务隔离的不可改SHA-256证据引用，并显式记录省略字段与字节数。单条证据原始JSON最多4MiB，超出时停止分析并记录包失败，不静默截断为可用证据。每次分析最多取证2次、累计32KiB，读取还计入任务I/O预算；只读已绑定的同任务引用，不解析任意文件链接。
 
@@ -86,9 +102,9 @@ node scripts/probe-jev.mjs
 
 ## 恢复与幂等
 
-`recoverRun`只把未结动作冻结为`unknown`，不重放、不清空预算，也不证明旧worker已停止。冻结后的run停在`reconciling`，除核对外的业务派发一律被`attempt_unresolved`拒绝。
+`recoverRun`把未结动作冻结为`unknown`，递增 fence 并清除租约；不重放、不清空预算，也不证明旧 worker 已停止。最终派发检查拒绝已经冻结或失权的尝试；已获准或已进入下游的调用仍可能在冻结后产生副作用。冻结后的 run 停在 `reconciling`。
 
-核对必须逐条给出未结动作的结论与外部证据引用：`scheduler.reconcile(taskId,{authority,resolutions})`把每条未知动作记为`reconciled_applied`或`reconciled_absent`。核对**不冒充目标验证**——它的verification固定为`unknown`、`goalSatisfied=null`，只是把"副作用到底有没有发生"落成可审计的事实；全部核完才回到`waiting_analysis`，是否达成目标仍由原Verifier后续判定。核对不会重放写入，也不会因为模型或调用方声明就记为成功。
+调用方提供的 `evidenceRef` 只是声明，不能证明旧调用已终止或副作用不存在。未决尝试的自动对账目前关闭：未经宿主独立核验的结论不会转换为 `reconciled_applied` 或 `reconciled_absent`，也不会触发后续派发。后续要恢复此能力，需持久、可信且绑定同一尝试的终止证据和目标对象复核；缺失时保持未知。
 
 `idempotencyKey`按**工具+键**在同一任务内绑定，且只拦"已核验生效"的同一意图：已`reconciled_applied`，或已结算且验证通过。已验证失败的动作保留同键可修复，未知动作先由冻结阻止而非幂等表判断。不同工具复用同键不算同一副作用。该守卫在`reserveAttempt`内生效，因此拦在派发之前。
 

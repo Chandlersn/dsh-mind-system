@@ -1,4 +1,4 @@
-﻿/**
+/**
  * API-route test: drives the panel HTTP handlers with stub req/res objects
  * against the plugin's real (global) memory root.
  *
@@ -11,7 +11,24 @@
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { mkdir, writeFile, readFile, stat, rm, readdir, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile, stat, rm, readdir, symlink } from 'node:fs/promises';
+
+// Keep the default-root read tests independent of the user's real home.
+const testHome = await mkdtemp(path.join(os.tmpdir(), 'dsh-api-default-root-'));
+const previousHome = process.env.DSH_HOME;
+const previousAgentsHome = process.env.DSH_AGENTS_HOME;
+process.env.DSH_HOME = testHome;
+process.env.DSH_AGENTS_HOME = path.join(testHome, 'agents');
+await mkdir(path.join(testHome, 'memory', 'functions'), { recursive: true });
+await mkdir(path.join(testHome, 'skills', 'detached-restart', 'scripts'), { recursive: true });
+await mkdir(path.join(testHome, 'skills', 'skill-creator', 'scripts', '__pycache__'), { recursive: true });
+await writeFile(path.join(testHome, 'memory', 'MEMORY.md'), '# 记忆管理\n\n## 功能模块索引（functions/）\n\n| 功能域 | 摘要 |\n|---|---|\n| [插件测试](functions/插件测试.md) | 记忆插件测试样本 |\n');
+await writeFile(path.join(testHome, 'memory', 'functions', '插件测试.md'), '# 插件测试\n\n记忆插件测试样本。\n');
+await writeFile(path.join(testHome, 'skills', 'detached-restart', 'SKILL.md'), '---\nname: detached-restart\ndescription: Test fixture\nagent_created: true\nstatus: active\nscope: global\n---\n\n# Procedure\n');
+await writeFile(path.join(testHome, 'skills', 'detached-restart', 'scripts', 'restart-relay.mjs'), '// fixture\n');
+await writeFile(path.join(testHome, 'skills', 'skill-creator', 'SKILL.md'), '---\nname: skill-creator\ndescription: Test fixture\n---\n');
+await writeFile(path.join(testHome, 'skills', 'skill-creator', 'scripts', 'quick_validate.py'), 'def validate_skill():\n    pass\n');
+await writeFile(path.join(testHome, 'skills', 'skill-creator', 'scripts', '__pycache__', 'test.pyc'), 'fixture');
 
 // 宿主缺席时**跳过**而不是失败：本脚本验证的是"与真宿主协作"，没有宿主就
 // 没有可验证的对象。CI 要求必须有宿主时设 DSH_REQUIRE_HOST=1（缺席即失败）。
@@ -73,7 +90,7 @@ if (!liveInst.handler) throw new Error('route was not registered');
 
 // Temp roots for the write probes: a memory root with one source area and a
 // skill root — the suite must NEVER touch the real catalog again.
-const { mkdtemp, rm: rmTmp } = await import('node:fs/promises');
+const { rm: rmTmp } = await import('node:fs/promises');
 const osMod = await import('node:os');
 const tmpMem = await mkdtemp(path.join(osMod.tmpdir(), 'dsh-api-mem-'));
 const tmpSkills = await mkdtemp(path.join(osMod.tmpdir(), 'dsh-api-sk-'));
@@ -139,12 +156,9 @@ const { call: tcall, post: tpost } = callerOf((...a) => tempInst.handler(...a));
 const { call: gcall, post: gpost } = callerOf((...a) => guardInst.handler(...a));
 
 let failures = 0;
-// 已知发布阻断（面板 exclusive 暂存清理）下的预期失败：这些断言在阻断解除后
-// 必须转绿，因此保留 FAIL 计数与输出，只是不计入本轮归档改动的判定。
-const KNOWN_BLOCKED = /确认转正返回 200|转正后候选文件已移除|删除正式道返回 200|正式道已从 dao\/ 移除|如实提醒索引行需手工删|否决返回 200|否决后不再出现在待决策队列|has completed deletion event/;
 const ok = (cond, label) => {
 	console.log(cond ? `  PASS ${label}` : `  FAIL ${label}`);
-	if (!cond && !KNOWN_BLOCKED.test(label)) failures++;
+	if (!cond) failures++;
 };
 const encoded = encodeURIComponent;
 
@@ -379,37 +393,55 @@ ok(badRel2.status === 400, 'skillfile rejects backslashes in the relative path')
 	const noReason = await tpost('/api/memory-org/axiom-action', { action: 'reject', name: 'apitest候选' });
 	ok(noReason.status === 400, '否决不给理由 → 400（否则同一命题会原样再提）');
 
-	// 确认 → 转正：文件移到 dao/，候选位置消失
+	// 确认 → 转正 — PAUSED. Writing dao/<slug>.md and then unlinking the candidate
+	// is a path-based delete, so the route now refuses before its first side
+	// effect (safe_delete_unavailable, HTTP 500 with the code in the JSON error).
+	// The former outcome assertions (status 200, formal dao created, candidate
+	// removed) are unreachable while the pause holds; they stay in this comment so
+	// the intent is not lost: 确认转正返回 200 / 转正后正式道文件存在 / 转正后候选文件已移除.
 	const confirmed = await tpost('/api/memory-org/axiom-action', { action: 'confirm', name: 'apitest候选' });
-	ok(confirmed.status === 200, `确认转正返回 200（${confirmed.status}: ${confirmed.body}）`);
+	ok(confirmed.status === 500 && String(JSON.parse(confirmed.body).error).includes('safe_delete_unavailable'), `确认转正已暂停并明确报错（${confirmed.status}: ${confirmed.body}）`);
 	const daoAfter = await readdir(daoDir).catch(() => []);
-	ok(daoAfter.includes('apitest候选.md'), '转正后正式道文件存在');
+	ok(!daoAfter.includes('apitest候选.md'), '转正暂停时不得创建正式道文件');
 	const candAfter = await readdir(candDir).catch(() => []);
-	ok(!candAfter.includes('apitest候选.md'), '转正后候选文件已移除');
-	// 正式道的删除（2026-11-10 用户要求）：与候选删除**留档语义**不同。
+	ok(candAfter.includes('apitest候选.md'), '转正暂停时候选文件必须原样保留');
+	// The candidate keeps every byte: no rewrite, no archive, no unlink.
+	ok(await readFile(candFile, 'utf8') === await readFile(candFile, 'utf8') && await readFile(candFile, 'utf8') === [
+		'# 候选公理 · apitest候选', '',
+		'## 命题', '',
+		'秩序与混乱会互相转化，各自演化出不同的结构', '',
+		validBody,
+		'## 来源法', '',
+		'- [法一](../insights/法一.md)',
+		'- [法二](../insights/法二.md)',
+		'- [法三](../insights/法三.md)',
+		'- [法四](../insights/法四.md)',
+		'- [法五](../insights/法五.md)',
+		'',
+	].join('\n'), '转正暂停时候选必须逐字节不变');
+	// DAO deletion is paused until cross-process no-overwrite commits are proven.
 	const daoDirD = path.join(root, 'dao');
-	await writeFile(path.join(daoDirD, '待删正试道.md'), [
+	const daoToDelete = path.join(daoDirD, '待删正试道.md');
+	const daoOriginal = [
 		'# 道 · 待删正试道', '', '## 命题', '', '一条要被删掉的正式道。', '',
-	].join('\n'), 'utf8');
+	].join('\n');
+	await writeFile(daoToDelete, daoOriginal, 'utf8');
 	const delDao = await tpost('/api/memory-org/dao-action', { action: 'delete', name: '待删正试道' });
-	ok(delDao.status === 200, '删除正式道返回 200');
-	const daoFilesNow = await readdir(daoDirD).catch(() => []);
-	ok(!daoFilesNow.includes('待删正试道.md'), '正式道已从 dao/ 移除');
-	const archived = await readdir(path.join(daoDirD, '_deleted')).catch(() => []);
-	ok(archived.includes('待删正试道.md'), '删除的正式道留档到 dao/_deleted/（它可能被召回引用过）');
-	const archText = await readFile(path.join(daoDirD, '_deleted', '待删正试道.md'), 'utf8');
-	ok(archText.includes('面板手动删除'), '留档记录删除来源与时间');
-	const delBody = JSON.parse(delDao.body);
-	ok(String(delBody.note ?? '').includes('手工删除'), '如实提醒索引行需手工删（面板不改索引）');
+	ok(delDao.status === 503 && JSON.parse(delDao.body).code === 'safe_delete_unavailable', `正式道删除暂停（${delDao.body}）`);
+	ok(await readFile(daoToDelete, 'utf8') === daoOriginal, '删除暂停时正式道逐字节保留');
+	const archiveAbsent = await readFile(path.join(daoDirD, '_deleted', '待删正试道.md')).then(() => false, (err) => err.code === 'ENOENT');
+	ok(archiveAbsent, '删除暂停时不创建归档');
 
-	// 归档目标是目录时，真实 writeFile 必然失败；原道必须原样保留。
+	// The pause also preserves the source when an archive target is occupied.
 	const blockedName = '归档失败保留道';
 	const originalDao = '# 道 · 归档失败保留道\n\n不可丢失的命题。\n';
 	const blockedSource = path.join(daoDirD, `${blockedName}.md`);
 	await writeFile(blockedSource, originalDao, 'utf8');
-	await mkdir(path.join(daoDirD, '_deleted', `${blockedName}.md`));
+	// An occupied target must remain untouched while deletion is paused.
+	await mkdir(path.join(daoDirD, '_deleted', `${blockedName}.md`), { recursive: true });
 	const blockedDelete = await tpost('/api/memory-org/dao-action', { action: 'delete', name: blockedName });
-	ok(blockedDelete.status === 500, '归档写入失败返回错误');
+	const blockedBody = JSON.parse(blockedDelete.body);
+	ok(blockedDelete.status === 503 && blockedBody.code === 'safe_delete_unavailable', '归档路径被占时同样暂停删除');
 	ok(await readFile(blockedSource, 'utf8') === originalDao, '归档失败时原道内容完整保留');
 
 	// 不存在的道 → 404，而不是静默成功
@@ -417,62 +449,77 @@ ok(badRel2.status === 400, 'skillfile rejects backslashes in the relative path')
 	ok(missing.status === 404, '删除不存在的道返回 404');
 	// 否决与删除：两条路径的**区别**必须成立——否决留档（反例证据），
 	// 删除是"这条根本不该出现"。混成一条会让证据悄悄消失。
+	// Both are PAUSED now (safe_delete_unavailable): veto archives into
+	// _rejected/ then unlinks, delete unlinks. The distinguishing behaviour is
+	// unreachable, but the shared contract — refuse before any side effect, keep
+	// the candidate byte-identical — is asserted for both. Former assertions,
+	// kept for intent: 否决返回 200 / 否决后候选移到 _rejected/ / 否决理由落盘 /
+	// 否决后不再是待决策 / 删除返回 200 / 删除后候选彻底消失 / 删除**不**留档.
 	const candDir2 = path.join(daoDir, '_candidates');
-	await writeFile(path.join(candDir2, 'apitest驳回.md'), [
-		'# 候选公理 · apitest驳回', '', '## 命题', '', '待否决的命题。', '',
+	const rejectName = 'apitest驳回';
+	const rejectSource = path.join(candDir2, `${rejectName}.md`);
+	await writeFile(rejectSource, [
+		`# 候选公理 · ${rejectName}`, '', '## 命题', '', '待否决的命题。', '',
 		'## 来源法', '', ...['一','二','三','四','五'].map((n) => `- [法${n}](../insights/法${n}.md)`), '',
 	].join('\n'), 'utf8');
-	const rejected = await tpost('/api/memory-org/axiom-action', { action: 'reject', name: 'apitest驳回', reason: '这只是一条法的换句话' });
-	ok(rejected.status === 200, '否决返回 200');
+	const rejectBytesBefore = await readFile(rejectSource);
+	const rejected = await tpost('/api/memory-org/axiom-action', { action: 'reject', name: rejectName, reason: '这只是一条法的换句话' });
+	ok(rejected.status === 500 && String(JSON.parse(rejected.body).error).includes('safe_delete_unavailable'), '否决已暂停并明确报错');
+	ok((await readFile(rejectSource)).equals(rejectBytesBefore), '否决暂停时候选逐字节保留');
 	const rejDir = path.join(candDir2, '_rejected');
 	const rejFiles = await readdir(rejDir).catch(() => []);
-	ok(rejFiles.includes('apitest驳回.md'), '否决后候选移到 _rejected/（保留为反例证据）');
-	const rejText = await readFile(path.join(rejDir, 'apitest驳回.md'), 'utf8');
-	ok(rejText.includes('这只是一条法的换句话'), '否决理由落盘');
+	ok(!rejFiles.includes(`${rejectName}.md`), '否决暂停时不得创建反例归档');
 	const pendingAfterReject = await readdir(candDir2).catch(() => []);
-	ok(!pendingAfterReject.includes('apitest驳回.md'), '否决后不再出现在待决策队列');
+	ok(pendingAfterReject.includes(`${rejectName}.md`), '否决暂停时仍留在待决策队列（未移动）');
 
-	await writeFile(path.join(candDir2, 'apitest删除.md'), '## 命题\n\n误写的候选。\n', 'utf8');
-	const deleted = await tpost('/api/memory-org/axiom-action', { action: 'delete', name: 'apitest删除' });
-	ok(deleted.status === 200, '删除返回 200');
-	const afterDel = await readdir(candDir2).catch(() => []);
-	ok(!afterDel.includes('apitest删除.md'), '删除后候选彻底消失');
+	const delName = 'apitest删除';
+	const delCandidate = path.join(candDir2, `${delName}.md`);
+	await writeFile(delCandidate, '## 命题\n\n误写的候选。\n', 'utf8');
+	const delBytesBefore = await readFile(delCandidate);
+	const deleted = await tpost('/api/memory-org/axiom-action', { action: 'delete', name: delName });
+	ok(deleted.status === 500 && String(JSON.parse(deleted.body).error).includes('safe_delete_unavailable'), '删除候选已暂停并明确报错');
+	ok((await readFile(delCandidate)).equals(delBytesBefore), '删除暂停时候选逐字节保留');
 	const rejAfterDel = await readdir(rejDir).catch(() => []);
-	ok(!rejAfterDel.includes('apitest删除.md'), '删除**不**留档（与否决的区别）');
+	ok(!rejAfterDel.includes(`${delName}.md`), '删除暂停时不产生任何归档');
 	{
-		const { readLedger, contentHash } = await import('./src/write-ledger.js');
+		const { readLedger } = await import('./src/write-ledger.js');
 		const ledger = await readLedger(root);
-		for (const [source, target] of [
-			['dao/_candidates/apitest候选.md', 'dao/apitest候选.md'],
-			['dao/_candidates/apitest驳回.md', 'dao/_candidates/_rejected/apitest驳回.md'],
-			['dao/_candidates/apitest删除.md', undefined],
-			['dao/待删正试道.md', 'dao/_deleted/待删正试道.md'],
-		]) {
-			ok(ledger?.get(source)?.op === 'delete' && ledger.get(source)?.to === target, `${source} has completed deletion event`);
-			if (target) ok(ledger.get(target)?.hash === contentHash(await readFile(path.join(root, ...target.split('/')), 'utf8')), `${target} is recorded with current content`);
+		// No delete/delete_intent event may exist for the three paused lifecycle
+		// actions; the formal dao is now legitimately deleted via rename-first.
+		for (const source of ['dao/_candidates/apitest候选.md', 'dao/_candidates/apitest驳回.md', 'dao/_candidates/apitest删除.md']) {
+			const op = ledger?.get(source)?.op;
+			ok(!['delete', 'delete_intent'].includes(op), `${source} has no paused deletion event (${op ?? 'absent'})`);
 		}
 		const health = await mod.runHealthCheck(root, mod.DEFAULTS);
-		ok(!health.results.some((r) => r.rule === 'R26' && /(?:apitest候选|apitest驳回|apitest删除|待删正试道)\.md.*不存在/.test(r.message)), 'R26 does not report panel lifecycle deletions as unexplained loss');
+		ok(!health.results.some((r) => r.rule === 'R26' && /(?:apitest候选|apitest驳回|apitest删除|待删正试道)\.md.*不存在/.test(r.message)), 'R26 does not report paused lifecycle actions as unexplained loss');
 	}
-	const daoText = await readFile(path.join(daoDir, 'apitest候选.md'), 'utf8');
-	ok(daoText.includes('用户确认') && daoText.includes('转正'), '正式道标注了"经用户确认转正"');
-	ok(daoText.includes('法五'), '来源法完整带进正式道');
-	ok(daoText.includes(validBody), '正式道保留候选全部正文和原有格式');
+	// 正式道内容检查：转正已暂停，没有正式道文件可读。原来的三条断言检查的是
+	// 转正产物（标注"经用户确认转正"、来源法完整带进、正文全保留），因此改为对
+	// **候选原文**做同样的形状校验——候选就是那批字节的来源，校验意图不变。
+	// Former: daoText.includes('用户确认')/'转正'; daoText.includes('法五'); daoText.includes(validBody).
+	const daoText = await readFile(candFile, 'utf8');
+	ok(!(await readdir(daoDir).catch(() => [])).includes('apitest候选.md'), '转正暂停时正式道不存在（转正产物无从校验）');
+	ok(daoText.includes('法五'), '候选原文携带全部来源法（转正后应完整带进正式道）');
+	ok(daoText.includes(validBody), '候选原文保留全部正文和原有格式（转正后应逐字节带进正式道）');
 	const { checkDaoBody, philosophicalShape } = await import('./src/dao-shape.js');
 	const { gateDao } = await import('./src/layer-gate.js');
-	ok(checkDaoBody(daoText).findings.length === 0 && philosophicalShape('秩序与混乱会互相转化，各自演化出不同的结构').ok && gateDao({ name: 'apitest候选', proposition: '秩序与混乱会互相转化，各自演化出不同的结构', extractedFrom: ['法一','法二','法三','法四','法五'], existing: 0 }).ok, '正式道通过独立 gate 和正文形态检查');
+	ok(checkDaoBody(daoText).findings.length === 0 && philosophicalShape('秩序与混乱会互相转化，各自演化出不同的结构').ok && gateDao({ name: 'apitest候选', proposition: '秩序与混乱会互相转化，各自演化出不同的结构', extractedFrom: ['法一','法二','法三','法四','法五'], existing: 0 }).ok, '候选原文通过独立 gate 和正文形态检查（转正前置条件仍成立）');
 	const deniedWithoutConnection = await post('/api/memory-org/axiom-action', { action: 'delete', name: '任意候选' });
 	ok(deniedWithoutConnection.status === 501, '未提供 connection 时候选写入路径关闭');
 	const unauthorized = await gpost('/api/memory-org/axiom-action', { action: 'confirm', name: '任意候选' });
 	ok(unauthorized.status === 401, 'connection 拒绝请求时不进入候选操作');
 
 	// 真实磁盘故障：归档目标已是目录；拒绝必须返回失败并保留完整原文。
+	// With reject paused, the guard fires before the archive write, so the 500 now
+	// comes from the pause instead of the archive failure; the half of the
+	// contract that still applies (source preserved byte-for-byte) is asserted.
 	const rejectBlockedName = '候选归档失败';
 	const rejectOriginal = '# 候选公理 · 候选归档失败\n\n## 命题\n\n原文不可丢失。\n';
 	await writeFile(path.join(candDir, `${rejectBlockedName}.md`), rejectOriginal, 'utf8');
-	await mkdir(path.join(rejDir, `${rejectBlockedName}.md`));
+	// Same for _rejected/: the paused reject no longer creates it.
+	await mkdir(path.join(rejDir, `${rejectBlockedName}.md`), { recursive: true });
 	const rejectBlocked = await tpost('/api/memory-org/axiom-action', { action: 'reject', name: rejectBlockedName, reason: '验证故障' });
-	ok(rejectBlocked.status === 500 && await readFile(path.join(candDir, `${rejectBlockedName}.md`), 'utf8') === rejectOriginal, '否决归档失败保留候选原文并返回错误');
+	ok(rejectBlocked.status === 500 && await readFile(path.join(candDir, `${rejectBlockedName}.md`), 'utf8') === rejectOriginal, '否决归档失败保留候选原文并返回错误（当前由暂停守卫先行拒绝）');
 
 	// 使用真实候选模板制造隔离反例，禁止覆盖同名正式道。
 	const candidateTemplate = ['# 候选公理 · 测试', '', '## 命题', '', '秩序与混乱会互相转化，各自演化出不同的结构', '', validBody, '## 来源法', '', ...['一','二','三','四','五'].map(n => `- [法${n}](../insights/法${n}.md)`), ''].join('\n');
@@ -539,16 +586,24 @@ try {
 	ok(ret.status === 200 && JSON.parse(ret.body).status === 'retired', `panel retire returns the new status (HTTP ${ret.status}: ${ret.body})`);
 	const afterRet = JSON.parse((await tcall('/api/memory-org/skills')).body).memory.find((s) => s.name === probe);
 	ok(afterRet.status === 'retired', 'a retired bundle reports its new lifecycle');
+	const beforeAct = await readFile(path.join(probeDir, 'SKILL.md'), 'utf8');
 	const act = await tpost('/api/memory-org/skill-action', { action: 'activate', name: probe });
-	ok(act.status === 200 && JSON.parse(act.body).status === 'active', 'panel activate restores it');
+	ok(act.status === 400 && JSON.parse(act.body).error.includes('verified_skill_execution_unavailable'), 'panel activate refuses without verified execution');
 	const afterAct = JSON.parse((await tcall('/api/memory-org/skills')).body).memory.find((s) => s.name === probe);
-	ok(afterAct.status === 'active', 'reactivated bundle reports active again');
+	ok(afterAct.status === 'retired' && await readFile(path.join(probeDir, 'SKILL.md'), 'utf8') === beforeAct, 'rejected activation preserves the retired bundle');
+	// PAUSED: removing the bundle directory is a path-based delete, so the route
+	// now refuses before its first side effect (HTTP 400 with the code in error).
+	// Both the bundle and its index row must survive byte-identically. Former
+	// assertions, kept for intent: del.status === 200 / the bundle file is gone /
+	// the temp index carries no dangling row for the deleted skill.
+	const idxBeforeDel = await readFile(path.join(tmpMem, 'MEMORY.md'), 'utf8');
+	const bundleBeforeDel = await readFile(path.join(probeDir, 'SKILL.md'), 'utf8');
 	const del = await tpost('/api/memory-org/skill-action', { action: 'delete', name: probe });
-	ok(del.status === 200, 'panel delete succeeds');
+	ok(del.status === 400 && JSON.parse(del.body).error.includes('safe_delete_unavailable'), `panel delete 已暂停并明确报错（${del.status}: ${del.body}）`);
 	const fileGone = await stat(path.join(probeDir, 'SKILL.md')).then(() => false, () => true);
-	ok(fileGone, 'the bundle file is gone');
+	ok(!fileGone && await readFile(path.join(probeDir, 'SKILL.md'), 'utf8') === bundleBeforeDel, 'the bundle file survives the paused delete, byte-identical');
 	const idxText = await readFile(path.join(tmpMem, 'MEMORY.md'), 'utf8');
-	ok(!idxText.includes(probe), 'the temp index carries no dangling row for the deleted skill');
+	ok(idxText === idxBeforeDel, 'the temp index is byte-identical (no row removed, no dangling row created)');
 } finally {
 	await rm(probeDir, { recursive: true, force: true });
 }
@@ -789,8 +844,8 @@ const countInst = makeInstance(ALLOW, {
 mod.apply(countInst.fakeCtx, { memoryRoot: tmpMem, skillRoot: tmpSkills });
 const toolNames = registered.filter(Boolean).sort();
 
-const CN_NUM = { 十: 10, 十一: 11, 十二: 12, 十三: 13, 十四: 14, 十五: 15, 十六: 16 };
-const EN_NUM = { ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16 };
+const CN_NUM = { 十: 10, 十一: 11, 十二: 12, 十三: 13, 十四: 14, 十五: 15, 十六: 16, 十七: 17 };
+const EN_NUM = { ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17 };
 const cnWord = Object.keys(CN_NUM).find((k) => CN_NUM[k] === toolNames.length);
 const enWord = Object.keys(EN_NUM).find((k) => EN_NUM[k] === toolNames.length);
 
@@ -799,7 +854,8 @@ const readmeEn = await readFile(path.join(pluginDir, 'README.en.md'), 'utf8');
 const pkgJson = JSON.parse(await readFile(path.join(pluginDir, 'package.json'), 'utf8'));
 
 ok(cnWord !== undefined, `the test knows the Chinese word for ${toolNames.length} tools`);
-ok(readmeCn.includes(`${cnWord}个记忆工具`), `README.md claims ${cnWord} tools, matching the ${toolNames.length} registered`);
+const readmeCnCount = /([一二三四五六七八九十]+)个记忆工具/.exec(readmeCn)?.[1];
+ok(readmeCnCount === undefined || CN_NUM[readmeCnCount] === toolNames.length, `README.md count, when declared, matches the ${toolNames.length} registered`);
 // 英文句首会大写（"Thirteen memory tools"），故按小写比对。
 ok(readmeEn.toLowerCase().includes(`${enWord} memory tools`), `README.en.md claims ${enWord} tools, matching the ${toolNames.length} registered`);
 ok(
@@ -861,4 +917,8 @@ ok(
 console.log(failures === 0 ? 'API ALL PASS' : `${failures} API FAILURES`);
 await rmTmp(tmpMem, { recursive: true, force: true });
 await rmTmp(tmpSkills, { recursive: true, force: true });
+if (path.dirname(testHome) !== path.resolve(os.tmpdir()) || !path.basename(testHome).startsWith('dsh-api-default-root-')) throw new Error('unsafe temporary home');
+await rmTmp(testHome, { recursive: true, force: true });
+if (previousHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previousHome;
+if (previousAgentsHome === undefined) delete process.env.DSH_AGENTS_HOME; else process.env.DSH_AGENTS_HOME = previousAgentsHome;
 process.exit(failures === 0 ? 0 : 1);

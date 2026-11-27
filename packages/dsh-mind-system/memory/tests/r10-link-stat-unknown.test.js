@@ -67,7 +67,15 @@ test('单个链接 stat 失败只报告该链接未知，继续扫描后续真�
   for (const item of escape) assert.doesNotMatch(item.message, /不存在|missing|dangling/i, '越界路径无法 stat 不是已确认不存在');
 });
 
-for (const missing of [true, false]) test(`真实 memory_rename 完成后 stat 未知，${missing ? '有' : '无'}已发现死链时回执均为下界`, async (t) => {
+// SKIPPED, not deleted: all four cases below assert the R10 dangling-link
+// accounting that memory_rename performs AFTER it moves the file (lower-bound
+// accounting when a stat/read fails, and the incomplete-check warning). Rename
+// and merge now refuse before their first side effect (safe_rename_unavailable),
+// so no rename receipt exists to inspect and this verification path cannot run.
+// The bodies stay intact; they return to service with a concurrency-safe rename.
+const R10_VERIFY_SKIP = 'safe rename unavailable: rename refuses before any write, so no post-rename R10 receipt exists';
+
+for (const missing of [true, false]) test(`真实 memory_rename 完成后 stat 未知，${missing ? '有' : '无'}已发现死链时回执均为下界`, { skip: R10_VERIFY_SKIP }, async (t) => {
   const { home, root, skills } = await fixture(t);
   const oldHome = process.env.DSH_HOME;
   process.env.DSH_HOME = home;
@@ -98,7 +106,7 @@ for (const missing of [true, false]) test(`真实 memory_rename 完成后 stat �
   assert.doesNotMatch(text, /^改写后死链数：\d+$/m);
 });
 
-test('真实 memory_rename 体检因索引缺失提前退出时不得报告完整零死链', async (t) => {
+test('真实 memory_rename 体检因索引缺失提前退出时不得报告完整零死链', { skip: R10_VERIFY_SKIP }, async (t) => {
   const { home, root, skills } = await fixture(t);
   const oldHome = process.env.DSH_HOME;
   process.env.DSH_HOME = home;
@@ -125,7 +133,7 @@ test('真实 memory_rename 体检因索引缺失提前退出时不得报告完�
   assert.match(text, /检查不完整.*下界/);
 });
 
-test('rename 已完成后的体检抛错返回成功及不完整下界', async (t) => {
+test('rename 已完成后的体检抛错返回成功及不完整下界', { skip: R10_VERIFY_SKIP }, async (t) => {
   const { home, root, skills } = await fixture(t);
   const oldHome = process.env.DSH_HOME;
   process.env.DSH_HOME = home;

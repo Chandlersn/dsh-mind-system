@@ -19,7 +19,7 @@
  *
  * @module dsh-memory-manager
  */
-import { readFile, writeFile, rename, link, unlink, rm, mkdir, readdir, stat, lstat, realpath } from 'node:fs/promises';
+import { readFile, writeFile, appendFile, rename, link, unlink, rm, mkdir, readdir, stat, lstat, realpath } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
@@ -43,10 +43,13 @@ import {
 	localDateStr, normDate, oneLine, charLen, readIfExists, writeText, statExists, safeSlug,
 	splitIterationBlocks, dshHome, joinDshHome, resolveRoot, appendBlock, countHeadingDate, withPathLock, withWriteCommitLock, MemoryWriteCommitUnknown, MemoryLedgerAppendError, MemoryStageOutcomeUnknown,
 } from './src/util.js';
-import { usagePath, usageFiles, appendUsage, usageWriteHealth, readUsage, summarizeUsage, insightTrust, trustLineFor, refreshTrustLine, canonicalHref, compactUsage } from './src/usage.js';
+import { usagePath, usageFiles, appendUsage, usageWriteHealth, readUsage, scanUsage, summarizeUsage, insightTrust, trustLineFor, refreshTrustLine, canonicalHref, compactUsage } from './src/usage.js';
 // SAG bridge (second recall channel): startSagService is fire-and-forget at
 // apply() time — `sag api start` measured 512ms and must never block the host.
 import { sagSearch, sagPing, sagStatus, sagIsIndexed, startSagService, readSagEndpoint, resolveSagApiKey } from './src/sag.js';
+// Architecture-edge verdicts: shared with `npm run verify-graph` so the live
+// panel and the CLI can never disagree about what "running" means.
+import { classifyEdges, collectFacts } from './src/graph-runtime.js';
 import {
 	memoryIndexTemplate, functionFileTemplate, dailyTemplate, insightTemplate, sepOf,
 	upsertIndexRow, appendUnderHeading, refreshSummarySection, replaceSection,
@@ -55,11 +58,20 @@ import {
 import { selfReload, isReloading } from './src/reload.js';
 import { createWriteGuard } from './src/write-guard.js';
 import { withMemoryRootTransaction } from './src/root-transaction.js';
+import { currentOperationId, withOperationContext } from './src/operation-context.js';
+import { readOperationRows } from './src/operation-reader.js';
+import { traceObject } from './src/object-trace.js';
+import { readAdoptionEvidence } from './src/adoption-evidence.js';
+import { readUsageCorrelation } from './src/usage-correlation-reader.js';
+import { retentionInventory } from './src/retention-inventory.js';
+import { planMemoryDelete } from './src/memory-delete.js';
 import { selectCaptureEvents } from './src/capture-events.js';
 import { captureSelectedEvents } from './src/capture-service.js';
 import { inspectCaptureIntent } from './src/capture-intent.js';
-import { archiveDailyMonths, readArchivedDay, latestArchivedDay, setDeleteImplementation } from './src/daily-archive.js';
+import { AUTO_DAILY_ARCHIVE_ENABLED, archiveDailyMonths, readArchivedDay, readArchivedDayStrict, latestArchivedDay, setDeleteImplementation } from './src/daily-archive.js';
 import { createCaptureStatus } from './src/capture-status.js';
+import { createLiveFlow } from './src/live-flow.js';
+import { createClosureStream } from './src/closure-stream.js';
 import { tokensOf, matchIndexRows, buildRecallMessage, buildBudgetedRecall, skillNameOf, archiveBlocks, eligibleIndexRows, RECALL_BUDGET_TOKENS } from './src/recall.js';
 import { redactSecrets, scanSecrets } from './src/secrets.js';
 import { gateDao, gateFa, concreteMarkersOf, MIN_DAO_SOURCES, MAX_DAO_ENTRIES, daoSourceSlugs, daoReservedHeadingCollisions } from './src/layer-gate.js';
@@ -71,13 +83,20 @@ import { checkDaoBody, philosophicalShape } from './src/dao-shape.js';
 import { AXIOM_CANDIDATE_STATES, confirmAxiomCandidate, rejectAxiomCandidate, describeCandidate } from './src/axiom-candidate.js';
 // 阀门桥（2026-11-09）：对 dsh-valves 的可选依赖——负向规则召回注入 + 上行评估留痕。
 // 缺 valves 时全部返回 undefined，既有行为一分不变（N4 降级）。
-import { relevantNegativeRules, recordUpwardWrite, recordDownwardWrite, upwardEntryFromWrite } from './src/valves-bridge.js';
+import { relevantNegativeRules, recordUpwardWrite, recordDownwardWrite, recordCorrelatedAdoption, upwardEntryFromWrite } from './src/valves-bridge.js';
+import { canonicalObjectKey } from './src/object-key.js';
 
 // 归档通道（daily-archive.js）默认自带删除配对实现；这里把本文件的真身
 // deleteTrackedFile 注入进去，使归档删除与 memory_rename 同一语义（intent/
 // complete 配对、to 指向归档位置、withWriteCommitLock 排队）。模块加载即注入：
 // daily-archive 不会在 server.js 加载前被独立使用。
 setDeleteImplementation(deleteTrackedFile);
+
+const SKILL_ACTIVATION = Object.freeze({
+	available: false,
+	reason: 'verified_skill_execution_unavailable',
+	detail: '宿主尚无绑定技能版本和任务的独立执行验收证据',
+});
 
 // Keep unlink and its intent/completion records ordered with writeText commits in
 // this process. Disk and ledger remain separate writes: incomplete intent is
@@ -124,8 +143,7 @@ export async function deleteTrackedFile(root, file, expectedText, { tool, to, wr
 export async function writeRenameTarget(root, file, expected, text) {
 	const key = ledgerKey(root, file);
 	const redacted = redactSecrets(text).text;
-	// 暂存移入 .stage/（与目标同卷）；创建时记录 (dev, ino)，提交后按 inode
-	// 核验清理——路径被外来文件替换时只清空内容，绝不 unlink 陌生文件。
+	// Stage on the same volume and record its identity; leave unknown paths untouched.
 	// 创建失败（含独占 EEXIST / 写入 EIO）包成 MEMORY_STAGE_OUTCOME_UNKNOWN：
 	// 目标尚未替换，与 writeText 的暂存失败契约一致。
 	let stageEntry;
@@ -153,7 +171,7 @@ export async function writeRenameTarget(root, file, expected, text) {
 			}
 			const cleanup = await removeVerifiedStage(stageEntry).catch((cause) => ({ removed: false, deferred: true, reason: cause?.code ?? 'cleanup-unknown' }));
 			if (!cleanup.removed) {
-				const err = new Error(`目标已写入并记账（${key}），暂存清理 deferred（${cleanup.reason ?? 'unknown'}）：内容已清零，路径 ${tmp} 保留待孤儿清扫；请核对。`);
+				const err = new Error(`目标已写入并记账（${key}），暂存清理 deferred（${cleanup.reason ?? 'unknown'}）：路径 ${tmp} 的归属或内容未确认；请核对，不要盲目处理。`);
 				err.code = 'MEMORY_STAGE_CLEANUP_DEFERRED'; err.fileWritten = true; err.ledgerStatus = 'recorded'; err.cleanupStatus = 'deferred'; err.stagePath = tmp;
 				throw err;
 			}
@@ -180,14 +198,31 @@ async function deleteAfterPanelCopy(root, file, text, options) {
 	}
 }
 
+// Fail-closed refusal for the destructive entry points that still call
+// deleteTrackedFile or remove a directory tree. Those paths read the current
+// bytes and then unlink/rm; an external process that appends or replaces the
+// path inside that window loses its update while the receipt still reports
+// success. The window cannot be closed from inside deleteTrackedFile itself —
+// some callers have already created a target or an archive by then — so every
+// entry point refuses AFTER its read-only validation and BEFORE its first side
+// effect. Nothing is written, archived, staged, created or deleted first.
+function refuseLosslessDelete(operation) {
+	const error = new Error(`safe_delete_unavailable: 并发场景下的无损删除能力尚不可用，${operation} 暂停，未写入、未归档、未删除任何内容。`);
+	error.code = 'safe_delete_unavailable';
+	return error;
+}
+
+function refuseLosslessRename(operation) {
+	const error = new Error(`safe_rename_unavailable: 并发场景下的无损改名能力尚不可用，${operation} 暂停，未写入、未删除、未改写任何内容。`);
+	error.code = 'safe_rename_unavailable';
+	return error;
+}
+
 // Panel-created archives previously bypassed the write ledger. Keep exclusive
 // creation semantics when requested and report a failed append after disk write.
 //
-// 暂存清理（2026-11-13）：暂存移入记忆根下 .stage/，创建时经句柄记录
-// (dev, ino)；提交后 removeVerifiedStage 只在 inode 核验一致时 unlink——
-// 删的必是自己创建的文件对象，路径被外来文件替换时只清空内容保留路径。
-// 因此 exclusive 提交成功不再抛 MEMORY_PANEL_CLEANUP_UNKNOWN（面板候选
-// 确认/否决/删除恢复可用）；只有归属完全无法核验时如实报 deferred。
+// Stage cleanup leaves an unverified or replaced path untouched and reports deferred.
+// Path verification followed by unlink is not atomic against external processes.
 async function writeTrackedPanelFile(root, file, text, { exclusive = false, tool } = {}) {
 	const key = ledgerKey(root, file);
 	if (!isTracked(key)) throw new Error(`拒绝登记无效写入路径：${key}`);
@@ -223,10 +258,7 @@ async function writeTrackedPanelFile(root, file, text, { exclusive = false, tool
 				throw new MemoryLedgerAppendError(file, key, cause);
 			}
 		} catch (err) { failure = err; }
-		// Clean the stage through the verified-inode path. For rename the stage
-		// is already consumed (ENOENT → removed). For link the stage remains and
-		// is unlinked only when it is still the inode we created; a replaced
-		// path is truncated to zero bytes and left for the orphan sweep.
+		// Preserve an unverified or replaced stage path for investigation.
 		let cleanup = null;
 		if (staged) {
 			try { cleanup = await removeVerifiedStage(stageEntry); }
@@ -245,13 +277,394 @@ async function writeTrackedPanelFile(root, file, text, { exclusive = false, tool
 			throw failure;
 		}
 		if (cleanup && !cleanup.removed) {
-			// 目标已提交并记账，仅暂存归属无法核验：如实报部分完成，但这是
-			// deferred（内容已清零、路径待孤儿清扫）而不是 unknown——面板主流程
-			// 不再被阻断。
-			const err = new Error(`目标已提交并记账（${key}），暂存清理 deferred（${cleanup.reason ?? 'unknown'}）：内容已清零，路径 ${stageEntry.path} 保留待孤儿清扫；请核对。`);
+			// The destination is committed; the remaining stage needs investigation.
+			const err = new Error(`目标已提交并记账（${key}），暂存清理 deferred（${cleanup.reason ?? 'unknown'}）：路径 ${stageEntry.path} 的归属或内容未确认；请核对，不要盲目处理。`);
 			err.code = 'MEMORY_STAGE_CLEANUP_DEFERRED'; err.fileWritten = true; err.ledgerStatus = 'recorded'; err.cleanupStatus = 'deferred'; err.stagePath = stageEntry.path;
 			throw err;
 		}
+	});
+}
+
+// Historical implementation below is disabled: lstat followed by rename can
+// overwrite an archive created by another process. Do not re-enable it without
+// a proven cross-process no-overwrite commit and recovery protocol.
+// The former rename-first flow attempted to retain concurrent writes, but its
+// destination lstat and rename are separate operations. Another process can
+// create the destination between them, after which rename can overwrite it.
+// A process-local lock does not close this gap. The legacy code is retained for
+// review and is unreachable while the entry is paused.
+//
+// `result` is { status, body } for a direct HTTP response, or { error } thrown
+// for an internal failure; the caller returns the response verbatim.
+async function deleteDaoRenameFirst(root, daoPath, archivePath, slug) {
+	// The destination check and rename are not atomic across processes.
+	const error = refuseLosslessDelete('dao-action:delete');
+	return { status: 503, body: { error: error.message, code: error.code } };
+	const sourceKey = ledgerKey(root, daoPath);
+	const archiveKey = ledgerKey(root, archivePath);
+	return withWriteCommitLock(daoPath, async () => {
+		// Read-only phase: check the ledger BEFORE the rename and abort if it is
+		// unreadable or a previous delete on the source is still incomplete.
+		const before = await readLedger(root);
+		if (before === undefined) throw new Error(`账本不可读或损坏，未删除 ${sourceKey}`);
+		if (before.get(sourceKey)?.op === 'delete_intent') throw new Error(`先前删除未完成，未删除 ${sourceKey}`);
+		try { await readFile(daoPath, 'utf8'); }
+		catch (cause) { if (cause?.code === 'ENOENT') return { status: 404, body: { error: `道条目不存在：${slug}` } }; throw cause; }
+
+		const delDir = path.dirname(archivePath);
+		await mkdir(delDir, { recursive: true });
+		let targetInfo;
+		try { targetInfo = await lstat(archivePath); }
+		catch (cause) { if (cause?.code !== 'ENOENT') throw cause; targetInfo = undefined; }
+		if (targetInfo !== undefined) {
+			if (!targetInfo.isFile()) {
+				const err = new Error(`归档目标不是普通文件，未删除 ${sourceKey}`);
+				err.code = 'MEMORY_DELETE_ARCHIVE_TARGET_INVALID';
+				throw err;
+			}
+			// The archive already exists. It can be residue from the OLD delete
+			// flow, which archived a snapshot but lost the race to unlink the
+			// source. If the archive body — with only its trailing deletion note
+			// removed — is byte-identical to the source, this is that residue:
+			// remove the redundant source idempotently and leave the correct
+			// archive untouched. Different content keeps the 409 protection.
+			let sourceText, archiveText;
+			try {
+				sourceText = await readFile(daoPath, 'utf8');
+				archiveText = await readFile(archivePath, 'utf8');
+			} catch (cause) {
+				const err = new Error(`归档或源读取失败，未删除 ${sourceKey}`, { cause });
+				err.code = 'MEMORY_DELETE_ARCHIVE_COMPARE_FAILED';
+				throw err;
+			}
+			const marker = '\n## 删除\n';
+			const markerAt = archiveText.lastIndexOf(marker);
+			const archiveBody = markerAt >= 0 ? archiveText.slice(0, markerAt) : archiveText;
+			if (sourceText.trimEnd() !== archiveBody.trimEnd()) {
+				return { status: 409, body: { error: `已有同名历史归档：${slug}；为保护历史，本次未删除正式道` } };
+			}
+			// Idempotent residue cleanup. The archive already holds the original
+			// bytes, so rename the source into a quarantine (atomic, same volume).
+			// A writer that opened the source before the rename follows the inode
+			// into the quarantine instead of losing its append; a writer that opens
+			// the old path afterwards creates a fresh source file. Never unlink.
+			const quarantine = path.join(delDir, `${slug}.${randomUUID()}.dropped`);
+			try { await rename(daoPath, quarantine); }
+			catch (cause) {
+				let sourceStillThere = false;
+				try { sourceStillThere = (await lstat(daoPath)).isFile(); } catch { /* gone */ }
+				if (sourceStillThere) {
+					const err = new Error(`残留正式道改名失败，未删除 ${sourceKey}`, { cause });
+					err.code = 'MEMORY_DELETE_RENAME_FAILED';
+					throw err;
+				}
+				let quarantined = false;
+				try { quarantined = (await lstat(quarantine)).isFile(); } catch { /* gone */ }
+				if (!quarantined) {
+					const err = new Error(`残留正式道改名结果未知：${sourceKey}；请先核对文件和账本，不要盲目重试。`, { cause });
+					err.code = 'MEMORY_DELETE_OUTCOME_UNKNOWN'; err.deleteStatus = 'unknown'; err.ledgerStatus = 'not_attempted';
+					throw err;
+				}
+			}
+			const id = randomUUID();
+			const tool = 'dao-action:delete';
+			const event = { key: sourceKey, id, tool, to: archiveKey };
+			let intentOk = false;
+			try { intentOk = await recordDeleteEvent(root, { ...event, op: 'delete_intent' }); } catch { /* unknown */ }
+			if (!intentOk) {
+				const err = new Error(`残留源已隔离，但 ${sourceKey} 的删除意图记账结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+				err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'quarantined'; err.ledgerStatus = 'unknown';
+				throw err;
+			}
+			const archiveHash = contentHash(archiveText);
+			const existingArchive = before.get(archiveKey);
+			if (!(existingArchive?.op === 'write' && existingArchive.hash === archiveHash)) {
+				let archiveWriteOk = false;
+				try { archiveWriteOk = await recordWrite(root, { key: archiveKey, hash: archiveHash, tool }); } catch { /* unknown */ }
+				if (!archiveWriteOk) {
+					const err = new Error(`残留源已隔离，但归档写入账本结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+					err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'quarantined'; err.ledgerStatus = 'unknown';
+					throw err;
+				}
+			}
+			let deleteOk = false;
+			try { deleteOk = await recordDeleteEvent(root, { ...event, op: 'delete' }); } catch { /* unknown */ }
+			if (!deleteOk) {
+				const err = new Error(`残留源已隔离，但 ${sourceKey} 的删除完成记账结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+				err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'quarantined'; err.ledgerStatus = 'unknown';
+				throw err;
+			}
+			const after = await readLedger(root);
+			if (after === undefined || after.get(sourceKey)?.op !== 'delete' || after.get(sourceKey)?.id !== id) {
+				const err = new Error(`残留源已隔离，但账本对账结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+				err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'quarantined'; err.ledgerStatus = 'unknown';
+				throw err;
+			}
+			return {
+				status: 200,
+				body: {
+					message: `已删除道 · ${slug}（原已有正确归档，已清理残留源）`,
+					archived: `dao/_deleted/${slug}.md`,
+					quarantined: path.relative(root, quarantine),
+					note: '归档原本已存在且内容一致；残留源已移入隔离区保留字节。MEMORY.md 里指向这条的道层行需要手工删除。',
+				},
+			};
+		}
+
+		// Commit point. If the acknowledgement is lost, disk state settles it:
+		// source gone + archive present means the rename did happen.
+		try { await rename(daoPath, archivePath); }
+		catch (cause) {
+			let sourceStillThere = false;
+			try { sourceStillThere = (await lstat(daoPath)).isFile(); } catch { /* gone */ }
+			if (sourceStillThere) {
+				const err = new Error(`正式道改名失败，未删除 ${sourceKey}`, { cause });
+				err.code = 'MEMORY_DELETE_RENAME_FAILED';
+				throw err;
+			}
+			let archiveThere = false;
+			try { archiveThere = (await lstat(archivePath)).isFile(); } catch { /* gone */ }
+			if (!archiveThere) {
+				const err = new Error(`正式道改名结果未知：${sourceKey}；请先核对文件和账本，不要盲目重试。`, { cause });
+				err.code = 'MEMORY_DELETE_OUTCOME_UNKNOWN'; err.deleteStatus = 'unknown'; err.ledgerStatus = 'not_attempted';
+				throw err;
+			}
+		}
+
+		// Append the deletion note IN PLACE. A truncate-and-rewrite here would
+		// orphan an open writer's handle and lose exactly the bytes we are
+		// protecting; O_APPEND keeps both streams in the same inode.
+		const archivedNow = await readFile(archivePath, 'utf8');
+		const separator = archivedNow.endsWith('\n') ? '\n' : '\n\n';
+		const note = `${separator}## 删除\n\n- 时间：${new Date().toISOString()}\n- 来源：面板手动删除\n`;
+		try { await appendFile(archivePath, note, 'utf8'); }
+		catch (cause) {
+			const err = new Error(`正式道已归档到 ${archiveKey}，但删除标记追加失败：请先核对文件和账本，不要盲目重试。`, { cause });
+			err.code = 'MEMORY_DELETE_ARCHIVE_NOTE_FAILED'; err.deleteStatus = 'archived'; err.ledgerStatus = 'not_attempted';
+			throw err;
+		}
+		const finalText = await readFile(archivePath, 'utf8');
+
+		// R26 receipt. All three appends are required; any unknown result is an
+		// error, never a 200. The source gets delete_intent+delete (paired), the
+		// archive gets a write with the hash of the bytes actually on disk.
+		const id = randomUUID();
+		const tool = 'dao-action:delete';
+		const event = { key: sourceKey, id, tool, to: archiveKey };
+		let intentOk = false;
+		try { intentOk = await recordDeleteEvent(root, { ...event, op: 'delete_intent' }); } catch { /* unknown */ }
+		if (!intentOk) {
+			const err = new Error(`正式道已归档到 ${archiveKey}，但 ${sourceKey} 的删除意图记账结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+			err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'archived'; err.ledgerStatus = 'unknown';
+			throw err;
+		}
+		let archiveWriteOk = false;
+		try { archiveWriteOk = await recordWrite(root, { key: archiveKey, hash: contentHash(finalText), tool }); } catch { /* unknown */ }
+		if (!archiveWriteOk) {
+			const err = new Error(`正式道已归档到 ${archiveKey}，但归档写入账本结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+			err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'archived'; err.ledgerStatus = 'unknown';
+			throw err;
+		}
+		let deleteOk = false;
+		try { deleteOk = await recordDeleteEvent(root, { ...event, op: 'delete' }); } catch { /* unknown */ }
+		if (!deleteOk) {
+			const err = new Error(`正式道已归档到 ${archiveKey}，但 ${sourceKey} 的删除完成记账结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+			err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'archived'; err.ledgerStatus = 'unknown';
+			throw err;
+		}
+		const after = await readLedger(root);
+		if (after === undefined || after.get(sourceKey)?.op !== 'delete' || after.get(sourceKey)?.id !== id || after.get(archiveKey)?.hash !== contentHash(finalText)) {
+			const err = new Error(`正式道已归档到 ${archiveKey}，但账本对账结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+			err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'archived'; err.ledgerStatus = 'unknown';
+			throw err;
+		}
+		return {
+			status: 200,
+			body: {
+				message: `已删除道 · ${slug}（已留档到 dao/_deleted/）`,
+				archived: `dao/_deleted/${slug}.md`,
+				note: 'MEMORY.md 里指向这条的道层行需要手工删除——索引由 memory_index 维护，面板不改索引。',
+			},
+		};
+	});
+}
+
+// Historical implementation below is disabled: its rename and later index
+// rewrite lack a proven cross-process no-overwrite commit protocol.
+// The legacy lower-layer implementation has the same archive race, and its
+// caller's index read-modify-write can overwrite another process's changes.
+// It remains below for review but is unreachable while deletion is paused.
+async function deleteTrackedRenameFirst(root, { sourcePath, archivePath, sourceKey, archiveKey, tool, noteText } = {}) {
+	if (!sourcePath || !archivePath || !sourceKey || !archiveKey || !tool || typeof noteText !== 'string') {
+		const err = new Error('rename-first delete requires sourcePath, archivePath, sourceKey, archiveKey, tool and noteText');
+		err.code = 'MEMORY_DELETE_INVALID_ARGUMENTS';
+		throw err;
+	}
+	// Neither archive publication nor the subsequent index update has a
+	// proven cross-process, no-overwrite commit protocol.
+	throw refuseLosslessDelete('memory_delete');
+	return withWriteCommitLock(sourcePath, async () => {
+		// Read-only validation BEFORE any rename: ledger must be readable and no
+		// previous delete on this source may be left incomplete.
+		const before = await readLedger(root);
+		if (before === undefined) throw new Error(`账本不可读或损坏，未删除 ${sourceKey}`);
+		if (before.get(sourceKey)?.op === 'delete_intent') throw new Error(`先前删除未完成，未删除 ${sourceKey}`);
+		let sourceText;
+		try { sourceText = await readFile(sourcePath, 'utf8'); }
+		catch (cause) {
+			if (cause?.code === 'ENOENT') {
+				const err = new Error(`条目不存在：${sourceKey}`);
+				err.code = 'not_found';
+				throw err;
+			}
+			throw cause;
+		}
+
+		const delDir = path.dirname(archivePath);
+		await mkdir(delDir, { recursive: true });
+		let targetInfo;
+		try { targetInfo = await lstat(archivePath); }
+		catch (cause) { if (cause?.code !== 'ENOENT') throw cause; targetInfo = undefined; }
+		if (targetInfo !== undefined) {
+			if (!targetInfo.isFile()) {
+				const err = new Error(`归档目标不是普通文件，未删除 ${sourceKey}`);
+				err.code = 'MEMORY_DELETE_ARCHIVE_TARGET_INVALID';
+				throw err;
+			}
+			// The archive may be residue from the OLD write-then-unlink flow:
+			// identical body (minus the trailing delete note) but the source
+			// survived. Quarantine the redundant source; never overwrite history.
+			let archiveText;
+			try { archiveText = await readFile(archivePath, 'utf8'); }
+			catch (cause) {
+				const err = new Error(`归档或源读取失败，未删除 ${sourceKey}`, { cause });
+				err.code = 'MEMORY_DELETE_ARCHIVE_COMPARE_FAILED';
+				throw err;
+			}
+			const marker = '\n## 删除\n';
+			const markerAt = archiveText.lastIndexOf(marker);
+			const archiveBody = markerAt >= 0 ? archiveText.slice(0, markerAt) : archiveText;
+			if (sourceText.trimEnd() !== archiveBody.trimEnd()) {
+				const err = new Error(`已有同名历史归档：${archiveKey}；为保护历史，本次未删除 ${sourceKey}`);
+				err.code = 'archive_exists';
+				throw err;
+			}
+			const quarantine = path.join(delDir, `${path.basename(archivePath, '.md')}.${randomUUID()}.dropped`);
+			try { await rename(sourcePath, quarantine); }
+			catch (cause) {
+				let sourceStillThere = false;
+				try { sourceStillThere = (await lstat(sourcePath)).isFile(); } catch { /* gone */ }
+				if (sourceStillThere) {
+					const err = new Error(`残留源改名失败，未删除 ${sourceKey}`, { cause });
+					err.code = 'MEMORY_DELETE_RENAME_FAILED';
+					throw err;
+				}
+				let quarantined = false;
+				try { quarantined = (await lstat(quarantine)).isFile(); } catch { /* gone */ }
+				if (!quarantined) {
+					const err = new Error(`残留源改名结果未知：${sourceKey}；请先核对文件和账本，不要盲目重试。`, { cause });
+					err.code = 'MEMORY_DELETE_OUTCOME_UNKNOWN'; err.deleteStatus = 'unknown'; err.ledgerStatus = 'not_attempted';
+					throw err;
+				}
+			}
+			const id = randomUUID();
+			const event = { key: sourceKey, id, tool, to: archiveKey };
+			let intentOk = false;
+			try { intentOk = await recordDeleteEvent(root, { ...event, op: 'delete_intent' }); } catch { /* unknown */ }
+			if (!intentOk) {
+				const err = new Error(`残留源已隔离，但 ${sourceKey} 的删除意图记账结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+				err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'quarantined'; err.ledgerStatus = 'unknown';
+				throw err;
+			}
+			const archiveHash = contentHash(archiveText);
+			const existingArchive = before.get(archiveKey);
+			if (!(existingArchive?.op === 'write' && existingArchive.hash === archiveHash)) {
+				let archiveWriteOk = false;
+				try { archiveWriteOk = await recordWrite(root, { key: archiveKey, hash: archiveHash, tool }); } catch { /* unknown */ }
+				if (!archiveWriteOk) {
+					const err = new Error(`残留源已隔离，但归档写入账本结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+					err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'quarantined'; err.ledgerStatus = 'unknown';
+					throw err;
+				}
+			}
+			let deleteOk = false;
+			try { deleteOk = await recordDeleteEvent(root, { ...event, op: 'delete' }); } catch { /* unknown */ }
+			if (!deleteOk) {
+				const err = new Error(`残留源已隔离，但 ${sourceKey} 的删除完成记账结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+				err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'quarantined'; err.ledgerStatus = 'unknown';
+				throw err;
+			}
+			const after = await readLedger(root);
+			if (after === undefined || after.get(sourceKey)?.op !== 'delete' || after.get(sourceKey)?.id !== id) {
+				const err = new Error(`残留源已隔离，但账本对账结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+				err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'quarantined'; err.ledgerStatus = 'unknown';
+				throw err;
+			}
+			return { status: 200, quarantined: path.relative(root, quarantine) };
+		}
+
+		// Commit point. A writer with an open handle follows the inode into the
+		// archive; a writer opening the old path afterwards creates a fresh file.
+		try { await rename(sourcePath, archivePath); }
+		catch (cause) {
+			let sourceStillThere = false;
+			try { sourceStillThere = (await lstat(sourcePath)).isFile(); } catch { /* gone */ }
+			if (sourceStillThere) {
+				const err = new Error(`源改名失败，未删除 ${sourceKey}`, { cause });
+				err.code = 'MEMORY_DELETE_RENAME_FAILED';
+				throw err;
+			}
+			let archiveThere = false;
+			try { archiveThere = (await lstat(archivePath)).isFile(); } catch { /* gone */ }
+			if (!archiveThere) {
+				const err = new Error(`源改名结果未知：${sourceKey}；请先核对文件和账本，不要盲目重试。`, { cause });
+				err.code = 'MEMORY_DELETE_OUTCOME_UNKNOWN'; err.deleteStatus = 'unknown'; err.ledgerStatus = 'not_attempted';
+				throw err;
+			}
+		}
+
+		// Append the delete note IN PLACE — never truncate or rewrite, so an
+		// already-open writer keeps appending to the same inode.
+		try { await appendFile(archivePath, noteText, 'utf8'); }
+		catch (cause) {
+			const err = new Error(`已归档到 ${archiveKey}，但删除标记追加失败：请先核对文件和账本，不要盲目重试。`, { cause });
+			err.code = 'MEMORY_DELETE_ARCHIVE_NOTE_FAILED'; err.deleteStatus = 'archived'; err.ledgerStatus = 'not_attempted';
+			throw err;
+		}
+		const finalText = await readFile(archivePath, 'utf8');
+
+		// R26 receipt. All three appends are required; any unknown result is an
+		// error, never a 200.
+		const id = randomUUID();
+		const event = { key: sourceKey, id, tool, to: archiveKey };
+		let intentOk = false;
+		try { intentOk = await recordDeleteEvent(root, { ...event, op: 'delete_intent' }); } catch { /* unknown */ }
+		if (!intentOk) {
+			const err = new Error(`已归档到 ${archiveKey}，但 ${sourceKey} 的删除意图记账结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+			err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'archived'; err.ledgerStatus = 'unknown';
+			throw err;
+		}
+		let archiveWriteOk = false;
+		try { archiveWriteOk = await recordWrite(root, { key: archiveKey, hash: contentHash(finalText), tool }); } catch { /* unknown */ }
+		if (!archiveWriteOk) {
+			const err = new Error(`已归档到 ${archiveKey}，但归档写入账本结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+			err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'archived'; err.ledgerStatus = 'unknown';
+			throw err;
+		}
+		let deleteOk = false;
+		try { deleteOk = await recordDeleteEvent(root, { ...event, op: 'delete' }); } catch { /* unknown */ }
+		if (!deleteOk) {
+			const err = new Error(`已归档到 ${archiveKey}，但 ${sourceKey} 的删除完成记账结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+			err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'archived'; err.ledgerStatus = 'unknown';
+			throw err;
+		}
+		const after = await readLedger(root);
+		if (after === undefined || after.get(sourceKey)?.op !== 'delete' || after.get(sourceKey)?.id !== id || after.get(archiveKey)?.hash !== contentHash(finalText)) {
+			const err = new Error(`已归档到 ${archiveKey}，但账本对账结果未知（意图 ${id}）；请先核对文件和账本，不要盲目重试。`);
+			err.code = 'MEMORY_DELETE_LEDGER_UNKNOWN'; err.intentId = id; err.deleteStatus = 'archived'; err.ledgerStatus = 'unknown';
+			throw err;
+		}
+		return { status: 200, quarantined: null, archiveText: finalText };
 	});
 }
 
@@ -1067,7 +1480,7 @@ async function runHealthCheck(root, opts) {
 			}
 		}
 	} catch (err) {
-		if (err?.code !== 'ENOENT') add('WARN', 'R22', `使用记录检查不完整，思想信任状态未知（${err?.code ?? 'unknown'}）`, { subtype: 'check-incomplete', subject: 'usage-log' });
+		add('WARN', 'R22', `使用记录检查不完整，思想信任状态未知（${err?.code ?? 'unknown'}）`, { subtype: 'check-incomplete', subject: 'usage-log' });
 	}
 
 	// R23 (the principle layer's retirement budget): every other zone can shrink
@@ -1131,7 +1544,7 @@ async function runHealthCheck(root, opts) {
 		// Reads every shard too — reading only the legacy file would silently drop
 		// all references written after the monthly split and report them as gone.
 		let raw = '';
-		for (const uf of await usageFiles(root)) raw += `${(await readIfExists(uf.file)) ?? ''}\n`;
+		for (const uf of await usageFiles(root)) raw += `${await readFile(uf.file, 'utf8')}\n`;
 		if (raw) {
 			const hrefs = new Set();
 			for (const line of raw.split('\n')) {
@@ -1186,7 +1599,7 @@ async function runHealthCheck(root, opts) {
 		// Same reason as (c): the deletion-evidence check must see every shard, or
 		// a file touched only after the split looks like it was never referenced.
 		let rawAll = '';
-		for (const uf of await usageFiles(root)) rawAll += `${(await readIfExists(uf.file)) ?? ''}\n`;
+		for (const uf of await usageFiles(root)) rawAll += `${await readFile(uf.file, 'utf8')}\n`;
 		if (rawAll) {
 			const seen = new Set();
 			for (const line of rawAll.split('\n')) {
@@ -1571,23 +1984,64 @@ function panelizeHealth(health) {
 // tools
 // ---------------------------------------------------------------------------
 
+function memoryRetentionInventoryTool(opts) {
+	return defineTool({
+		name: 'memory_retention_inventory',
+		description: 'Read bounded file counts and byte totals for fixed memory and default DSH storages locations only. Missing, unavailable, disabled and incomplete observations are reported; counts with unknown=true are lower bounds. The default storages location may differ from an active valves custom storageDir. Runtime SQLite/WAL and system caches are not included. This is neither a whole-system inventory nor permission to clean up; no file contents or arbitrary paths are returned.',
+		parameters: {},
+		output: {
+			schema: {
+				type: 'object', additionalProperties: false,
+				properties: {
+					storageScope: { type: 'string', required: true },
+					categories: { type: 'array', required: true, items: {
+						type: 'object', additionalProperties: false,
+						properties: {
+							category: { type: 'string', required: true },
+							files: { type: 'integer', required: true },
+							bytes: { type: 'integer', required: true },
+							unknown: { type: 'boolean', required: true },
+							risks: { type: 'array', required: true, items: { type: 'string' } },
+						},
+					} },
+					risks: { type: 'array', required: true, items: { type: 'string' } },
+				},
+			},
+			render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+		},
+		async execute(args) {
+			if (!args || typeof args !== 'object' || Reflect.ownKeys(args).length) throw new Error('inventory accepts no arguments');
+			const result = await retentionInventory({ memoryRoot: resolveRoot(opts), storageRoot: joinDshHome('storages') });
+			return {
+				storageScope: 'default_dsh_home_storages_only_active_valves_location_unverified',
+				categories: Object.entries(result.categories).map(([category, item]) => ({ category, ...item })),
+				risks: result.risks,
+			};
+		},
+	});
+}
+
 function memoryReadTool(opts) {
 	return defineTool({
 		name: 'memory_read',
 		description:
-			'Read the function-area project memory. Start with kind=index (MEMORY.md: dual tables whose one-line summaries let you judge relevance without opening files, plus consensus and env constants), then open the exact function/insight file you need. Daily logs are one-line decision threads (kind=daily defaults to the latest day). kind=function/insight WITHOUT a name lists that directory with sizes.',
+			'Read the function-area project memory. Start with kind=index (MEMORY.md: dual tables whose one-line summaries let you judge relevance without opening files, plus consensus and env constants), then open the exact function/insight file you need. Daily logs are one-line decision threads (kind=daily defaults to the latest day). kind=function/insight WITHOUT a name lists that directory with sizes. kind=operation requires request_id and returns a bounded read-only ledger scan; matching rows do not prove success or adoption. kind=object_trace requires objectKey (canonical logical object key) and returns a read-only write->index->recall->read->adoption trace; every hop reports present/missing/unknown/not_observed; adoption present means a matching positive/correction signal was recorded, with caller identity unverified, and querying changes nothing. kind=adoption_evidence with objectKey (and optional cursor/limit) pages matching positive/correction declarations or unverified historical records for that object; exposure/reads never appear. Neither result authenticates a user or proves adoption, goal achievement or principle attribution; signals are not governance-eligible.',
 		parameters: {
 			kind: {
 				type: 'string',
 				required: true,
-				enum: ['index', 'function', 'insight', 'dao', 'capability', 'skill', 'daily'],
-				description: 'index=MEMORY.md; function=functions/<name>.md; insight=insights/<name>.md; dao=dao/<name>.md (最抽象层); capability=capabilities/<name>.md (CLI/MCP ledger); skill=<skillRoot>/<name>/SKILL.md (the host bundle — one store, no memory-root copy); daily=YYYY-MM-DD.md (latest when date omitted).',
+				enum: ['index', 'function', 'insight', 'dao', 'capability', 'skill', 'daily', 'operation', 'object_trace', 'adoption_evidence', 'live_flow', 'graph_evidence'],
+				description: 'index=MEMORY.md; function=functions/<name>.md; insight=insights/<name>.md; dao=dao/<name>.md (最抽象层); capability=capabilities/<name>.md (CLI/MCP ledger); skill=<skillRoot>/<name>/SKILL.md (the host bundle — one store, no memory-root copy); daily=YYYY-MM-DD.md (latest when date omitted); live_flow=current bounded live edge observations; graph_evidence=historical architecture checks from the overview classifier, not live activity; both accept only kind.',
 			},
 			name: {
 				type: 'string',
 				description: 'Feature or theme slug (no .md). Required for reading one file; omit to list the directory.',
 			},
 			date: { type: 'string', description: 'YYYY-MM-DD for kind=daily; defaults to the latest daily log.' },
+			request_id: { type: 'string', description: 'Required for kind=operation: exact generated request UUID. Do not supply name, date, or filesystem paths for this mode.' },
+			objectKey: { type: 'string', description: 'Required for kind=object_trace and adoption_evidence: canonical logical object key (e.g. functions/foo.md). Always derived from an existing target/href; never a caller-declared identity.' },
+			cursor: { type: 'string', description: 'Optional for kind=adoption_evidence: use nextCursor from the previous page.' },
+			limit: { type: 'integer', description: 'Optional for kind=adoption_evidence: page size 1-100 (default 50).' },
 		},
 		output: {
 			schema: {
@@ -1613,6 +2067,7 @@ function memoryReadTool(opts) {
 				},
 			},
 			render: (_args, v) => {
+				if (['operation', 'object_trace', 'adoption_evidence', 'live_flow', 'graph_evidence'].includes(_args.kind)) return [{ type: 'text', text: v.content }];
 				if (!v.found && v.listing.length === 0) {
 					// 「记忆还是空的」是错的：这里只知道**这个分区**是空的。整库为空时
 					// 该提示第一次写入，但某个分区为空（如 dao/ 还没凑够 5 条法）是完全
@@ -1637,6 +2092,58 @@ function memoryReadTool(opts) {
 		presentCall: (args) => ({ card: 'generic', title: `Read memory: ${args.kind}${args.name ? `/${args.name}` : ''}`, kind: 'other', rawInput: args }),
 		async execute(args, exec) {
 			const root = resolveRoot(opts);
+			if (args.kind === 'graph_evidence') {
+				if (Reflect.ownKeys(args).some(key => key !== 'kind')) throw new Error('graph_evidence accepts only kind');
+				let result = { status: 'unavailable', evidenceScope: 'historical', currentActivity: 'unknown' };
+				try {
+					const edges = classifyEdges(collectFacts({ dshHome: dshHome() })).map(edge => ({
+						id: edge.id, graphEdge: edge.graphEdge, status: edge.status, detail: edge.detail,
+						...(edge.evidenceScope === 'historical' ? { evidenceScope: 'historical', latestReceiptAt: edge.latestReceiptAt } : {}),
+					}));
+					result = { status: 'available', evidenceScope: 'historical', currentActivity: 'unknown', edges,
+						checks: { total: edges.length, historicalObserved: edges.filter(edge => edge.status === 'observed').length,
+							unknown: edges.filter(edge => edge.status === 'unknown').length } };
+				} catch { /* Evidence collection may be unavailable. */ }
+				return { found: result.status === 'available', path: 'graph-evidence', content: JSON.stringify(result), listing: [] };
+			}
+			if (args.kind === 'live_flow') {
+				if (Reflect.ownKeys(args).some(key => key !== 'kind')) throw new Error('live_flow accepts only kind');
+				let result = { status: 'unavailable' };
+				try {
+					const snapshot = opts.liveFlow?.();
+					if (snapshot && typeof snapshot === 'object' && snapshot.edges && typeof snapshot.edges === 'object' && Number.isSafeInteger(snapshot.dropped) && snapshot.dropped >= 0) {
+						const edges = {};
+						for (const id of ['e2', 'e3', 'e4', 'e6', 'e7', 'e9', 'e10', 'e11', 'e12', 'e14', 'e15']) {
+							const edge = snapshot.edges[id];
+							if (edge && ['active', 'finished', 'failed', 'unknown'].includes(edge.phase) && Number.isFinite(edge.at) && Number.isFinite(edge.expiresAt)) {
+								edges[id] = { phase: edge.phase, at: edge.at, expiresAt: edge.expiresAt };
+								if (id === 'e10' && (edge.source === 'disk' || edge.source === 'cache')) edges[id].source = edge.source;
+							}
+						}
+						result = { status: 'available', edges, dropped: snapshot.dropped };
+					}
+				} catch { /* Instrumentation is optional. */ }
+				return { found: result.status === 'available', path: 'live-flow', content: JSON.stringify(result, null, 2), listing: [] };
+			}
+			if (args.kind === 'operation') {
+				if (Reflect.ownKeys(args).some(key => !['kind', 'request_id'].includes(key))) throw new Error('operation query accepts only kind and request_id');
+				const result = await readOperationRows({ root, requestId: args.request_id });
+				return { found: Array.isArray(result.rows) && result.rows.length > 0, path: '.write-ledger.jsonl', content: JSON.stringify(result), listing: [] };
+			}
+			if (args.kind === 'object_trace') {
+				// Read-only lifecycle trace. Serialized into `content` so the existing required
+				// { found, path, content, listing } schema stays unchanged for every consumer.
+				if (Reflect.ownKeys(args).some(key => !['kind', 'objectKey'].includes(key))) throw new Error('object_trace accepts only kind and objectKey');
+				const result = await traceObject({ root, objectKey: args.objectKey });
+				return { found: result.status === 'ok' || result.status === 'incomplete', path: 'object-trace', content: JSON.stringify(result), listing: [] };
+			}
+			if (args.kind === 'adoption_evidence') {
+				// Read-only, paged adoption verdicts for one object. Exposure/reads never
+				// appear here; safety fields keep goal/principle/governance unevaluated.
+				if (Reflect.ownKeys(args).some(key => !['kind', 'objectKey', 'cursor', 'limit'].includes(key))) throw new Error('adoption_evidence accepts only kind, objectKey, cursor and limit');
+				const result = await readAdoptionEvidence({ root, objectKey: args.objectKey, cursor: args.cursor, limit: args.limit });
+				return { found: Array.isArray(result.rows) && result.rows.length > 0, path: 'adoption-evidence', content: JSON.stringify(result), listing: [] };
+			}
 			if (args.kind === 'index') {
 				const p = path.join(root, 'MEMORY.md');
 				const text = await readIfExists(p);
@@ -1875,11 +2382,11 @@ function memoryUsageTool(opts) {
 	return defineTool({
 		name: 'memory_usage',
 		description:
-			'Record and read USAGE signals, the data that lets the memory sort itself. action=record logs one event against a memory file (kind: correction = the user corrected / rejected what was recalled or written; positive = explicit confirmation like "对了/就是这个"; recall/read are logged automatically). action=report aggregates the last N days per file and suggests a layer: 实验 (<3 uses), 专项 (>=3 uses + >=1 confirmation), 通用 (>=10 uses + >=2 confirmations + correction rate <20%). Uses count ENGAGEMENT only (read + verdicts): a recall injection is EXPOSURE, not use — counting it would let the plugin\'s own output inflate the popularity that decides what gets recalled next. Layers are suggestions for the model to act on — this tool never moves files.',
+			'Record and read usage signals. positive and correction are caller-declared signals with unauthenticated origin; they do not establish human confirmation or adoption. recall/read are logged automatically. The report aggregates signals and suggests heuristic layers: 实验 (<3 uses), 专项 (>=3 uses + >=1 positive), 通用 (>=10 uses + >=2 positives + correction rate <20%). Uses count reads and declared verdicts; recall counts as exposure. Layer suggestions do not verify outcomes, and this tool never moves files.',
 		parameters: {
 			action: { type: 'string', required: true, enum: ['record', 'report'], description: 'record=记一次信号；report=按天聚合出分层建议。' },
 			href: { type: 'string', description: 'record 必填：目标记忆文件，如 `functions/批印坊工程加固.md`、`insights/逐帧渲染取帧三闸.md`、`2026-10-18.md`、`daily/2026-10.md`（月归档）。' },
-			kind: { type: 'string', enum: ['correction', 'positive', 'recall', 'read'], description: 'record 必填：correction=用户纠正/否定，positive=用户明确认可，recall/read 一般由插件自动记录。' },
+			kind: { type: 'string', enum: ['correction', 'positive', 'recall', 'read'], description: 'record 必填：correction/positive 为调用方声明的纠正/正向信号，来源未认证；recall/read 一般由插件自动记录。' },
 			note: { type: 'string', description: 'record 强烈建议填写：一句话说明这次判定针对的是**哪件事**（例如用户原话）。它不只是备注——翻转计数靠它区分「同一结论被推翻」与「同一个文件被纠正了不同的事」；不写就只能按相邻判定猜，容易把无关纠正误报成结论不稳定。' },
 			days: { type: 'integer', description: 'report 的统计窗口（天，默认 30）。' },
 		},
@@ -1912,6 +2419,15 @@ function memoryUsageTool(opts) {
 						},
 					},
 					warnings: { type: 'array', required: true, items: { type: 'string' } },
+					scanStatus: { type: 'string', enum: ['complete', 'incomplete', 'unknown'] },
+					scanReasons: { type: 'array', items: { type: 'string' } },
+					invalidRows: { type: 'integer' },
+					invalidRowsLowerBound: { type: 'boolean' },
+					snapshot: { type: 'string', enum: ['unknown'] },
+					logicalCompleteness: { type: 'string', enum: ['unknown'] },
+					usageWritten: { type: 'boolean' },
+					bridgeStatus: { type: 'string', enum: ['appended', 'unconfirmed', 'invalid', 'legacy_unlinked', 'unknown'] },
+					correlationId: { type: 'string' },
 				},
 			},
 			render: (_args, v) => {
@@ -1921,23 +2437,52 @@ function memoryUsageTool(opts) {
 				if (v.action === 'record') {
 					return [{ type: 'text', text: v.warnings.length ? v.warnings.join('\n') : '已记录使用信号。' }];
 				}
-				if (!v.items.length) return [{ type: 'text', text: '还没有使用信号。信号来自召回注入、memory_read、以及你用 memory_usage(action=record) 记录的纠正/认可。' }];
-				const lines = [`近 ${v.days} 天使用信号（按实际触及排序；召回注入只算曝光，不算使用）：`];
+				if (!v.items.length) {
+					const status = v.scanStatus === 'complete' ? '所扫描范围内没有使用信号。' : '使用记录扫描不完整，无法判断是否有使用信号。';
+					return [{ type: 'text', text: [status, ...v.warnings.map((w) => `⚠ ${w}`)].join('\n') }];
+				}
+				const lines = [`近 ${v.days} 天使用信号（按触及排序；召回注入只算曝光）：`, 'positive/correction 为调用方声明，来源未认证；分层和比例仅作启发式参考。'];
 				for (const it of v.items) {
-					lines.push(`- [${it.layer}] ${it.href} · 触及 ${it.uses}（读 ${it.reads} + 判断 ${it.corrections + it.positives}）· 曝光 ${it.exposure}（召回 ${it.recalls}）· 纠正 ${it.corrections} · 认可 ${it.positives} · 纠正率 ${it.badRate}${it.flips ? ` · 翻转 ${it.flips}` : ''}`);
+					lines.push(`- [${it.layer}] ${it.href} · 触及 ${it.uses}（读 ${it.reads} + 判断 ${it.corrections + it.positives}）· 曝光 ${it.exposure}（召回 ${it.recalls}）· 纠正声明 ${it.corrections} · 正向声明 ${it.positives} · 纠正声明比例 ${it.badRate}${it.flips ? ` · 翻转 ${it.flips}` : ''}`);
 				}
 				for (const w of v.warnings) lines.push(`⚠ ${w}`);
 				lines.push('层只是建议：通用=可进默认推荐，专项=常规池，实验=仍在小范围验证。');
 				return [{ type: 'text', text: lines.join('\n') }];
 			},
 		},
-		presentCall: (args) => ({ card: 'generic', title: `Memory usage: ${args.action ?? ''}`, kind: 'other', rawInput: args }),
+		presentCall: (args) => {
+			const readString = (key) => {
+				try {
+					const value = args?.[key];
+					return typeof value === 'string' ? redactSecrets(value).text : undefined;
+				} catch { return undefined; }
+			};
+			const action = readString('action');
+			const kind = readString('kind');
+			const href = readString('href');
+			const note = readString('note');
+			let days;
+			try { if (typeof args?.days === 'number' && Number.isFinite(args.days)) days = args.days; } catch { /* Omit inaccessible values. */ }
+			const safeAction = action === 'record' || action === 'report' ? action : undefined;
+			const safeKind = ['positive', 'correction', 'read', 'recall'].includes(kind) ? kind : undefined;
+			const rawInput = { ...(safeAction ? { action: safeAction } : {}), ...(safeKind ? { kind: safeKind } : {}),
+				...(href !== undefined ? { href } : {}), ...(note !== undefined ? { note } : {}), ...(days !== undefined ? { days } : {}) };
+			return { card: 'generic', title: `Memory usage: ${safeAction ?? ''}`, kind: 'other', rawInput };
+		},
 		async execute(args, exec) {
 			const root = resolveRoot(opts);
 			const days = Math.min(Math.max(1, Number(args.days) || 30), 365);
 			const warnings = [];
 			if (args.action === 'record') {
+				const rawHref = typeof args.href === 'string' ? args.href : '';
 				const href = oneLine(args.href);
+				if (redactSecrets(rawHref).text !== rawHref || redactSecrets(href).text !== href) {
+					throw new Error('记忆路径无效。');
+				}
+				if ((args.kind === 'positive' || args.kind === 'correction') &&
+					(canonicalObjectKey(href) !== href || href.length > 256 || !rawHref.isWellFormed() || /[\u0000-\u001f\u007f]/.test(rawHref))) {
+					throw new Error('记忆路径无效，无法关联使用信号。');
+				}
 				// 5.27.0: a skill's own bundle is recordable too — the activate
 				// evidence gate reads positives on `skills/<name>/SKILL.md`, and until
 				// now the contract REJECTED exactly that href (hit twice in practice).
@@ -1952,11 +2497,41 @@ function memoryUsageTool(opts) {
 				if (skillM && !isSkillName(skillM[1])) throw new Error(`技能名必须是 kebab-case，收到：${skillM[1]}`);
 				const kind = ['correction', 'positive', 'recall', 'read'].includes(args.kind) ? args.kind : null;
 				if (!kind) throw new Error('kind 必须是 correction / positive / recall / read');
-				await appendUsage(root, { href, kind, note: oneLine(args.note ?? '') || undefined });
-				return { action: 'record', days, items: [], warnings: [`已记录：${kind} → ${href}${args.note ? `（${oneLine(args.note)}）` : ''}`] };
+				const note = redactSecrets(oneLine(args.note ?? '')).text || undefined;
+				const isVerdict = kind === 'positive' || kind === 'correction';
+				const correlationId = isVerdict ? randomUUID() : undefined;
+				const writeResult = await appendUsage(root, { href, kind, note, ...(correlationId ? { correlationId } : {}) });
+				if (!writeResult.ok) {
+					throw new Error(`使用信号写入未确认（${writeResult.code}）${correlationId ? `，关联 ID：${correlationId}` : ''}；可能已部分写入，未桥接治理。请先检查账本，禁止盲目重试。`);
+				}
+				let bridgeStatus;
+				if (isVerdict) {
+					try {
+						bridgeStatus = await recordCorrelatedAdoption(opts.ctx, { schemaVersion: 1, eventId: correlationId, objectKey: href, kind, note: note ?? '' });
+					} catch { bridgeStatus = 'unknown'; }
+				}
+				const source = isVerdict ? '（调用方声明，来源未认证）' : '';
+				warnings.push(`已记录：${kind} → ${href}${source}${note ? `（${note}）` : ''}`);
+				if (bridgeStatus === 'appended') warnings.push('关联桥接服务报告已追加；这不证明交付或人工采纳。');
+				if (bridgeStatus === 'legacy_unlinked') warnings.push('旧桥接服务报告已接受，但记录未关联；这不证明交付或人工采纳。');
+				if (bridgeStatus === 'invalid') warnings.push('⚠ 关联桥接输入被服务判为无效；使用信号已记录。');
+				if (bridgeStatus === 'unconfirmed' || bridgeStatus === 'unknown') warnings.push('⚠ 桥接结果未知或服务不可用；无法确认写入，也无法排除已经写入。请勿据此重试。');
+				return { action: 'record', days, items: [], warnings, ...(isVerdict ? { usageWritten: true, bridgeStatus, correlationId } : {}) };
 			}
-			const entries = await readUsage(root, days);
-			const items = summarizeUsage(entries).map((it) => ({
+			warnings.push('positive/correction 为调用方声明，来源未认证；不构成经核验的人工反馈或采纳证据。');
+			const scan = await scanUsage(root, { days });
+			const allowedReasons = new Set(['root_unavailable', 'legacy_unavailable', 'enumeration_limit', 'directory_unavailable',
+				'conflicting_sources', 'enumeration_failed', 'file_limit', 'byte_limit', 'source_changed', 'line_limit',
+				'truncated_tail', 'line_too_large', 'invalid_utf8', 'invalid_row', 'invalid_time', 'invalid_count', 'expanded_limit', 'source_unavailable']);
+			const scanReasons = [...new Set(scan.reasons.map((reason) => allowedReasons.has(reason) ? reason : 'other'))];
+			const scanMetadata = { scanStatus: scan.scanStatus, scanReasons, invalidRows: scan.invalidRows,
+				invalidRowsLowerBound: scan.invalidRowsLowerBound, snapshot: scan.snapshot, logicalCompleteness: scan.logicalCompleteness };
+			if (scan.scanStatus !== 'complete') {
+				warnings.push(`使用账本扫描不完整（${scan.scanStatus}；原因：${scanReasons.join('、') || 'unknown'}）；坏行至少 ${scan.invalidRows} 条，计数可能为下界；不提供分层或纠正率建议。`);
+				return { action: 'report', days, items: [], warnings, ...scanMetadata };
+			}
+			warnings.push('扫描为观察结果：snapshot=unknown、logicalCompleteness=unknown；不构成一致快照或账本完整性证明。');
+			const items = summarizeUsage(scan.entries).map((it) => ({
 				href: it.href,
 				uses: it.uses,
 				exposure: it.exposure,
@@ -1972,13 +2547,13 @@ function memoryUsageTool(opts) {
 			const hot = items.filter((it) => it.layer === '通用').length;
 			if (hot) warnings.push(`${hot} 条已达到「通用」建议线：可考虑在索引行里标明它是标配工具，或让它进默认推荐`);
 			const bad = items.filter((it) => it.uses >= 3 && it.badRate > 0.4);
-			for (const b of bad) warnings.push(`${b.href} 纠正率 ${Math.round(b.badRate * 100)}%（>40%）：先重构这条记忆，别继续往上叠迭代`);
+			for (const b of bad) warnings.push(`${b.href} 纠正声明比例 ${Math.round(b.badRate * 100)}%（>40%）：可复核这条记忆的使用信号`);
 			// Flips: confirmed then overturned (or the reverse). Two or more means the
 			// memory keeps changing verdicts — the content is unstable, not unlucky.
 			for (const f of items.filter((it) => it.flips >= 2)) {
-				warnings.push(`${f.href} 结论被反复推翻（翻转 ${f.flips} 次）：先查清到底哪个判断成立，再决定保留哪一版——反复推翻的记忆不能当依据`);
+				warnings.push(`${f.href} 声明信号出现 ${f.flips} 次翻转：可复核相关判断及其来源`);
 			}
-			return { action: 'report', days, items, warnings };
+			return { action: 'report', days, items, warnings, ...scanMetadata };
 		},
 	});
 }
@@ -2529,13 +3104,16 @@ function memorySagTool(opts) {
 	return defineTool({
 		name: 'memory_sag',
 		description:
-			'Second recall channel over the SAG-Wiki knowledge base (experimental layer) with two actions. action=search (default) returns matching BODIES, not just pointers — use it when you already decided you need content and would otherwise open several files. action=status reports the index state: which roots SAG watches, how many files each holds, and (when `file` is given) whether THAT memory is actually indexed right now. Use status after writing a memory when you need to know the write reached the index — a search cannot answer that by itself, because fast mode ALWAYS returns unrelated neighbours, so "hits > 0" proves nothing. Do NOT use this tool to decide whether a topic exists — pre-step index recall already does that for free, and SAG ranks daily logs highly (measured: 3 of 6 queries put a diary or an unrelated file first). Every passage is a LEAD from the experimental layer: verify with memory_read before quoting it as an established conclusion. When the service is unavailable this reports the concrete reason (no_key / network / timeout / http_xxx) instead of returning an empty list, so "cannot search" is never mistaken for "nothing recorded".',
+			'Second recall channel over the SAG-Wiki knowledge base (experimental layer) with two actions. action=search (default) returns matching BODIES, not just pointers — use it when you already decided you need content and would otherwise open several files. action=status reports the index state: which roots SAG watches, how many files each holds, and (when `file` is given) whether THAT memory is actually indexed right now. Use status after writing a memory when you need to know the write reached the index — a search cannot answer that by itself, because fast mode ALWAYS returns unrelated neighbours, so "hits > 0" proves nothing. Do NOT use this tool to decide whether a topic exists — pre-step index recall already does that for free, and SAG ranks daily logs highly (measured: 3 of 6 queries put a diary or an unrelated file first). Every passage is a LEAD from the experimental layer: verify with memory_read before quoting it as an established conclusion. Use optional `paths`/`exclude` to restrict a search to specific indexed roots/subdirectories when you already know the scope — this cuts unrelated hits without changing the default all-roots search. When the service is unavailable this reports the concrete reason (no_key / network / timeout / http_xxx) instead of returning an empty list, so "cannot search" is never mistaken for "nothing recorded".',
 		parameters: {
 			action: { type: 'string', enum: ['search', 'status'], description: 'search (default) = fetch passages; status = index state, and whether `file` is indexed.' },
 			query: { type: 'string', description: 'action=search: natural-language or keyword query. Chinese works (SAG segments with jieba).' },
 			limit: { type: 'integer', description: 'action=search: how many passages (default 3, max 10). 3 is usually ~1.5KB total.' },
+			paths: { type: 'array', items: { type: 'string' }, description: 'action=search: optional absolute roots/subdirs to restrict the search to (SAG indexed paths). Omit for all roots.' },
+			exclude: { type: 'array', items: { type: 'string' }, description: 'action=search: optional DIRECTORY scopes to exclude (SAG excludes whole scopes, not individual files).' },
 			file: { type: 'string', description: 'action=status: check whether THIS memory file is indexed. Give a path relative to the memory root (e.g. insights/失败被伪装成成功.md) or a phrase that only that file contains via `phrase`.' },
 			phrase: { type: 'string', description: 'action=status: a distinctive phrase from `file`, used to locate it. Required together with file for an exact per-file check.' },
+			includeDiskCount: { type: 'boolean', description: 'action=status: also count files on disk per root and report indexLag (bounded, read-only). Off by default.' },
 		},
 		output: {
 			schema: {
@@ -2560,6 +3138,8 @@ function memorySagTool(opts) {
 								path: { type: 'string', required: true },
 								status: { type: 'string', required: true },
 								indexedFiles: { type: 'integer' },
+								diskFiles: { type: 'integer', description: 'When includeDiskCount=true: bounded count of files on disk (null if unreadable).' },
+								indexLag: { type: 'integer', description: 'diskFiles - indexedFiles; null when either is unknown.' },
 							},
 						},
 					},
@@ -2595,7 +3175,12 @@ function memorySagTool(opts) {
 				if (v.action === 'status') {
 					const lines = [`SAG 索引状态${v.version ? `（v${v.version}）` : ''}${v.apiRunning ? ' · 服务在跑' : ' · 服务未运行'}：`];
 					for (const r of v.roots ?? []) {
-						lines.push(`- ${r.path} · ${r.status} · ${r.indexedFiles === null ? '文件数未知' : `${r.indexedFiles} 个文件`}`);
+						let line = `- ${r.path} · ${r.status} · ${r.indexedFiles === null ? '文件数未知' : `${r.indexedFiles} 个文件`}`;
+						if (r.diskFiles !== undefined) {
+							line += r.diskFiles === null ? ' · 磁盘数未知'
+								: ` · 磁盘 ${r.diskFiles} · ${r.indexLag === 0 ? '索引同步' : `索引差 ${r.indexLag > 0 ? '+' : ''}${r.indexLag}`}`;
+						}
+						lines.push(line);
 					}
 					if (v.indexed !== undefined) {
 						lines.push(
@@ -2621,7 +3206,7 @@ function memorySagTool(opts) {
 		async execute(args) {
 			// --- status: index state, and (optionally) whether one file is indexed ---
 			if (args.action === 'status') {
-				const st = await sagStatus();
+				const st = await sagStatus({ includeDiskCount: args.includeDiskCount === true });
 				if (!st.ok) return { ok: false, action: 'status', reason: st.reason ?? 'unknown' };
 				const out = {
 					ok: true,
@@ -2649,7 +3234,10 @@ function memorySagTool(opts) {
 			}
 			const q = oneLine(args.query);
 			const limit = Math.min(Math.max(1, Number(args.limit) || 3), 10);
-			const r = await sagSearch(q, { limit });
+			const scope = {};
+			if (Array.isArray(args.paths)) scope.paths = args.paths;
+			if (Array.isArray(args.exclude)) scope.exclude = args.exclude;
+			const r = await sagSearch(q, { limit, ...scope });
 			if (!r.ok) return { ok: false, action: 'search', reason: r.reason ?? 'unknown' };
 			return {
 				ok: true,
@@ -2667,6 +3255,20 @@ function memorySagTool(opts) {
 			};
 		},
 	});
+}
+
+// Mirror the first-table selection used by the capability index upsert.
+function capabilityIndexRow(text, name) {
+	const lines = text.split('\n');
+	const start = lines.findIndex(line => line.startsWith(CAP_TABLE_HEADING) || line.startsWith('## 能力台账（可用工具 / MCP / CLI）'));
+	if (start < 0) return undefined;
+	let i = start + 1;
+	while (i < lines.length && !lines[i].startsWith('## ') && !lines[i].startsWith('|')) i++;
+	if (i >= lines.length || !lines[i].startsWith('|')) return undefined;
+	for (i++; i < lines.length && lines[i].startsWith('|'); i++) {
+		if (rowSlug(lines[i]) === name) return lines[i];
+	}
+	return undefined;
 }
 
 function memoryCapabilityTool(opts) {
@@ -2806,9 +3408,14 @@ warnings: { type: 'array', required: true, items: { type: 'string' } },
 			const indexPath = path.join(root, 'MEMORY.md');
 			await withPathLock(indexPath, async () => {
 				let indexText = (await readIfExists(indexPath)) ?? memoryIndexTemplate();
+				const previousRow = capabilityIndexRow(indexText, name);
 				const row = `| [${name}](${CAP_DIR}/${name}.md) | ${summary} |`;
 				indexText = upsertIndexRow(indexText, CAP_TABLE_HEADING, CAP_TABLE_HEADER, name, row);
+				const committedRow = capabilityIndexRow(redactSecrets(indexText).text, name);
 				await writeText(indexPath, indexText);
+				if (committedRow !== undefined && committedRow !== previousRow) {
+					try { opts.observeCapabilityIndexed?.(); } catch { /* Instrumentation is optional. */ }
+				}
 				// Fresh index: the just-written row must be recallable on the next
 				// step, not up to 10s later (audit #10).
 				opts.dropRecallCaches?.();
@@ -2855,9 +3462,9 @@ function memorySkillTool(opts, hooks = {}) {
 	return defineTool({
 		name: 'memory_skill',
 		description:
-			'Crystallize a REPEATED, CONFIRMED operation into a callable procedure (the missing “use” step of the data flow: record → distill → promote → display → USE). A skill IS a host bundle under <dshHome>/skills/<kebab-name>/SKILL.md — the same directory the host `skill` tool loads and the panel shows; there is no memory-root copy. actions: candidates = which areas the usage signals nominate (pure aggregation: >=6 uses, >=1 confirmation, correction rate <20%, not already crystallized) — call it periodically and decide; crystallize = write that bundle from an area\'s proven steps (status=candidate); activate/retire = lifecycle transitions (activate only after the procedure was actually followed successfully; retire when the environment changed, the file stays as history); delete = remove the bundle and its index row (git is the only archive); list/read = what skills exist / full text. A skill answers “do it exactly like THIS” — distinct from capabilities/ (“what tool exists”) and insights/ (“what principle holds”). Scope (global/project) is the only metadata beyond the bundle name; the name itself is the kebab host name. WRITING the procedure MUST follow the skill-creator skill (load it via the `skill` tool: ~/.dsh/skills/skill-creator/): Step1 concrete examples → Step2 plan reusable contents → Step3 init_skill.py → Step4 imperative-style editing → Step5 quick_validate.py + package_skill.py → Step6 real-task iteration, with its Quality Bar applied (description <=80 words with a when-to-use trigger, use/do-not-use triggers, imperative style, machine-checkable rules, no dangling links, size budgets).',
+			'Crystallize a repeated operation into a callable procedure using caller-declared signals as unverified leads (the missing “use” step of the data flow: record → distill → promote → display → USE). A skill IS a host bundle under <dshHome>/skills/<kebab-name>/SKILL.md — the same directory the host `skill` tool loads and the panel shows; there is no memory-root copy. actions: candidates = which areas the usage signals nominate (pure aggregation: >=6 uses, >=1 caller-declared positive signal, correction rate <20%, not already crystallized; this does not authenticate a user or prove task success) — call it periodically and decide; crystallize = write that bundle from an area\'s proven steps (status=candidate); activate/retire = lifecycle transitions (automatic activation is unavailable until independently verified execution is bound to the skill version and task; retire when the environment changed, the file stays as history); delete = remove the bundle and its index row (git is the only archive); list/read = what skills exist / full text. A skill answers “do it exactly like THIS” — distinct from capabilities/ (“what tool exists”) and insights/ (“what principle holds”). Scope (global/project) is the only metadata beyond the bundle name; the name itself is the kebab host name. WRITING the procedure MUST follow the skill-creator skill (load it via the `skill` tool: ~/.dsh/skills/skill-creator/): Step1 concrete examples → Step2 plan reusable contents → Step3 init_skill.py → Step4 imperative-style editing → Step5 quick_validate.py + package_skill.py → Step6 real-task iteration, with its Quality Bar applied (description <=80 words with a when-to-use trigger, use/do-not-use triggers, imperative style, machine-checkable rules, no dangling links, size budgets).',
 		parameters: {
-			action: { type: 'string', required: true, enum: ['candidates', 'crystallize', 'activate', 'retire', 'list', 'read', 'delete'], description: 'candidates=看提名；crystallize=结晶一份技能；activate/retire=生命周期；delete=删除技能文件与索引行（不可恢复，git 是档案）；list/read=查。' },
+			action: { type: 'string', required: true, enum: ['candidates', 'crystallize', 'activate', 'retire', 'list', 'read', 'delete'], description: 'candidates=看提名；crystallize=结晶一份技能；activate/retire=生命周期；delete=删除技能文件与索引行（该动作因并发无损删除不可用而暂停，有效请求在写入前以 safe_delete_unavailable 失败）；list/read=查。' },
 			project: { type: 'string', description: 'list 可选：按项目 key 过滤（skill_scope --route 语义）——global 技能全保留，project 技能只留 scope_project 匹配的，无 scope 的不计入确定适用。' },
 			name: { type: 'string', description: 'crystallize/activate/retire/read 必填：技能名（文件名 slug）。' },
 			summary: { type: 'string', description: 'crystallize 必填：一句话用途（索引行与命中提示用）。' },
@@ -2950,7 +3557,7 @@ warnings: { type: 'array', required: true, items: { type: 'string' } },
 				// after every success, a ReferenceError here makes the host reject
 				// a disk write that DID land — silent-write + rejected-receipt,
 				// the 5.11.3 lesson recurring through an untested projection path).
-				if (v.action === 'crystallize') lines.push(`ℹ 技能目录包已写入 ${path.dirname(String(v.file ?? ''))}。请按 skill-creator 流程打磨正文（skill 工具加载 ~/.dsh/skills/skill-creator/：规划内容 → 祈使句编辑 → scripts 配套 → quick_validate.py 校验）；按真实任务跑通一次后用 memory_skill(activate) 转正，pre-step 会优先提示命中技能。`);
+				if (v.action === 'crystallize') lines.push(`ℹ 技能目录包已写入 ${path.dirname(String(v.file ?? ''))}。请按 skill-creator 流程打磨正文（skill 工具加载 ~/.dsh/skills/skill-creator/：规划内容 → 祈使句编辑 → scripts 配套 → quick_validate.py 校验）；自动转正暂不可用：需先具备绑定技能版本和任务的独立执行验收证据。`);
 				if (v.action === 'delete') lines.push('ℹ 文件与索引行已删除，宿主目录同步失效；历史只能从 git 恢复。');
 				return [{ type: 'text', text: lines.join('\n') }];
 			},
@@ -3196,26 +3803,11 @@ warnings: { type: 'array', required: true, items: { type: 'string' } },
 				const note = oneLine(args.note ?? '');
 				if (cur === to) throw new Error(`${name} 已是 ${to}`);
 				if (to === 'retired' && cur === 'candidate') warnings.push('candidate 直接 retired：未经使用即放弃，确认是否应保留观察');
-				// EVIDENCE GATE (5.27.0): promotion to active — the one state that
-				// enters recall as ⭐ "follow it, do not re-derive" and publishes to
-				// the host — must point at SOME use signal: a positive/read on the
-				// skill itself, or on the area it was distilled from. "Activate only
-				// after the procedure was actually followed" used to be prose only;
-				// the model can still carry it explicitly with `note` (recorded into
-				// the usage ledger — the body stays the current procedure).
+				// Caller signals and notes do not verify execution of this skill version.
 				if (to === 'active') {
-					const usageItems = summarizeUsage(await readUsage(root));
-					const own = usageItems.find((u) => u.href === `skills/${name}/SKILL.md`);
-					const fromArea = srcsOfExisting(text).some((h0) => {
-						const u = usageItems.find((x) => x.href === h0);
-						return u && (u.positives > 0 || u.reads > 0);
-					});
-					if (!((own && (own.positives > 0 || own.recalls > 0)) || fromArea) && !note) {
-						throw new Error(`把 ${name} 转正需要证据：它（或来源功能域）还没有任何使用/认可以外信号。真跑通过就在 note 里写清哪次任务跑通（会记进台账），或先 memory_usage(record) 记一笔认可`);
-					}
-					if (!((own && (own.positives > 0 || own.recalls > 0)) || fromArea) && note) {
-						warnings.push('转正仅凭 note 声明（无机械使用信号）：note 已记入 .usage.jsonl 供事后审计');
-					}
+					const error = new Error(`${SKILL_ACTIVATION.reason}: ${name} 自动转正暂不可用；${SKILL_ACTIVATION.detail}。`);
+					error.code = SKILL_ACTIVATION.reason;
+					throw error;
 				}
 				const date = localDateStr();
 				// Update whichever status marker the file actually carries so the two
@@ -3248,6 +3840,10 @@ warnings: { type: 'array', required: true, items: { type: 'string' } },
 				if (!/^(?:true|1)$/i.test(String(parseSkillText(text).fields.agent_created ?? ''))) {
 					throw new Error(`${name} 不是本插件结晶的技能（缺 agent_created），删除请走它自己的来源渠道`);
 				}
+				// Name validation, the SKILL.md read and the ownership gate have run
+				// and keep their own messages; the recursive rm below is the first
+				// side effect, and the index row would follow it.
+				throw refuseLosslessDelete('memory_skill(delete)');
 				await rm(path.dirname(p), { recursive: true, force: true });
 				const indexPath = path.join(root, 'MEMORY.md');
 				await withPathLock(indexPath, async () => {
@@ -3289,7 +3885,7 @@ function memoryWriteTool(opts) {
 			sources: {
 				type: 'array',
 				items: { type: 'string' },
-				description: '调用方声明的每日记录日期列表（YYYY-MM-DD，去重）。任一日期的每日文件缺失或为空、或日期重复，整次写入被拒。只检查声明的文件存在且非空，不核验其相关性或是否实际读过；未声明时块内明确标“未声明素材”。',
+				description: '调用方声明的每日记录日期列表（YYYY-MM-DD，去重）。顶层每日文件非空，或顶层缺失时严格解析归档日节正文非空，才可接受；空、缺失或状态不确定及重复日期均拒绝。只检查有限读取结果，不核验相关性、真实性或是否实际读过；未声明时块内明确标“未声明素材”。',
 			},
 			cadenceException: {
 				type: 'string',
@@ -3331,7 +3927,7 @@ function memoryWriteTool(opts) {
 				];
 				if (v.resolvedDailyLogs.length) lines.push(`✅ 已勾掉待观察项：${v.resolvedDailyLogs.join('、')}`);
 				lines.push(v.sourceDays.length
-					? `📅 声明的素材日（仅检查文件存在且非空）：${v.sourceDays.join('、')}`
+					? `📅 调用方声明的素材日（仅检查顶层文件或归档日节非空，未核验相关性和真实性）：${v.sourceDays.join('、')}`
 					: '📅 素材日：未声明——产物无法核验蒸馏依据了哪些每日记录');
 				if (v.cadenceException) lines.push(`ℹ 豁免（调用方声明，未经核验）：${v.cadenceException}`);
 				lines.push('ℹ 索引行未自动写入——功能域稳定后用 memory_index 收进索引；本工具不改写每日原始记录，直接编辑的来源可能未知。');
@@ -3377,14 +3973,27 @@ function memoryWriteTool(opts) {
 				}
 			}
 			const verifiedSources = [];
-			const missingSources = [];
+			const rejectedSources = [];
 			for (const day of declaredSources) {
-				const text = await readIfExists(path.join(root, `${day}.md`));
-				if (typeof text === 'string' && text.trim()) verifiedSources.push(day);
-				else missingSources.push(day);
+				let text;
+				try { text = await readIfExists(path.join(root, `${day}.md`)); }
+				catch { rejectedSources.push(`${day}: unavailable`); continue; }
+				if (text !== undefined) {
+					if (typeof text === 'string' && text.trim()) verifiedSources.push(day);
+					else rejectedSources.push(`${day}: empty`);
+					continue;
+				}
+				let archived;
+				try { archived = await readArchivedDayStrict(root, day); }
+				catch { rejectedSources.push(`${day}: unavailable`); continue; }
+				if (archived?.status === 'found') verifiedSources.push(day);
+				else {
+					const allowed = new Set(['missing', 'empty', 'ambiguous', 'unavailable', 'invalid']);
+					rejectedSources.push(`${day}: ${allowed.has(archived?.status) ? archived.status : 'unknown'}`);
+				}
 			}
-			if (missingSources.length) {
-				throw new Error(`sources: 每日记录缺失或为空：${missingSources.join('、')}（声明不存在的素材等于伪造证据）`);
+			if (rejectedSources.length) {
+				throw new Error(`sources: 每日记录缺失或为空或状态未确认：${rejectedSources.join('、')}；未确认的日期不能作为本次写入素材。`);
 			}
 			const exceptionText = args.cadenceException === undefined ? '' : oneLine(args.cadenceException);
 			if (exceptionText && charLen(exceptionText) < 4) {
@@ -3451,7 +4060,7 @@ function memoryWriteTool(opts) {
 			// Provenance is part of the block, not a receipt-only field: the block is what
 			// survives in the repository and what a later reader can re-check.
 			const sourceLabel = verifiedSources.length
-				? `${verifiedSources.join('、')}（仅检查声明的每日文件存在且非空${verifiedSources.length < 3 ? '；声明少于 3 天' : ''}）`
+				? `${verifiedSources.join('、')}（仅检查调用方声明的顶层每日文件或归档日节非空，未核验相关性、真实性或是否读过${verifiedSources.length < 3 ? '；声明少于 3 天' : ''}）`
 				: '未声明（素材天数未知）';
 			bullets.push(`- **素材**：${sourceLabel}${exceptionText ? `（豁免：${exceptionText}；调用方声明，未经核验）` : ''}`);
 			if (args.change !== undefined && oneLine(args.change)) bullets.push(`- **改动**：${oneLine(args.change)}`);
@@ -4296,7 +4905,7 @@ function memoryRenameTool(opts) {
 	return defineTool({
 		name: 'memory_rename',
 		description:
-			'Rename or merge a function area (R10): move functions/<from>.md to functions/<to>.md, preserving source content when merging into an existing target, and update index, function and insight references. Historical daily logs are never rewritten, so their links may retain the old name. Report remaining dangling links; zero is not guaranteed.',
+			'Rename or merge a function area (R10): move functions/<from>.md to functions/<to>.md, preserving source content when merging into an existing target, and update index, function and insight references. Historical daily logs are never rewritten, so their links may retain the old name. Report remaining dangling links; zero is not guaranteed. NOTE: both rename and merge are temporarily unavailable because a concurrent lossless rename cannot be guaranteed; valid requests fail before any write with safe_rename_unavailable, while invalid input keeps its original error.',
 		parameters: {
 			from: { type: 'string', required: true, description: '现有功能域 slug。' },
 			to: { type: 'string', required: true, description: '目标 slug：不存在 = 重命名；已存在 = 合并（旧块追加到目标文件末尾）。' },
@@ -4339,11 +4948,16 @@ function memoryRenameTool(opts) {
 			const toText = await readIfExists(toPath);
 			const merging = toText !== undefined;
 			if (merging) {
-				const [a, b, realA, realB] = await Promise.all([stat(fromPath), stat(toPath), realpath(fromPath), realpath(toPath)]);
+				const [a, b, realA, realB] = await Promise.all([stat(fromPath, { bigint: true }), stat(toPath, { bigint: true }), realpath(fromPath), realpath(toPath)]);
 				if ((a.ino && b.ino && a.dev === b.dev && a.ino === b.ino) || realA === realB || (process.platform === 'win32' && realA.toLowerCase() === realB.toLowerCase())) {
 					throw new Error('from 与 to 指向同一文件，拒绝合并');
 				}
 			}
+
+			// Every read-only validation above has run and kept its own message;
+			// the first side effect (writeRenameTarget) is below. Refuse here so no
+			// target is created and nothing is partially committed.
+			throw refuseLosslessRename(merging ? 'memory_rename 合并' : 'memory_rename 改名');
 
 			// 1) move / merge content
 			let finalToText;
@@ -4462,6 +5076,119 @@ function memoryRenameTool(opts) {
 			};
 		},
 	});
+}
+
+/**
+ * memory_delete — delete one distilled result by layer.
+ * 法/术/器 (L1/L2/L3) self-delete into a per-zone archive (recoverable).
+ * 道 (L0) is refused here: its deletion requires the human panel confirmation.
+ * Index updates follow source deletion and are not crash-atomic with it.
+ */
+function removeDeletedIndexRows(text, zone, slug) {
+	const headings = {
+		functions: [FUNC_TABLE_HEADING], insights: [INSIGHT_TABLE_HEADING],
+		capabilities: [CAP_TABLE_HEADING, '## 能力台账（可用工具 / MCP / CLI）'],
+	};
+	const headers = { functions: ['功能域', '功能域摘要'], insights: ['思想主题'], capabilities: ['能力'] };
+	const lines = text.split('\n');
+	const definitions = lines.filter((line) => /^\s{0,3}\[[^\]]+\]:/.test(line)).join('\n');
+	const expected = eligibleIndexRows(`| [x](<${zone}/${encodeURIComponent(slug)}.md>) | x |`)[0]?.href;
+	let section = false, table = false, uncertain = 0;
+	const after = lines.filter((line, i) => {
+		if (/^##\s/.test(line)) { section = headings[zone].some((h) => line.startsWith(h)); table = false; return true; }
+		if (!section) return true;
+		if (!line.startsWith('|')) { table = false; return true; }
+		const cells = line.split('|');
+		const first = (cells[1] ?? '').trim();
+		if (headers[zone].includes(first) && /^\|\s*:?-+/.test(lines[i + 1] ?? '')) { table = true; return true; }
+		if (!table || /^:?-+:?$/.test(first)) return true;
+		// Only a single fully recognized link can establish row identity.
+		const linkPattern = /\[[^\]\r\n]+\](?:\[[^\]\r\n]*\]|\(\s*(?:<[^>\r\n]+>|(?:\\.|[^()\s\\])+)(?:\s+(?:"[^"\r\n]*"|'[^'\r\n]*'))?\s*\))/g;
+		const links = [...line.matchAll(linkPattern)];
+		const remainder = links.length === 1 ? line.replace(linkPattern, '') : line;
+		if (links.length !== 1 || /[\[\]!`\\<>]/.test(remainder) || /%(?![\da-f]{2})/i.test(links[0]?.[0] ?? '') || slug.includes('%')) {
+			uncertain++; return true;
+		}
+		const parsed = eligibleIndexRows(`${line}\n${definitions}`);
+		if (parsed.length !== 1 || !expected) { uncertain++; return true; }
+		return parsed[0].href !== expected;
+	}).join('\n');
+	return { text: after, uncertain };
+}
+
+function memoryDeleteTool(opts) {
+	return {
+		name: 'memory_delete',
+		description: 'Deletion is temporarily unavailable because archive and index updates lack a proven cross-process safe commit. Valid lower-layer requests fail with safe_delete_unavailable before writing. Dao (L0) is refused here.',
+		parameters: {
+			type: 'object',
+			additionalProperties: false,
+			required: ['zone', 'name'],
+			properties: {
+				zone: { type: 'string', enum: ['functions', 'insights', 'capabilities', 'dao'], description: '层分区：functions=术/L2、insights=法/L1、capabilities=器/L3、dao=道/L0（后者工具层拒绝）。' },
+				name: { type: 'string', description: '要删除的条目 slug（不含 .md、不含路径分隔符）。' },
+			},
+		},
+		output: {
+			schema: {
+				type: 'object', additionalProperties: false, required: ['deleted', 'source', 'archive', 'layer'],
+				properties: {
+					deleted: { type: 'boolean' }, source: { type: 'string' }, archive: { type: 'string' },
+					layer: { type: 'string' }, warnings: { type: 'array', items: { type: 'string' } },
+				},
+			},
+			render: (_args, v) => [{ type: 'text', text: `已删除 ${v.source}（${v.layer}，归档到 ${v.archive}）。${v.warnings?.length ? '\n⚠ ' + v.warnings.join('\n⚠ ') : ''}` }],
+		},
+		presentCall: (args) => ({ card: 'generic', title: `Delete memory: ${args?.zone ?? ''}/${args?.name ?? ''}`, kind: 'other', rawInput: args }),
+		async execute(args) {
+			const plan = planMemoryDelete({ zone: args?.zone, name: args?.name });
+			if (!plan.ok) {
+				const err = new Error(plan.message);
+				err.code = plan.code;
+				throw err;
+			}
+			const root = resolveRoot(opts);
+			const sourcePath = path.join(root, plan.source);
+			const archivePath = path.join(root, plan.archive);
+			// The note starts with a newline so the residue path can strip it by
+			// lastIndexOf('\n## 删除\n') exactly as the dao helper does.
+			const noteText = `\n\n## 删除\n\n- 时间：${new Date().toISOString()}\n- 层：${plan.layer}\n- 工具：memory_delete\n`;
+			let deletion;
+			try {
+				deletion = await deleteTrackedRenameFirst(root, {
+					sourcePath, archivePath, sourceKey: plan.source, archiveKey: plan.archive,
+					tool: 'memory_delete', noteText,
+				});
+			} finally { opts.dropRecallCaches?.(); }
+			const warnings = [];
+			if (deletion.quarantined) {
+				warnings.push(`归档原本已存在且内容一致；残留源已隔离到 ${deletion.quarantined} 保留字节，未覆盖历史归档。`);
+			}
+			// Index cleanup is a SEPARATE write from the atomic delete. The delete
+			// has already committed; a failure here must not be reported as a failed
+			// delete, nor claim the index was updated when it was not.
+			const indexPath = path.join(root, 'MEMORY.md');
+			try {
+				await withPathLock(indexPath, async () => {
+					const before = await readIfExists(indexPath);
+					if (before === undefined) return;
+					const cleaned = removeDeletedIndexRows(before, plan.zone, plan.slug);
+					const after = cleaned.text;
+					if (cleaned.uncertain) warnings.push(`MEMORY.md 有 ${cleaned.uncertain} 行的目标无法唯一确认（unknown），已保留；请人工核对。`);
+					if (after.includes(plan.source)) warnings.push(`MEMORY.md 仍有对 ${plan.source} 的引用；仅删除已识别的索引行，请人工核对其余引用。`);
+					if (after !== before) {
+						if (redactSecrets(after).text !== after) throw new Error('索引含需脱敏内容，拒绝因清理而改动其他内容');
+						await writeText(indexPath, after, { memoryRoot: root });
+					}
+				});
+			} catch (cause) {
+				warnings.push(`归档 ${plan.archive} 已写入，源 ${plan.source} 已删除并记账；MEMORY.md 更新未确认，请手工清理索引（不要盲目重试删除）。${cause?.message ?? String(cause)}`);
+			} finally {
+				opts.dropRecallCaches?.();
+			}
+			return { deleted: true, source: plan.source, archive: plan.archive, layer: plan.layer, warnings };
+		},
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -5074,7 +5801,7 @@ function memoryIndexTool(opts) {
 const DISCIPLINE_TEXT = [
 	'## 持久记忆纪律（memory-manager）',
 	'',
-	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十五个工具：memory_read / memory_search / memory_sag / memory_capability / memory_write / memory_index / memory_insight / memory_dao / memory_fold / memory_rename / memory_check / memory_usage / memory_federation / memory_skill / memory_inbox；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向五层，每层只吃上一层的产出**：',
+	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十七个工具：memory_read / memory_retention_inventory / memory_search / memory_sag / memory_capability / memory_write / memory_index / memory_insight / memory_dao / memory_fold / memory_rename / memory_delete / memory_check / memory_usage / memory_federation / memory_skill / memory_inbox；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向五层，每层只吃上一层的产出**：',
 	'',
 	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 可由 agent 使用编辑工具记录；每天留意有价值的判断、取舍、经验、踩坑因果和待验证事项，没有值得记录的内容时不强制当天有条目。粗粒度筛选：**执行式日志（常规命令输出、PID、退出码、耗时流水）不要抄**，理解关键因果必需的细节可少量保留；不补造历史，不记录凭据。直接编辑不等于插件采集或来源认证，也不自动脱敏；来源不明时如实标记未知，可能触发 R26 对账或采集基线不匹配，不得补造账本。插件用户消息采集默认关闭，开启后只采集符合条件的用户原话并脱敏、截断，不自动记录助手判断，也不保证来源认证或完整性；未启用时如实说明采集缺口。其他记忆层仍按各自插件工具与保护机制写入。',
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一个 functions/<功能域>.md 迭代块 = **≥3 个主题相关素材日的综合结论**（蒸馏结论：动因/改动/判据/待观察 各一句；2026-11-09 用户要求：不以单日为单位蒸馏，单日事件多是过程片段，多天的演化/反复/被推翻才值得归档）。**素材日由 agent 围绕主题检索推理挑选**（memory_search 全库找相关日，可不连续、可跨周月），不是机械取最近 3 天——选证据关联不选日历相邻，块内说明为何选这些日。相关素材不足 3 天先积累不蒸馏（周检是天然时机）；用户显式要求或踩坑因果/安全约束可豁免，块内注明素材日期与理由。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
@@ -5296,7 +6023,7 @@ async function overviewPayload(root, opts) {
 	const usageSources = [];
 	let liveLines = 0;
 	for (const uf of await usageFiles(root)) {
-		const text = (await readIfExists(uf.file)) ?? '';
+		const text = await readFile(uf.file, 'utf8');
 		const lines = text.split('\n').filter((line) => line.trim());
 		for (const line of lines) usageLines.push(line);
 		// A shard under `.usage/` is the live path; the root `.usage.jsonl` is the
@@ -5326,14 +6053,16 @@ async function overviewPayload(root, opts) {
 			/* corrupt line — counted in the total, not in the breakdown */
 		}
 	}
-	let indexRows = 0;
-	let indexBytes = 0;
+	let indexRows = null;
+	let indexBytes = null;
 	try {
-		const idxText = (await readIfExists(path.join(root, 'MEMORY.md'))) ?? '';
-		indexRows = idxText.split('\n').filter((l) => /^\|\s*[^|\s]/.test(l) && !/^\|\s*:?-{2,}/.test(l) && !/^\|\s*(功能域|思想主题|技能|验收项|编号|规则|资产)/.test(l)).length;
-		indexBytes = byteLen(idxText);
+		const idxText = await readIfExists(path.join(root, 'MEMORY.md'));
+		if (idxText !== null && idxText !== undefined) {
+			indexRows = idxText.split('\n').filter((l) => /^\|\s*[^|\s]/.test(l) && !/^\|\s*:?-{2,}/.test(l) && !/^\|\s*(功能域|思想主题|技能|验收项|编号|规则|资产)/.test(l)).length;
+			indexBytes = byteLen(idxText);
+		}
 	} catch {
-		/* fresh root */
+		// A missing or unreadable index is not an empty index.
 	}
 	const env = {
 		version: opts.version ?? '',
@@ -5352,6 +6081,22 @@ async function overviewPayload(root, opts) {
 	const sagEndpoint = readSagEndpoint();
 	const sagKey = resolveSagApiKey();
 	const sagStatus = await sagPing({ endpoint: sagEndpoint.endpoint, apiKey: sagKey.key ?? null }).catch(() => ({ online: false, authorized: null }));
+	// Live architecture-edge verdicts. Recomputed on EVERY overview call (including
+	// each SSE push) from the real stores, using the same classifier as the CLI.
+	// A failure is reported, never turned into an empty "nothing running" result.
+	const edgeStatus = (() => {
+		try {
+			const edges = classifyEdges(collectFacts({ dshHome: dshHome() }));
+			const graphEdges = [...new Set(edges.map((e) => e.graphEdge))];
+			const runningGraphs = new Set(edges.filter((e) => e.status === 'running').map((e) => e.graphEdge));
+			const historicalGraphs = new Set(edges.filter((e) => e.status === 'observed' && e.evidenceScope === 'historical').map((e) => e.graphEdge));
+			return { status: 'available', at: Date.now(), edges,
+				runningGraphs: [...runningGraphs], graphEdgeCount: graphEdges.length,
+				runningGraphCount: runningGraphs.size, historicalGraphs: [...historicalGraphs], historicalGraphCount: historicalGraphs.size };
+		} catch {
+			return { status: 'unavailable', at: Date.now(), edges: [] };
+		}
+	})();
 	return {
 		...health,
 		title: '全局记忆',
@@ -5378,6 +6123,16 @@ async function overviewPayload(root, opts) {
 		},
 		capture: capture ? { ...capture, intentWitness: await inspectCaptureIntent(root) } : null,
 		cycleCoverage: await cycleCoverageProjection(opts.ctx),
+		edgeStatus,
+		liveFlow: (() => { try { return opts.liveFlow?.() ?? null; } catch { return null; } })(),
+		closureEvidence: (() => {
+			try {
+				if (typeof opts.closureReport !== 'function') return { status: 'unavailable' };
+				// No taskId/review here: automatic observation only. Correlation and
+				// human review are supplied by a person in the loop at query time.
+				return { status: 'available', ...opts.closureReport({}) };
+			} catch { return { status: 'unavailable' }; }
+		})(),
 		patrolDelivery: opts.patrolDelivery?.() ?? { status: 'unavailable' },
 		runtimeSnapshot: await opts.runtimeSnapshot(),
 		env,
@@ -5413,64 +6168,137 @@ function streamPanel(res, root, opts) {
 		// Disable proxy buffering so an event arrives when it happens.
 		'x-accel-buffering': 'no',
 	});
-	const send = (event, data) => {
-		try {
-			res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-		} catch {
-			/* client vanished mid-write; the close handler cleans up */
+	// Bound both queued frames and Node's writable buffer; never discard an ordered event.
+	const maxBufferedBytes = 1024 * 1024;
+	const byteLength = text => typeof Buffer === 'undefined' ? unescape(encodeURIComponent(text)).length : Buffer.byteLength(text);
+	let queue = [];
+	let queuedBytes = 0;
+	let blocked = false;
+	const flush = () => {
+		while (!closed && !blocked && queue.length) {
+			const frame = queue.shift();
+			queuedBytes -= byteLength(frame);
+			try { blocked = res.write(frame) === false; } catch { close(); }
 		}
 	};
+	const send = (event, data) => {
+		if (closed) return;
+		try {
+			const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+			const size = byteLength(frame);
+			if (size + queuedBytes + (res.writableLength || 0) > maxBufferedBytes) { close(); return; }
+			queue.push(frame);
+			queuedBytes += size;
+			flush();
+		} catch { close(); }
+	};
+	const onDrain = () => { blocked = false; flush(); };
 	let closed = false;
 	let lastHash = '';
 	let timer = null;
 	let heartbeat = null;
+	let pending = false;
+	let lastSuccessAt = 0;
+	let needsFreshOverview = false;
+	let unsubscribe = null;
+	let flowAvailable = false;
+	const flowStatus = available => {
+		flowAvailable = available;
+		send('flow-status', available ? { available: true } : { available: false, fallback: 'snapshot' });
+	};
+	const sendFlow = snapshot => {
+		if (closed) return;
+		if (snapshot == null) { flowStatus(false); return; }
+		if (!flowAvailable) flowStatus(true);
+		send('flow', snapshot);
+	};
+	const sampleFlow = () => {
+		if (closed || typeof unsubscribe !== 'function') return;
+		try {
+			if (typeof opts.liveFlow !== 'function') throw new Error('unavailable');
+			sendFlow(opts.liveFlow());
+		} catch { flowStatus(false); }
+	};
 
 	const tick = async () => {
-		if (closed) return;
+		if (closed || pending) return;
+		pending = true;
 		try {
 			const payload = await overviewPayload(root, opts);
+			if (closed) return;
+			lastSuccessAt = Date.now();
 			// JSON.stringify order is stable for the same source object shape, so the
 			// digest is a reliable "did anything change" signal.
-			const text = JSON.stringify(payload);
-			if (text !== lastHash) {
+			// The collection timestamp changes on every sample and is not a fact change.
+			const { liveFlow: _liveFlow, ...overview } = payload;
+			const digestPayload = overview.edgeStatus ? { ...overview, edgeStatus: { ...overview.edgeStatus, at: undefined } } : overview;
+			const text = JSON.stringify(digestPayload);
+			if (text !== lastHash || needsFreshOverview) {
 				lastHash = text;
+				needsFreshOverview = false;
 				send('overview', payload);
 			}
 		} catch (err) {
 			// Report the failure instead of silently going quiet: a dead monitor that
 			// looks merely idle is the worst of both worlds.
-			send('error', { message: String(err?.message ?? err) });
+			lastSuccessAt = 0;
+			lastHash = '';
+			if (!closed) send('snapshot-error', { message: String(err?.message ?? err) });
+		} finally {
+			pending = false;
 		}
 	};
-
-	tick();
-	timer = setInterval(tick, 2000);
-	heartbeat = setInterval(() => {
-		if (!closed) {
-			try {
-				res.write(': keep-alive\n\n');
-			} catch {
-				/* ignore */
-			}
-		}
-	}, 20000);
-	// Never hold the host process open for a stream.
-	timer.unref?.();
-	heartbeat.unref?.();
 
 	const close = () => {
 		if (closed) return;
 		closed = true;
 		clearInterval(timer);
 		clearInterval(heartbeat);
-		try {
-			res.end();
-		} catch {
-			/* already ended */
-		}
+		try { unsubscribe?.(); } catch { /* Optional instrumentation cleanup. */ }
+		res.off?.('close', close);
+		res.off?.('error', close);
+		res.off?.('drain', onDrain);
+		queue = [];
+		queuedBytes = 0;
+		opts.streamClosers?.delete(close);
+		try { res.end(); } catch { /* Already ended. */ }
 	};
 	res.on?.('close', close);
 	res.on?.('error', close);
+	res.on?.('drain', onDrain);
+	if (opts.streamsDisposed) { close(); return; }
+	opts.streamClosers?.add(close);
+	try {
+		if (typeof opts.subscribeLiveFlow !== 'function') throw new Error('unavailable');
+		unsubscribe = opts.subscribeLiveFlow(snapshot => { try { if (typeof opts.liveFlow === 'function') sendFlow(snapshot); } catch { /* Optional instrumentation. */ } });
+		if (closed) {
+			try { unsubscribe?.(); } catch { /* Optional instrumentation cleanup. */ }
+			return;
+		}
+		if (typeof unsubscribe !== 'function') throw new Error('unavailable');
+		sampleFlow();
+	} catch {
+		try { if (typeof unsubscribe === 'function') unsubscribe(); } catch { /* Optional instrumentation cleanup. */ }
+		unsubscribe = null;
+		flowStatus(false);
+	}
+
+	if (closed) return;
+	tick();
+	timer = setInterval(tick, 2000);
+	heartbeat = setInterval(() => {
+		if (!closed) {
+			sampleFlow();
+			if (closed) return;
+			const snapshotFresh = lastSuccessAt > 0 && Date.now() - lastSuccessAt < 90000;
+			if (!snapshotFresh) needsFreshOverview = true;
+			send('heartbeat', { snapshotFresh });
+		}
+	}, 20000);
+	// Never hold the host process open for a stream.
+	timer.unref?.();
+	heartbeat.unref?.();
+
 }
 
 /**
@@ -5757,6 +6585,9 @@ function memoryPanelApi(opts, connection, inbox) {
 				if (action === 'delete') {
 					// 删除 = 用户明确不要这条。与 reject 的区别：reject 留档案（反例证据），
 					// delete 是「这条根本不该出现」（误写/重复）。
+					// Validation above is complete (name, action, candidate read); the
+					// unlink below is the first side effect.
+					throw refuseLosslessDelete('axiom-action:delete（删除候选）');
 					await deleteTrackedFile(root, candPath, text, { tool: 'axiom-action:delete' });
 					return json(res, 200, { message: `已删除候选 ${slug}` });
 				}
@@ -5768,6 +6599,9 @@ function memoryPanelApi(opts, connection, inbox) {
 						{ reason },
 					);
 					if (!r.ok) return json(res, 400, { error: r.reason });
+					// The archive mkdir below is the first side effect; the source is
+					// then unlinked by the same unsafe path-based delete.
+					throw refuseLosslessDelete('axiom-action:reject（否决候选）');
 					// 否决：候选文件移到 _candidates/_rejected/，保留证据但不占待决策队列。
 					const rejDir = path.join(candDir, '_rejected');
 					await mkdir(rejDir, { recursive: true });
@@ -5820,6 +6654,10 @@ function memoryPanelApi(opts, connection, inbox) {
 				}
 				// 保留候选正文的全部章节和字节；来源与后续记录原样保留。
 				const daoText = `# 道 · ${slug}\n\n> 由候选公理经用户确认转正（${c.axiom.confirmed_at}）。\n\n## 命题\n\n${proposition}\n\n${candidateBody}${text.slice(bodyEnd)}`;
+				// All validations above have run and kept their messages. The target
+				// creation below is the first side effect, and the candidate is then
+				// unlinked by the same unsafe path-based delete; refuse before both.
+				throw refuseLosslessDelete('axiom-action:confirm（候选转正）');
 				try {
 					await writeTrackedPanelFile(root, targetPath, daoText, { exclusive: true, tool: 'axiom-action:confirm' });
 				} catch (err) {
@@ -5846,30 +6684,14 @@ function memoryPanelApi(opts, connection, inbox) {
 				const slug = safeSlug(body?.name);
 				if (!slug) return json(res, 400, { error: 'name 必填' });
 				const daoPath = path.join(root, 'dao', `${slug}.md`);
-				let text;
-				try {
-					text = await readFile(daoPath, 'utf8');
-				} catch {
-					return json(res, 404, { error: `道条目不存在：${slug}` });
-				}
+				try { await readFile(daoPath, 'utf8'); }
+				catch { return json(res, 404, { error: `道条目不存在：${slug}` }); }
 				const delDir = path.join(root, 'dao', '_deleted');
-				// 归档失败必须中止，确保原文仍在；删除失败也不能报告成功。
-				await mkdir(delDir, { recursive: true });
-				try {
-					await writeTrackedPanelFile(root, path.join(delDir, `${slug}.md`), `${text.trimEnd()}\n\n## 删除\n\n- 时间：${new Date().toISOString()}\n- 来源：面板手动删除\n`, { exclusive: true, tool: 'dao-action:delete' });
-				} catch (err) {
-					if (err?.code === 'EEXIST') {
-						const existing = await stat(path.join(delDir, `${slug}.md`));
-						if (existing.isFile()) return json(res, 409, { error: `已有同名历史归档：${slug}；为保护历史，本次未删除正式道` });
-					}
-					throw err;
-				}
-				await deleteAfterPanelCopy(root, daoPath, text, { tool: 'dao-action:delete', to: `dao/_deleted/${slug}.md` });
-				return json(res, 200, {
-					message: `已删除道 · ${slug}（已留档到 dao/_deleted/）`,
-					archived: `dao/_deleted/${slug}.md`,
-					note: 'MEMORY.md 里指向这条的道层行需要手工删除——索引由 memory_index 维护，面板不改索引。',
-				});
+				// Auth, method, name and the existing DAO read have all run above.
+				// The helper owns the atomic rename and the R26 receipt; it returns
+				// the direct HTTP response for every outcome, including 404/409.
+				const deletion = await deleteDaoRenameFirst(root, daoPath, path.join(delDir, `${slug}.md`), slug);
+				return json(res, deletion.status, deletion.body);
 			}
 			if (seg === 'skill-action') {
 				if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
@@ -5959,7 +6781,7 @@ function memoryPanelApi(opts, connection, inbox) {
 				}
 				memory.sort((a, b) => a.name.localeCompare(b.name));
 				host.sort((a, b) => a.name.localeCompare(b.name));
-				return json(res, 200, { memory, host });
+				return json(res, 200, { memory, host, activation: SKILL_ACTIVATION });
 			}
 			// One stored skill's bundle: the SERVER resolves it from the known roots;
 			// the request only names the skill directory. No paths travel in.
@@ -6020,7 +6842,9 @@ function memoryPanelApi(opts, connection, inbox) {
 			}
 			if (seg === 'list') {
 				const zone = url.searchParams.get('zone');
-				if (!SEARCH_ZONES.includes(zone)) return json(res, 400, { error: 'invalid zone' });				// 5.24.0: skills are host bundles, not memory-root files. The panel
+				// The panel reads the skill library from /list?zone=skills too, so this
+				// route must accept `skills` even though it is not a search zone.
+				if (![...SEARCH_ZONES, 'skills'].includes(zone)) return json(res, 400, { error: 'invalid zone' });				// 5.24.0: skills are host bundles, not memory-root files. The panel
 				// skill zone IS the library endpoint (/skills); /list?zone=skills
 				// keeps answering with bundle SKILL.md rows so an older caller
 				// reading the list zone still gets real rows.
@@ -6255,21 +7079,26 @@ export function apply(ctx, config, dependencies = {}) {
 		reload: () => selfReload(ctx, { logger: ctx.logger ?? console }),
 	};
 
+	// Cordis owns this provision and removes it with this plugin's fiber.
+	// Resolve the root from host configuration only; callers supply only an ID.
+	if (typeof ctx.provide === 'function' && !ctx.get?.('memoryUsageCorrelation', false)) {
+		ctx.provide('memoryUsageCorrelation', {
+			readUsageCorrelation: (id) => readUsageCorrelation(resolveRoot(opts), id),
+		});
+	}
+
+	opts.streamClosers = new Set();
 	opts.runtimeSnapshot = createRuntimeSnapshotProjection(ctx);
 
 	// Instance-local observations only; no event, inbox post or durable data.
 	const captureStatus = createCaptureStatus({ enabled: opts.captureUserTurns });
 	opts.captureStatus = () => captureStatus.snapshot();
 
-	// —— 每日按月归档定时器（2026-11-13 用户启用）——
-	//
-	// 启动 60s 后首跑、每 6h 一次（0 关闭）。归档只处理**非当月**的顶层日文件，
-	// 当月文件永不触碰；写入走 writeText 记账、删除走 delete_intent/delete 配对，
-	// 失败保留源文件。withMemoryRootTransaction 与其他写入共享同进程根队列；
-	// 失败只记本实例状态，不投递收件箱（体检 R10/R21/R26 会对归档结果对账）。
-	// disposers 数组在下方才初始化，定时器清理器先暂存、注册时再并入。
+	// Automatic daily archive is paused by the shared capability constant.
+	// Its source deletion is unsafe against concurrent external writers.
 	const archiveDisposers = [];
-	if (opts.dailyArchiveFirstDelayMs > 0 && opts.dailyArchiveIntervalMs > 0) {
+	// The scheduler is paused until cross-process source deletion is safe.
+	if (AUTO_DAILY_ARCHIVE_ENABLED && opts.dailyArchiveFirstDelayMs > 0 && opts.dailyArchiveIntervalMs > 0) {
 		let archiveBusy = false;
 		// 进程内 1h 节流：热重载/多实例会重复 apply()，每个新实例都有自己的
 		// 60s 定时器；Symbol.for 级时间戳让同进程内的所有实例共享一个节流窗，
@@ -6284,7 +7113,7 @@ export function apply(ctx, config, dependencies = {}) {
 			globalThis[ARCHIVE_LAST_RUN] = Date.now();
 			void withMemoryRootTransaction(resolveRoot(opts), async () => {
 				const root = resolveRoot(opts);
-				await archiveDailyMonths(root);
+				await (dependencies.archiveDailyMonths ?? archiveDailyMonths)(root);
 				// Same cadence, same transaction: shrink CLOSED usage months. Recall
 				// rows fold into per-(href, day) counts (exposure number preserved),
 				// reads/corrections stay verbatim. Never touches the current or the
@@ -6302,8 +7131,7 @@ export function apply(ctx, config, dependencies = {}) {
 	}
 
 	// —— .stage/ 孤儿清扫（2026-11-13）——
-	// 暂存 deferred 时路径保留（内容已清零），靠启动清扫兜底：超龄（7 天）
-	// 视为崩溃遗留按名删除；目录插件独占 + uuid 命名覆盖风险面。失败忽略。
+	// Unverified old stages are retained; age alone does not prove ownership.
 	const sweepTimer = setTimeout(() => {
 		void sweepStaleStages(resolveRoot(opts)).catch(() => {});
 	}, 30_000);
@@ -6332,20 +7160,53 @@ export function apply(ctx, config, dependencies = {}) {
 	// `layer` is the memory layer the write lands on: 术 functions=L2,
 	// 法 insights=L1, 道 dao=L0. Others are recorded as L2 (default layer).
 	const WRITE_LAYERS = { memory_write: 'L2', memory_insight: 'L1', memory_dao: 'L0', memory_capability: 'L2', memory_index: 'L2' };
+	const writeContext = (tool, args) => {
+		const candidate = tool === 'memory_dao' && args?.status === 'candidate';
+		const mapping = {
+			memory_write: ['function', 'functions', args?.feature, 'write'],
+			memory_insight: ['insight', 'insights', args?.theme, 'write'],
+			memory_dao: [candidate ? 'dao_candidate' : 'dao', candidate ? 'dao/_candidates' : 'dao', args?.name, candidate ? 'candidate' : 'active'],
+			memory_capability: ['capability', 'capabilities', args?.name, 'record'],
+			memory_index: ['index_entry', args?.zone === 'insights' ? 'insights' : 'functions', args?.name, 'upsert'],
+		};
+		const [kind, directory, raw, tool_action] = mapping[tool];
+		let target = null;
+		try {
+			// Use execution's canonical slug; failure here must not replace its validation.
+			if (typeof raw !== 'string') throw new Error('Invalid identity type');
+			if (tool === 'memory_index' && !['functions', 'insights'].includes(args?.zone)) throw new Error('Invalid index zone');
+			if (tool === 'memory_dao' && args?.status !== undefined && !['active', 'candidate'].includes(args.status)) throw new Error('Invalid dao status');
+			const key = `${directory}/${safeSlug(raw)}.md`;
+			if (Buffer.byteLength(key, 'utf8') <= 1024) target = { kind, key };
+		} catch { /* Invalid identities remain unknown until execution validates them. */ }
+		return {
+			schema_version: 2, source: 'dsh-memory-manager', event: 'write_admission', mode: 'observational',
+			request_id: currentOperationId(),
+			tool, tool_action, target, origin_basis: 'bridge_default',
+			execution_result: 'not_observed', adoption: 'not_observed',
+		};
+	};
 	const transactionTool = (tool) => ({
 		...tool,
-		execute: async (args, exec) => {
+		execute: async (args, exec) => withOperationContext(async () => {
 			if (WRITE_LAYERS[tool.name] !== undefined
 				&& (tool.name !== 'memory_capability' || args?.action === 'record')
 				&& (tool.name !== 'memory_dao' || args?.status !== 'list_candidates')) {
-				try { recordDownwardWrite(ctx, { tool: tool.name, layer: WRITE_LAYERS[tool.name], target: String(args?.feature ?? args?.theme ?? args?.name ?? tool.name) }); }
+				try {
+					recordDownwardWrite(ctx, {
+						tool: tool.name, layer: WRITE_LAYERS[tool.name],
+						target: String(args?.feature ?? args?.theme ?? args?.name ?? tool.name),
+						write_context: writeContext(tool.name, args),
+					});
+				}
 				catch { /* bookkeeping never blocks the write */ }
 			}
-			return withMemoryRootTransaction(resolveRoot(opts), () => tool.execute(args, exec));
-		},
+			return await withMemoryRootTransaction(resolveRoot(opts), () => tool.execute(args, exec));
+		}),
 	});
 	const disposers = [
 		ctx.tools.register(transactionTool(memoryReadTool(opts))),
+		ctx.tools.register(memoryRetentionInventoryTool(opts)),
 		ctx.tools.register(memorySearchTool(opts)),
 		// Second recall channel: bodies from the SAG experimental layer.
 		ctx.tools.register(memorySagTool(opts)),
@@ -6356,6 +7217,7 @@ export function apply(ctx, config, dependencies = {}) {
 		ctx.tools.register(transactionTool(memoryDaoTool(opts))),
 		ctx.tools.register(transactionTool(memoryFoldTool(opts))),
 		ctx.tools.register(transactionTool(memoryRenameTool(opts))),
+		ctx.tools.register(transactionTool(memoryDeleteTool(opts))),
 		ctx.tools.register(memoryCheckTool(opts, inbox)),
 		ctx.tools.register(transactionTool(memoryUsageTool(opts))),
 		ctx.tools.register(memoryFederationTool(opts)),
@@ -6424,6 +7286,37 @@ export function apply(ctx, config, dependencies = {}) {
 	// fs/*-intent 是 first-wins 单槽，已有监听器会让后续守卫不执行。
 	// tools/execute 是包裹式流水线，检查后调用 next 才进入工具本体。
 	// 仅覆盖调度的 write/edit，不拦 shell 或其他写入方式。
+	// Observations must never change the execution pipeline or its final result.
+	if (typeof ctx.on === 'function') {
+		let stopExecute;
+		let stopResult;
+		try {
+			const flow = (dependencies.createLiveFlow ?? createLiveFlow)();
+			stopExecute = ctx.on('tools/execute', async (exec, next) => {
+				try { flow.start(exec); } catch { /* instrumentation is optional */ }
+				return await next();
+			});
+			stopResult = ctx.on('tools/result', (exec, result) => {
+				try { flow.finish(exec, result); } catch { /* instrumentation is optional */ }
+			});
+			opts.liveFlow = () => flow.snapshot();
+			// Automatic three-hop evidence observation. The review hop and task
+			// correlation are supplied by a person in the loop at query time,
+			// never inferred here; the stream never asserts the loop is closed.
+			const closureStream = (dependencies.createClosureStream ?? createClosureStream)({ flow });
+			opts.closureReport = params => closureStream.report(params);
+			if (typeof flow.subscribe === 'function') opts.subscribeLiveFlow = listener => flow.subscribe(listener);
+			if (typeof flow.recallJoined === 'function') opts.observeRecallJoined = () => flow.recallJoined();
+			if (typeof flow.indexMatched === 'function') opts.observeIndexMatched = source => flow.indexMatched(source);
+			if (typeof flow.capabilityIndexed === 'function') opts.observeCapabilityIndexed = () => flow.capabilityIndexed();
+			if (typeof stopExecute === 'function') disposers.push(stopExecute);
+			if (typeof stopResult === 'function') disposers.push(stopResult);
+		} catch {
+			try { if (typeof stopExecute === 'function') stopExecute(); } catch { /* optional listener */ }
+			try { if (typeof stopResult === 'function') stopResult(); } catch { /* optional listener */ }
+		}
+	}
+
 	if (typeof ctx.on === 'function') {
 		const guard = createWriteGuard(() => resolveRoot(opts), ctx, () => opts.skillRoot ? path.resolve(opts.skillRoot) : path.join(dshHome(), 'skills'));
 		disposers.push(ctx.on('tools/execute', guard));
@@ -6503,11 +7396,19 @@ export function apply(ctx, config, dependencies = {}) {
 	// 注入/暂缓/丢弃/预算用量。探针只读汇总，不落盘（曝光数据不是记忆）。
 	const RECALL_LEDGER_CAP = 50;
 	const recallLedger = [];
+	const rulesUnknownReported = new Set();
 	const recordRecall = (stats) => {
 		if (!stats) return;
 		recallLedger.push({ injected: stats.actualRows, strong: stats.injected, held: stats.held, dropped: stats.dropped, archives: stats.archives, rules: stats.rules, budget: stats.budget, used: stats.usedTokens,
 			omittedRows: stats.budgetOmitted.rows, omittedRepairs: stats.budgetOmitted.repairs, omittedHeld: stats.budgetOmitted.held, omittedArchives: stats.budgetOmitted.archives,
-			optionalBytes: stats.optionalBytes, renderFailures: stats.renderFailed ? 1 : 0 });
+			optionalBytes: stats.optionalBytes, mandatoryStatusBytes: stats.mandatoryStatusBytes, renderFailures: stats.renderFailed ? 1 : 0,
+			// Source classification is diagnostics only (no model-visible text).
+			// source.kind is a host declaration, not proof of a human identity.
+			// These counters cover ADMITTED/injected rounds only: a notification-only
+			// step with no matching rule is never recorded here, so this is an
+			// observation of what entered the model, NOT a full-denominator miss rate.
+			sourceKnown: stats.sourceTrace?.known ?? 0, sourceAmbiguous: stats.sourceTrace?.ambiguous ?? 0,
+			sourceUnknown: stats.sourceTrace?.unknown ?? 0, sourceInternal: stats.sourceTrace?.internal ?? 0 });
 		if (recallLedger.length > RECALL_LEDGER_CAP) recallLedger.shift();
 	};
 	const recallLedgerSummary = () => {
@@ -6517,53 +7418,47 @@ export function apply(ctx, config, dependencies = {}) {
 			rounds: recallLedger.length,
 			injected: sum('injected'), strong: sum('strong'), held: sum('held'), dropped: sum('dropped'), archives: sum('archives'), rules: sum('rules'),
 			omittedRows: sum('omittedRows'), omittedRepairs: sum('omittedRepairs'), omittedHeld: sum('omittedHeld'), omittedArchives: sum('omittedArchives'),
-			peakOptionalBytes: Math.max(...recallLedger.map((e) => e.optionalBytes)), renderFailures: sum('renderFailures'),
+			peakOptionalBytes: Math.max(...recallLedger.map((e) => e.optionalBytes)), peakMandatoryStatusBytes: Math.max(...recallLedger.map((e) => e.mandatoryStatusBytes)), renderFailures: sum('renderFailures'),
+			sourceKnown: sum('sourceKnown'), sourceAmbiguous: sum('sourceAmbiguous'),
+			sourceUnknown: sum('sourceUnknown'), sourceInternal: sum('sourceInternal'),
 			budget: recallLedger[0].budget,
 			peakUsed: Math.max(...recallLedger.map((e) => e.used)),
 		};
 	};
 	liveRecallSummary = recallLedgerSummary; // 零参数探针读同一个汇总
-	// The recall reads MEMORY.md with a 10s cache and .usage.jsonl with 60s.
-	// TTL alone meant a memory_index row stayed UNRECALLABLE for up to 10s after
-	// its own tool call wrote it (audit #10: the discipline says "write then
-	// recall"; the cache window broke it). The tools now declare the caches via
-	// opts.dropRecallCaches — a write to either file voids the matching cache,
-	// so freshness follows writes instead of the clock.
+	// Index cache invalidation follows writes; usage is freshly scanned per step.
 	const indexCache = { text: undefined, at: 0 };
-	const usageCache = { map: undefined, recent: undefined, at: 0 };
 	opts.dropRecallCaches = () => {
 		indexCache.at = 0;
 		indexCache.text = undefined;
-		usageCache.at = 0;
-		usageCache.map = undefined;
-		usageCache.recent = undefined;
 	};
-	const readUsageCached = async () => {
+	const readUsageObservation = async (current = () => true) => {
+		// A fresh bounded observation prevents a previously complete cache from
+		// hiding later corruption. Each caller keeps its own observation.
 		const now = Date.now();
-		if (usageCache.map === undefined || now - usageCache.at > 60_000) {
-			// Fusion input: which rows are actually USED (recall/read) and how they
-			// were judged (positives / correction rate). Cheap: one dot-file read
-			// per minute, and a failure just means "rank lexically only".
-			try {
-				const entries = await readUsage(resolveRoot(opts));
-				const items = summarizeUsage(entries);
-				usageCache.map = new Map(items.map((it) => [it.href, it]));
-				usageCache.recent = summarizeUsage(entries.filter((entry) => entry.ms >= now - 7 * 24 * 60 * 60 * 1000));
-			} catch {
-				usageCache.map = new Map();
-				usageCache.recent = [];
-			}
-			usageCache.at = now;
+		const scan = await scanUsage(resolveRoot(opts));
+		if (!current()) return undefined;
+		if (scan.scanStatus !== 'complete') {
+			const error = new Error('usage scan incomplete');
+			error.code = 'USAGE_SCAN_INCOMPLETE';
+			throw error;
 		}
-		return usageCache.map;
+		const entries = scan.entries;
+		return {
+			map: new Map(summarizeUsage(entries).map((it) => [it.href, it])),
+			recent: summarizeUsage(entries.filter((entry) => entry.ms >= now - 7 * 24 * 60 * 60 * 1000)),
+		};
 	};
-	const readIndexCached = async () => {
+	const readIndexCached = async (current = () => true) => {
 		const now = Date.now();
 		if (indexCache.text === undefined || now - indexCache.at > 10_000) {
-			indexCache.text = (await readIfExists(path.join(resolveRoot(opts), 'MEMORY.md'))) ?? '';
+			const text = (await readIfExists(path.join(resolveRoot(opts), 'MEMORY.md'))) ?? '';
+			if (!current()) return { text, source: 'disk' };
+			indexCache.text = text;
 			indexCache.at = now;
+			return { text, source: 'disk' };
 		}
-		return indexCache.text;
+		return { text: indexCache.text, source: 'cache' };
 	};
 	disposers.push(
 		ctx.on('agent/pre-step', async (payload, next) => {
@@ -6573,29 +7468,120 @@ export function apply(ctx, config, dependencies = {}) {
 			// outside the guard, so a downstream error propagates (instead of the
 			// waterfall being re-entered by a catch that calls next() again).
 			let recall = null;
+			let ruleStatus;
 			try {
-				const userText = batch
-					.flatMap((m) => (m?.role === 'user' ? m.content : []))
-					.filter((b) => b?.type === 'text')
-					.map((b) => b.text)
-					.join('\n');
-				const signature = `${payload.turn ?? ''}:${createHash('sha256').update(userText).digest('hex')}`;
+				// Classify every user-role message by its host-declared source kind.
+				// Role alone is not enough: agent relays, subagent settlements and
+				// background-job notices are all delivered as user messages by the
+				// host (createUserMessage), so a role-only filter makes internal
+				// traffic look like a fresh user topic and grows the recall ledger.
+				// Text prefixes are NOT used as identity evidence: a real user can
+				// quote them, and their shape varies (sender name, job id).
+				// Proven notification kinds: the host builds these exclusively as
+				// completion notices (createSettlementMessage / dsh-tool-jobs
+				// deliverSettlement). They are never a user topic, so exclude them.
+				// 'agent-message' is deliberately NOT excluded: the host uses that
+				// same kind for formal work instructions sent to an idle child,
+				// and its source carries no field separating instructions from
+				// relays. Text prefixes are not identity evidence either. Keep it
+				// and record the ambiguity as a limitation below.
+				const INTERNAL_KINDS = new Set(['subagent-settled', 'tool-jobs']);
+				// Authorized automatic inputs that legitimately drive recall: a
+				// direct human user (including user-rpc), an answered user question,
+				// a goal round, and a schedule delivery.
+				const ALLOWED_KINDS = new Set(['user', 'user-question-reply', 'goal', 'schedule']);
+				const classified = batch.reduce((acc, m) => {
+					if (m?.role !== 'user') return acc;
+					const kind = m?.source && typeof m.source === 'object' ? m.source.kind : undefined;
+					const text = (Array.isArray(m.content) ? m.content : [])
+						.filter((b) => b?.type === 'text' && typeof b.text === 'string')
+						.map((b) => b.text)
+						.join('\n');
+					if (!text.trim()) return acc;
+					// Negative rules match the FULL incoming text, including
+					// notification kinds, so their original semantics are kept.
+					acc.allTexts.push(text);
+					if (INTERNAL_KINDS.has(kind)) {
+						acc.internal += 1;
+						return acc;
+					}
+					// Split recall topic candidates: trusted host-declared kinds
+					// win the query; agent-message is retained (not excluded) as a
+					// fallback because the host also uses that kind for formal
+					// work instructions to idle children, which have no separate
+					// identity field and must still drive parent-task recall.
+					if (ALLOWED_KINDS.has(kind)) {
+						acc.trustedTexts.push(text);
+						acc.known += 1;
+					} else {
+						acc.ambiguousTexts.push(text);
+						if (kind === 'agent-message') acc.ambiguous += 1;
+						else acc.unknown += 1; // missing or unrecognized source: keep text, mark unknown
+					}
+					return acc;
+				}, { trustedTexts: [], ambiguousTexts: [], allTexts: [], known: 0, unknown: 0, ambiguous: 0, internal: 0 });
+				// Trusted input always sets the topic; ambiguous text is used only
+				// when no trusted co-input exists, so internal chatter cannot hijack
+				// the recall query while parent-task-only turns keep working.
+				const userText = classified.trustedTexts.length
+					? classified.trustedTexts.join('\n')
+					: classified.ambiguousTexts.join('\n');
+				const allUserText = classified.allTexts.join('\n');
+				const sourceTrace = { known: classified.known, unknown: classified.unknown, ambiguous: classified.ambiguous, internal: classified.internal };
+				// Signature covers the FULL batch text, not only recall-eligible text:
+				// two different notices in one turn must not share a signature, or a
+				// prior foreground flag could clear the second one's fresh rules.
+				const signature = `${payload.turn ?? ''}:${createHash('sha256').update(allUserText).digest('hex')}`;
 				// MemOS borrow ⑤: every non-empty user turn gets a recall attempt,
 				// but the whole attempt is bounded by an absolute budget. On timeout
 				// we inject NOTHING (rather than a slow or half-built recall), so the
 				// step proceeds normally — the failure mode is silence, not latency.
 				const budgetMs = Math.min(Number(opts.recallTimeoutMs) || DEFAULTS.recallTimeoutMs, DEFAULTS.recallTimeoutMs);
 				const deadline = performance.now() + budgetMs;
+				let optionalActive = true;
+				const optionalCurrent = () => optionalActive && performance.now() < deadline;
+				const notificationOnly = !userText.trim();
+				const prior = recallServed.get(payload.agent.id)?.signature === signature ? recallServed.get(payload.agent.id) : {};
+				const readRules = async () => {
+					let timer;
+					const ruleDeadline = performance.now() + budgetMs;
+					try {
+						const result = await Promise.race([
+							Promise.resolve().then(() => relevantNegativeRules(opts.ctx, allUserText)).then(
+								(value) => Array.isArray(value) ? { status: 'ok', rules: value } : { status: 'unavailable', rules: [] },
+								() => ({ status: 'unavailable', rules: [] }),
+							),
+							new Promise((resolve) => { timer = setTimeout(() => resolve({ status: 'timeout', rules: [] }), budgetMs); }),
+						]);
+						return performance.now() >= ruleDeadline ? { status: 'timeout', rules: [] } : result;
+					} finally { if (timer !== undefined) clearTimeout(timer); }
+				};
+				const rulesPromise = allUserText.trim() ? readRules() : Promise.resolve({ status: 'ok', rules: [] });
 				const buildRecall = async () => {
-					if (!userText.trim()) return null;
-					const served = recallServed.get(payload.agent.id);
-					const prior = served?.signature === signature ? served : {};
-					const indexText = await readIndexCached();
+					if (!allUserText.trim()) return null;
+					// A notification-only step gets no index recall and no recall ledger
+					// row, but negative rules still match its full text below. Keeping
+					// this branch inside buildRecall leaves next() to run exactly once.
+					const indexRead = notificationOnly ? { text: '', source: null } : await readIndexCached(optionalCurrent);
+					const indexText = indexRead.text;
+					if (!optionalCurrent()) return null;
 					// A missing index must not suppress separately configured negative rules.
 					// RRF fusion: lexical IDF rank + usage-heat rank (see
 					// matchIndexRows). Signals already exist in .usage.jsonl;
 					// without this they were collected but never used to rank.
-					const usage = await readUsageCached();
+					// A notification-only step needs no usage data; a read failure
+					// there must not suppress the negative-rule channel.
+					let usage;
+					let recentUsage;
+					let usageUnknown = false;
+					if (!notificationOnly) {
+						try {
+							const observation = await readUsageObservation(optionalCurrent);
+							usage = observation?.map;
+							recentUsage = observation?.recent;
+						} catch { usageUnknown = true; }
+					}
+					if (!optionalCurrent()) return null;
 					const qTokens = tokensOf(userText);
 					// 档案块：共识/道条目整份带入（独立通道，不与索引行 IDF 争名额）。
 					const archives = archiveBlocks(indexText, qTokens);
@@ -6613,8 +7599,8 @@ export function apply(ctx, config, dependencies = {}) {
 					// mistake is about to be repeated — force it into the NEXT step's
 					// context even when the current wording doesn't match it. The
 					// current step is never interrupted or modified.
-					if (usage && usage.size) {
-						const repairs = decisionRepairTargets(usageCache.recent ?? []).filter(
+					if (!notificationOnly && usage && usage.size) {
+						const repairs = decisionRepairTargets(recentUsage ?? []).filter(
 							(r) => !rows.some((l) => l.href === r.href) && !userText.includes(r.href),
 						);
 						if (repairs.length) {
@@ -6626,23 +7612,14 @@ export function apply(ctx, config, dependencies = {}) {
 							}
 						}
 					}
-					// 负向规则注入（2026-11-09，阀门下行通道的零配合落点）：
-					// 已人工确认的禁令若关键词命中本轮输入，即使记忆索引一行都
-					// 没匹配上也要注入——"什么不能做"必须在动手前到达上下文。
-					// 桥失败/服务不在 → undefined → 行为与旧版完全一致。
-					let negativeLines = [];
-					try {
-						const hits = await relevantNegativeRules(opts.ctx, userText);
-						if (Array.isArray(hits)) negativeLines = hits;
-					} catch {
-						negativeLines = [];
-					}
 					// R28 scans run in the background; recall consumes only the cached state.
-					scheduleDistillScan();
+					// A notification-only step injects nothing but matching rules, so it
+					// must not start a scan or display backlog/scan prompts either.
+					if (!notificationOnly) scheduleDistillScan();
 					const backlogLines = [];
 					const scanPending = Boolean(distillPromptCache?.pending);
 					const scanRevision = distillPromptRevision;
-					const includeScan = scanPending ? !prior.pending : prior.scanRevision !== scanRevision;
+					const includeScan = !notificationOnly && (scanPending ? !prior.pending : prior.scanRevision !== scanRevision);
 					if (includeScan && scanPending) backlogLines.push('⚠ 候选扫描进行中，结果尚未确定；如有旧结果仅供参考。');
 					if (includeScan && distillPromptCache?.skipped) backlogLines.push(`⚠ 候选扫描未知：${distillPromptCache.skipped}`);
 					if (includeScan && distillPromptCache?.readUnknown) backlogLines.push(`⚠ 候选扫描不完整：${distillPromptCache.readUnknown} 个文件读不到，结果可能漏项。`);
@@ -6652,8 +7629,14 @@ export function apply(ctx, config, dependencies = {}) {
 					for (const b of (includeScan ? distillPromptCache?.orphan : []) ?? []) {
 						backlogLines.push(`⚠ 未验证未匹配汇总：${b.days.length} 个日期共约 ${b.bytes} 字符的部分段落未命中现有关键词；这些段落可能互不相关，不能据此判定结构缺口。`);
 					}
-					if (prior.foreground) { rows.length = 0; archives.length = 0; negativeLines = []; }
-					if (!rows.length && !negativeLines.length && !archives.length && !backlogLines.length) return null;
+					// Dedupe of a previously served batch clears the injected channels,
+					// but a notification-only step's rules are its entire payload and
+					// must not be silently dropped by a prior foreground flag.
+					if (prior.foreground && !notificationOnly) { rows.length = 0; archives.length = 0; }
+					if (!rows.length && !archives.length && !backlogLines.length && !usageUnknown) return null;
+					// Required status is separate from optional recall and never clipped by its budget.
+					const usageWarning = usageUnknown ? '⚠ 使用账本读取失败：使用热度与纠偏状态未知，本轮仅按其他可用证据召回。' : '';
+					const mandatoryStatusBytes = byteLen(usageWarning);
 					let selectedRows = [], selectedArchives = [];
 					let budgetOmitted = { rows: 0, repairs: 0, held: 0, archives: 0 }, optionalBytes = 0, renderFailed = false;
 					let message = { role: 'user', content: [{ type: 'text', text: '' }], source: { kind: 'memory-manager/recall', form: 'recall' } };
@@ -6670,6 +7653,10 @@ export function apply(ctx, config, dependencies = {}) {
 							renderFailed = true;
 						}
 					}
+					if (usageWarning) {
+						const prefix = message.content[0]?.text ? `${message.content[0].text}\n\n` : '';
+						message.content = [{ type: 'text', text: `${prefix}${usageWarning}` }];
+					}
 					// R28 is supplementary; render it before the complete negative rules.
 					if (backlogLines.length) {
 						const block = [
@@ -6681,22 +7668,18 @@ export function apply(ctx, config, dependencies = {}) {
 						].join('\n');
 						message.content = [{ type: 'text', text: `${message.content[0]?.text ? message.content[0].text + '\n\n' : ''}${block}` }];
 					}
-					if (negativeLines.length) {
-						const block = [
-							'### ⛔ 负向规则（valves · 已人工确认）',
-							'',
-							'以下禁令与本轮输入相关，动手前先核对，命中即换路径：',
-							...negativeLines.map((r) => `- [${r.id}] ${r.statement}`),
-						].join('\n');
-						message.content = [{ type: 'text', text: `${message.content[0]?.text ? message.content[0].text + '\n\n' : ''}${block}` }];
-					}
 					if (!message.content[0]?.text) return null;
+					// Source classification is diagnostics, not model-facing content:
+					// prepending text here would escape the byte budget and desync
+					// optionalBytes. Expose it through the recall telemetry instead.
 					return {
 						message: createUserMessage(message), signature, rows: selectedRows,
-						foreground: Boolean(selectedRows.length || selectedArchives.length || negativeLines.length),
+						indexMatchSource: selectedArchives.length || selectedRows.some(row => base.some(match => match.href === row.href)) ? indexRead.source : null,
+						sourceTrace,
+						foreground: Boolean(selectedRows.length || selectedArchives.length),
 						pending: Boolean(backlogLines.length && scanPending), scanRevision: backlogLines.length && !scanPending ? scanRevision : undefined,
 						recallStats: recallStats ?? { injected: 0, held: 0, dropped: 0, budget: RECALL_BUDGET_TOKENS, usedTokens: 0 },
-						archivesCount: selectedArchives.length, rulesCount: negativeLines.length, budgetOmitted, optionalBytes, renderFailed,
+						archivesCount: selectedArchives.length, rulesCount: 0, budgetOmitted, optionalBytes, mandatoryStatusBytes, renderFailed,
 					};
 				};
 				// Absolute budget: whichever settles first wins. A timeout injects
@@ -6704,15 +7687,42 @@ export function apply(ctx, config, dependencies = {}) {
 				let timeout;
 				try {
 					recall = await Promise.race([
-						buildRecall(),
+						buildRecall().catch(() => null),
 						new Promise((resolve) => { timeout = setTimeout(() => resolve(null), budgetMs); }),
 					]);
 					// A blocked event loop can let the build's microtask run before the
 					// expired timer. It must not admit an already-expired candidate.
 					if (performance.now() >= deadline) recall = null;
 				} finally {
+					optionalActive = false;
 					if (timeout !== undefined) clearTimeout(timeout);
 				}
+				const ruleResult = await rulesPromise;
+				ruleStatus = ruleResult.status;
+				const rules = prior.foreground && !notificationOnly ? [] : ruleResult.rules;
+				const ruleWarning = ruleResult.status !== 'ok' && !rulesUnknownReported.has(payload.agent.id)
+					? `⚠ 负向规则状态未知（${ruleResult.status === 'timeout' ? '读取超时' : '服务不可用或读取失败'}）。` : '';
+				const blocks = [];
+				if (ruleWarning) blocks.push(ruleWarning);
+				if (rules.length) blocks.push([
+					'### ⛔ 负向规则（valves · 已人工确认）', '',
+					'以下禁令与本轮输入相关，动手前先核对，命中即换路径：',
+					...rules.map((r) => `- [${r.id}] ${r.statement}`),
+				].join('\n'));
+				if (blocks.length) {
+					if (!recall) recall = {
+						message: createUserMessage({ role: 'user', content: [{ type: 'text', text: '' }], source: { kind: 'memory-manager/recall', form: 'recall' } }),
+						signature, rows: [], sourceTrace, foreground: false, pending: false,
+						recallStats: rules.length ? { injected: 0, held: 0, dropped: 0, budget: RECALL_BUDGET_TOKENS, usedTokens: 0 } : null,
+						archivesCount: 0, rulesCount: 0, budgetOmitted: { rows: 0, repairs: 0, held: 0, archives: 0 },
+						optionalBytes: 0, mandatoryStatusBytes: 0, renderFailed: false,
+					};
+					const prefix = recall.message.content[0]?.text;
+					recall.message = createUserMessage({ ...recall.message, content: [{ type: 'text', text: [prefix, ...blocks].filter(Boolean).join('\n\n') }] });
+					recall.rulesCount = rules.length;
+					recall.foreground ||= rules.length > 0;
+				}
+				if (recall) recall.ruleStatus = ruleResult.status;
 			} catch {
 				recall = null; // degrade to plain admission
 			}
@@ -6740,7 +7750,15 @@ export function apply(ctx, config, dependencies = {}) {
 					);
 				}
 			}
+			if (decision.kind === 'enter' && ruleStatus === 'ok') rulesUnknownReported.delete(payload.agent.id);
 			if (!recall || decision.kind !== 'enter') return decision;
+			if (recall.indexMatchSource) {
+				try { opts.observeIndexMatched?.(recall.indexMatchSource); } catch { /* Instrumentation is optional. */ }
+			}
+			if (recall.ruleStatus && recall.ruleStatus !== 'ok') {
+				if (rulesUnknownReported.size >= 512 && !rulesUnknownReported.has(payload.agent.id)) rulesUnknownReported.delete(rulesUnknownReported.values().next().value);
+				rulesUnknownReported.add(payload.agent.id);
+			}
 			// Commit only the candidate that actually won the deadline and is being
 			// inserted into an entered step. Late builds and rejected steps leave no
 			// served signature or exposure records behind.
@@ -6751,12 +7769,16 @@ export function apply(ctx, config, dependencies = {}) {
 			if (recall.pending) state.pending = true;
 			if (recall.scanRevision !== undefined) state.scanRevision = recall.scanRevision;
 			recallServed.set(payload.agent.id, state);
-			if (recall.recallStats) recordRecall({ ...recall.recallStats, actualRows: recall.rows.length, archives: recall.archivesCount, rules: recall.rulesCount, budgetOmitted: recall.budgetOmitted, optionalBytes: recall.optionalBytes, renderFailed: recall.renderFailed });
+			if (recall.recallStats) recordRecall({ ...recall.recallStats, actualRows: recall.rows.length, archives: recall.archivesCount, rules: recall.rulesCount, budgetOmitted: recall.budgetOmitted, optionalBytes: recall.optionalBytes, mandatoryStatusBytes: recall.mandatoryStatusBytes, renderFailed: recall.renderFailed, sourceTrace: recall.sourceTrace });
 			for (const r of recall.rows) {
 				const root = resolveRoot(opts);
 				void withMemoryRootTransaction(root, () => appendUsage(root, { href: r.href, kind: 'recall' })).catch(() => {});
 			}
-			return { ...decision, messages: [recall.message, ...decision.messages] };
+			const joined = { ...decision, messages: [recall.message, ...decision.messages] };
+			if (recall.rows.length > 0 || recall.archivesCount > 0) {
+				try { opts.observeRecallJoined?.(); } catch { /* Instrumentation is optional. */ }
+			}
+			return joined;
 		}, { prepend: true }),
 	);
 	const sp = ctx.systemPrompt;
@@ -6838,6 +7860,8 @@ export function apply(ctx, config, dependencies = {}) {
 	});
 
 	return () => {
+		opts.streamsDisposed = true;
+		for (const close of opts.streamClosers) close();
 		for (const d of disposers.reverse()) d();
 	};
 }

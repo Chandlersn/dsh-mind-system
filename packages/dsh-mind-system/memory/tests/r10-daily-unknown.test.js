@@ -92,7 +92,12 @@ test('唯一每日文件不可读时不得将零死链视为已确认', async (t
   assert.ok(r10(result).some((r) => isUnknown(r) && r.message.includes('2026-01-01.md')), '零条 R10 FAIL 不能代替明确未知状态');
 });
 
-test('真实 memory_rename 回执不得把未完整检查呈现为已确认零死链', async (t) => {
+// SKIPPED, not deleted: this case asserts that the receipt of a COMPLETED
+// memory_rename does not present an incomplete R10 scan as a confirmed zero
+// dangling count. Rename and merge now refuse before their first side effect
+// (safe_rename_unavailable), so no rename receipt exists to inspect. The body
+// stays intact; it returns to service with a concurrency-safe rename.
+test('真实 memory_rename 回执不得把未完整检查呈现为已确认零死链', { skip: 'safe rename unavailable: rename refuses before any write, so no rename receipt exists to inspect' }, async (t) => {
   const { home, root, skills } = await fixture(t);
   const oldHome = process.env.DSH_HOME;
   process.env.DSH_HOME = home;

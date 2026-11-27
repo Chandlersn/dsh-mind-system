@@ -96,7 +96,11 @@ async function timedOut(t, f) {
   const first = f.preStep(f.payload, async () => { nextCount++; return original; });
   await f.reached.promise; // Matching is complete; the optional bridge is blocked.
   t.mock.timers.tick(100); // Deterministically settle the admission budget first.
-  assert.strictEqual(await first, original, 'a timed-out recall must not change the admitted messages');
+  const result = await first;
+  assert.equal(result.kind, original.kind);
+  assert.equal(result.messages.length, 1);
+  assert.match(result.messages[0].content[0].text, /^⚠ 负向规则状态未知（读取超时）。$/);
+  assert.equal((await readUsageLedgerText(f.root)).trim(), '', 'timeout status cannot create usage exposure');
   assert.equal(nextCount, 1, 'downstream next is invoked exactly once');
 }
 
@@ -226,7 +230,11 @@ test('a background candidate completing after timeout cannot create a served led
     const first = f.preStep(f.payload, async () => original);
     await readStarted.promise;
     t.mock.timers.tick(100);
-    assert.strictEqual(await first, original, 'the index read was still pending when the timeout admitted the step');
+    const result = await first;
+    assert.equal(result.kind, original.kind);
+    assert.equal(result.messages.length, 1);
+    assert.match(result.messages[0].content[0].text, /^⚠ 负向规则状态未知（读取超时）。$/);
+    assert.equal((await readUsageLedgerText(f.root)).trim(), '', 'late index read cannot create usage exposure');
     releaseRead.resolve();
     // Both index and usage reads are controlled above; one event-loop turn
     // drains the resumed candidate's microtasks, whether it aborts or reaches valves.

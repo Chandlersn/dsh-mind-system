@@ -96,9 +96,14 @@ async function setup() {
 	ctx.systemPrompt.tools(() => ({
 		schemas: REAL_TOOLS.map((n) => ({ name: n, description: `d:${n}`, parameters: {} })),
 	}));
+	let exposesTools = false;
+	ctx.on('system-prompt/assemble', async (presentation, _context, next) => {
+		exposesTools = Array.isArray(presentation.tools);
+		return next();
+	});
 	await ctx.plugin(mindMod);
 	return {
-		ctx,
+		ctx, supportsReorder: () => exposesTools,
 		order: async () => (await ctx.systemPrompt.assemble({})).tools.map((t) => t.name),
 	};
 }
@@ -108,8 +113,8 @@ function userMsg(text) {
 	return { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] };
 }
 
-test('接线：agent/inbox/claimed → 判处境 → assemble 真的重排了工具面', async () => {
-	const { ctx, order } = await setup();
+test('接线：claimed 判处境并按宿主能力处理工具顺序', async () => {
+	const { ctx, order, supportsReorder } = await setup();
 	try {
 		const before = await order();
 
@@ -117,40 +122,40 @@ test('接线：agent/inbox/claimed → 判处境 → assemble 真的重排了工
 		ctx.emit('agent/inbox/claimed', { message: userMsg('你调用心智系统插件对自身进行对抗式审查'), turn: 1 });
 
 		const after = await order();
-		assert.notEqual(after.join(','), before.join(','), '判出处境后工具面必须真的变了（不是空转）');
-		assert.ok(
-			after[0].startsWith('clis_') || after[0].startsWith('meta_'),
-			`diagnose 处境下判结构工具应排首位，实际 ${after[0]}`,
-		);
+		assert.equal(mindMod.currentSituationOf(), 'diagnose');
+		if (supportsReorder()) {
+			assert.notDeepEqual(after, before);
+			assert.ok(after[0].startsWith('clis_') || after[0].startsWith('meta_'));
+		} else assert.deepEqual(after, before);
 	} finally {
 		await ctx.fiber.dispose();
 	}
 });
 
-test('接线：重排在第 1 步就生效（不是滞后一拍 —— 这是审查查出的核心缺陷）', async () => {
-	const { ctx, order } = await setup();
+test('接线：第 1 步判处境并按宿主能力处理工具顺序', async () => {
+	const { ctx, order, supportsReorder } = await setup();
 	try {
 		const baseline = (await order()).join(',');
 		// 第 1 步：用户输入到达 → 紧接着 assemble
 		ctx.emit('agent/inbox/claimed', { message: userMsg('帮我审查一下这个插件有没有隐患'), turn: 1 });
 		const step1 = (await order()).join(',');
-		assert.notEqual(
-			step1,
-			baseline,
-			'第 1 步（模型首次回应用户、决定用哪个工具的那一步）必须已有调度效果',
-		);
+		assert.equal(mindMod.currentSituationOf(), 'diagnose');
+		if (supportsReorder()) assert.notEqual(step1, baseline);
+		else assert.equal(step1, baseline);
 	} finally {
 		await ctx.fiber.dispose();
 	}
 });
 
 test('接线：一个 turn 内工具面只变一次（不抖 —— 抖会触发宿主请求序列重启）', async () => {
-	const { ctx, order } = await setup();
+	const { ctx, order, supportsReorder } = await setup();
 	try {
 		const baseline = (await order()).join(',');
 		ctx.emit('agent/inbox/claimed', { message: userMsg('帮我审查一下这个插件'), turn: 1 });
 		const step1 = (await order()).join(',');
-		assert.notEqual(step1, baseline, '第 1 步必须已生效');
+		assert.equal(mindMod.currentSituationOf(), 'diagnose');
+		if (supportsReorder()) assert.notEqual(step1, baseline);
+		else assert.equal(step1, baseline);
 
 		// 第 2 步起 inbox 为空 → 宿主不再发 claimed（claimed 数组为空）。
 		// 但即使发了一个空消息，处境也不该被重置。
@@ -243,16 +248,18 @@ test('接线：分节真的进了装配结果（不是只调用了 section()）'
 });
 
 test('不同 agent 交错运行时处境互不覆盖，工具只暴露自己的判定', async () => {
-	const { ctx } = await setup();
+	const { ctx, supportsReorder } = await setup();
 	const a = { id: 'agent-a' }, b = { id: 'agent-b' };
 	const order = async (agent) => (await ctx.systemPrompt.assemble({ agent, scope: agent })).tools.map(t => t.name);
 	try {
 		ctx.emit('agent/inbox/claimed', { agent: a, turn: 1, message: userMsg('请审查这个问题') });
 		const before = await order(a);
-		assert.ok(before[0].startsWith('clis_') || before[0].startsWith('meta_'));
+		if (supportsReorder()) assert.ok(before[0].startsWith('clis_') || before[0].startsWith('meta_'));
 		ctx.emit('agent/inbox/claimed', { agent: b, turn: 1, message: userMsg('搜一下最新资料') });
 		assert.deepEqual(await order(a), before, 'B 的输入不得改变 A 的工具面');
-		assert.ok((await order(b))[0].includes('search'));
+		const orderB = await order(b);
+		if (supportsReorder()) assert.ok(orderB[0].includes('search'));
+		else assert.deepEqual(orderB, before);
 		ctx.emit('agent/inbox/claimed', { agent: a, turn: 1, message: { role: 'assistant', content: [{ type: 'text', text: '搜一下最新资料' }] } });
 		assert.deepEqual(await order(a), before, '非用户消息不能更改处境');
 		const injected = { role: 'user', source: { kind: 'plugin:clis' }, content: [{ type: 'text', text: '搜一下最新资料' }] };
@@ -330,7 +337,7 @@ test('缺少 claimed 事件时 pre-step 仍可采样并在后续装配应用', a
 	}
 });
 
-test('scripts/verify-assembly.mjs 必须全绿（它是仓库里最强的判据，之前 5 项 FAIL 却没人看见）', async () => {
+test('verify-assembly reports unsupported host capability or verifies legacy reordering', async () => {
 	// ⚠️ 旧版这个脚本不在测试套件里 —— 它实跑 5 项 FAIL（分节不在装配、
 	// 重排是空转），原因是没有提供 tools 服务 → 插件 apply() 未激活。
 	// 把它接进套件，这类失败就不再可能"存在但无人知晓"。
@@ -346,6 +353,10 @@ test('scripts/verify-assembly.mjs 必须全绿（它是仓库里最强的判据�
 		const out = execFileSync(process.execPath, [script], { encoding: 'utf8', cwd: pkgRoot });
 		assert.ok(out.includes('VERIFY OK'), `verify-assembly.mjs 必须全绿，实际输出：\n${out}`);
 	} catch (error) {
-		assert.fail(`verify-assembly.mjs 失败：\n${error.stdout ?? ''}${error.stderr ?? ''}`);
+		const out = `${error.stdout ?? ''}${error.stderr ?? ''}`;
+		assert.equal(error.status, 1, out);
+		assert.match(out, /unsupported host contract: tools are provider-owned/);
+		assert.match(out, /VERIFY FAIL/);
+		console.log('Host capability unsupported: provider-owned tools cannot be reordered by assembly listeners.');
 	}
 });

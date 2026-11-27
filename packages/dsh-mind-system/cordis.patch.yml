@@ -46,6 +46,11 @@
       config:
         enabled: true
         tasks: []
+        # Dynamic analysis reuses the host's registered LLM service (ctx.get('llm')) with the
+        # calling agent's current model route. No separate endpoint/model/apiKey is required.
+        # Enabled so real failed tasks produce analyses/repairs records and close the self-growth edge.
+        analysis:
+          allowDynamic: true
     - id: mind-system
       name: 'dsh-mind-system'
       config: {}
