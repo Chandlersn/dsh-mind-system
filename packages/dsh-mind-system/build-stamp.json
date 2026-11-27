@@ -181,7 +181,7 @@
     },
     "memory/server.js": {
       "source": "dsh-memory-manager/server.js",
-      "sha256": "bac113162616c1e52118100ee931ee1feda41688ec79e674e215af711fd54dcd"
+      "sha256": "96359f449efb73501da09e02b3a81635c33c5f2e56e9d00f31a517b287eb0bf0"
     },
     "memory/src/adoption-evidence.js": {
       "source": "dsh-memory-manager/src/adoption-evidence.js",
