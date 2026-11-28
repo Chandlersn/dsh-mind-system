@@ -145,7 +145,7 @@
     },
     "memory/README.md": {
       "source": "dsh-memory-manager/README.md",
-      "sha256": "048d9c97fc355e9af08659837503f30d67cac8455dda4451144e88bd7551e91b"
+      "sha256": "ca7b0412179733c4a38e2ef3663b2bcbe4e03ed19a1e5f0f9749f2b377ab12b0"
     },
     "memory/api-test.mjs": {
       "source": "dsh-memory-manager/api-test.mjs",
