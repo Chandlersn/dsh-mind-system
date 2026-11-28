@@ -31,9 +31,9 @@ test('capability index observations expire and carry no identity', () => {
   const seen = [];
   flow.subscribe(value => seen.push(value));
   flow.capabilityIndexed('private-name');
-  assert.deepEqual(flow.snapshot().edges.e9, { phase: 'finished', at: 10, expiresAt: 30010 });
+  assert.deepEqual(flow.snapshot().edges.e9, { phase: 'finished', at: 10, expiresAt: 120010 });
   assert.doesNotMatch(JSON.stringify(seen), /private/);
-  time = 30010;
+  time = 120010;
   assert.equal(flow.snapshot().edges.e9, undefined);
 });
 
@@ -43,16 +43,16 @@ test('index match source is bounded and expires without identity', () => {
   flow.indexMatched('private-source');
   assert.deepEqual(flow.snapshot().edges, {});
   flow.indexMatched('disk', 'private-extra');
-  assert.deepEqual(flow.snapshot().edges.e10, { phase: 'finished', at: 10, expiresAt: 30010, source: 'disk' });
+  assert.deepEqual(flow.snapshot().edges.e10, { phase: 'finished', at: 10, expiresAt: 120010, source: 'disk' });
   time = 11;
   flow.indexMatched('cache');
   assert.equal(flow.snapshot().edges.e10.source, 'cache');
   assert.doesNotMatch(JSON.stringify(flow.snapshot()), /private/);
-  time = 30011;
+  time = 120011;
   assert.equal(flow.snapshot().edges.e10, undefined);
 });
 
-test('retains finished and failed events for 30 seconds by default', () => {
+test('retains finished and failed events for 120 seconds by default', () => {
   let time = 100;
   const flow = createLiveFlow({ now: () => time });
   const finished = call('finished', 'memory_write');
@@ -60,11 +60,13 @@ test('retains finished and failed events for 30 seconds by default', () => {
   flow.start(finished); flow.finish(finished, { isError: false });
   flow.start(failed); flow.finish(failed, { isError: true });
   assert.deepEqual(flow.snapshot().edges, {
-    e2: { phase: 'finished', at: 100, expiresAt: 30100 },
-    e4: { phase: 'failed', at: 100, expiresAt: 30100 },
+    e2: { phase: 'finished', at: 100, expiresAt: 120100 },
+    e4: { phase: 'failed', at: 100, expiresAt: 120100 },
   });
-  time = 30099; assert.equal(Object.keys(flow.snapshot().edges).length, 2);
-  time = 30100; assert.deepEqual(flow.snapshot().edges, {});
+  // A terminal event must survive long enough for a person to see it in the GUI.
+  time = 90100; assert.equal(Object.keys(flow.snapshot().edges).length, 2, 'still visible after 90s');
+  time = 120099; assert.equal(Object.keys(flow.snapshot().edges).length, 2);
+  time = 120100; assert.deepEqual(flow.snapshot().edges, {});
 });
 
 test('keeps the default active timeout at 60 seconds', () => {
@@ -74,8 +76,8 @@ test('keeps the default active timeout at 60 seconds', () => {
   time = 60099;
   assert.deepEqual(flow.snapshot().edges.e2, { phase: 'active', at: 100, expiresAt: 60100 });
   time = 60100;
-  assert.deepEqual(flow.snapshot().edges.e2, { phase: 'unknown', at: 60100, expiresAt: 90100 });
-  time = 90100; assert.deepEqual(flow.snapshot().edges, {});
+  assert.deepEqual(flow.snapshot().edges.e2, { phase: 'unknown', at: 60100, expiresAt: 180100 });
+  time = 180100; assert.deepEqual(flow.snapshot().edges, {});
 });
 
 test('clamps an explicit TTL to the five-minute maximum', () => {

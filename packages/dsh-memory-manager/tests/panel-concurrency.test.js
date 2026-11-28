@@ -1,3 +1,4 @@
+import { seedDistillationSources } from './distill-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -41,6 +42,7 @@ test('authenticated dao-action waits for the complete memory_write root transact
     const sourceDao = '# 并发道\n\n正式道原文，必须在工具完成之后才归档。\n';
     await io.writeFile(path.join(root, 'MEMORY.md'), '# 隔离索引\n', 'utf8');
     await io.writeFile(fn, '# 并发功能\n\n## 当前状态摘要（截至 2026-11-09）\n\n- 现有状态。\n', 'utf8');
+    const material = await seedDistillationSources(root, 'serialized panel actions');
     await io.writeFile(dao, sourceDao, 'utf8');
     process.env.DSH_HOME = home;
 
@@ -104,7 +106,7 @@ test('authenticated dao-action waits for the complete memory_write root transact
     dispose = mod.apply(ctx, { memoryRoot: root, skillRoot, dshRoot: process.env.DSH_INSTALL_DIR });
     const writer = tools.get('memory_write');
     assert.ok(writer?.execute && handler, 'real apply must register both tool and panel');
-    toolPromise = writer.execute({ feature: '并发功能', title: '并发写入', summary: '测试事务顺序', result: 'done' }, {});
+    toolPromise = writer.execute({ ...material, feature: '并发功能', title: '并发写入', summary: '测试事务顺序', result: 'done' }, {});
     await featureRead.promise; // The real tool owns its root lock but has not read the feature yet.
 
     const payload = Buffer.from(JSON.stringify({ action: 'delete', name: '并发道' }));

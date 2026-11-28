@@ -84,6 +84,8 @@ export function createCaptureStatus({ enabled = false } = {}) {
   const errorCodes = emptyBins(CAPTURE_ERROR_CODES);
   const errorStages = emptyBins(CAPTURE_ERROR_STAGES);
   let saturated = false;
+  let lastOutcome = null;
+  let lastOutcomeAt = null;
   const increment = (object, key) => {
     if (object[key] >= CAPTURE_COUNTER_MAX) { saturated = true; return; }
     object[key] += 1;
@@ -111,6 +113,8 @@ export function createCaptureStatus({ enabled = false } = {}) {
           }
           finished = true;
           counts.pending -= 1;
+          lastOutcome = outcome;
+          lastOutcomeAt = Date.now();
           increment(counts, outcome);
           if (labels) {
             increment(errorCodes, labels.code);
@@ -124,7 +128,7 @@ export function createCaptureStatus({ enabled = false } = {}) {
       if (!noArguments(args)) return null;
       return {
         enabled, createdAt, hasObservations: counts.observed > 0,
-        resetOnNewInstance: true, saturated,
+        resetOnNewInstance: true, saturated, snapshotAt: Date.now(), lastOutcome, lastOutcomeAt,
         ...counts,
         errorCodes: { ...errorCodes }, errorStages: { ...errorStages },
       };

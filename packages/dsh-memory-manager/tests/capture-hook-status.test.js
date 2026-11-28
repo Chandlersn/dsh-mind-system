@@ -184,7 +184,10 @@ test('unverified baseline is visible as a read-only status failure and cannot re
   assert.equal(await readFile(file, 'utf8'), historical, 'failed capture must not redact or alter existing history');
   assert.ok(!(await readdir(f.root)).includes('.write-ledger.jsonl'), 'do not falsely attest the old file');
   const again = await a.overview();
-  assert.deepEqual(again, status, 'overview is read-only');
+  assert.equal(status.lastOutcome, 'failed');
+  assert.ok(Number.isSafeInteger(status.lastOutcomeAt) && status.lastOutcomeAt >= status.createdAt);
+  assert.ok(status.snapshotAt >= status.lastOutcomeAt && again.snapshotAt >= status.snapshotAt);
+  assert.deepEqual(again, { ...status, snapshotAt: again.snapshotAt }, 'reading a later snapshot preserves the recorded completion');
   assert.equal(a.emits.length, a.initialEmits);
   await noInbox(f.home);
 });

@@ -155,7 +155,7 @@ function appendArchiveText(existing, addition) {
 }
 
 /** Parse archive boundaries without interpreting fenced code as headings. */
-function parseDaySection(text, date) {
+export function parseArchiveBoundaries(text) {
 	const lines = String(text ?? '').split('\n');
 	const boundaries = [];
 	const seen = new Set();
@@ -182,6 +182,13 @@ function parseDaySection(text, date) {
 		}
 	}
 	if (fence) return { status: 'ambiguous', reason: 'unclosed_fence' };
+	return { status: 'parsed', lines, boundaries };
+}
+
+function parseDaySection(text, date) {
+	const parsed = parseArchiveBoundaries(text);
+	if (parsed.status !== 'parsed') return parsed;
+	const { lines, boundaries } = parsed;
 	const days = boundaries.filter((entry) => entry.day).map((entry) => entry.day);
 	const index = boundaries.findIndex((entry) => entry.day === date);
 	if (index < 0) return { status: 'missing', reason: 'day_missing', days };

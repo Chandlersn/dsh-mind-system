@@ -1223,7 +1223,13 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 	ok(usableHtml.includes('第二通道 · 可用'), `the SAG node states the channel works (${usableHtml.includes('第二通道 · 可用')})`);
 	ok(usableHtml.includes('SAG 搜索调用 · 返回方向') && usableHtml.includes('第二通道 · 可用'), 'the search call and service availability are labelled separately');
 	ok(usableHtml.includes('技能包 7 个') && !usableHtml.includes('技能库 7 项') && usableHtml.includes('条台账') && usableHtml.includes('每日线索（含归档）'), 'skill count is its own fact, distinct from the capability ledger, and daily includes archives');
-	ok(usableHtml.includes('反馈供参考') && !usableHtml.includes('校准阈值'), 'feedback does not claim automatic threshold calibration');
+	ok(usableHtml.includes('使用数据匹配') && usableHtml.includes('flow-edge-e13') && !usableHtml.includes('校准阈值'), 'usage matching is a live observation');
+	ok(usableHtml.includes('static-edge-e8') && usableHtml.includes('手工登记') && usableHtml.includes('静态关系（无实时观测）') && !usableHtml.includes('flow-edge-e8'), 'manual Dao registration has a static legend and no flow state');
+	ok(!usableHtml.includes('M125 228 L125 294'), 'daily records have no direct index route');
+	const nowForUsage = Date.now();
+	const usageModel = T.buildArchitecture({ ...base, liveFlow: { edges: { e13: { phase: 'finished', at: nowForUsage, expiresAt: nowForUsage + 10000 } } } });
+	const usageHtml = serialize(FakeReact.createElement(T.Architecture, { model: usageModel, flowAt: nowForUsage }));
+	ok(usageHtml.includes('使用数据 → 召回匹配：匹配时已读取使用数据') && !usableHtml.includes('匹配时已读取使用数据'), 'usage counts alone cannot light the matching edge');
 	ok(elements(FakeReact.createElement(T.Architecture, { model: usable })).some((node) => node.type === 'path' && node.props?.d === 'M800 51 L320 51'), 'on-demand SAG connects to the session rather than the automatic gate');
 	ok(count(usableHtml, 'data-dmo="sag-configured"') === 1 && count(usableHtml, 'data-dmo="sag-online"') === 1 && count(usableHtml, 'data-dmo="sag-authorized"') === 1,
 		'three independent status rows are rendered');
@@ -1269,11 +1275,11 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 	for (const [phase, tone] of [['active', 'business'], ['finished', 'warn'], ['failed', 'danger']]) {
 		const flowing = T.buildArchitecture({ ...base, sag: { configured: true, online: false, authorized: false }, liveFlow: { edges: { e15: { phase, at: now, expiresAt: now + 10000 } } } });
 		ok(sagEdgeOf(flowing, now)?.props.className.includes(`flow-${phase} ${tone}`), `${phase} query event draws its legend tone regardless of service status`);
-		ok(sagEdgeOf(flowing, now - 90_000)?.props.className.includes('flow-unknown'), `${phase} query event becomes unknown when flow data is stale`);
+		ok(sagEdgeOf(flowing, now - 120_001)?.props.className.includes('flow-unknown'), `${phase} query event becomes unknown when flow data is stale`);
 	}
 	const legendSwatches = elements(FakeReact.createElement(T.Architecture, { model: usable }))
 		.filter((n) => n.type === 'line' && typeof n.props?.className === 'string' && n.props.className.includes('dmo-edge'));
-	ok(legendSwatches.length === 4, `legend carries the four flow states (${legendSwatches.length})`);
+	ok(legendSwatches.length === 5 && legendSwatches.some(n => n.props.className === 'dmo-edge muted') && legendSwatches.some(n => n.props.className === 'dmo-edge muted dashed'), 'the legend distinguishes static relations from unknown live activity');
 
 	// CARD PROP FORWARDING (real-host bug, 2026-11-16): Card used to accept only
 	// {children, tight, className} and silently drop everything else, so every

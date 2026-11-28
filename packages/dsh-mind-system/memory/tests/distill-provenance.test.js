@@ -43,7 +43,7 @@ async function setup(t) {
   return { root, tools };
 }
 
-const base = { feature: 'provenance', title: '蒸馏来源核验', summary: '记录素材来源核验', date: '2026-11-19' };
+const base = { sourceReason: 'The three observations show the original condition, recurrence and verification.', feature: 'provenance', title: '蒸馏来源核验', summary: '记录素材来源核验', date: '2026-11-19' };
 
 async function seedDays(root, days) {
   for (const day of days) {
@@ -101,52 +101,54 @@ test('an empty daily file is not evidence of a material day', async (t) => {
   await assert.rejects(() => tool.execute({ ...base, sources: ['2026-11-17', '2026-11-18', '2026-11-19'] }, {}), /缺失或为空/);
 });
 
-test('undeclared provenance is recorded as undeclared instead of implied', async (t) => {
+test('zero material days cannot create a block, including when an exception is claimed', async t => {
   const { root, tools } = await setup(t);
-  const tool = tools.get('memory_write');
-  const result = await tool.execute({ ...base }, {});
-  assert.equal(result.sourceDaysUndeclared, true);
-  assert.deepEqual(result.sourceDays, []);
-  // A clean write keeps the existing no-warning contract; the truth lives in the
-  // receipt field and the block, not as noise on every write.
-  assert.deepEqual(result.warnings.filter((w) => /素材/.test(w)), []);
-  const text = await readFile(path.join(root, 'functions', 'provenance.md'), 'utf8');
-  assert.match(text, /- \*\*素材\*\*：未声明（素材天数未知）/);
+  const writer = tools.get('memory_write');
+  for (const sources of [undefined, []]) {
+    for (const cadenceException of [undefined, '安全约束：需要立即保留当天的审计依据']) {
+      await assert.rejects(writer.execute({ ...base, ...(sources ? { sources } : {}), ...(cadenceException === undefined ? {} : { cadenceException }) }), /仅确认 0 个素材日/);
+    }
+  }
+  await assert.rejects(readFile(path.join(root, 'functions', 'provenance.md')), { code: 'ENOENT' });
 });
 
-test('an exception without declared sources leaves the number of days unknown', async (t) => {
+test('a short set requires a concrete classified exception and still checks every declared source', async t => {
   const { root, tools } = await setup(t);
-  const tool = tools.get('memory_write');
-  for (const [feature, sources] of [['omitted', undefined], ['empty', []]]) {
-    const args = { ...base, feature, cadenceException: '用户显式要求立即蒸馏', ...(sources ? { sources } : {}) };
-    const result = await tool.execute(args, {});
-    assert.equal(result.sourceDaysUndeclared, true);
-    assert.deepEqual(result.sourceDays, []);
-    assert.equal(result.cadenceException, args.cadenceException);
-    const text = await readFile(path.join(root, 'functions', `${feature}.md`), 'utf8');
-    assert.match(text, /未声明（素材天数未知）/);
-    assert.doesNotMatch(text, /不足 3 天/);
-    const rendered = tool.output.render(args, result).map((b) => b.text).join('\n');
-    assert.match(rendered, /素材日：未声明/);
-    assert.match(rendered, /豁免（调用方声明，未经核验）/);
+  const writer = tools.get('memory_write');
+  const days = ['2026-11-17', '2026-11-19'];
+  await seedDays(root, days);
+  for (const sources of [days.slice(0, 1), days]) {
+    for (const cadenceException of [undefined, '', '一般理由：需要提前归档', '用户显式要求', '安全约束：安全约束', '安全约束：。。。', '当日踩坑因果：aaaa']) {
+      await assert.rejects(writer.execute({ ...base, ...(sources ? { sources } : {}), ...(cadenceException === undefined ? {} : { cadenceException }) }), /cadenceException/);
+    }
+  }
+  const target = path.join(root, 'functions', 'provenance.md');
+  await assert.rejects(readFile(target), {code: 'ENOENT'});
+  for (const category of ['用户显式要求', '安全约束', '当日踩坑因果']) {
+    const cadenceException = `${category}：须记录当天发现的读取失败导致覆盖原文问题`;
+    const result = await writer.execute({ ...base, sources: days, cadenceException });
+    assert.equal(result.cadenceException, cadenceException);
+    assert.ok((await readFile(target, 'utf8')).includes(cadenceException));
+    assert.match(writer.output.render(base, result)[0].text, /调用方声明，未经核验/);
+    const previous = await readFile(target);
+    await assert.rejects(writer.execute({ ...base, sources: [...days, '2026-11-18'], cadenceException }), /missing/);
+    assert.deepEqual(await readFile(target), previous);
   }
 });
 
-test('fewer than three days needs an explicit, labelled exception', async (t) => {
+test('three dates without a caller selection reason are rejected', async t => {
   const { root, tools } = await setup(t);
-  await seedDays(root, ['2026-11-19']);
-  const tool = tools.get('memory_write');
-  const warned = await tool.execute({ ...base, sources: ['2026-11-19'] }, {});
-  assert.ok(warned.warnings.some((w) => /<3/.test(w)), 'two-day write must warn, not silently pass');
-  assert.match(await readFile(path.join(root, 'functions', 'provenance.md'), 'utf8'), /素材\*\*：2026-11-19（仅检查调用方声明的顶层每日文件或归档日节非空，未核验相关性、真实性或是否读过；声明少于 3 天）/);
-
-  const excepted = { ...base, feature: 'excepted', sources: ['2026-11-19'], cadenceException: '当日踩坑因果：重复踩同一个坑' };
-  const result = await tool.execute(excepted, {});
-  assert.equal(result.cadenceException, excepted.cadenceException);
-  const text = await readFile(path.join(root, 'functions', 'excepted.md'), 'utf8');
-  assert.match(text, /仅检查调用方声明的顶层每日文件或归档日节非空，未核验相关性、真实性或是否读过/);
-  assert.match(text, /（豁免：当日踩坑因果：重复踩同一个坑；调用方声明，未经核验）/);
-  assert.doesNotMatch(text, /未声明/);
-  const rendered = tool.output.render(excepted, result).map((b) => b.text).join('\n');
-  assert.match(rendered, /豁免（调用方声明，未经核验）/);
+  const days = ['2026-11-01','2026-11-09','2026-11-19'];
+  await seedDays(root, days);
+  const writer = tools.get('memory_write');
+  const { sourceReason, ...withoutReason } = base;
+  const args = { ...withoutReason, sources: days };
+  await assert.rejects(writer.execute(args), /sourceReason/);
+  await assert.rejects(readFile(path.join(root, 'functions', 'provenance.md')), {code:'ENOENT'});
+  const result = await writer.execute({ ...args, verification: 'The last day records resolution after two earlier occurrences.' });
+  assert.equal(result.sourceDays.length, 3);
+  assert.match(await readFile(result.featureFile, 'utf8'), /last day records resolution/);
+  const corrected = await writer.execute({ ...base, sources: days, replace: JSON.stringify({oldString: days[0], newString: 'corrected historical date'}) });
+  const latest = (await readFile(corrected.featureFile, 'utf8')).split(corrected.appendedHeading).pop();
+  assert.ok(latest.includes(days.join('、')), 'historical corrections must preserve the new evidence declaration');
 });

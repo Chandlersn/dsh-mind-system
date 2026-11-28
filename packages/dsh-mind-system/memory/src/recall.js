@@ -382,6 +382,7 @@ export function matchIndexRows(indexText, userTokens, limit = 3, usage, options 
 				if (h > maxHeat) maxHeat = h;
 			}
 		}
+		try { options.observeUsageMatched?.(); } catch { /* Observation cannot affect recall. */ }
 		if (maxHeat > 0) {
 			const boosted = scored.map((r) => {
 				const h = heat.get(r.href);

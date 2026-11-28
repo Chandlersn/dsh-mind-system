@@ -2,10 +2,10 @@ const MAX_ACTIVE = 1024;
 const MAX_SUBSCRIBERS = 128;
 const ACTIVE_TIMEOUT_MS = 60_000;
 const MIN_TTL_MS = 5_000;
-const DEFAULT_TTL_MS = 30_000;
+const DEFAULT_TTL_MS = 120_000;
 const MAX_TTL_MS = 300_000;
 const DIRECT = new Map([
-  ['memory_write', 'e2'], ['memory_insight', 'e3'], ['memory_dao', 'e4'],
+  ['memory_write', 'e2'], ['memory_insight', 'e3'],
 ]);
 
 function edgeFor(exec) {
@@ -14,6 +14,7 @@ function edgeFor(exec) {
   if (direct) return direct;
   const args = exec.arguments;
   if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
+  if (exec.name === 'memory_dao' && (args.status === undefined || args.status === 'active' || args.status === 'candidate')) return 'e4';
   if (exec.name === 'memory_read' && args.kind === 'index') return 'e11';
   if (exec.name === 'memory_index') return args.zone === 'functions' ? 'e6' : args.zone === 'insights' ? 'e7' : null;
   if (exec.name === 'memory_usage' && args.action === 'record') return 'e14';
@@ -109,6 +110,10 @@ export function createLiveFlow({ now = Date.now, ttlMs = DEFAULT_TTL_MS } = {}) 
       const time = clock();
       expire(time);
       remember('e9', 'finished', time);
+      notify();
+    },
+    usageMatched() {
+      remember('e13', 'finished', clock());
       notify();
     },
     indexMatched(source) {

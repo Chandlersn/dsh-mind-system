@@ -1487,6 +1487,7 @@ window.__ModuleLoader__.load({
 				}
 				return parts;
 			};
+			const edge = captureEdge(data);
 			const codeDetails = bins(data?.errorCodes, codes);
 			const stageDetails = bins(data?.errorStages, stages);
 			const detail = (items) => items === null ? '未知' : items.length ? items.join(' · ') : '无已记录明细';
@@ -1494,6 +1495,7 @@ window.__ModuleLoader__.load({
 				h(CardTitle, null, '每日采集状态'),
 				h('section', { role: 'status', 'aria-label': '每日采集状态', 'aria-live': 'polite', 'data-dmo': 'capture-status' },
 					h('div', null, `采集：${enabled}`),
+					edge.detail !== edge.label ? h('div', { className: 'dmo-meta' }, edge.detail) : null,
 					h('div', { className: 'dmo-meta' }, observations),
 					h('div', null, `尝试 ${fmt('scheduled')} · 确认 ${fmt('confirmed')} · 失败 ${fmt('failed')} · 待处理 ${fmt('pending')}`),
 					h('div', { className: 'dmo-meta' }, `已选择 ${fmt('selected')} · 重复 ${fmt('duplicate')} · 冲突 ${fmt('conflict')}`),
@@ -1526,8 +1528,35 @@ window.__ModuleLoader__.load({
 		 * 召回方向（读取，自上而下）：dao/insights/functions 被 pre-step 钩子注入
 		 * 闭环：写入 → 索引 → 召回 → 命中/纠正信号 → 下一轮阈值与分层
 		 */
+		// Activity edges are retained for 120s on the server; the UI must treat the
+		// feed as fresh for the same window or it hides still-live terminal events.
+		const FLOW_FRESH_MS = 120_000;
 		const knownCount = (value) => Number.isFinite(value) ? value : null;
 		const displayCount = (value) => knownCount(value) ?? '未知';
+
+		const captureOutcomes = {
+			confirmed: ['写入已确认', 'ok', 'ok'], duplicate: ['重复，已跳过', 'warn', 'w'],
+			conflict: ['采集冲突', 'danger', 'd'], failed: ['采集失败', 'danger', 'd'],
+		};
+		function captureEdge(capture, now = Date.now()) {
+			const result = (label, tone = 'muted dashed', marker = 'm', detail = label) => ({ label, tone, marker, detail });
+			const validTime = (at) => Number.isSafeInteger(at) && at >= 0 && at <= now;
+			if (typeof capture?.enabled !== 'boolean') return result('采集状态未知');
+			if (!validTime(capture.snapshotAt)) return result(capture.enabled ? '采集观测未知' : '采集未启用');
+			const { lastOutcome, lastOutcomeAt, snapshotAt } = capture;
+			const outcome = typeof lastOutcome === 'string' && Object.hasOwn(captureOutcomes, lastOutcome) && validTime(lastOutcomeAt) && lastOutcomeAt <= snapshotAt ? captureOutcomes[lastOutcome] : null;
+			const last = outcome ? `上次结果：${outcome[0]} · ${new Date(lastOutcomeAt).toLocaleString()}` : '上次结果未知';
+			if (now - snapshotAt >= FLOW_FRESH_MS) return result('采集快照已过期', undefined, undefined, last);
+			if (!capture.enabled) return result('采集未启用');
+			if (!Number.isSafeInteger(capture.pending) || capture.pending < 0) return result('采集观测未知');
+			if (capture.pending > 0) return result(`采集中 ${capture.pending}`, 'business flow-active', 'b', last);
+			if (outcome) return now - lastOutcomeAt < FLOW_FRESH_MS ? result(...outcome, last) : result('采集结果已过期', undefined, undefined, last);
+			if (lastOutcome === null && lastOutcomeAt === null && capture.scheduled === 0) {
+				if (capture.hasObservations === false && capture.observed === 0) return result('尚无采集样本');
+				if (capture.hasObservations === true && capture.observed > 0) return result('尚无采集尝试');
+			}
+			return result('采集结果未知');
+		}
 
 		function buildArchitecture({ counts, usage, capture, env, health, sag, cycleCoverage, runtimeSnapshot, patrolDelivery, edgeStatus, liveFlow }) {
 			const c = counts ?? {};
@@ -1594,6 +1623,7 @@ window.__ModuleLoader__.load({
 				verdicts: n(usage?.verdictEvents),
 				reads: n(usage?.readEvents),
 				captureOn: hasCapture,
+				capture,
 				health: { fail: n(health?.failCount), warn: n(health?.warnCount) },
 				indexBytes: n(env?.indexBytes),
 				indexComfort: n(env?.indexComfortBytes),
@@ -1635,7 +1665,7 @@ window.__ModuleLoader__.load({
 		 * Nodes show server counts; structural edges show direction without claiming
 		 * that historical counts verify stage health or a closed loop.
 		 */
-		const FLOW_LABELS = { e2: '每日线索 → 功能域', e3: '功能域 → 思想', e4: '思想 → 道', e6: '功能域 → 索引', e7: '思想 → 索引', e9: '能力台账 → 索引', e10: '索引匹配已进入步骤的召回候选', e11: '索引读取工具调用', e12: '召回消息插入已进入的步骤（未证明模型使用）', e14: '会话 → 使用信号记录', e15: 'SAG 搜索调用（结果返回会话）' };
+		const FLOW_LABELS = { e2: '每日线索 → 功能域', e3: '功能域 → 思想', e4: '思想 → 道', e6: '功能域 → 索引', e7: '思想 → 索引', e9: '能力台账 → 索引', e10: '索引匹配已进入步骤的召回候选', e11: '索引读取工具调用', e12: '召回消息插入已进入的步骤（未证明模型使用）', e13: '使用数据 → 召回匹配', e14: '会话 → 使用信号记录', e15: 'SAG 搜索调用（结果返回会话）' };
 		function flowState(flow, key, now = Date.now()) {
 			const edge = Object.hasOwn(FLOW_LABELS, key) && flow?.edges && Object.hasOwn(flow.edges, key) ? flow.edges[key] : null;
 			const validTime = (value) => Number.isFinite(value) && Number.isFinite(new Date(value).getTime());
@@ -1650,20 +1680,23 @@ window.__ModuleLoader__.load({
 			useEffect(() => {
 				const now = Date.now();
 				const deadlines = Object.keys(FLOW_LABELS).map((key) => flowState(m.liveFlow, key, now).expiresAt).filter((at) => at !== null && at > now);
-				if (live && Number.isFinite(lastEventAt) && lastEventAt + 90000 > now) deadlines.push(lastEventAt + 90000);
-				if (Number.isFinite(flowAt) && flowAt + 90000 > now) deadlines.push(flowAt + 90000);
+				if (live && Number.isFinite(lastEventAt) && lastEventAt + FLOW_FRESH_MS > now) deadlines.push(lastEventAt + FLOW_FRESH_MS);
+				if (Number.isFinite(flowAt) && flowAt + FLOW_FRESH_MS > now) deadlines.push(flowAt + FLOW_FRESH_MS);
+				for (const at of [m.capture?.snapshotAt, m.capture?.lastOutcomeAt]) {
+					if (Number.isSafeInteger(at) && at <= now && at + FLOW_FRESH_MS > now) deadlines.push(at + FLOW_FRESH_MS);
+				}
 				if (!deadlines.length) return undefined;
 				const timer = setTimeout(() => setExpiryTick((n) => n + 1), Math.min(Math.min(...deadlines) - now + 1, 2147483647));
 				return () => clearTimeout(timer);
-			}, [m.liveFlow, live, lastEventAt, flowAt, expiryTick]);
+			}, [m.liveFlow, m.capture, live, lastEventAt, flowAt, expiryTick]);
 			// Freshness is part of the data, not a decoration: an event older than
 			// ~90s means the stream is likely dead even if it never emitted `error`
 			// (a killed proxy or a suspended tab does exactly that).
 			const ageMs = Number.isFinite(lastEventAt) ? Date.now() - lastEventAt : null;
-			const liveMode = Boolean(live) && ageMs !== null && ageMs < 90_000;
+			const liveMode = Boolean(live) && ageMs !== null && ageMs < FLOW_FRESH_MS;
 			const view = {
 				...m,
-				liveFlow: Number.isFinite(flowAt) && Date.now() - flowAt >= 0 && Date.now() - flowAt < 90_000 ? m.liveFlow : undefined,
+				liveFlow: Number.isFinite(flowAt) && Date.now() - flowAt >= 0 && Date.now() - flowAt < FLOW_FRESH_MS ? m.liveFlow : undefined,
 				liveMode,
 				lastEventAge: ageMs === null ? null : Math.max(0, Math.round(ageMs / 1000)),
 				fallbackMode: Boolean(fallback) || !liveMode,
@@ -1672,7 +1705,7 @@ window.__ModuleLoader__.load({
 				refreshKnown: refreshKnown === true,
 				// 'unavailable' means the server said the activity feed is absent, so
 				// the arrows cannot show current work. It is NOT proof that nothing ran.
-				flowFeed: flowFeed === 'unavailable' || (flowFeed === 'available' && Number.isFinite(flowAt) && Date.now() - flowAt >= 90_000) ? 'unavailable' : flowFeed === 'available' ? 'available' : null,
+				flowFeed: flowFeed === 'unavailable' || (flowFeed === 'available' && Number.isFinite(flowAt) && Date.now() - flowAt >= FLOW_FRESH_MS) ? 'unavailable' : flowFeed === 'available' ? 'available' : null,
 			};
 			return renderArchitecture(view, onZone);
 		}
@@ -1768,14 +1801,14 @@ window.__ModuleLoader__.load({
 		}
 
 		function renderArchitecture(m, onZone) {
+			const capture = captureEdge(m.capture);
 			const W = 1120;
 			const H = 600;
-			const stage = () => null;
-			// Historical counts do not establish stage health.
-			const tone = () => 'dmo-edge muted dashed';
 			const flowProps = (key) => {
-				const { phase, at } = flowState(m.liveFlow, key);
-				return { key: `${key}-${phase}-${at}`, 'data-dmo': `flow-edge-${key}`, className: `dmo-edge flow-${phase} ${phase === 'active' ? 'business' : phase === 'finished' ? 'warn' : phase === 'failed' ? 'danger' : 'muted dashed'}`, markerEnd: `url(#dmo-ah-${phase === 'active' ? 'b' : phase === 'finished' ? 'w' : phase === 'failed' ? 'd' : 'm'})` };
+				const { phase, at, expired } = flowState(m.liveFlow, key);
+				const status = { active: '进行中', finished: '已观察到完成事件', failed: '失败', unknown: expired ? '活动已过期' : '暂无近期观测' }[phase];
+				const description = `${FLOW_LABELS[key]} · ${m.flowFeed === 'unavailable' ? '活动数据不可用' : status}`;
+				return { key: `${key}-${phase}-${at}`, children: h('title', null, description), 'aria-label': description, 'data-dmo': `flow-edge-${key}`, className: `dmo-edge flow-${phase} ${phase === 'active' ? 'business' : phase === 'finished' ? 'warn' : phase === 'failed' ? 'danger' : 'muted dashed'}`, markerEnd: `url(#dmo-ah-${phase === 'active' ? 'b' : phase === 'finished' ? 'w' : phase === 'failed' ? 'd' : 'm'})` };
 			};
 
 			const node = (key, { x, y, w, h: bh, name, count, unit, role, tier, accent }) => {
@@ -1819,6 +1852,8 @@ window.__ModuleLoader__.load({
 					? phase === 'finished' ? `索引匹配完成（${m.liveFlow?.edges?.e10?.source === 'cache' ? '缓存' : m.liveFlow?.edges?.e10?.source === 'disk' ? '磁盘' : '来源未知'}）` : null
 					: key === 'e12'
 					? { active: '插入事件处理中', finished: '已插入步骤，模型使用情况未知', failed: '插入失败' }[phase]
+					: key === 'e13'
+					? { finished: '匹配时已读取使用数据' }[phase]
 					: { active: '调用进行中', finished: '调用结束，结果待核验', failed: '调用失败' }[phase];
 				return status ? [`${name}：${status}`] : [];
 			});
@@ -1874,8 +1909,8 @@ window.__ModuleLoader__.load({
 						// ---- edges first so nodes paint on top ----
 						h('g', { key: 'edges', className: 'dmo-edges' }, [
 							// 写入：来源 → 每日原始
-							h('path', { key: 'e1', d: 'M180 82 L180 120 L125 120 L125 148', className: tone(stage('write')), markerEnd: 'url(#dmo-ah-m)' }),
-							label('l1', 152, 112, '捕获'),
+							h('path', { key: 'e1', 'data-dmo': 'flow-edge-e1', 'aria-label': `捕获 · ${capture.label} · ${capture.detail}`, d: 'M180 82 L180 120 L125 120 L125 148', className: `dmo-edge ${capture.tone}`, markerEnd: `url(#dmo-ah-${capture.marker})` }, h('title', null, capture.detail)),
+							label('l1', 152, 112, `捕获 · ${capture.label}`),
 							// 蒸馏链
 							h('path', { key: 'e2', d: 'M210 189 L248 189', ...flowProps('e2') }),
 							h('path', { key: 'e3', d: 'M410 189 L448 189', ...flowProps('e3') }),
@@ -1883,13 +1918,13 @@ window.__ModuleLoader__.load({
 							label('l2', 229, 181, 'write'),
 							label('l3', 429, 181, 'insight'),
 							label('l4', 629, 181, 'dao'),
-							// 各层收行进索引
-							h('path', { key: 'e5', d: 'M125 228 L125 294', className: tone(stage('write'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
+							// Only functions and insights are accepted by memory_index.
 							h('path', { key: 'e6', d: 'M330 228 L330 294', ...flowProps('e6') }),
 							h('path', { key: 'e7', d: 'M530 228 L530 294', ...flowProps('e7') }),
-							h('path', { key: 'e8', d: 'M715 228 L715 294', className: tone(stage('distill'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
+							h('path', { key: 'e8', 'data-dmo': 'static-edge-e8', d: 'M715 228 L715 294', className: 'dmo-edge muted', markerEnd: 'url(#dmo-ah-m)' }, h('title', null, '道的索引行由手工登记，此线表示静态关系。')),
+							label('l8', 750, 268, '手工登记'),
 							h('path', { key: 'e9', d: 'M840 200 L800 200 L800 294', ...flowProps('e9') }),
-							label('l5', 640, 268, 'memory_index 收行'),
+							label('l6', 430, 268, '功能域 / 思想索引调用'),
 							label('l9', 820, 192, '指针'),
 							// 索引 → 召回准入 / 会话
 							h('path', { d: 'M520 366 L520 430', ...flowProps('e10') }),
@@ -1900,8 +1935,8 @@ window.__ModuleLoader__.load({
 							h('path', { key: 'e12', d: 'M390 460 L312 460', ...flowProps('e12') }),
 							label('l12', 351, 452, '召回插入步骤'),
 							// 信号 → 准入（左向）
-							h('path', { key: 'e13', d: 'M730 484 L652 484', className: tone(stage('feedback'), 'ok'), markerEnd: 'url(#dmo-ah-m)' }),
-							label('l13', 691, 476, '反馈供参考'),
+							h('path', { d: 'M730 484 L652 484', ...flowProps('e13') }),
+							label('l13', 691, 476, '使用数据匹配'),
 							// 会话 → 信号：走底部回流弧（第四段，闭环）
 							h('path', { key: 'e14', d: 'M175 504 L175 540 L905 540 L905 504', ...flowProps('e14') }),
 							label('l14', 540, 532, '使用信号记录调用'),
@@ -1926,10 +1961,10 @@ window.__ModuleLoader__.load({
 							// count = capability-ledger entries; skills are a separate host
 							// bundle count. Showing both as one number on this node misleads.
 							node('capabilities', { x: 840, y: 150, w: 240, h: 78, name: '能力台账', count: nOf('capabilities'), unit: '条台账', role: '外部工具/MCP/CLI 台账', tier: 'L2c' }),
-							node('index', { x: 40, y: 294, w: 800, h: 72, name: 'MEMORY.md 索引', count: m.indexRows, unit: '行', role: '派生物：各层收行于此，召回只读它', accent: true }),
+							node('index', { x: 40, y: 294, w: 800, h: 72, name: 'MEMORY.md 索引', count: m.indexRows, unit: '行', role: '索引行与档案供召回读取', accent: true }),
 							node('ctx', { x: 40, y: 430, w: 272, h: 74, name: '下一轮会话上下文', role: '注入点：决定未来知道什么' }),
 							node('gate', { x: 390, y: 430, w: 262, h: 74, name: '召回准入', role: '预算 / 分层 / 阀门规则' }),
-							node('sig', { x: 730, y: 430, w: 350, h: 74, name: '召回曝光（未去重）', count: m.recallEvents, unit: '条', role: `总事件 ${displayCount(m.signals)} · 正向/纠正 ${displayCount(m.verdicts)}` }),
+							node('sig', { x: 730, y: 430, w: 350, h: 74, name: '使用信号', count: m.recallEvents, unit: '条召回曝光（未去重）', role: `总事件 ${displayCount(m.signals)} · 正向/纠正 ${displayCount(m.verdicts)}` }),
 						]),
 						h('g', { key: 'legend' }, [
 							h('line', { key: 'k1', x1: 40, y1: 578, x2: 75, y2: 578, className: 'dmo-edge business' }),
@@ -1940,6 +1975,8 @@ window.__ModuleLoader__.load({
 							h('text', { key: 'k6', x: 507, y: 582, className: 'dmo-edge-label' }, '调用失败'),
 							h('line', { key: 'k7', x1: 620, y1: 578, x2: 655, y2: 578, className: 'dmo-edge muted dashed' }),
 							h('text', { key: 'k8', x: 662, y: 582, className: 'dmo-edge-label' }, '未知或已过期'),
+							h('line', { key: 'k9', x1: 825, y1: 578, x2: 860, y2: 578, className: 'dmo-edge muted' }),
+							h('text', { key: 'k10', x: 867, y: 582, className: 'dmo-edge-label' }, '静态关系（无实时观测）'),
 						]),
 					),
 				),
@@ -2029,6 +2066,9 @@ window.__ModuleLoader__.load({
 				h('summary', null, '诊断与最近改动'),
 				h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 } },
 					h('section', { 'data-dmo': 'health-details' }, h(CardTitle, null, '体检详情'), problems.length ? h('ul', { className: 'dmo-probs' }, problems.map((p, i) => h('li', { key: i }, `[${p.level}] ${p.rule}: ${p.message}`))) : h('div', { className: 'dmo-meta' }, '没有提供体检问题详情。')),
+						health?.reviewNotes?.length ? h('details', { 'data-dmo': 'review-notes' },
+							h('summary', null, `复核线索（${health.reviewNotes.length}）`),
+							h('ul', { className: 'dmo-probs' }, health.reviewNotes.map((n, i) => h('li', { key: i }, `${n.rule} · ${n.message}`)))) : null,
 					h(CaptureStatus, { capture }),
 					h('section', { 'data-dmo': 'usage-diagnostics' }, h(CardTitle, null, '使用信号分层与热点'),
 						h('div', { className: 'dmo-meta' }, '召回是曝光，不证明采纳；正向和纠正是调用方声明，来源未经认证。分层是启发式建议。'),
@@ -3120,7 +3160,7 @@ window.__ModuleLoader__.load({
 			// The panel API answers with `results` (see runHealthCheck); accept the
 			// older `problems` spelling too so a stale server half cannot blank the
 			// health chips silently.
-			const health = ws ? { initialized: ws.initialized, failCount: ws.failCount, warnCount: ws.warnCount, results: ws.results ?? ws.problems ?? null } : null;
+			const health = ws ? { initialized: ws.initialized, failCount: ws.failCount, warnCount: ws.warnCount, results: ws.results ?? ws.problems ?? null, reviewNotes: ws.reviewNotes } : null;
 			const indexText = indexFile.data?.text ?? '';
 			const tables = parseIndexTables(indexText);
 			const lists = { functions: funcs.data?.files ?? [], insights: insights.data?.files ?? [], dao: daos.data?.files ?? [], capabilities: caps.data?.files ?? [], skills: skills.data?.files ?? [], daily: dailies.data?.files ?? [] };
@@ -3320,7 +3360,7 @@ window.__ModuleLoader__.load({
 			// 架构图独用一个 view.kind：它不是"分区列表"，是跨层的结构视图。
 			else if (view.kind === 'arch')
 				main = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 14 } }, h(Architecture, {
-					model: buildArchitecture({ counts, usage: overview.data?.[0]?.usage, capture: overview.data?.[0]?.capture, env: overview.data?.[0]?.env, health, sag: overview.data?.[0]?.sag, cycleCoverage: overview.data?.[0]?.cycleCoverage, runtimeSnapshot: overview.data?.[0]?.runtimeSnapshot, patrolDelivery: overview.data?.[0]?.patrolDelivery, edgeStatus: overview.data?.[0]?.edgeStatus, liveFlow: SSE_BOX.flowAt !== null && Date.now() - SSE_BOX.flowAt < 90_000 ? SSE_BOX.flow : undefined }),
+					model: buildArchitecture({ counts, usage: overview.data?.[0]?.usage, capture: overview.data?.[0]?.capture, env: overview.data?.[0]?.env, health, sag: overview.data?.[0]?.sag, cycleCoverage: overview.data?.[0]?.cycleCoverage, runtimeSnapshot: overview.data?.[0]?.runtimeSnapshot, patrolDelivery: overview.data?.[0]?.patrolDelivery, edgeStatus: overview.data?.[0]?.edgeStatus, liveFlow: SSE_BOX.flowAt !== null && Date.now() - SSE_BOX.flowAt < FLOW_FRESH_MS ? SSE_BOX.flow : undefined }),
 					// Freshness is read here (not stored in a hook) so the badge always
 					// reflects the channel's real state at render time.
 					live: sseFreshness(SSE_BOX).live,

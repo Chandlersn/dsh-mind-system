@@ -12,6 +12,7 @@
  * The Host installation must be discoverable (see resolveDshRoot): set
  * DSH_INSTALL_DIR when the harness install is not the process's own ancestor.
  */
+import { seedDistillationSources } from './tests/distill-fixture.js';
 import { mkdir, mkdtemp, rm, readFile, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -91,8 +92,9 @@ ok(c0.failCount === 1 && c0.results[0].rule === 'R0', `check on empty root: ${c0
 
 // 2) first write -> creates the function file only (index + daily are separate
 // layers now; the raw daily log is the model's to maintain)
+const distillationSources = await seedDistillationSources(root, 'memory tool integration');
 const w1 = await T.memory_write.execute(
-	{ feature: '测试功能', title: '第一次迭代', summary: '验证插件写入闭环', currentState: '初始状态', change: '写入测试', verification: '本测试', result: 'done', open: '待验证遗留项' },
+	{ ...distillationSources, feature: '测试功能', title: '第一次迭代', summary: '验证插件写入闭环', currentState: '初始状态', change: '写入测试', verification: '本测试', result: 'done', open: '待验证遗留项' },
 	exec,
 );
 ok(w1.createdFunctionFile === true, 'write creates function file');
@@ -121,7 +123,7 @@ ok(ix2.created === false, 'memory_index upserts (created=false on update)');
 // 3b) memory_search: ranked retrieval over the whole root (bodies, not just
 // index summaries). A rare token must win over a token every row shares.
 await T.memory_write.execute(
-	{ feature: '检索目标', title: '逐帧渲染静默失败的三类事故', summary: '检索测试素材', change: '写一段只有这里才有的稀有词：逐帧渲染。', result: 'done' },
+	{ ...distillationSources, feature: '检索目标', title: '逐帧渲染静默失败的三类事故', summary: '检索测试素材', change: '写一段只有这里才有的稀有词：逐帧渲染。', result: 'done' },
 	exec,
 );
 const s1 = await T.memory_search.execute({ q: '逐帧' }, exec);
@@ -153,11 +155,11 @@ await rm(crlfDay, { force: true });
 // silently-wrong filter is worse than none.
 {
 	await T.memory_write.execute(
-		{ feature: '时序检索', title: '三月旧事', summary: 's', change: '时序锚点只在旧块出现', date: '2026-03-01', result: 'done' },
+		{ ...distillationSources, feature: '时序检索', title: '三月旧事', summary: 's', change: '时序锚点只在旧块出现', date: '2026-03-01', result: 'done' },
 		exec,
 	);
 	await T.memory_write.execute(
-		{ feature: '时序检索', title: '十月新篇', summary: 's2', change: '时序锚点只在新块出现', date: '2026-10-05', result: 'done' },
+		{ ...distillationSources, feature: '时序检索', title: '十月新篇', summary: 's2', change: '时序锚点只在新块出现', date: '2026-10-05', result: 'done' },
 		exec,
 	);
 	const allT = await T.memory_search.execute({ q: '时序锚点' }, exec);
@@ -315,7 +317,7 @@ ok(mod.matchIndexRows(trustIndex, mod.tokensOf('逐帧 渲染'), 3).find((r) => 
 
 // 4) second write same day -> 补 suffix
 const w2 = await T.memory_write.execute(
-	{ feature: '测试功能', title: '第二次迭代', summary: '同日第二块加补后缀', currentState: '两块后仍稳定', result: 'pending' },
+	{ ...distillationSources, feature: '测试功能', title: '第二次迭代', summary: '同日第二块加补后缀', currentState: '两块后仍稳定', result: 'pending' },
 	exec,
 );
 ok(w2.appendedHeading.includes('补'), `补 suffix: ${w2.appendedHeading}`);
@@ -335,13 +337,13 @@ ok(!('indexBytes' in (T.memory_insight.output?.schema?.properties ?? {})), 'memo
 
 // 5b) related: existing = bare sibling link; missing = plain text
 const w3 = await T.memory_write.execute(
-	{ feature: '测试功能', title: '相关链接写法验证', summary: 'related 链接必须是裸文件名', related: ['测试功能'], result: 'done' },
+	{ ...distillationSources, feature: '测试功能', title: '相关链接写法验证', summary: 'related 链接必须是裸文件名', related: ['测试功能'], result: 'done' },
 	exec,
 );
 const fn3 = await readFile(w3.featureFile, 'utf8');
 ok(fn3.includes('相关：[测试功能.md](测试功能.md)') || fn3.includes('相关：（无）'), 'self-related filtered');
 const w4 = await T.memory_write.execute(
-	{ feature: '测试功能', title: '未建档相关渲染', summary: '不存在的 related 渲染为纯文本', related: ['另一功能'], result: 'done' },
+	{ ...distillationSources, feature: '测试功能', title: '未建档相关渲染', summary: '不存在的 related 渲染为纯文本', related: ['另一功能'], result: 'done' },
 	exec,
 );
 const fn4 = await readFile(w4.featureFile, 'utf8');
@@ -351,14 +353,14 @@ ok(!fn4.includes('](另一功能.md)'), 'no dangling href for missing related');
 // 6) resolve remains accepted, but historical raw evidence is immutable.
 // This isolated daily fixture models a previously captured user entry.
 await T.memory_write.execute(
-	{ feature: '遗留功能', title: '引入遗留', summary: '有遗留项的功能', result: 'pending' },
+	{ ...distillationSources, feature: '遗留功能', title: '引入遗留', summary: '有遗留项的功能', result: 'pending' },
 	exec,
 );
 const dailyPath0 = path.join(root, `${today}.md`);
 const dailyRaw0 = `# ${today} 记录\n\n- 遗留功能有个开放风险 → [functions/遗留功能.md](functions/遗留功能.md)\n`;
 await writeFile(dailyPath0, dailyRaw0, 'utf8');
 const w5 = await T.memory_write.execute(
-	{ feature: '测试功能', title: '解决遗留项', summary: '勾掉遗留功能的待观察', resolve: '遗留功能', result: 'done' },
+	{ ...distillationSources, feature: '测试功能', title: '解决遗留项', summary: '勾掉遗留功能的待观察', resolve: '遗留功能', result: 'done' },
 	exec,
 );
 const d1 = await T.memory_read.execute({ kind: 'daily' }, exec);
@@ -419,11 +421,11 @@ ok(cTrust.results.some((r) => r.rule === 'R22' && r.message.includes('信任主�
 }
 
 // 8) fold: create a file with many blocks, fold keeping 2
-await T.memory_write.execute({ feature: '折叠目标', title: '块一', summary: 's1', result: 'reverted', open: '教训一' }, exec);
-await T.memory_write.execute({ feature: '折叠目标', title: '块二', summary: 's2', result: 'done' }, exec);
-await T.memory_write.execute({ feature: '折叠目标', title: '块三', summary: 's3', result: 'done' }, exec);
-await T.memory_write.execute({ feature: '折叠目标', title: '块四', summary: 's4', result: 'done' }, exec);
-await T.memory_write.execute({ feature: '折叠目标', title: '块五', summary: 's5', result: 'done' }, exec);
+await T.memory_write.execute({ ...distillationSources, feature: '折叠目标', title: '块一', summary: 's1', result: 'reverted', open: '教训一' }, exec);
+await T.memory_write.execute({ ...distillationSources, feature: '折叠目标', title: '块二', summary: 's2', result: 'done' }, exec);
+await T.memory_write.execute({ ...distillationSources, feature: '折叠目标', title: '块三', summary: 's3', result: 'done' }, exec);
+await T.memory_write.execute({ ...distillationSources, feature: '折叠目标', title: '块四', summary: 's4', result: 'done' }, exec);
+await T.memory_write.execute({ ...distillationSources, feature: '折叠目标', title: '块五', summary: 's5', result: 'done' }, exec);
 const fold1 = await T.memory_fold.execute({ feature: '折叠目标', keep: 2 }, exec);
 ok(fold1.foldedBlocks === 3 && fold1.keptBlocks === 2, `fold counts: ${fold1.foldedBlocks}/${fold1.keptBlocks}`);
 ok(fold1.bytesAfter < fold1.bytesBefore, `fold shrinks: ${fold1.bytesBefore} -> ${fold1.bytesAfter}`);
@@ -455,7 +457,7 @@ ok(foldedFile.content.includes('## ['), 'kept blocks remain');
 // 8b) a fold must not recycle a same-day tag: the folded tags live on in the
 // 「早期演化」 list, so the next write continues the sequence (补4 → 补5) instead
 // of colliding with a folded 补2 and tripping the R3 ordering check.
-const w11 = await T.memory_write.execute({ feature: '折叠目标', title: '折叠后新块', summary: '折叠后编号不撞名', result: 'done' }, exec);
+const w11 = await T.memory_write.execute({ ...distillationSources, feature: '折叠目标', title: '折叠后新块', summary: '折叠后编号不撞名', result: 'done' }, exec);
 ok(w11.appendedHeading.includes('补5'), `post-fold tag continues the sequence: ${w11.appendedHeading}`);
 
 // 9) rename: bare rename rewrites references everywhere — PAUSED.
@@ -466,9 +468,9 @@ ok(w11.appendedHeading.includes('补5'), `post-fold tag continues the sequence: 
 // result-shape assertions are kept in the comment so the intent stays visible:
 //   r1.mode === 'renamed'; r1.danglingAfter === 0; references rewritten to the
 //   new name; old file gone; index row renamed.
-await T.memory_write.execute({ feature: '旧名功能', title: '重命名前', summary: '将被重命名', result: 'done' }, exec);
+await T.memory_write.execute({ ...distillationSources, feature: '旧名功能', title: '重命名前', summary: '将被重命名', result: 'done' }, exec);
 await T.memory_write.execute(
-	{ feature: '测试功能', title: '引用旧名', summary: '含旧名相关链接', related: ['旧名功能'], result: 'done' },
+	{ ...distillationSources, feature: '测试功能', title: '引用旧名', summary: '含旧名相关链接', related: ['旧名功能'], result: 'done' },
 	exec,
 );
 await T.memory_index.execute({ zone: 'functions', name: '旧名功能', summary: '将被重命名的功能' }, exec);
@@ -493,7 +495,7 @@ ok((await readFile(path.join(root, 'MEMORY.md'))).equals(renameIndexBefore), 'in
 // 10) merge: fold 待并入 into 测试功能 — PAUSED for the same reason.
 // Former assertions: r2.mode === 'merged'; r2.danglingAfter === 0; merged blocks
 // appended to the target; the merged source row removed from the index.
-await T.memory_write.execute({ feature: '待并入', title: '并入前块', summary: '将被合并', result: 'done' }, exec);
+await T.memory_write.execute({ ...distillationSources, feature: '待并入', title: '并入前块', summary: '将被合并', result: 'done' }, exec);
 await T.memory_index.execute({ zone: 'functions', name: '待并入', summary: '将被合并的功能' }, exec);
 const mergeSourcePath = path.join(root, 'functions', '待并入.md');
 const mergeTargetPath = path.join(root, 'functions', '测试功能.md');
@@ -530,7 +532,7 @@ for (const r of c1.results) console.log(`    [${r.level}] ${r.rule}: ${r.message
 // 11b) temperature: a feature nobody references is flagged as cold; a heavily
 // referenced one is not. At this point 测试功能 is referenced by the index and
 // insights, so it must NOT be cold; 无引用功能 would be.
-await T.memory_write.execute({ feature: '无引用功能', title: '孤立块', summary: '没有任何其他文件引用此功能', result: 'done' }, exec);
+await T.memory_write.execute({ ...distillationSources, feature: '无引用功能', title: '孤立块', summary: '没有任何其他文件引用此功能', result: 'done' }, exec);
 const c2 = await T.memory_check.execute({}, exec);
 const cold = c2.results.filter((r) => r.rule === 'TEMP');
 ok(cold.some((r) => r.message.includes('无引用功能')), `cold flagged: ${cold.map((r) => r.message.split('：')[0]).join('; ')}`);
@@ -541,7 +543,7 @@ ok(!cold.some((r) => r.message.includes('测试功能')), 'referenced feature no
 // compares against indexed rows — index 无引用功能 first.
 await T.memory_index.execute({ zone: 'functions', name: '无引用功能', summary: '没有任何其他文件引用此功能' }, exec);
 const w6 = await T.memory_write.execute(
-	{ feature: '相近功能', title: '疑似重复写入', summary: '没有任何其他文件引用此功能的孤立块', result: 'done' },
+	{ ...distillationSources, feature: '相近功能', title: '疑似重复写入', summary: '没有任何其他文件引用此功能的孤立块', result: 'done' },
 	exec,
 );
 ok(w6.warnings.some((x) => x.includes('疑似与已有功能域')), `dedupe warning: ${w6.warnings.join(' | ').slice(0, 80)}`);
@@ -558,7 +560,7 @@ ok(!c3.results.some((r) => r.rule === 'TEMP'), `grace window suppresses cold fla
 // 12) bad slug rejected
 let threw = false;
 try {
-	await T.memory_write.execute({ feature: '../逃逸', title: 'x', summary: 's' }, exec);
+	await T.memory_write.execute({ ...distillationSources, feature: '../逃逸', title: 'x', summary: 's' }, exec);
 } catch {
 	threw = true;
 }
@@ -612,13 +614,13 @@ if (typeof ps === 'function') {
 // flagged both at write time and by the health check, but only as a WARN.
 const longChange = '实现细节逐条流水。'.repeat(110); // 990 chars > MAX_BLOCK_CHARS
 const w7 = await T.memory_write.execute(
-	{ feature: '冗长功能', title: '未蒸馏的块', summary: '用来验证蒸馏闸门', change: longChange, result: 'done' },
+	{ ...distillationSources, feature: '冗长功能', title: '未蒸馏的块', summary: '用来验证蒸馏闸门', change: longChange, result: 'done' },
 	exec,
 );
 ok(w7.warnings.some((x) => x.includes('本块正文')), 'write warns on an over-long block');
 const longSummary = '这一段索引摘要故意写得非常长'.repeat(12); // 168 chars > MAX_ROW_SUMMARY_CHARS
 const w8 = await T.memory_write.execute(
-	{ feature: '摘要过长功能', title: '摘要过长', summary: longSummary, change: '简短改动', result: 'done' },
+	{ ...distillationSources, feature: '摘要过长功能', title: '摘要过长', summary: longSummary, change: '简短改动', result: 'done' },
 	exec,
 );
 ok(w8.warnings.some((x) => x.includes('索引行摘要')), 'write warns on an over-long summary');
@@ -649,7 +651,7 @@ ok(c4b.failCount === 0, 'R14 is advisory (WARN), never a FAIL');
 
 // 14b) related: "x.md" is accepted as the slug (no `x.md.md（未建档）`)
 const w9 = await T.memory_write.execute(
-	{ feature: '测试功能', title: 'related 带 .md 后缀', summary: 'related 容忍 .md 后缀', related: ['冗长功能.md'], result: 'done' },
+	{ ...distillationSources, feature: '测试功能', title: 'related 带 .md 后缀', summary: 'related 容忍 .md 后缀', related: ['冗长功能.md'], result: 'done' },
 	exec,
 );
 const fn9 = await readFile(w9.featureFile, 'utf8');
@@ -657,7 +659,7 @@ ok(fn9.includes('](冗长功能.md)') && !fn9.includes('冗长功能.md.md'), 'r
 
 // 14c) a distilled block raises no verbosity warning
 const w10 = await T.memory_write.execute(
-	{ feature: '测试功能', title: '蒸馏块不告警', summary: '结论级块不触发蒸馏闸门', change: '改动一句', reason: '原因一句', verification: '验证一句', result: 'done', open: '待观察一句' },
+	{ ...distillationSources, feature: '测试功能', title: '蒸馏块不告警', summary: '结论级块不触发蒸馏闸门', change: '改动一句', reason: '原因一句', verification: '验证一句', result: 'done', open: '待观察一句' },
 	exec,
 );
 ok(!w10.warnings.some((x) => x.includes('本块正文')), 'a distilled block raises no verbosity warning');
@@ -849,7 +851,7 @@ const US = T.memory_usage;
 ok(typeof US?.execute === 'function', 'memory_usage registered');
 // guard: a marked file is skipped by the TEMP cold rule
 const gw = await T.memory_write.execute(
-	{ feature: '守护域', title: '低频高价值的兜底规则', summary: '安全审计类低频高价值记忆', result: 'done', guard: true },
+	{ ...distillationSources, feature: '守护域', title: '低频高价值的兜底规则', summary: '安全审计类低频高价值记忆', result: 'done', guard: true },
 	exec,
 );
 const guardText = await readFile(gw.featureFile, 'utf8');
@@ -858,7 +860,7 @@ const cg = await T.memory_check.execute({}, exec);
 const coldNames = cg.results.filter((r) => r.rule === 'TEMP').map((r) => r.message).join(' ');
 ok(!coldNames.includes('守护域'), 'guarded file is exempt from the cold-memory rule');
 // un-guarded control file IS flagged
-await T.memory_write.execute({ feature: '普通冷域', title: '没人引用的块', summary: '会被判冷的普通域', result: 'done' }, exec);
+await T.memory_write.execute({ ...distillationSources, feature: '普通冷域', title: '没人引用的块', summary: '会被判冷的普通域', result: 'done' }, exec);
 const cg2 = await T.memory_check.execute({}, exec);
 ok(cg2.results.some((r) => r.rule === 'TEMP' && r.message.includes('普通冷域')), 'unguarded cold file still flagged');
 // usage recording: recalls from the pre-step hook are logged automatically
@@ -901,7 +903,7 @@ ok(
 await US.execute({ action: 'record', href: 'functions/熔断域.md', kind: 'correction' }, exec);
 await US.execute({ action: 'record', href: 'functions/熔断域.md', kind: 'correction' }, exec);
 await US.execute({ action: 'record', href: 'functions/熔断域.md', kind: 'correction' }, exec);
-await T.memory_write.execute({ feature: '熔断域', title: '反复被纠正的域', summary: '用来验证熔断规则', result: 'pending' }, exec);
+await T.memory_write.execute({ ...distillationSources, feature: '熔断域', title: '反复被纠正的域', summary: '用来验证熔断规则', result: 'pending' }, exec);
 const cg3 = await T.memory_check.execute({}, exec);
 ok(cg3.results.some((r) => r.rule === 'R18' && r.message.includes('熔断')), `R18 trips on a repeatedly corrected area (${cg3.results.filter((r) => r.rule === 'R18').length} R18)`);
 // bad href / bad kind are rejected loudly
@@ -1038,7 +1040,7 @@ ok(!cCap.results.some((r) => r.message.includes('ffmpeg') && r.level === 'FAIL')
 // are reported, NEVER rewritten — facts must not be silently mangled.
 {
 	const wSec = await T.memory_write.execute(
-		{ feature: '防线测试', title: '带密钥的迭代', summary: '验证写侧 redact', change: 'token ghp_abcdefghijklmnopqrstuvwxyz0123456789 已配置', result: 'done' },
+		{ ...distillationSources, feature: '防线测试', title: '带密钥的迭代', summary: '验证写侧 redact', change: 'token ghp_abcdefghijklmnopqrstuvwxyz0123456789 已配置', result: 'done' },
 		exec,
 	);
 	ok(wSec.warnings.some((x) => x.includes('凭据材料') && x.includes('github-token')), 'write warns which credential was redacted');
@@ -1056,7 +1058,7 @@ ok(!cCap.results.some((r) => r.message.includes('ffmpeg') && r.level === 'FAIL')
 	ok(stillThere.includes('11010519491231002X'), 'tier-2 is never rewritten');
 	// A fenced code example is documentation, not a leak (no false positive).
 	await T.memory_write.execute(
-		{ feature: '防线测试', title: '代码块示例', summary: '验证误报边界', change: '示例见下\n\n```bash\nexport OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwx\n```\n\n正文结束', result: 'done' },
+		{ ...distillationSources, feature: '防线测试', title: '代码块示例', summary: '验证误报边界', change: '示例见下\n\n```bash\nexport OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwx\n```\n\n正文结束', result: 'done' },
 		exec,
 	);
 	const cSec2 = await T.memory_check.execute({}, exec);
@@ -1481,7 +1483,7 @@ for (const [form, bullet] of [
 // The nominated area gets a real function file first: a skill must cite a
 // source that exists (else R10 dangles), and the same slug as the nominated
 // href is what proves de-nomination is keyed on the EVIDENCE, not the name.
-await T.memory_write.execute({ feature: '分离延迟重启', title: '建立被提名域', summary: '反复重跑的操作，等待结晶', result: 'done' }, exec);
+await T.memory_write.execute({ ...distillationSources, feature: '分离延迟重启', title: '建立被提名域', summary: '反复重跑的操作，等待结晶', result: 'done' }, exec);
 // NOMINATION COUNTS ENGAGEMENT, NOT EXPOSURE (2026-10-27): this fixture used to
 // reach the >=6 use floor with recalls alone — i.e. the plugin could nominate a
 // procedure for crystallization purely by having injected it, without the model
@@ -1604,7 +1606,7 @@ ok(ownThrew, 'crystallize refuses to overwrite a foreign (non-agent_created) bun
 // "only after the procedure was actually followed" is code now, not prose. The
 // source area must be one NOTHING has read/confirmed: a memory_write creates the
 // file but is NOT a usage signal, so the skill's evidence base stays empty.
-await T.memory_write.execute({ feature: '闸门零信号源', title: 't', summary: 's', change: 'c', result: 'done' }, exec);
+await T.memory_write.execute({ ...distillationSources, feature: '闸门零信号源', title: 't', summary: 's', change: 'c', result: 'done' }, exec);
 await T.memory_skill.execute({ action: 'crystallize', name: 'gate-skill', summary: '闸门回归', when: '闸门回归', procedure: ['一', '二'], verification: 'v', sources: ['闸门零信号源'] }, exec);
 const gateFile = path.join(skillRoot, 'gate-skill', 'SKILL.md');
 const gateBefore = await readFile(gateFile, 'utf8');

@@ -295,6 +295,46 @@ test('e9 records only acknowledged changes to the named capability row', async (
   } finally { await host.close(); }
 });
 
+test('usage matching reports only a complete nonempty scan consumed by automatic index matching', async () => {
+  for (const scenario of ['empty', 'broken', 'no-candidates', 'matched']) {
+    let now = Date.now();
+    const host = await fixture({ createLiveFlow: () => createLiveFlow({ now: () => now }) });
+    try {
+      if (scenario !== 'no-candidates') {
+        await writeFile(path.join(host.root, 'MEMORY.md'), '# Memory\n## Functions\n| Domain | Summary |\n|---|---|\n| [alphaunique](functions/alphaunique.md) | alphaunique matching |\n');
+      }
+      if (scenario !== 'empty') {
+        const row = { t: new Date(now).toISOString(), href: 'functions/private-file.md', kind: 'read' };
+        await writeFile(path.join(host.root, '.usage.jsonl'), JSON.stringify(row) + (scenario === 'broken' ? '\n{broken\n' : '\n'));
+      }
+      const step = host.listeners.get('agent/pre-step')[0];
+      const snapshot = async () => JSON.parse((await host.tools.get('memory_read').execute({ kind: 'live_flow' })).content);
+      await step({ agent: { id: 'private-agent' }, turn: 1, messages: [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'alphaunique' }] }] }, async () => ({ kind: 'enter', messages: [] }));
+      const edge = (await snapshot()).edges.e13;
+      if (scenario === 'matched') {
+        assert.deepEqual(edge, { phase: 'finished', at: now, expiresAt: now + 120000 });
+        now += 120000;
+        assert.equal((await snapshot()).edges.e13, undefined);
+      } else assert.equal(edge, undefined, scenario);
+    } finally { await host.close(); }
+  }
+});
+
+test('listing Dao candidates has no distillation activity', async () => {
+  const host = await fixture();
+  try {
+    const exec = { token: Symbol(), name: 'memory_dao', arguments: { status: 'list_candidates', name: '', proposition: '', extractedFrom: [], body: '' } };
+    const read = host.tools.get('memory_read');
+    const snapshot = async () => JSON.parse((await read.execute({ kind: 'live_flow' })).content);
+    await host.listeners.get('tools/execute')[0](exec, async () => {
+      assert.equal((await snapshot()).edges.e4, undefined);
+      return host.tools.get('memory_dao').execute(exec.arguments);
+    });
+    host.listeners.get('tools/result')[0](exec, { isError: false });
+    assert.equal((await snapshot()).edges.e4, undefined);
+  } finally { await host.close(); }
+});
+
 test('only memory_read index execution maps to e11', async () => {
   const host = await fixture();
   try {

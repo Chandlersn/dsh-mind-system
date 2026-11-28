@@ -122,7 +122,9 @@ test('a healthy push channel does not hide a missing activity feed', () => {
   // Healthy or not-yet-observed feeds never claim the channel is missing.
   assert.equal(badge({ ...live, flowFeed: 'available' }), undefined);
   assert.equal(badge({ ...live, flowFeed: null }), undefined);
-  assert.match(textOf(badge({ ...live, flowFeed: 'available', flowAt: Date.now() - 90000 })), /数据流活动不可用/);
+  // The feed stays fresh for the same 120s window the server retains terminal edges.
+  assert.equal(badge({ ...live, flowFeed: 'available', flowAt: Date.now() - 90000 }), undefined, 'still fresh after 90s');
+  assert.match(textOf(badge({ ...live, flowFeed: 'available', flowAt: Date.now() - 120000 })), /数据流活动不可用/);
   assert.equal(badge({ ...live, flowFeed: 'available', flowAt: Date.now() }), undefined);
   // Without a working push channel the push badge already explains the outage.
   assert.equal(badge({ live: false, lastEventAt: null, flowFeed: 'unavailable' }), undefined);
@@ -311,7 +313,7 @@ test('disconnected or stale stream cannot reuse an active HTTP snapshot', () => 
   assert.match(edge('snapshot-error').props.className, /flow-active/);
   assert.match(edge('overview').props.className, /flow-active/);
   const oldNow = Date.now;
-  const staleAt = oldNow() + 90001;
+  const staleAt = oldNow() + 120001;
   try {
     Date.now = () => staleAt;
     assert.match(edge(null).props.className, /flow-unknown/);

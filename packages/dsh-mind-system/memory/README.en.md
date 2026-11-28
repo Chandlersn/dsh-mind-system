@@ -12,7 +12,7 @@ will **re-apply** is distilled into `insights/`, whatever is **re-run and verifi
 callable procedure in `skills/`, the index keeps a single line per row, and every session starts with that
 discipline injected into its system prompt.
 
-- seventeen memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a Web panel
+- eighteen memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
 - Mechanical lint rules (R0–R28 plus temperature analysis; rule numbers grow, so no fixed count is claimed), so rot gets detected instead of remembered
 - **Capability ledger**: every EXTERNAL CLI / MCP / local tool you used is filed in `capabilities/` — look before
@@ -164,10 +164,11 @@ records *why* we believed it then.
 
 | Tool | What it does |
 |---|---|
+| `memory_distill_review` | List candidate material by date and source location. Submit a review for the exact version after checking the original passages. Changed material becomes eligible for review again. |
 | `memory_read` | read the index / a function file / an insight file / a capability entry / a skill / a daily log (`kind=index` first, to judge relevance) |
 | `memory_search` | **ranked full-text search** across the whole root: scans bodies, not just one-line summaries, and returns zone/file/line/section/snippet plus each hit's attributed date. Use it when you remember a fragment but not the area or the day; `after`/`before` filter by date range (block tag → file head → filename → mtime, in that order) |
 | `memory_capability` | **the capability ledger**: `record` files an EXTERNAL CLI/MCP/local tool you used (invocation, prerequisites, what it solved — one file per tool, updated in place; never the harness's own tools or the project's own scripts); `list` before a task to see what is available; `read` for a tool's full entry |
-| `memory_write` | **append one iteration block** (a conclusion distilled from the raw daily record) and refresh the head stable-state summary; `summary` is the block's one-line takeaway. **Writes no index row, never touches the daily log** |
+| `memory_write` | Append one iteration block and refresh the head summary. Cite at least three distinct material days. An explicit user request, a same-day failure with an identified cause, or a safety constraint can qualify for an exception with a concrete reason and a verifiable source day. The caller explains why the selected records are relevant. |
 | `memory_index` | **the integration layer**: once an area/theme stabilizes, upsert its row into the MEMORY.md index (row summary distilled from the block summaries); pass `group` to land in a `### 索引·<domain>` sub-table when the table has been split |
 | `memory_insight` | distil a transferable principle from the function division into `insights/`, backlink its source areas, `supersedes` to replace an older idea; three soft gates at write time (≥2 source areas / not a procedure / ≤200 chars) |
 | `memory_dao` | write the **道 layer** (`dao/`) — the most abstract guiding principle. HARD GATE: must be extracted from **>=5 laws**, the proposition must contain no concrete tech/project/file markers and no procedure phrasing, and the layer caps at 7 entries; a rejection states exactly what is missing |

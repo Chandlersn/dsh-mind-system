@@ -4,7 +4,29 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { detectDistillationBacklog, apply } from '../server.js';
+import { detectDistillationBacklog, apply, DEFAULTS, runHealthCheck, panelizeHealth } from '../server.js';
+
+test('health preserves each review lead alongside independently actionable structural findings', async () => {
+  const root = fixture();
+  try {
+    const area = path.join(root, 'functions', 'memory-manager.md');
+    const blocks = ['2026-10-10', '2026-10-11'].flatMap(day =>
+      Array.from({ length: 5 }, (_, i) => `## [${day}] correction ${i}`));
+    writeFileSync(area, ['# Area', '## 早期演化', ...blocks, '## 早期演化'].join('\n'));
+    addDays(root, ['memory_write', 'memory_read', 'memory_check', 'astronomy', 'baking', 'gardening']);
+    const report = await runHealthCheck(root, { ...DEFAULTS, skillRoot: path.join(root, 'skills') });
+    const messages = rule => report.reviewNotes.filter(n => n.rule === rule).map(n => n.message).join('\n');
+    assert.match(messages('R27'), /functions\/memory-manager\.md（2026-10-10 有 5 块/);
+    assert.match(messages('R27'), /2026-10-11 有 5 块/);
+    assert.match(messages('R28'), /未验证词法候选：memory-manager/);
+    assert.match(messages('R28'), /未验证未匹配汇总/);
+    const actionable = report.results.filter(n => ['R27', 'R28'].includes(n.rule));
+    assert.equal(actionable.length, 1);
+    assert.equal(actionable[0].level, 'WARN');
+    assert.match(actionable[0].message, /早期演化.*重复/);
+    assert.deepEqual(panelizeHealth(report).reviewNotes, report.reviewNotes);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 const bulk = (topic) => `## Section\n${topic} ${'Detailed material for review. '.repeat(30)}\n`;
 function fixture() {
@@ -79,7 +101,7 @@ test('missing functions directory still scans daily files; empty root is valid',
   const root = fixture();
   try {
     rmSync(path.join(root, 'functions'), { recursive: true });
-    assert.deepEqual(await detectDistillationBacklog(root), { due: [], orphan: [] });
+    assert.deepEqual(await detectDistillationBacklog(root), { due: [], orphan: [], daysScanned: 0, truncated: false, truncationReasons: [] });
     addDays(root, ['alpha', 'beta', 'gamma']);
     const result = await detectDistillationBacklog(root);
     assert.equal(result.orphan.length, 1);
@@ -108,7 +130,7 @@ test('unreadable enumerated files make partial results visible in pre-step', asy
     assert.equal(result.readUnknown, 1);
     assert.equal(result.due.length, 1);
     const text = await preStepText(root);
-    assert.match(text, /候选扫描不完整：1 个文件读不到/);
+    assert.match(text, /候选扫描不完整：1 项读取或解析失败/);
     assert.match(text, /未验证词法候选/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -214,4 +236,50 @@ test('a rejected background scan stays unknown and is not retried within the cac
     assert.match(await step(3), /候选扫描未知.*EIO/);
     assert.equal(scans, 1);
   } finally { dispose(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('scan crosses months and the old ten-file cutoff, resolves duplicate dates, exposes exact section locations', async t => {
+  const root = fixture(); t.after(() => rmSync(root, { recursive:true, force:true }));
+  mkdirSync(path.join(root,'daily'));
+  for (const area of ['Alpha','Beta']) writeFileSync(path.join(root,'functions',`${area}.md`),'# Area');
+  const archive = '# Month\n### [2026-10-01]\nAlpha and Beta\n## section\nAlpha only\n### [2026-10-02]\narchive shadow Beta\n';
+  writeFileSync(path.join(root,'daily','2026-10.md'),archive);
+  writeFileSync(path.join(root,'2026-10-02.md'),'Alpha and Beta');
+  for (let n=10; n<=22; n++) writeFileSync(path.join(root,`2026-11-${n}.md`),n===10?'Alpha and Beta':'other material');
+  const r = await detectDistillationBacklog(root,{}, {minBytes:1});
+  assert.equal(r.truncated,false); assert.equal(r.readUnknown,undefined); assert.equal(r.daysScanned,15);
+  const [a,b] = ['Alpha','Beta'].map(area=>r.due.find(row=>row.area===area));
+  assert.deepEqual(a.days,['2026-10-01','2026-10-02','2026-11-10']); assert.deepEqual(a.days,b.days);
+  assert.equal(a.sections.length,4); assert.equal(b.sections.length,3);
+  assert.deepEqual(b.sections[0],{day:'2026-10-01',path:'daily/2026-10.md',startLine:3,endLine:3});
+  assert.equal(b.sections[1].path,'2026-10-02.md');
+  for (const row of [...r.due,...r.orphan]) assert.match(row.materialVersion,/^[0-9a-f]{64}$/);
+  assert.notEqual(a.materialVersion,b.materialVersion);
+});
+
+test('versions follow ordered material contents and date, independent of unrelated line offsets',async t=>{
+  const root=fixture(); t.after(()=>rmSync(root,{recursive:true,force:true}));
+  writeFileSync(path.join(root,'functions','Alpha.md'),'# Area');
+  const file=path.join(root,'2026-11-01.md');
+  const scan=async()=>await detectDistillationBacklog(root,{}, {minDays:1,minBytes:1});
+  writeFileSync(file,'unrelated\n## A\nAlpha\n'); const first=await scan();
+  writeFileSync(file,'unrelated\nmore\n## A\nAlpha\n'); const moved=await scan();
+  assert.equal(moved.due[0].materialVersion,first.due[0].materialVersion);
+  assert.notEqual(moved.orphan[0].materialVersion,first.orphan[0].materialVersion);
+  assert.equal(moved.due[0].sections[0].startLine,3);
+  writeFileSync(file,'unrelated\nmore\n## A\nAlphA\n'); assert.equal((await scan()).due.length,0);
+  writeFileSync(file,'unrelated\nmore\n## A\nAlpha!\n'); assert.notEqual((await scan()).due[0].materialVersion,first.due[0].materialVersion);
+  writeFileSync(path.join(root,'2026-10-01.md'),'## A\nAlpha!\n'); assert.equal((await scan()).due[0].days.length,2);
+});
+
+test('each scan limit reports a partial result and ambiguous archives are never counted',async t=>{
+  const root=fixture(); t.after(()=>rmSync(root,{recursive:true,force:true}));
+  addDays(root,['astro','writing','art']);
+  for(const key of ['maxEntries','maxFiles','maxFileBytes','maxTotalBytes','maxReferences','windowDays']) {
+    const result=await detectDistillationBacklog(root,{}, {[key]:1});
+    assert.equal(result.truncated,true,key); assert.ok(result.truncationReasons.includes(key),key);
+  }
+  mkdirSync(path.join(root,'daily')); writeFileSync(path.join(root,'daily','2026-10.md'),'### [2026-10-01]\nx\n### [2026-10-01]\ny\n');
+  const result=await detectDistillationBacklog(root); assert.equal(result.readUnknown,1); assert.equal(result.daysScanned,3);
+  assert.deepEqual(result.issues,[{path:'daily/2026-10.md',reason:'duplicate_day'}]);
 });

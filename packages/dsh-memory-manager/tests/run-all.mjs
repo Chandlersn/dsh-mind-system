@@ -127,6 +127,7 @@ const suites = [
 	'tests/archive-order.test.js',
 	// Lexical candidates are not evidence of related days or completed work.
 	'tests/distill-backlog.test.js',
+	'tests/distill-review-tool.test.js',
 	'tests/scan-dedupe.test.js',
 	// HTTP and SSE must expose the same cycle coverage and unavailable states.
 	'tests/panel-cycle-coverage.test.js',

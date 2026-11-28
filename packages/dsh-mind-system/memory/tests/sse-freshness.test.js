@@ -158,7 +158,8 @@ test('panel handles idle heartbeats, delayed and failed HTTP, disconnect, and re
   es.emit('flow', active); es.emit('error'); tree = await render(); assert.equal(find(tree, 'Architecture').props.model.liveFlow, undefined);
   es.emit('overview', { liveFlow: active }); tree = await render(); assert.equal(find(tree, 'Architecture').props.model.liveFlow, undefined);
   es.emit('flow', finished); tree = await render(); assert.deepEqual(find(tree, 'Architecture').props.model.liveFlow, finished);
-  for (let i = 0; i < 5; i++) { now += 20000; es.emit('heartbeat', { snapshotFresh: true }); }
+  // Heartbeats keep overview fresh but must not extend the 120s flow window.
+  for (let i = 0; i < 7; i++) { now += 20000; es.emit('heartbeat', { snapshotFresh: true }); }
   tree = await render();
   assert.equal(find(tree, 'Architecture').props.live, true, 'overview heartbeats remain fresh');
   assert.equal(find(tree, 'Architecture').props.model.liveFlow, undefined, 'overview heartbeats cannot refresh an old flow snapshot');

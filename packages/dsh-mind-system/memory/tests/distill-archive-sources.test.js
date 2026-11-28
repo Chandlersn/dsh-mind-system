@@ -20,7 +20,7 @@ async function fixture(t) {
   t.after(async () => { dispose?.(); if (old === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = old; assert.equal(path.dirname(home), path.resolve(tmpdir())); await rm(home, { recursive: true, force: true }); });
   return { root, tool: tools.get('memory_write'), archive: path.join(root, 'daily', '2026-11.md') };
 }
-const args = { feature: 'test-archive', title: 'Source verification', summary: 'A bounded test', date: '2026-11-20' };
+const args = { sourceReason: 'These dates cover archived observations and their top-level follow-up.', feature: 'test-archive', title: 'Source verification', summary: 'A bounded test', date: '2026-11-20' };
 const archive = '# November\n\n## [2026-W47]\n\n### [2026-11-17]\n\nDay content.\n\n### [2026-11-18]\n\nOther content.\n';
 async function absent(file) { await assert.rejects(() => readFile(file), { code: 'ENOENT' }); }
 

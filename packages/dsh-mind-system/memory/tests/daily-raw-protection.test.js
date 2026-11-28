@@ -60,7 +60,7 @@ test('memory_write resolve 保留历史日记并诚实报告未勾选', async (t
   await writeFile(daily, original);
   const tool = tools.get('memory_write');
   assert.ok(tool);
-  const args = { feature: 'result', title: '隔离迭代', summary: '记录此功能的新结果', resolve: 'legacy', date: '2026-01-02' };
+  const args = { sources: ['2026-01-01'], cadenceException: '安全约束：当天确认原始记录必须逐字节保留', feature: 'result', title: '隔离迭代', summary: '记录此功能的新结果', resolve: 'legacy', date: '2026-01-02' };
   const result = await tool.execute(args, {});
   assert.equal(await readFile(daily, 'utf8'), original);
   assert.match(await readFile(path.join(root, 'functions', 'result.md'), 'utf8'), /隔离迭代/);

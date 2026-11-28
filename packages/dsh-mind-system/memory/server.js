@@ -58,6 +58,8 @@ import {
 import { selfReload, isReloading } from './src/reload.js';
 import { createWriteGuard } from './src/write-guard.js';
 import { withMemoryRootTransaction } from './src/root-transaction.js';
+import { reviewState } from './src/distill-reviews.js';
+import { distillReviewTool } from './src/distill-review-tool.js';
 import { currentOperationId, withOperationContext } from './src/operation-context.js';
 import { readOperationRows } from './src/operation-reader.js';
 import { traceObject } from './src/object-trace.js';
@@ -68,6 +70,7 @@ import { planMemoryDelete } from './src/memory-delete.js';
 import { selectCaptureEvents } from './src/capture-events.js';
 import { captureSelectedEvents } from './src/capture-service.js';
 import { inspectCaptureIntent } from './src/capture-intent.js';
+import { detectDistillationBacklog } from './src/distill-scan.js';
 import { AUTO_DAILY_ARCHIVE_ENABLED, archiveDailyMonths, readArchivedDay, readArchivedDayStrict, latestArchivedDay, setDeleteImplementation } from './src/daily-archive.js';
 import { createCaptureStatus } from './src/capture-status.js';
 import { createLiveFlow } from './src/live-flow.js';
@@ -896,6 +899,7 @@ const DATE_TAG = /^##\s*\[(\d{4})-(\d{2})-(\d{2})/gm;
 const healthIssueIdentities = new WeakMap();
 async function runHealthCheck(root, opts) {
 	const results = [];
+	const reviewNotes = [];
 	const add = (level, rule, message, identity) => {
 		const finding = { level, rule, message };
 		if (identity) healthIssueIdentities.set(finding, identity);
@@ -914,21 +918,22 @@ async function runHealthCheck(root, opts) {
 
 	let emptySummary = 0;
 	// R28 reports unverified lexical candidates, not proven backlog or coverage.
-	const backlog = opts.skipBacklog ? { due: [], orphan: [] } : await detectDistillationBacklog(root, opts);
+	const backlog = opts.skipBacklog ? { due: [], orphan: [] } : (await reviewState(root, await detectDistillationBacklog(root, opts))).pending;
 	if (backlog.skipped) {
 		// "Could not scan" must not read as "nothing is due".
 		add('WARN', 'R28', backlog.skipped, { subtype: 'distill-unknown' });
 	}
+	if (backlog.truncated) add('WARN', 'R28', `候选扫描已截断（${backlog.truncationReasons.join('、')}），已读取 ${backlog.daysScanned} 个日期`, { subtype: 'distill-truncated' });
 	if (backlog.readUnknown) {
 		// A partial scan: the listed backlog may be incomplete. Say so rather than
 		// presenting a short list as the whole truth.
-		add('WARN', 'R28', `候选扫描不完整：${backlog.readUnknown} 个文件读不到，结果可能漏项`, { subtype: 'distill-partial' });
+		add('WARN', 'R28', `候选扫描不完整：${backlog.readUnknown} 项读取或解析失败，结果可能漏项`, { subtype: 'distill-partial' });
 	}
 	for (const b of backlog.due) {
-		add('WARN', 'R28', `未验证词法候选：${b.area} 在 ${b.days.length} 个日期有关键词命中（${b.days.join('、')}，约 ${b.bytes} 字符）；最新块日期 ${b.newestBlock ?? '（无）'} 不证明素材已被处理或应蒸馏`, { subtype: 'distill-due', subject: b.area });
+		reviewNotes.push({ rule: 'R28', message: `未验证词法候选：${b.area} 在 ${b.days.length} 个日期有关键词命中（${b.days.join('、')}， ${b.bytes} 字节）；最新块日期 ${b.newestBlock ?? '（无）'} 不证明素材已被处理或应蒸馏` });
 	}
 	for (const b of backlog.orphan) {
-		add('WARN', 'R28', `未验证未匹配汇总：${b.days.length} 个日期（${b.days.join('、')}）的部分段落未命中现有关键词；可能互不相关，不能据此判定结构缺口`, { subtype: 'distill-orphan', subject: b.topic });
+		reviewNotes.push({ rule: 'R28', message: `未验证未匹配汇总：${b.days.length} 个日期（${b.days.join('、')}）的部分段落未命中现有关键词；可能互不相关，不能据此判定结构缺口` });
 	}
 
 	const longRows = [];
@@ -1923,7 +1928,6 @@ async function runHealthCheck(root, opts) {
 		}
 		const dup = [];
 		const long = [];
-		const sameDay = [];
 		const preview = (list) => `${list.slice(0, 4).join('、')}${list.length > 4 ? ` 等 ${list.length} 处` : ''}`;
 		for (const f of names) {
 			let text;
@@ -1943,8 +1947,9 @@ async function runHealthCheck(root, opts) {
 				const m = /^##\s*\[(\d{4}-\d{2}-\d{2})/.exec(l);
 				if (m) byDay.set(m[1], (byDay.get(m[1]) || 0) + 1);
 			}
-			const worst = [...byDay.entries()].sort((a, b) => b[1] - a[1])[0];
-			if (worst && worst[1] >= 5) sameDay.push(`functions/${f}（${worst[0]} 有 ${worst[1]} 块）`);
+			for (const [day, count] of byDay) {
+				if (count >= 5) reviewNotes.push({ rule: 'R27', message: `functions/${f}（${day} 有 ${count} 块）：请结合素材日期与豁免理由审阅。` });
+			}
 		}
 		if (dup.length) {
 			add('WARN', 'R27', `「早期演化」段重复（应合并为一段）：${preview(dup)}——每次折叠新插一段会让文件越折越长，召回读到的是串不起作用的标签`, { subtype: 'duplicate-evolution-sections', subject: 'aggregate' });
@@ -1952,16 +1957,13 @@ async function runHealthCheck(root, opts) {
 		if (long.length) {
 			add('WARN', 'R27', `「早期演化」标题逐条列日期标签或过长（标题只该写数量与区间）：${preview(long)}——需审查标题与段落后再整理，当前 memory_fold 不会自动整理旧段`, { subtype: 'long-evolution-headings', subject: 'aggregate' });
 		}
-		if (sameDay.length) {
-			add('WARN', 'R27', `同一天有多块迭代记录：${preview(sameDay)}——数量本身不能证明违反蒸馏纪律，请结合素材日期与豁免理由审查`, { subtype: 'same-day-blocks', subject: 'aggregate' });
-		}
 	} catch {
 		/* R27 是增强检查，绝不因它失败而中断体检 */
 	}
 
 	const warnCount = results.filter((r) => r.level === 'WARN').length;
 	const failCount = results.filter((r) => r.level === 'FAIL').length;
-	return { root, results, warnCount, failCount };
+	return { root, results, warnCount, failCount, ...(reviewNotes.length ? { reviewNotes } : {}) };
 }
 
 /**
@@ -1977,6 +1979,7 @@ function panelizeHealth(health) {
 		failCount: uninit ? 0 : health.failCount,
 		warnCount: uninit ? 0 : health.warnCount,
 		results: uninit ? [] : health.results,
+		...(health.reviewNotes?.length ? { reviewNotes: health.reviewNotes } : {}),
 	};
 }
 
@@ -2113,7 +2116,7 @@ function memoryReadTool(opts) {
 					const snapshot = opts.liveFlow?.();
 					if (snapshot && typeof snapshot === 'object' && snapshot.edges && typeof snapshot.edges === 'object' && Number.isSafeInteger(snapshot.dropped) && snapshot.dropped >= 0) {
 						const edges = {};
-						for (const id of ['e2', 'e3', 'e4', 'e6', 'e7', 'e9', 'e10', 'e11', 'e12', 'e14', 'e15']) {
+						for (const id of ['e2', 'e3', 'e4', 'e6', 'e7', 'e9', 'e10', 'e11', 'e12', 'e13', 'e14', 'e15']) {
 							const edge = snapshot.edges[id];
 							if (edge && ['active', 'finished', 'failed', 'unknown'].includes(edge.phase) && Number.isFinite(edge.at) && Number.isFinite(edge.expiresAt)) {
 								edges[id] = { phase: edge.phase, at: edge.at, expiresAt: edge.expiresAt };
@@ -2797,149 +2800,7 @@ async function listMdDir(dir) {
  * Matching and block dates cannot establish topic relevance or absorption.
  * The legacy due/orphan field names are retained for existing consumers.
  */
-export async function detectDistillationBacklog(root, opts = {}, options = {}) {
-	const windowDays = Number.isFinite(options.windowDays) ? options.windowDays : 10;
-	const minDays = Number.isFinite(options.minDays) ? options.minDays : 3;
-	const minBytes = Number.isFinite(options.minBytes) ? options.minBytes : 400;
-
-	// Which function areas exist, and when each last produced a block.
-	let areaFiles = [];
-	try {
-		areaFiles = (await readdir(path.join(root, 'functions'))).filter((f) => f.endsWith('.md'));
-	} catch (err) {
-		// A missing functions directory still allows unmatched daily sections to be scanned.
-		if (err?.code !== 'ENOENT') {
-			return { due: [], orphan: [], skipped: `functions/ 枚举失败（${err?.code ?? 'unknown'}）——候选状态未知` };
-		}
-	}
-
-	const areas = [];
-	let readUnknown = 0;
-	for (const f of areaFiles) {
-		const name = f.replace(/\.md$/, '');
-		// A single unreadable function file must NOT abort the whole check: an EIO on
-		// one file says nothing about the others, and aborting would replace "unknown
-		// for this file" with "silently no backlog at all" — the exact confusion this
-		// rule exists to remove. Counted and reported instead.
-		let text = '';
-		try {
-			text = await readFile(path.join(root, 'functions', f), 'utf8');
-		} catch {
-			readUnknown += 1;
-			continue;
-		}
-		const dates = [...text.matchAll(/^##\s*\[(\d{4}-\d{2}-\d{2})/gm)].map((m) => m[1]).sort();
-		areas.push({ name, newestBlock: dates[dates.length - 1] ?? null });
-	}
-
-	// Recent daily logs, newest last.
-	let dailyFiles = [];
-	try {
-		dailyFiles = (await readdir(root))
-			.filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
-			.sort()
-			.slice(-windowDays);
-	} catch (err) {
-		return { due: [], orphan: [], skipped: `记忆根枚举失败（${err?.code ?? 'unknown'}）` };
-	}
-
-	// Area detection for one section body.
-	//
-	// Two signals, both explicit — no synonym guessing:
-	//   1. the area's own slug appears in the body ("memory-manager", "心智编排层");
-	//   2. the body names a CODE MODULE that belongs to that area ("memory_write",
-	//      "valve_check", "runtime_run"). Daily logs talk in tool names far more
-	//      than in zone slugs, so without this almost nothing is attributable —
-	//      measured: an exact-slug-only matcher threw 101KB across 9 days into
-	//      "unattributed", which is a number nobody can act on.
-	//
-	// The module lists live here, next to the matcher, because a rule that decides
-	// attribution must be readable in one place. Adding a module there is a
-	// deliberate act; nothing is inferred from similarity.
-	// A `\b` must NOT wrap the whole group: JS word boundaries are ASCII-based, and
-	// a CJK character is a non-word character to `\b`. Wrapping meant "…段落索引行…"
-	// had no boundary between 落 and 索 (both non-word), so the Chinese alternatives
-	// silently never matched — measured: a 3-day case counted only 2 days, and the
-	// rule quietly under-reported the backlog it exists to catch. The boundary now
-	// guards only the ASCII module names, where it is needed to avoid matching
-	// `xmemory_write`.
-	const AREA_MODULES = {
-		'memory-manager': /(?:\bmemory_(?:read|write|index|insight|dao|capability|check|fold|rename|usage|federation|skill|inbox|sag|search)\b|MEMORY\.md|回忆|召回|索引行|蒸馏|体检|面板|usage|漏判)/i,
-		'dsh插件开发': /(cordis|inject|ctx\.get|healthProbe|宿主契约|插件(?:开发|装载)|apply\s*\(|webServer)/i,
-		'心智编排层': /(mind-system|五成员|valve_check|valve_confirm|valve_nominate|valve_govern|候选公理|UPGRADE-PLAN|主线|阶段\s*[IVX]+)/i,
-		'clis因果分层系统': /(\bCLIS\b|clis_classify|clis_run|clis_plan|因果结构|介入)/i,
-		'批印坊工程加固': /(批印坊|printpress)/i,
-		'dsh视频工坊': /(视频工坊|video-studio|openfilm)/i,
-		'宣传片制作': /(宣传片|视频管线|出片|ffmpeg|逐帧渲染|成片)/i,
-		'学习模式插件': /(学习模式|掌握式|课程页)/i,
-		'purrge与系统管理': /(purrge|空间管家)/i,
-		'meta框架契约包': /(meta-framework|契约包)/i,
-	};
-	const matchesArea = (area, body) => {
-		if (body.includes(area.name)) return true;
-		const re = AREA_MODULES[area.name];
-		return re ? re.test(body) : false;
-	};
-
-	const perArea = new Map();   // area -> { days:Set, bytes, sections }
-	const orphanDays = new Map(); // day -> bytes with no area
-
-	for (const file of dailyFiles) {
-		const day = file.replace(/\.md$/, '');
-		// Same discipline as the area loop: one unreadable daily log must not abort
-		// the scan, and it must not be counted as "a day with no material" either.
-		let text = '';
-		try {
-			text = await readFile(path.join(root, file), 'utf8');
-		} catch {
-			readUnknown += 1;
-			continue;
-		}
-		if (!text) continue;
-		// Split into level-2 sections so one day's unrelated parts are not all
-		// credited to whichever area happens to appear once.
-		const marks = [...text.matchAll(/^##\s+.+$/gm)];
-		for (let i = 0; i < marks.length; i++) {
-			const start = marks[i].index;
-			const end = marks[i + 1]?.index ?? text.length;
-			const body = text.slice(start, end);
-			const hit = areas.find((a) => matchesArea(a, body));
-			if (hit) {
-				if (!perArea.has(hit.name)) perArea.set(hit.name, { days: new Set(), bytes: 0, sections: 0 });
-				const g = perArea.get(hit.name);
-				g.days.add(day); g.bytes += body.length; g.sections += 1;
-			} else {
-				orphanDays.set(day, (orphanDays.get(day) ?? 0) + body.length);
-			}
-		}
-	}
-
-	const due = [];
-	for (const [name, g] of perArea) {
-		if (g.days.size < minDays || g.bytes < minBytes) continue;
-		const area = areas.find((a) => a.name === name);
-		// A later block date does not prove that matching material was absorbed.
-		due.push({ area: name, days: [...g.days].sort(), bytes: g.bytes, newestBlock: area?.newestBlock ?? null });
-	}
-
-	// TODO(orphan attribution): sections with no area are counted per day but not
-	// yet clustered into topics — doing that well needs either explicit tags in the
-	// daily log or a semantic index, and a keyword guess would be unverifiable.
-	// Until then the orphan signal is reported as a single aggregate so the number
-	// is at least visible.
-	const orphan = [];
-	const orphanTotalDays = orphanDays.size;
-	if (orphanTotalDays >= minDays) {
-		const bytes = [...orphanDays.values()].reduce((a, b) => a + b, 0);
-		if (bytes >= minBytes) {
-			orphan.push({ topic: '未归属素材', days: [...orphanDays.keys()].sort(), bytes });
-		}
-	}
-
-	// Unreadable files are reported, not swallowed: "could not read" is not
-	// "nothing there", and a partial scan must not present itself as complete.
-	return readUnknown ? { due, orphan, readUnknown } : { due, orphan };
-}
+export { detectDistillationBacklog };
 
 /**
  * The usage-href list a skill's own evidence cites: its frontmatter `sources:`
@@ -3866,7 +3727,7 @@ function memoryWriteTool(opts) {
 	return defineTool({
 		name: 'memory_write',
 		description:
-			'Append ONE iteration block to functions/<feature>.md (distilled conclusion, not a process log; dates are tags, blocks are append-only) and refresh the file-head stable-state summary via `currentState`. The daily log (YYYY-MM-DD.md) is the RAW evidence layer and is never rewritten by this tool; agent editing is permitted, but direct edits are not authenticated plugin collection and their provenance may be unknown. **Cadence rule (user, 2026-11-09): a block synthesizes >=3 TOPIC-RELEVANT days of daily-log material, not a single day and not a sliding 3-day window** — pick the days yourself: define the theme, search ALL daily logs (memory_search), select the dates genuinely related to it (may be non-contiguous, weeks apart), and note in the block why those days were chosen. Evidence relevance, not calendar adjacency. Write what HOLDS across those days (evolution, recurrence, reversal). Under 3 relevant days: keep accumulating, distill at the weekly review. Exceptions (note the reason in the block): explicit user request, or same-day pitfall-causality/safety constraints. The MEMORY.md index row is written separately (memory_index) once a feature area stabilizes, so distillation flows daily → functions → index, one direction per step. Hard limits enforced on write: block body ≤900 chars, 概括 ≤110 chars (over-length is rejected as a process log, not a distilled conclusion). A block is a DISTILLED conclusion (动因 / 改动 / 判据 / 待观察, one line each): per-step changelists, code-level enumerations and debugging process stay in the session, the daily log and the code — writing them into the block is the failure R14 flags.',
+			'Append ONE iteration block to functions/<feature>.md (distilled conclusion, not a process log; dates are tags, blocks are append-only) and refresh the file-head stable-state summary via `currentState`. The daily log (YYYY-MM-DD.md) is the RAW evidence layer and is never rewritten by this tool; agent editing is permitted, but direct edits are not authenticated plugin collection and their provenance may be unknown. **Cadence rule (user, 2026-11-09): a block synthesizes >=3 TOPIC-RELEVANT days of daily-log material, not a single day and not a sliding 3-day window** — pick the days yourself: define the theme, search ALL daily logs (memory_search), select the dates genuinely related to it (may be non-contiguous, weeks apart), and note in the block why those days were chosen. Evidence relevance, not calendar adjacency. Write what HOLDS across those days (evolution, recurrence, reversal). The tool requires three distinct nonempty material days and a selection reason (sourceReason, reason or verification). With one or two verified days, supply cadenceException as a documented category and concrete reason. Zero verified days are rejected. Dates and reason are caller declarations; topical relevance and authorization are not independently verified. The MEMORY.md index row is written separately (memory_index) once a feature area stabilizes, so distillation flows daily → functions → index, one direction per step. Hard limits enforced on write: block body ≤900 chars, 概括 ≤110 chars (over-length is rejected as a process log, not a distilled conclusion). A block is a DISTILLED conclusion (动因 / 改动 / 判据 / 待观察, one line each): per-step changelists, code-level enumerations and debugging process stay in the session, the daily log and the code — writing them into the block is the failure R14 flags.',
 		parameters: {
 			// Declaration order is display order: the host's generic tool card shows
 			// `name · first string argument`, so the FIRST parameter must be the
@@ -3885,18 +3746,19 @@ function memoryWriteTool(opts) {
 			sources: {
 				type: 'array',
 				items: { type: 'string' },
-				description: '调用方声明的每日记录日期列表（YYYY-MM-DD，去重）。顶层每日文件非空，或顶层缺失时严格解析归档日节正文非空，才可接受；空、缺失或状态不确定及重复日期均拒绝。只检查有限读取结果，不核验相关性、真实性或是否实际读过；未声明时块内明确标“未声明素材”。',
+				description: '调用方声明的每日记录日期列表（YYYY-MM-DD，去重）。顶层每日文件非空，或顶层缺失时严格解析归档日节正文非空，才可接受；空、缺失或状态不确定及重复日期均拒绝。至少 3 个可回查日期；有分类及具体事由的豁免仍须 1 个。只核对记录可读且非空，主题相关性及来源由调用方说明。',
 			},
+			sourceReason: { type: 'string', description: '调用方说明为何挑选这些素材日。也可在 reason 或 verification 中说明；豁免时可在具体事由中说明。' },
 			cadenceException: {
 				type: 'string',
-				description: '可选：素材不足 3 天的豁免理由（用户显式要求 / 当日踩坑因果 / 安全约束）。这是调用方声明，不是核验过的事实；调用方自己写明是哪一类。',
+				description: '1–2 个素材日须填写。格式为“用户显式要求：具体事由”“当日踩坑因果：具体事由”或“安全约束：具体事由”。分类和理由属于调用方声明。',
 			},
 			summary: { type: 'string', required: true, description: '本块的一句话概括（≤60 字）：从每日原始记录蒸馏本迭代时，它回答“这次迭代做了什么/解决了什么”。功能域稳定后由 memory_index 把它收进索引行。' },
 			currentState: { type: 'string', description: '刷新文件头部“当前状态摘要”：只写当前稳定行为/关键约束/隐患（3-5 条），不写历史与过程。' },
 			date: { type: 'string', description: '迭代日期 YYYY-MM-DD；缺省今天。同日第二个迭代自动加“补”后缀。' },
 			replace: {
 				type: 'string',
-				description: '可选：写完迭代块后在本功能文件内做字面替换（全部出现）。JSON 形式 {"oldString":"...","newString":"..."} 或其数组；找不到目标时报错。用于修正既往迭代块笔误/死链，审计上等价于追加一次修正迭代。',
+				description: '可选：追加新块前，对本功能文件已有内容做字面替换（全部出现）。JSON 形式 {"oldString":"...","newString":"..."} 或其数组；找不到目标时报错。用于修正既往迭代块笔误/死链，审计上等价于追加一次修正迭代。',
 			},
 			resolve: {
 				type: 'string',
@@ -3953,12 +3815,7 @@ function memoryWriteTool(opts) {
 			if (!summary) throw new Error('summary is required: the MEMORY.md index row must carry a one-line summary');
 			const warnings = [];
 
-			// Distillation provenance (2026-11-19). The >=3-days cadence rule used to be
-			// prompt-only: the block could claim it while leaving no evidence of which days
-			// were read. Declared days are verified against the daily files here, so a
-			// declared source can be re-checked later. Undeclared provenance is recorded as
-			// undeclared rather than silently implied — capture is opt-in, so a hard gate
-			// would also reject legitimate writes in roots that never collected dailies.
+			// Validate all declared evidence before initializing or modifying the target.
 			const declaredSources = [];
 			if (args.sources !== undefined) {
 				if (!Array.isArray(args.sources)) throw new Error('sources must be an array of YYYY-MM-DD dates');
@@ -3995,16 +3852,19 @@ function memoryWriteTool(opts) {
 			if (rejectedSources.length) {
 				throw new Error(`sources: 每日记录缺失或为空或状态未确认：${rejectedSources.join('、')}；未确认的日期不能作为本次写入素材。`);
 			}
-			const exceptionText = args.cadenceException === undefined ? '' : oneLine(args.cadenceException);
-			if (exceptionText && charLen(exceptionText) < 4) {
-				throw new Error('cadenceException 太短：写清属于哪类豁免（用户显式要求 / 当日踩坑因果 / 安全约束）');
+			const exceptionText = typeof args.cadenceException === 'string' ? oneLine(args.cadenceException) : '';
+			if (args.cadenceException !== undefined) {
+				const detail = /^(?:用户显式要求|当日踩坑因果|安全约束)\s*[:：]\s*(.+)$/u.exec(exceptionText)?.[1] ?? '';
+				const words = detail.match(/\p{L}/gu) ?? [];
+				if (words.length < 4 || new Set(words).size < 3 || /^(?:用户显式要求|当日踩坑因果|安全约束|立即蒸馏|具体事由|豁免理由|同上|无理由|暂无说明|不适用|none|todo|test|placeholder)[。.!！\s]*$/iu.test(detail)) {
+					throw new Error('cadenceException 须用“用户显式要求 / 当日踩坑因果 / 安全约束”之一作前缀，加冒号和具体事由');
+				}
 			}
-			// A clean write must stay warning-free (existing contract), so an
-			// undeclared provenance is recorded in the receipt and the block, not
-			// raised as a warning on every write.
-			if (!exceptionText && verifiedSources.length > 0 && verifiedSources.length < 3) {
-				warnings.push(`声明的素材日只有 ${verifiedSources.length} 天（<3）：蒸馏纪律要求 ≥3 个主题相关素材日；要么补素材，要么传 cadenceException 说明豁免`);
+			if (!verifiedSources.length || (verifiedSources.length < 3 && !exceptionText)) {
+				throw new Error(`sources: 仅确认 ${verifiedSources.length} 个素材日；须声明至少 3 个不同的主题相关素材日，豁免须有至少 1 个素材日及 cadenceException 分类与具体事由`);
 			}
+			const sourceReason = [args.sourceReason, args.reason, args.verification, exceptionText].find(text => typeof text === 'string' && text.trim());
+			if (!sourceReason) throw new Error('sourceReason: 请说明挑选这些素材日的理由，可在 reason 或 verification 中提供');
 
 			const indexPath = path.join(root, 'MEMORY.md');
 			const indexNow = await readIfExists(indexPath);
@@ -4063,6 +3923,7 @@ function memoryWriteTool(opts) {
 				? `${verifiedSources.join('、')}（仅检查调用方声明的顶层每日文件或归档日节非空，未核验相关性、真实性或是否读过${verifiedSources.length < 3 ? '；声明少于 3 天' : ''}）`
 				: '未声明（素材天数未知）';
 			bullets.push(`- **素材**：${sourceLabel}${exceptionText ? `（豁免：${exceptionText}；调用方声明，未经核验）` : ''}`);
+			if (args.sourceReason?.trim()) bullets.push(`- **选日理由（调用方声明）**：${oneLine(args.sourceReason)}`);
 			if (args.change !== undefined && oneLine(args.change)) bullets.push(`- **改动**：${oneLine(args.change)}`);
 			if (args.reason !== undefined && oneLine(args.reason)) bullets.push(`- **原因**：${oneLine(args.reason)}`);
 			if (args.verification !== undefined && oneLine(args.verification)) bullets.push(`- **验证**：${oneLine(args.verification)}`);
@@ -4096,7 +3957,7 @@ function memoryWriteTool(opts) {
 			if (summaryChars > MAX_ROW_SUMMARY_CHARS) {
 				warnings.push(`索引行摘要 ${summaryChars} 字 > ${MAX_ROW_SUMMARY_CHARS}：摘要是一句话（用来判断相关性），迭代细节留在功能文件`);
 			}
-			fnText = appendBlock(fnText, `\n${heading}\n\n${blockBody}\n`);
+			// Apply corrections to prior material before appending the verified evidence.
 			if (typeof args.replace === 'string' && args.replace.trim()) {
 				let pairs;
 				try {
@@ -4117,6 +3978,7 @@ function memoryWriteTool(opts) {
 					fnText = fnText.split(p.oldString).join(p.newString);
 				}
 			}
+			fnText = appendBlock(fnText, `\n${heading}\n\n${blockBody}\n`);
 			const wrote = await writeText(fnPath, fnText, { memoryRoot: root });
 			if (wrote?.hits?.length) {
 				warnings.push(`写入内容含凭据材料（${wrote.hits.join('、')}），落盘前已 redact 为 [REDACTED:kind]——密钥不该进记忆，请改用凭据服务`);
@@ -5579,6 +5441,14 @@ function memoryCheckTool(opts, inbox) {	return defineTool({
 							},
 						},
 					},
+					reviewNotes: {
+						type: 'array', items: {
+							type: 'object', additionalProperties: false, properties: {
+								rule: { type: 'string', required: true },
+								message: { type: 'string', required: true },
+							},
+						},
+					},
 					warnCount: { type: 'integer', required: true },
 					failCount: { type: 'integer', required: true },
 					tracked: {
@@ -5623,7 +5493,8 @@ function memoryCheckTool(opts, inbox) {	return defineTool({
 					const failure = failuresByIndex.get(index);
 					if (failure) lines.push(`    ⚠ 收件箱：${failure.message}`);
 				}
-				if (!v.results.length) lines.push('  全部通过');
+				if (!v.results.length) lines.push('  无 WARN / FAIL');
+				for (const note of v.reviewNotes ?? []) lines.push(`  [待审阅] ${note.rule}: ${note.message}`);
 				return [{ type: 'text', text: lines.join('\n') }];
 			},
 		},
@@ -5801,7 +5672,7 @@ function memoryIndexTool(opts) {
 const DISCIPLINE_TEXT = [
 	'## 持久记忆纪律（memory-manager）',
 	'',
-	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十七个工具：memory_read / memory_retention_inventory / memory_search / memory_sag / memory_capability / memory_write / memory_index / memory_insight / memory_dao / memory_fold / memory_rename / memory_delete / memory_check / memory_usage / memory_federation / memory_skill / memory_inbox；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向五层，每层只吃上一层的产出**：',
+	'本 Harness 维护**全局**跨会话记忆（`~/.dsh/memory/`，即 dshHome 的 memory/ 目录；十八个工具：memory_read / memory_retention_inventory / memory_search / memory_sag / memory_capability / memory_write / memory_index / memory_insight / memory_dao / memory_fold / memory_rename / memory_delete / memory_check / memory_usage / memory_federation / memory_skill / memory_inbox / memory_distill_review；结构见 memory/MEMORY.md）。记忆对全部项目、全部会话通用，按功能域组织而非按项目隔离。**数据流单向五层，每层只吃上一层的产出**：',
 	'',
 	'- **第 0 层 · 每日记录（原始层）**：`YYYY-MM-DD.md` 可由 agent 使用编辑工具记录；每天留意有价值的判断、取舍、经验、踩坑因果和待验证事项，没有值得记录的内容时不强制当天有条目。粗粒度筛选：**执行式日志（常规命令输出、PID、退出码、耗时流水）不要抄**，理解关键因果必需的细节可少量保留；不补造历史，不记录凭据。直接编辑不等于插件采集或来源认证，也不自动脱敏；来源不明时如实标记未知，可能触发 R26 对账或采集基线不匹配，不得补造账本。插件用户消息采集默认关闭，开启后只采集符合条件的用户原话并脱敏、截断，不自动记录助手判断，也不保证来源认证或完整性；未启用时如实说明采集缺口。其他记忆层仍按各自插件工具与保护机制写入。',
 	'- **第 1 层 · 功能域（memory_write）**：从每日原始记录中**归纳汲取**功能划分——一个 functions/<功能域>.md 迭代块 = **≥3 个主题相关素材日的综合结论**（蒸馏结论：动因/改动/判据/待观察 各一句；2026-11-09 用户要求：不以单日为单位蒸馏，单日事件多是过程片段，多天的演化/反复/被推翻才值得归档）。**素材日由 agent 围绕主题检索推理挑选**（memory_search 全库找相关日，可不连续、可跨周月），不是机械取最近 3 天——选证据关联不选日历相邻，块内说明为何选这些日。相关素材不足 3 天先积累不蒸馏；**蒸馏时机由 agent 在自然会话中自主判断、机会性执行**——收尾实质工作时若发现某主题已积累 ≥3 个相关素材日，就当场蒸馏，不等定时任务；定时自动化任务只做巡检兜底（报告哪些域待蒸馏、素材够不够），它是辅助，不是蒸馏的驱动者。用户显式要求或踩坑因果/安全约束可豁免，块内注明素材日期与理由。`summary` 是本块的一句话概括；功能域该新建还是并入既有的，判断依据就是每日记录里反复出现的主题。',
@@ -6233,7 +6104,9 @@ function streamPanel(res, root, opts) {
 			// digest is a reliable "did anything change" signal.
 			// The collection timestamp changes on every sample and is not a fact change.
 			const { liveFlow: _liveFlow, ...overview } = payload;
-			const digestPayload = overview.edgeStatus ? { ...overview, edgeStatus: { ...overview.edgeStatus, at: undefined } } : overview;
+			const digestPayload = { ...overview };
+			if (overview.edgeStatus) digestPayload.edgeStatus = { ...overview.edgeStatus, at: undefined };
+			if (overview.capture) digestPayload.capture = { ...overview.capture, snapshotAt: undefined };
 			const text = JSON.stringify(digestPayload);
 			if (text !== lastHash || needsFreshOverview) {
 				lastHash = text;
@@ -7310,6 +7183,7 @@ export function apply(ctx, config, dependencies = {}) {
 			if (typeof flow.subscribe === 'function') opts.subscribeLiveFlow = listener => flow.subscribe(listener);
 			if (typeof flow.recallJoined === 'function') opts.observeRecallJoined = () => flow.recallJoined();
 			if (typeof flow.indexMatched === 'function') opts.observeIndexMatched = source => flow.indexMatched(source);
+			if (typeof flow.usageMatched === 'function') opts.observeUsageMatched = () => flow.usageMatched();
 			if (typeof flow.capabilityIndexed === 'function') opts.observeCapabilityIndexed = () => flow.capabilityIndexed();
 			if (typeof stopExecute === 'function') disposers.push(stopExecute);
 			if (typeof stopResult === 'function') disposers.push(stopResult);
@@ -7381,16 +7255,26 @@ export function apply(ctx, config, dependencies = {}) {
 	let distillPromptCache = { due: [], orphan: [], pending: true };
 	let distillPromptFlight = null;
 	let distillPromptDisposed = false;
+	let reviewGeneration = 0;
+	const scanMaterial = () => (dependencies.detectDistillationBacklog ?? detectDistillationBacklog)(resolveRoot(opts));
+	disposers.push(ctx.tools.register(distillReviewTool(() => resolveRoot(opts), scanMaterial, () => {
+		reviewGeneration++;
+		distillPromptAt = 0;
+		distillPromptRevision++;
+		distillPromptCache = { due: [], orphan: [], pending: true };
+	})));
 	const scheduleDistillScan = () => {
 		const now = (dependencies.now ?? Date.now)();
 		if (distillPromptDisposed || distillPromptFlight || (distillPromptAt && now - distillPromptAt <= DISTILL_PROMPT_INTERVAL_MS)) return;
 		distillPromptAt = now;
 		distillPromptCache = { ...distillPromptCache, pending: true };
-		const scan = dependencies.detectDistillationBacklog ?? detectDistillationBacklog;
-		// Defer invocation so neither synchronous setup nor a rejected scan enters recall.
-		distillPromptFlight = Promise.resolve().then(() => distillPromptDisposed ? undefined : scan(resolveRoot(opts))).then(
-			(result) => { if (!distillPromptDisposed) { distillPromptCache = result; distillPromptRevision++; } },
-			(err) => { if (!distillPromptDisposed) { distillPromptCache = { due: [], orphan: [], skipped: `候选扫描失败（${err?.code ?? 'unknown'}）——状态未知` }; distillPromptRevision++; } },
+		const generation = reviewGeneration;
+		// Ignore scans started before the latest successful review.
+		distillPromptFlight = Promise.resolve().then(async () => {
+			if (!distillPromptDisposed) return (await reviewState(resolveRoot(opts), await scanMaterial())).pending;
+		}).then(
+			(result) => { if (!distillPromptDisposed && generation === reviewGeneration) { distillPromptCache = result; distillPromptRevision++; } },
+			(err) => { if (!distillPromptDisposed && generation === reviewGeneration) { distillPromptCache = { due: [], orphan: [], skipped: `候选扫描失败（${err?.code ?? 'unknown'}）——状态未知` }; distillPromptRevision++; } },
 		).finally(() => { distillPromptFlight = null; });
 	};
 	disposers.push(() => { distillPromptDisposed = true; });
@@ -7587,7 +7471,9 @@ export function apply(ctx, config, dependencies = {}) {
 					const qTokens = tokensOf(userText);
 					// 档案块：共识/道条目整份带入（独立通道，不与索引行 IDF 争名额）。
 					const archives = archiveBlocks(indexText, qTokens);
-					const matchedRows = matchIndexRows(indexText, qTokens, 3, usage, { memoryRoot: resolveRoot(opts), queryText: userText });
+					const matchedRows = matchIndexRows(indexText, qTokens, 3, usage, {
+						memoryRoot: resolveRoot(opts), queryText: userText, observeUsageMatched: opts.observeUsageMatched,
+					});
 					// 三档 + 双侧账本挂在返回数组上，filter 会丢掉自定义属性，先取下来。
 					const recallStats = matchedRows.stats ?? null;
 					const recallHeld = matchedRows.heldRows ?? [];
@@ -7624,13 +7510,15 @@ export function apply(ctx, config, dependencies = {}) {
 					const includeScan = !notificationOnly && (scanPending ? !prior.pending : prior.scanRevision !== scanRevision);
 					if (includeScan && scanPending) backlogLines.push('⚠ 候选扫描进行中，结果尚未确定；如有旧结果仅供参考。');
 					if (includeScan && distillPromptCache?.skipped) backlogLines.push(`⚠ 候选扫描未知：${distillPromptCache.skipped}`);
-					if (includeScan && distillPromptCache?.readUnknown) backlogLines.push(`⚠ 候选扫描不完整：${distillPromptCache.readUnknown} 个文件读不到，结果可能漏项。`);
+					if (includeScan && distillPromptCache?.truncated) backlogLines.push(`候选扫描已截断（${distillPromptCache.truncationReasons.join('、')}），已读取 ${distillPromptCache.daysScanned} 个日期。`);
+					if (includeScan && distillPromptCache?.readUnknown) backlogLines.push(`⚠ 候选扫描不完整：${distillPromptCache.readUnknown} 项读取或解析失败，结果可能漏项。`);
 					for (const b of (includeScan ? distillPromptCache?.due : []) ?? []) {
-						backlogLines.push(`⚠ 未验证词法候选：${b.area} 在 ${b.days.length} 个日期有关键词命中（${b.days.join('、')}）；最新块日期 ${b.newestBlock ?? '（无）'} 不证明素材是否已处理。`);
+						backlogLines.push(`待审阅 · 未验证词法候选：${b.area} 在 ${b.days.length} 个日期有关键词命中（${b.days.join('、')}）；最新块日期 ${b.newestBlock ?? '（无）'} 不证明素材是否已处理。`);
 					}
 					for (const b of (includeScan ? distillPromptCache?.orphan : []) ?? []) {
-						backlogLines.push(`⚠ 未验证未匹配汇总：${b.days.length} 个日期共约 ${b.bytes} 字符的部分段落未命中现有关键词；这些段落可能互不相关，不能据此判定结构缺口。`);
+						backlogLines.push(`待审阅 · 未验证未匹配汇总：${b.days.length} 个日期共 ${b.bytes} 字节的部分段落未命中现有关键词；这些段落可能互不相关，不能据此判定结构缺口。`);
 					}
+					if (includeScan && (distillPromptCache?.due?.length || distillPromptCache?.orphan?.length)) backlogLines.push('用 memory_distill_review list 定位素材原文；核对后可按确切版本提交审阅结论。');
 					// Dedupe of a previously served batch clears the injected channels,
 					// but a notification-only step's rules are its entire payload and
 					// must not be silently dropped by a prior foreground flag.
@@ -7666,7 +7554,7 @@ export function apply(ctx, config, dependencies = {}) {
 							'',
 							...backlogLines,
 							'',
-							'关键词命中不证明主题相关或存在积压；日期比较也不证明素材已被吸收。扫描只检查最近 10 个日文件中的二级标题段落，且每段只计入首个匹配域；须查阅原文才能判断。',
+							'关键词命中不证明主题相关或存在积压；日期比较也不证明素材已被吸收。扫描覆盖顶层日记与月归档，同日优先顶层；无二级标题的正文也参与，每段分别计入全部匹配域。达到读取上限时标记截断。',
 						].join('\n');
 						message.content = [{ type: 'text', text: `${message.content[0]?.text ? message.content[0].text + '\n\n' : ''}${block}` }];
 					}

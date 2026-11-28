@@ -1,3 +1,4 @@
+import { seedDistillationSources } from './distill-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -47,7 +48,8 @@ async function fixture(t, { index = true, area = true } = {}) {
     assert.ok(entry, `real apply must register ${name}`);
     return entry;
   };
-  return { root, indexPath, areaPath, indexBytes, areaBytes, tool };
+  const material = await seedDistillationSources(root, 'existing file read failure');
+  return { root, indexPath, areaPath, indexBytes, areaBytes, tool, material };
 }
 
 async function withReadFailure(target, code, run) {
@@ -96,7 +98,7 @@ const indexArgs = { zone: 'functions', name: 'area', summary: '验证已有索�
 test('memory_write: existing feature read EIO rejects without replacing its bytes or inventing ledger', async (t) => {
   const f = await fixture(t);
   await withReadFailure(f.areaPath, 'EIO', async () => {
-    await expectExplicitFailure(() => f.tool('memory_write').execute(writeArgs, {}), 'EIO');
+    await expectExplicitFailure(() => f.tool('memory_write').execute({ ...writeArgs, ...f.material }, {}), 'EIO');
   });
   assert.deepEqual(await readFile(f.areaPath), f.areaBytes, 'existing function bytes must survive');
   assert.deepEqual(await readFile(f.indexPath), f.indexBytes, 'unrelated index must survive');
@@ -115,7 +117,7 @@ test('memory_index: existing index read EACCES rejects without replacing its byt
 
 test('genuinely missing feature can be created and recorded by memory_write', async (t) => {
   const f = await fixture(t, { area: false });
-  const result = await f.tool('memory_write').execute(writeArgs, {});
+  const result = await f.tool('memory_write').execute({ ...writeArgs, ...f.material }, {});
   assert.equal(result.createdFunctionFile, true);
   const created = await readFile(f.areaPath, 'utf8');
   assert.match(created, /追加隔离测试/);

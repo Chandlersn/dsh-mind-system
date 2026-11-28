@@ -2,6 +2,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CAPTURE_COUNTER_MAX, CAPTURE_PENDING_MAX, createCaptureStatus } from '../src/capture-status.js';
 
+test('the latest accepted completion belongs to this instance and keeps its original time across snapshots', (t) => {
+  let now = 100;
+  t.mock.method(Date, 'now', () => now);
+  const status = createCaptureStatus({ enabled: true });
+  const first = status.schedule();
+  const second = status.schedule();
+  assert.equal(status.snapshot().lastOutcome, null);
+  assert.equal(status.snapshot().lastOutcomeAt, null);
+  now = 200;
+  assert.equal(second.finish('failed'), true);
+  now = 300;
+  assert.equal(first.finish('confirmed'), true);
+  now = 400;
+  assert.equal(first.finish('conflict'), false);
+  const snapshot = status.snapshot();
+  assert.equal(snapshot.lastOutcome, 'confirmed');
+  assert.equal(snapshot.lastOutcomeAt, 300);
+  assert.equal(snapshot.snapshotAt, 400);
+  assert.equal(createCaptureStatus().snapshot().lastOutcome, null);
+});
+
 function noNonFiniteNumbers(value) {
   if (typeof value === 'number') assert.ok(Number.isSafeInteger(value) && value >= 0);
   else if (value && typeof value === 'object') for (const v of Object.values(value)) noNonFiniteNumbers(v);

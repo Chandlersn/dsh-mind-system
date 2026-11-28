@@ -1,3 +1,4 @@
+import { seedDistillationSources } from './distill-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -50,7 +51,8 @@ test('concurrent memory_write preserves both blocks and unique same-day headings
   const tool = registered.find((entry) => entry?.name === 'memory_write' && typeof entry.execute === 'function');
   assert.ok(tool, 'real apply must register the memory_write executor');
   const date = '2026-05-10';
-  const base = { feature: '并发功能', date, result: 'done' };
+  const material = await seedDistillationSources(root, 'concurrent function writes');
+  const base = { ...material, feature: '并发功能', date, result: 'done' };
   await tool.execute({ ...base, title: '原有迭代', summary: '原有功能域的基准记录' }, {});
   const initial = await originalRead.call(fs.promises, target, 'utf8');
   let indexText;

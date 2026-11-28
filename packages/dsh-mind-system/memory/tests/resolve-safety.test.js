@@ -1,3 +1,4 @@
+import { seedDistillationSources } from './distill-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -38,7 +39,8 @@ async function fixture(t) {
   if (typeof dispose === 'function') t.after(() => dispose());
   const tool = registered.find((entry) => entry?.name === 'memory_write' && typeof entry.execute === 'function');
   assert.ok(tool, 'real apply must register memory_write');
-  const args = { feature: '主体功能', title: '验证主题', summary: '验证主体功能的保存', date: '2026-11-10', result: 'done', resolve: '待解决功能' };
+  const material = await seedDistillationSources(root, 'protecting raw daily records');
+  const args = { ...material, feature: '主体功能', title: '验证主题', summary: '验证主体功能的保存', date: '2026-11-10', result: 'done', resolve: '待解决功能' };
   return { root, functions, args, run: (overrides = {}) => tool.execute(Object.fromEntries(Object.entries({ ...args, ...overrides }).filter(([, value]) => value !== undefined)), {}) };
 }
 

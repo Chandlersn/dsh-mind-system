@@ -85,6 +85,7 @@ test('health warning navigates to open diagnostics with the issue details', () =
   statefulInstance.apply({ slots: { inject(_slot, fn) { fn(); }, register(options, component) { if (options.name === 'main') StatefulPanel = component; } } });
   {
     const fixture = { root: 'fixture', initialized: true, counts: {}, results: [{ level: 'WARN', rule: 'R5', message: 'missing index entry' }] };
+    fixture.reviewNotes = [{ rule: 'R28', message: 'candidate for review' }];
     const props = { initialView: { kind: 'zone', zone: 'functions' }, __apiFixtures: { '/api/memory-org/overview?v=0': { data: [fixture], loading: false, error: null } } };
     const renderPanel = () => { index = 0; return expand(statefulReact.createElement(StatefulPanel, props)); };
     let tree = renderPanel();
@@ -95,6 +96,7 @@ test('health warning navigates to open diagnostics with the issue details', () =
     assert.ok(tree.some((n) => n?.props?.['data-dmo'] === 'arch-canvas'));
     assert.ok(tree.some((n) => n?.props?.['data-dmo'] === 'architecture-diagnostics' && n.props.open === true));
     assert.ok(tree.includes('[WARN] R5: missing index entry'));
+    assert.ok(tree.includes('R28 · candidate for review'));
   }
 });
 
@@ -105,6 +107,32 @@ const base = {
   errorCodes: Object.fromEntries(CAPTURE_ERROR_CODES.map((code) => [code, 0])),
   errorStages: { source: 0, select: 0, schedule: 0, lock: 0, read: 0, dedupe: 0, stage: 0, commit: 0, ledger: 0, cleanup: 0, OTHER: 0 },
 };
+
+test('e1 displays capture configuration, samples, pending work and the latest accepted completion', (t) => {
+  const now = 900_000;
+  t.mock.method(Date, 'now', () => now);
+  const fresh = { ...base, snapshotAt: now, lastOutcome: null, lastOutcomeAt: null };
+  const completed = { ...fresh, observed: 5, hasObservations: true, scheduled: 5, failed: 4, confirmed: 1, lastOutcome: 'confirmed', lastOutcomeAt: now - 1 };
+  for (const [snapshot, label, marker] of [
+    [undefined, '采集状态未知', 'm'], [base, '采集观测未知', 'm'],
+    [{ ...fresh, enabled: false }, '采集未启用', 'm'], [fresh, '尚无采集样本', 'm'],
+    [{ ...fresh, hasObservations: true, observed: 1 }, '尚无采集尝试', 'm'],
+    [{ ...completed, pending: 2 }, '采集中 2', 'b'], [completed, '写入已确认', 'ok'],
+    [{ ...completed, lastOutcome: 'duplicate' }, '重复，已跳过', 'w'],
+    [{ ...completed, lastOutcome: 'conflict' }, '采集冲突', 'd'],
+    [{ ...completed, lastOutcome: 'failed' }, '采集失败', 'd'],
+    [{ ...completed, lastOutcomeAt: now - 120_000 }, '采集结果已过期', 'm'],
+    [{ ...fresh, snapshotAt: now - 120_000, pending: 2 }, '采集快照已过期', 'm'],
+    [{ ...completed, lastOutcomeAt: now + 1 }, '采集结果未知', 'm'],
+    [{ ...completed, lastOutcome: 'constructor' }, '采集结果未知', 'm'],
+  ]) {
+    const { tree } = render(snapshot);
+    assert.ok(tree.includes(`捕获 · ${label}`), label);
+    const edge = tree.find(n => n?.props?.['data-dmo'] === 'flow-edge-e1');
+    assert.equal(edge.props.markerEnd, `url(#dmo-ah-${marker})`, label);
+  }
+  assert.ok(render(completed).text.includes(new Date(now - 1).toLocaleString()));
+});
 
 test('旧服务没有采集字段时显示未知，不当作正常', () => {
   const { text } = render(undefined);
