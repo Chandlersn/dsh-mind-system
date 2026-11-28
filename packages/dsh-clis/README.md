@@ -1,221 +1,111 @@
 # dsh-clis
 
-一个 DSH 常驻插件，做两件事：
-
-- **碰到反馈时介入** —— agent 的工具失败开始重复时，在结果进入模型前注入
-  一条结构判断提示（回路越修越弹 / 对偶一边修一边被拉回 / 单向该追溯最早的因）。
-  四道闸门防干扰，`clis_metrics` 报告"提示注入 vs 被采纳"的采用率。
-- **全系统插件互相看得见** —— 枚举宿主全部插件、收集健康探针，把散乱警告
-  归并成结构结论。自动层零配合覆盖全部非内建插件；插件导出一个 `healthProbe`
-  即可接入更深信号。
-
-底层是四个可独立开关的因果组件（分类 → 策略 → 反馈 → 编排）。
-分类是确定性规则打分（需先填四问），不是语义理解；归因与策略主张
-无对照实验支撑——测试证明工程严谨，不是"比直接处理更有效"。
-
----
+DSH 插件。`clis_classify` 用四问判断因果结构，`clis_plan` 列出候选策略，`clis_run` 将规划与调用方回填的结果关联。`clis_probe` 检查宿主插件的装载状态或领域探针。插件还会在工具重复失败时向 agent 提示可以调用 CLIS。
 
 ## 为什么做这个
 
-两个具体的失败形态：
+当一个调整暂时缓解问题、随后又反弹时，继续调整前需要区分两种情况：改动是否经过延迟反馈再次影响原来的指标，还是上游条件一直未变。四问把这个区别落实到可核查的关系上。插件监督则处理另一类问题：当几个插件同时报告异常，先列出报错来源和覆盖范围，才能判断是否还有一个上游依赖需要调查。
 
-**一、"改了没效果"被当成"再改一次"。**
-指标来回震荡、越调越糟时，agent 的自然反应是换方案。但有些问题换方案只会更糟：
+## 安装与组件
 
-| 实际结构 | 换方案的后果 | 该做的 |
+独立包 `dsh-clis@0.3.0` 要求 Node.js ≥22.13。在目标 profile 的 Plugins → Add plugin 中选择本地 `packages/dsh-clis` 目录，或以其绝对路径作为 `plugin_manager` 的 `install_bundle` 目标。以下为路径示例，请换成本机仓库位置。已启用合成包 `dsh-mind-system` 的 profile 使用其中的 CLIS 条目即可。
+
+```json
+{"action":"install_bundle","target":"C:/src/dsh-mind-system/packages/dsh-clis"}
+```
+
+发布包自带 JavaScript 入口和共享 chunk，运行时由 shim 从 DSH 安装目录加载宿主的 Cordis。包内的 `cordis.patch.yml` 插入以下五个条目，各行默认配置均为 `{}`。可在 Settings → Plugins 分别启停。停用上游会使依赖它的条目失去所需服务。
+
+| 插件 ID | 提供的服务或工具 | 直接依赖 |
 |---|---|---|
-| **回路** | 在环上继续推，震荡幅度可能更大 | 先看结构，找阻尼点 |
-| **对偶** | 一边修一边被拉回原状 | 两侧同时成立，别只动一边 |
-| **单向** | 在结果处使力，改的是症状 | 溯源到最早可干预的因 |
-| **嵌套** | 拆模块才对，改一个不够 | 拆开看 |
+| `clis-classifier` | `clis.causalClassifier` | 无 |
+| `clis-strategy` | `clis.causalStrategy` | 分类器 |
+| `clis-feedback` | `clis.causalFeedback` | 无 |
+| `clis-orchestrator` | `clis.causalOrchestrator` | 分类器、策略、反馈 |
+| `clis-tools` | 下列六个 agent 工具 | `tools`、`systemPrompt`、分类器、策略、编排器 |
 
-分不清这四种，就只能试。而"试"的代价是时间与副作用。
+## 工具与四问
 
-**二、"没人看"与"一切正常"长得一样。**
-插件健康探针各报各的，但**散乱的警告之间是什么关系**，没人判断 ——
-三个插件各报一条"我的功能没就绪"，可能是同一个上游依赖掉了。
-`clis_probe` 只投递被监督者自己产不出的结论：结构性关系。
-
----
-
-## 一、agent 工具
-
-| 工具 | 作用 |
-| --- | --- |
-| `clis_probe` | **系统级监督**：枚举宿主全部插件，收集各自的健康探针，用因果结构分析判断"这些散乱问题之间是什么关系"，只投递对方自查报不出来的结论 |
-| `clis_run` | 跑完整闭环：分类 → 匹配路径 → 执行 → 反馈 → 必要时回退。**写动作默认拦下**，只放行只读动作；写动作需 `allow_writes` 显式白名单 |
-| `clis_classify` | 只判断因果类型 |
-| `clis_plan` | 只生成并排序候选路径 |
-| `clis_metrics` | **介入有效性**：提示注入了多少次（hinted）、agent 采纳了多少次（adopted）、采用率，**以及漏判分母**（`miss_rate`） |
-
-> `clis_metrics` 为什么要报 `miss_rate`：只看 `hinted` 那一栏，
-> "闸门在工作"和"没人在看"长得完全一样。`skipped`（评估过但放过）
-> 才是漏判的分母 —— `missRate = skipped / evaluated`。
-
-另注入一段系统提示段（`clis-causal-reasoning`），列出该找 CLIS 的症状
-（改了参数没效果、反复调整更糟、指标来回震荡、分不清谁因谁果）。
-
-### 向编排系统贡献因果词汇
-
-CLIS 的领域词汇（因果/结构/回路/对偶/归因…）原本是编排系统的盲区 ——
-实测这些说法全部无信号，而它们恰是本插件最该被用上的时刻。
-
-现在 CLIS 经 `mind/register-signal` 广播 `clis-causal` 信号：
-
-| 字段 | 值 |
+| 工具 | 输入与结果 |
 |---|---|
-| `situation` | `diagnose` |
-| `weight` | 3 |
-| `words` | 因果、因果结构、结构、回路、反馈环、对偶、矛盾、环状、张力、归因、归因错、诊断、判一下结构、是不是环、为什么会这样、根因 |
+| `clis_classify` | 必填 `description` 和 `q1`–`q4`，返回类型、置信度、触发的判断依据及探索信息。 |
+| `clis_plan` | 相同必填项。可用 `forbidden_actions`（动作名字符串数组）约束候选路径，返回 `paths` 中的排序、评分、步骤和可执行状态。 |
+| `clis_run` | 相同必填项。另接受 `forbidden_actions`、`allow_writes`（均为动作名数组）、`last_outcome` 和 `last_detail`。返回规划结果、动作回执、历史摘要和事件状态。 |
+| `clis_event_feedback` | 必填同一次 `clis_run` 的 `event.producerId` 和 `event.eventId`，按这对标识查询技术消费分类。 |
+| `clis_probe` | 省略参数以检查可发现的来源。`only` 是来源 ID 字符串数组，精确匹配本轮要检查的来源。 |
+| `clis_metrics` | 可传 `window_days` 或 `probe_self_test`，详见下文。 |
 
-**广播没有方向性** —— 缺编排系统时这条广播无人接收，CLIS 照常工作。
-（直接 import 会让 CLIS 反向依赖编排系统，于是"没装编排系统就装不上 CLIS"。）
+四问各接受 `yes`、`no`、`unknown`。Q1 问两个因素是否同时成立、互为定义且无先后，Q2 问是否有带延迟的相互影响，Q3 问是否严格先后且不可逆，Q4 问是否有多种结构并存。分类由作答决定。以下是 `clis_classify` 的参数，结果为 `cyclic`。
 
-载荷形状的契约由 `tests/signal-broadcast.test.ts` 守住（7 条）——
-事件名写错、载荷改成位置参数、字段名对不上，这些在类型断言下**编译期全绿**，
-只有契约测试能抓住。
+```json
+{"description":"扩容改变负载，负载延迟触发下一次扩缩容。","q1":"no","q2":"yes","q3":"no","q4":"no"}
+```
 
-### clis_probe 的两层监督
+Q4 为 `yes` 或前三问有多个 `yes` 时为 `nested`。其余情况下，前三问唯一的 `yes` 分别对应 `structural_duality`、`cyclic`、`unidirectional`。全无肯定作答为 `unknown`。置信度上限为 0.9。
 
-| 层 | 来源 | 覆盖 | 插件要做什么 |
-| --- | --- | --- | --- |
-| **自动层** | loader 元数据（模块导入 / 导出形态 / 装载状态 / 依赖满足） | 全部非内建插件 | **什么都不用做** |
-| **协作层** | 插件模块根导出 `healthProbe` | 导出者 | 加一个导出 |
+置信度低于 0.7 会标记 `needs_exploration`。策略匹配器按结构选策略族：对偶侧重对称关系和定义，循环考虑增益、延迟和阻尼，单向追溯上游和必要条件，嵌套拆子模块，未知结构先探测。`forbidden_actions` 命中的步骤会被剔除，受影响路径标为不可执行。编排器默认最多回退三次，达到上限且仍收到未解决信号时转人工；同一类型两次连续误判回退会触发一轮锁定。
 
-自动层是"新装插件不会被遗漏"的保证。协作层决定监督的**深度**，不决定**有无** ——
-缺了它，插件的领域内部问题看不到，但装载/依赖类问题照样能发现。
+### 怎样读 `clis_run`
 
-要接入协作层，按 [`PLUGIN-STANDARD.md`](https://github.com/#) 的约定加一个具名导出：
+`actions.observed` 列出待采集实际数据的观测动作。已知写动作默认落入 `actions.blocked_writes`，列入 `allow_writes` 仅会让内置执行器返回 `ok` 回执。该执行器没有调用外部系统实施观测、调参或干预。`outcome` 和 `signal_type` 描述本轮规划经过。
+
+首次分析可传 `last_outcome: "not_tried"`。实际尝试后，用同一问题描述与四问再次调用，传 `achieved` 或 `failed`，并用 `last_detail` 说明观测结果。历史键取决于规范化后的描述和四项作答。首次调用建立基线，有先前历史时才将回填结果关联到它。历史保存在 DSH 数据目录的 `storages/clis-history.json`。
+
+`event.status` 为 `persisted_pending` 时，事件已写入 `storages/clis-events.sqlite`，可以取其两个 ID 查询反馈。`persistence_failed` 表示持久化失败。已记录的技术分类仍标记 `authenticated: false`、`humanAdoption: "unknown"`、`principleAttribution: "unknown"` 和 `governanceEligible: false`。
+
+## 失败提示与指标
+
+插件注册系统提示段 `clis-causal-reasoning`，并通过 `mind/register-signal` 广播 `clis-causal`（`situation: "diagnose"`，权重 3）。重复失败提示由 `tools/post-execute` 单独触发。监听器识别工具错误和没有终止信号的非零退出码，过滤命中机械错误或基础设施错误规则的记录。同一 agent 的同一工具在 10 分钟内至少两次出现相同签名后，才有机会注入提示。已提示的签名和 agent 的 10 分钟冷却期均会阻止再次提示。调用 `clis_run` 或 `clis_classify` 会清除该 agent 的提示与冷却状态。
+
+`clis_metrics({window_days: 7})` 读取 `storages/clis-interventions.jsonl`。默认 30 天，输入 0 也取 30，其他数值限制在 1–365 天。汇总按文件顺序最多扫描前 10,000 条非空行，再按时间筛选。
+
+| 返回字段 | 计算口径 |
+|---|---|
+| `hinted` | 被记录为注入提示的次数。 |
+| `adopted` / `spontaneous` | 同一 agent 的 `clis_run` 或 `clis_classify` 调用与此前 30 分钟内的提示匹配时计入 `adopted`，每次匹配消费一条待匹配提示。其余调用计入 `spontaneous`。 |
+| `adoption_rate` | `adopted / hinted`，上限 1。`hinted` 为 0 时为 `null`。 |
+| `skipped` / `evaluated` | `skipped` 统计跳过记录，也包括订阅失败记录。`evaluated = hinted + skipped`。可用 `skipped_by_reason`、`skipped_by_gate` 看构成。 |
+| `miss_rate` | `skipped / evaluated`，分母为 0 时为 `null`。该值衡量记录中跳过的比例；判断哪些失败本应提示还需独立标注。 |
+
+例如 `hinted = 2`、`adopted = 1`、`skipped = 6` 时，`evaluated = 8`、`adoption_rate = 0.5`、`miss_rate = 0.75`。匹配只说明调用时间与 agent 对得上。`hinted = 0` 有多种原因，可先检查跳过分组、账本是否可读及宿主日志中的订阅错误。
+
+普通汇总也带 `probe_self_test`。调用 `clis_metrics({probe_self_test: true})` 仅返回这一项，自检比较当前 agent 可见的工具注册并用合成样本检查监督链，可调用当前分类服务，不扫描真实插件探针或读取历史账本。
+
+## 插件监督的自动层与协作层
+
+`clis_probe` 合并已登记的探针、已知服务键以及 loader 能枚举的未停用非内建条目。领域探针优先，剩余条目用装载元数据检查导入、导出形式、加载状态、意外未激活与声明的依赖。`supervision.supervised` 是应用 `only` 后的来源数，`domain_probes` 和 `structural_only` 列出过滤前的覆盖情况。`supervised = 0` 时也会返回 `status: "ok"`，此时没有来源接受检查。
+
+插件可以具名导出领域探针，或通过 `clis/register-probe` 提交 `{plugin, probe}`。以下是合法的最小导出。
 
 ```js
-export const healthProbe = {           // 与 inject / Config 同族
+export const healthProbe = {
   async probe() {
     return { plugin: 'my-plugin', status: 'ok', findings: [] }
   },
 }
 ```
 
-**投递纪律**：只发结构诊断（`structure.*`）与跨轮复发（`structure.recurring`）。
-对方自查出的逐条问题**不转发** —— 那些在各自插件的面板里已有，重复搬运只是噪音。
+检查结果按发现代号分组，由 `evidence` 给出次数与来源。只凭一次扫描无法回答关系和时间问题，有发现或探针异常时，`analysis.causalType` 固定为 `unknown`；无发现且无探针异常时省略 `analysis`。探针抛错或报告格式无效可产生 `structure.probe-broken` 通知。当前入口不关联跨轮对象，`dispositions` 为空，`history_status` 说明原因。普通业务发现只进入汇总，`notices.notified_plugins` 计的是成功发出事件的调用次数，无法确认收件方已处理。
 
-## 二、四个组件
+## 排错
 
-| 组件 | 服务名 | 职责 | 禁止 |
-| --- | --- | --- | --- |
-| **因果分类器** `classifier` | `clis.causalClassifier` | 只判断因果类型 | 不生成策略、不执行、不回退 |
-| **策略匹配器** `strategy` | `clis.causalStrategy` | 匹配策略、生成候选路径、排序执行 | 不重新判断类型、不决定回退 |
-| **反馈检测器** `feedback` | `clis.causalFeedback` | 检测反馈信号、识别误判、给回退建议 | 不重新分类、不执行回退 |
-| **闭环编排器** `orchestrator` | `clis.causalOrchestrator` | 编排三者、执行回退决策 | 不写任何判断/匹配/反馈规则 |
-
-依赖关系（由 inject 声明，Cordis 自动等待）：
-
-```
-classifier ──┬──> strategy
-feedback ────┴──> orchestrator
-```
-
-因此停用 `classifier` 会连带停用 `strategy` 与 `orchestrator`；`feedback` 独立无依赖。
-包根入口 `clis-tools` 依赖前三个服务，故须排在它们之后装载。
-
-## 三、因果类型与策略族
-
-| 类型 | 判断依据 | 策略族 |
-| --- | --- | --- |
-| `structural_duality` 结构对偶 | 同时成立、彼此定义、无先后 | 对称映射 / 关系调参 / 定义澄清 |
-| `cyclic` 循环因果 | A→B→A 且有时间延迟 | 杠杆点 / 增益控制 / 延迟调节 / 阻尼注入 |
-| `unidirectional` 单向因果 | A→B 严格先后不可逆 | 上游追溯 / 必要条件 / 不可逆接受 / 新因覆盖 |
-| `nested` 嵌套 | 多种结构并存 | 拆子模块递归 |
-| `unknown` 未知 | 四问无法判断 | 最小/广度探测（探索模式） |
-
-## 四、必须知道的边界（读之前请先看这一节）
-
-1. **分类器是确定性规则打分，不解析自然语言。**
-   需要调用方先填好四问（Q1–Q4 各 yes/no），它按规则打分判类型。
-   它不是"把一段中文描述扔进去就出结论"的语义理解器。
-
-2. **执行器是半自动的。**
-   只读动作（测量/追溯/枚举/定位）放行并返回观测请求；**写动作默认全部拦下**，
-   除非调用方在 `allow_writes` 里显式放行。这是刻意设计——CLIS 不知道你的系统能改什么。
-
-3. **只读模式不会空转。**
-   若一条路径的步骤全是只读，它不会判"成功"（那不是进展），而是直接返回
-   "需授权才能推进"，不做无意义的换路径重试。
-
-4. **因果推理层的有效性尚无对照实验支撑。**
-   四个组件有 600+ 例测试与 7 条硬约束验证，但那证明的是**工程严谨**，不是
-   "比直接处理更有效"。监督层（`clis_probe`）则是在真实使用中被逼出来的，有可复现实证。
-
-5. **强宿主耦合。** 只对 DSH 用户有用，不能独立运行。
-
-## 五、硬约束
-
-- **置信度上限 0.9**；低于 0.7 标记探索模式；`unknown` 给候选假设不强行归类。
-- **回退上限 3 次**；超过输出「需人工介入」并保留完整 trace。
-- **震荡锁定**：同一类型连续回退 2 次，锁定该类型至少 1 轮。
-- **边界强制**：`forbidden_actions` 内的动作在生成阶段被剔除，执行阶段再挡一次。
-- **生成与判断分离**：分类器不评价策略，策略不重新分类，反馈不自动回退。
-- **回路判据只认跨轮**：同一规则在一轮内触发多次（两条车道各一次）**不算**回路；
-  只有"上一轮报过、这一轮还在"才算，输出 `structure.recurring`。
-
-## 六、手动开关
-
-Settings → Plugins 或 Plugin Manager 里，四个组件与包根入口可**各自**启用/停用。
-
-```js
-plugin_manager({ action: 'set_plugin', target: 'clis-classifier', enabled: false })
-```
-
-停用 `clis-classifier` 会连带 `strategy` / `orchestrator` / `clis-tools` 停用（inject 依赖）。
-
-## 七、构建与打包
-
-- 版本：0.3.0
-- 打包：esbuild 代码分割，5 个入口（根 + 四组件）共享 chunk
-- **`@deepseek-ai/cordis` 走宿主 shim，不内联。**
-  构建时 `alias` 到 `cordis-shim.ts`，运行时用 `createRequire` 从探测到的 DSH 安装目录
-  加载宿主自己的 cordis。**为什么必须这样**：内联会让本插件声明的是第二个 `Service` 类，
-  服务虽注册进 ctx（走 `ctx.reflect.provide`）但宿主不认，`instanceof 宿主Service === false`，
-  依赖它的插件 `inject` 永不满足 —— **而且整个过程不抛任何错误**。
-- 可安装产物由 `scripts/package.mjs` 从两处组装：`bundle/`（JS）＋ `packaging/`（patch、
-  package.json、icon、README、locale）。**克隆仓库即可重建**，不依赖任何目录外文件。
-
-## 八、已知限制
-
-- **orchestrator 无独立验收**：全部由实现者自测。classifier / strategy / feedback 有独立
-  验收套件（详见 `reports/`），但 orchestrator 的断言由实现者本人设计，存在
-  "按自己的实现写断言"的可能。
-- 未测性能与并发。
-- 自动层只有 5 项检查（模块导入 / 导出形态 / 卡装载 / 意外未激活 / 依赖未满足）。
-  可扩展方向：声明的工具或路由是否真注册成功。
-- 协作层目前只有 CLIS 自己、`dsh-memory-manager`、`dsh-workbuddy-channels`、
-  `dsh-learning-mode` 四个插件导出探针。
-- **探针发现靠硬编码白名单兜底**：`KNOWN_PROBE_KEYS` 是写死的列表 ——
-  靠它才能被发现的插件，意味着每个新插件都得改 CLIS 的代码才能进覆盖范围。
-  首选路径是**主动广播**（`clis/register-probe`，零配合：别人不必为 CLIS 改代码），
-  白名单只作兜底。
-
----
-
-## 九、排错
-
-| 症状 | 多半是 | 怎么办 |
-|---|---|---|
-| `clis_probe` 报 `unknown tool` | CLIS 没装载成功 | 看宿主启动日志的 "did not activate"；多半是 `inject` 的依赖服务没就位（`clis.causalClassifier` 等四个） |
-| `clis_probe` 里看不到某个插件 | 它没导出 `healthProbe` | 协作层要插件自己导出；自动层仍会覆盖它的装载状态 |
-| 分类总是判成 `unknown` | 四问没填全 | 分类是**确定性规则打分**，需先给四问作答（q1–q4）；不是语义理解 |
-| `clis_run` 什么都不做 | 写动作被拦下了 | 写动作默认拦下，只放行只读动作；要放行得显式传 `allow_writes` |
-| `clis_metrics` 的 `miss_rate` 很高 | 闸门评估了但放过了 | 看 `skipped` 的原因与闸门分解；`missRate = skipped / evaluated` |
-| `clis_metrics` 的 `hinted=0` | 监听器没注册 | 不是"最近没人失败"，是介入机制没生效 —— 查 `post-execute` 事件源 |
-| 改源码不生效 | 跑的是旧产物 | 必须 `bundle.mjs` → `package.mjs` → 部署。**拷贝式打包不重建中间产物**，改的是源码、跑的是旧产物 |
-| 内联 cordis 后依赖永不满足 | 声明的是第二个 `Service` 类 | `instanceof 宿主Service === false`，且**整个过程不抛任何错误**。必须用 cordis shim |
-
----
-
-## 十、借鉴出处
-
-| 借鉴 | 体现在 |
+| 症状 | 如何区分原因 |
 |---|---|
-| **系统论的结构干预** | 四种因果结构各有各的干预方式 —— 在环上硬推会加剧震荡（对应 `clis_classify` 的四种分类） |
-| **干预有效性的度量要答两问** | 怎么量（同管线：hinted→adopted→skipped）与量谁（自产信号只进曝光，不进使用） |
-| **"信号在谁身上生成"** | 自产信号不给自己背书：`miss_rate` 用 `evaluated` 作分母，否则"没人在看"会显示成"漏判率 0%" |
-| **零配合层原则** | 探针发现的自动层不要求插件做任何事；协作层只决定深度，不决定有无 |
+| 找不到 `clis_probe` | 核对 `clis-tools` 是否在目标 profile 中激活，再按组件表检查所需服务。宿主定位失败时，可将 `DSH_INSTALL_DIR` 指向含宿主 Cordis 的安装根。 |
+| 插件只在 `structural_only` 中出现 | loader 能检查其装载元数据。检查该条目的模块是否导出了 `healthProbe.probe`，或是否在 CLIS 监听时成功广播了探针。 |
+| `miss_rate` 接近 1 | 检查 `skipped_by_reason`。`below-threshold` 表示相同签名次数不足，`cooldown` 表示近期已提示，`subscriber-missing` 提示应核查宿主订阅。 |
+| `clis_run` 有回执，外部系统没有变化 | 读取 `actions.observed` 和 `actions.blocked_writes`。调用方负责独立采集数据、执行获授权的操作，并在下次调用时回填结果。 |
+
+## 借鉴出处与已知限制
+
+四问与策略族沿用系统论中的反馈、延迟、阻尼和上游条件概念。这个实现把它们映射为固定规则和路径模板，适合比较结构假设。判断在某个系统里是否成立，仍需观察两因素实际的时间顺序和影响方向。提示后调用率、规则测试及探针自检都不足以估计真实任务改善了多少；这需要独立的任务结果和对照。
+
+自动层依赖 loader 可见性和内建条目的识别规则。服务键兜底只扫描 `clis.healthProbe`、`memory.healthProbe`、`mind.healthProbe`。诊断范围应以本轮 `supervision` 返回值为准。
+
+## 仓库验证
+
+从仓库根目录运行事件存储测试，覆盖重新打开、重复记录、冲突、事务回滚、跨进程并发和损坏数据检查。
+
+```sh
+node --test packages/dsh-clis/clis-event-store.test.js
+```

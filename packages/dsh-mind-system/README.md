@@ -17,13 +17,13 @@
 | meta-framework | 重定义问题并说明边界，可接入 CLIS 分类 | `meta/index.js` |
 | memory-manager | 检索、层级记忆写入、体检、问题收件箱及面板 | `memory/server.js` |
 | valves | 候选准入、决策账本、负向规则及巡检 | `valves/index.js` |
-| execution-runtime | 任务执行、配方和验收 | `runtime/src/host-plugin.js` |
+| [execution-runtime 使用说明](https://github.com/Chandlersn/dsh-mind-system/tree/main/packages/dsh-execution-runtime#readme) | 动态任务、原生模板、按配方验证与条件重试 | `runtime/src/host-plugin.js` |
 
 [`cordis.patch.yml`](cordis.patch.yml) 按依赖顺序注册 CLIS 四个服务、CLIS 工具包、meta、valves、memory、mind、runtime 和包根。成员通过宿主服务和事件交互，并非每个任务都会顺次运行全部成员。
 
 ## 安装
 
-需要 Node.js 22 或更高版本及可运行的 DSH 宿主。若当前包源提供此包，可运行：
+合成包清单要求 Node.js 22 或更高版本。使用 DSH 默认装载的全部六个成员时，需要满足 execution-runtime 声明的 Node.js ≥22.23.0。若当前包源提供此包，可运行：
 
 ```bash
 dsh plugin --profile web add dsh-mind-system
@@ -37,6 +37,8 @@ dsh plugin --profile web add dsh-mind-system
 - 需要重定义问题及其边界时，用 `meta_reframe`。该工具提供诊断，不自动决定或执行干预。
 - 遇到既有约定、历史决策或反复出现的问题，先用 `memory_read` / `memory_search` 查找相关证据，再决定是否沉淀。
 - 用 `mind_signals` 检查调度信号，用 `valve_metrics` 检查阀门账本；这些读数不等于任务成效。
+
+- 合成包默认启用 execution-runtime，原生模板清单为空。动态任务可通过 `runtime_execute` 提交，原生模板的自动重试另有授权条件。正文检索使用 `memory_sag`；`runtime_knowledge` 的内置 SAG 适配器不能提供有域和版本保证的读写。
 
 ## 依赖与配置
 
@@ -54,9 +56,9 @@ dsh plugin --profile web add dsh-mind-system
 ## 已知限制
 
 - agent-mind 的 `agent/inbox/claimed` 是处境判断主路径，`agent/pre-step` 是兼容路径；当前宿主的提示装配不提供工具列表，源码的重排逻辑无法在此生效，兼容方式待验证。重排设计不删除工具、核心工具保持原位，延后加载默认关闭；判断不保证模型调用某工具。未命中或歧义样本可能写入规则脱敏、截断后的输入摘要；`DSH_MIND_SAMPLING=0` 可关闭采样。
-- memory-manager 的层级门槛和自检检查可机械验证的形态，不能自动证明结论真实。记忆写入守卫覆盖宿主 `write` / `edit`，不全面覆盖 shell 和其他写入方式；R26 哈希对账也不能证明完整来源。
-- 候选道在 `dao/_candidates/` 等待处理。当前面板会话认证不能证明操作由真人点击，`memory_dao` 亦存在直接写正式道的 active 路径；人工确认仍依赖操作纪律。
-- valves 的阈值是待真实数据校准的暂定值。规则确认要求用户明确授权，但工具调用本身没有独立的人类身份凭据验证。
+- memory-manager 的层级门槛和自检检查可机械验证的形态，不能自动证明结论真实。记忆写入守卫覆盖宿主 `write`、`edit` 及 `str_replace_editor` 的写操作，不全面覆盖 shell 和其他写入方式；R26 哈希对账也不能证明完整来源。
+- 候选道在 `dao/_candidates/` 等待处理。当前面板可查看候选，确认、否决和删除均返回 `safe_delete_unavailable`。`memory_dao` 的 `active` 路径可直接写正式道。
+- valves 的阈值是待真实数据校准的暂定值。负向规则生效前要求用户明确授权。单凭工具调用不能证明已取得人工确认。
 - 巡检调度默认开启不代表输入已配置。周检原则清单未配置时会从记忆根 `insights/` 与决策账本枚举，两者都没有才报告 `no_input`；外部召回探针未接时召回边界段的违例数记未知（`null`）而非 0；季度巡检缺少层统计时跳过。
 - 记忆面板默认打开架构页，诊断与最近改动可展开；活动观测和历史架构证据均不证明任务成功或人工采纳。
 - 使用反馈由调用方声明，关联身份未经认证；重复关联可能歧义，不具治理资格。
@@ -64,7 +66,7 @@ dsh plugin --profile web add dsh-mind-system
 
 ## 验证与开发
 
-在源码仓库根目录执行 `npm run build`、`npm run verify-combined` 和 `npm test`。部分集成测试需要设置 `DSH_INSTALL_DIR` 指向真实宿主安装。完整测试和部署说明见[仓库 README](https://github.com/Chandlersn/dsh-mind-system#readme)。
+在源码仓库根目录执行 `npm run build`、`npm run verify-combined` 和 `npm test`。部分集成测试需要设置 `DSH_INSTALL_DIR` 指向真实宿主安装。独立运行时套件使用 `npm --prefix packages/dsh-execution-runtime test`。其他测试与部署说明见[仓库 README](https://github.com/Chandlersn/dsh-mind-system#readme)。
 
 如果 profile 中的安装目录是指向仓库产物的 junction，构建会直接修改运行实例的磁盘文件。仓库的 `install-profile.mjs` 使用拷贝并替换目标目录，不会创建 junction；执行前应核对目标及备份。
 

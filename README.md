@@ -66,7 +66,7 @@ flowchart LR
 
 ## 安装与使用
 
-需要可运行的 DSH 宿主，以及 Node.js 22 或更高版本。若合成包在当前包源中可用，可安装到指定 profile：
+需要可运行的 DSH 宿主。合成包声明 Node.js ≥22，默认启用的六个成员中 execution-runtime 要求最高，为 Node.js ≥22.23.0。若合成包在当前包源中可用，可安装到指定 profile：
 
 ```bash
 dsh plugin --profile web add dsh-mind-system
@@ -129,7 +129,7 @@ memory-manager 默认使用 DSH 数据根下的 `memory/`；`DSH_HOME` 和插件
 
 **使用信号账本的存储布局**（`.usage/` 下按月分片，`.usage.jsonl` 单文件仍可读，两者一起读）：单文件会随时间不断增大，因此改为按月分片；超过 90 天的整月会被**降采样归档**到 `.usage/archive/`——`recall` 折成 `{href, 日, n}` 计数行（**曝光总数一个不少**，判据照旧），`read` / `correction` / `positive` 原样保留（各自有独立权重）。归档过程核对读取结果，并保留原始字节供核查；遇到无法确认的状态需人工对账，不能仅凭归档结果推断没有数据丢失。
 
-**记忆面板**默认打开架构页，原独立概览入口已移除；诊断与最近改动位于架构页的可展开区域。页面接收活动与概览数据，流中断时使用轮询；新鲜度和活动指示只描述观测，不证明业务结果。源码界面、测试通过和正在运行的宿主页面分别需要核验。
+**记忆面板**默认打开架构页，诊断与最近改动位于可展开区域。「索引召回预览」展示候选行、分数和命中理由，实际注入还取决于会话上下文和预算。概览的体检和统计共用一次账本读取，同一记忆根的并发 HTTP 与 SSE 请求共享正在运行的采样。活跃账本行数只计未归档的月分片，历史归档仍计入总量。流中断时使用轮询，新鲜度和活动指示反映当前观测。
 
 **采集安全边界**：删除、重命名等入口因并发安全问题暂停，详见 [`UPGRADE-PLAN.md`](UPGRADE-PLAN.md)。`finishCaptureIntent` 当前源码先转移到隔离路径、核验身份，再按路径 `unlink`；核验与删除之间仍存在路径替换窗口（见 [`capture-intent-window-boundary.test.js`](packages/dsh-memory-manager/tests/capture-intent-window-boundary.test.js)）。追加式意图日志仍是隔离原型；该安全问题闭环前保持真实自动采集关闭，现场状态以实际查询为准。
 
@@ -251,7 +251,7 @@ $env:DSH_REQUIRE_HOST = '1'
 npm test
 ```
 
-根测试命令会运行合成包、agent-mind、meta-framework、valves 和 memory 的测试，以及记忆面板的宿主、API、UI 检查。独立运行时套件可用 `npm --prefix packages/dsh-execution-runtime test`，CLIS 事件存储用 `node --test packages/dsh-clis/clis-event-store.test.js`。SAG 现场测试需显式设置 `DSH_TEST_LIVE_SAG=1`。
+根测试命令会运行合成包、agent-mind、meta-framework、valves、execution-runtime 和 memory 的测试，以及记忆面板的宿主、API、UI 检查。可用 `npm --prefix packages/dsh-execution-runtime test` 单独运行执行运行时套件，用 `node --test packages/dsh-clis/clis-event-store.test.js` 检查 CLIS 事件存储。SAG 现场测试需显式设置 `DSH_TEST_LIVE_SAG=1`。
 
 ### 构建和安装边界
 
