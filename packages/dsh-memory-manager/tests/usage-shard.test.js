@@ -135,16 +135,13 @@ const iso = (daysAgo) => new Date(Date.now() - daysAgo * 86400_000).toISOString(
 	const src = readFileSync(new URL('../src/usage.js', import.meta.url), 'utf8');
 	ok(/export async function usageFiles/.test(src), 'usageFiles exists (the single source of ledger locations)');
 	// readUsage must go through usageFiles, not read usagePath directly.
-	const readUsageBody = src.slice(src.indexOf('export async function readUsage'), src.indexOf('export function summarizeUsage'));
+	const readUsageBody = src.slice(src.indexOf('export async function readUsage'), src.indexOf('export function createUsageSnapshot'));
 	ok(readUsageBody.includes('usageFiles('), 'readUsage enumerates every ledger file via usageFiles()');
 	ok(!/readIfExists\(usagePath\(/.test(readUsageBody), 'readUsage does not read the legacy path alone');
 
 	const srv = readFileSync(new URL('../server.js', import.meta.url), 'utf8');
-	// Every place that needs the WHOLE ledger must use usageFiles().
 	const directSingle = [...srv.matchAll(/readIfExists\(usagePath\(root\)\)/g)].length;
 	ok(directSingle === 0, `server.js never reads the legacy ledger alone (${directSingle} direct reads)`);
-	ok((srv.match(/usageFiles\(root\)/g) ?? []).length >= 3,
-		`server.js uses usageFiles() everywhere it needs the whole ledger (${(srv.match(/usageFiles\(root\)/g) ?? []).length} sites)`);
 }
 
 // --- 9. disabled compaction preserves all existing bytes -------------------

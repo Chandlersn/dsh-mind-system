@@ -42,7 +42,7 @@ test('R22 marks an enumerated shard disappearing as unknown', async (t) => {
   const original = fs.promises.readFile;
   let hits = 0;
   fs.promises.readFile = async function (name, ...args) {
-    if (typeof name === 'string' && path.resolve(name) === shard && new Error().stack.includes('readUsage (')) {
+    if (typeof name === 'string' && path.resolve(name) === shard) {
       hits++; throw Object.assign(new Error('injected'), { code: 'ENOENT' });
     }
     return original.call(this, name, ...args);

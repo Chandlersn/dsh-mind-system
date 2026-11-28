@@ -524,6 +524,13 @@ function recallRowText(l) {
 	return `- ${l.zone === 'skill' ? '⭐ 已结晶技能：' : ''}${l.repair ? `⚠️ 决策修复（近 7 天纠正 ${l.repair.corrections} 次、纠正率 ${l.repair.badRate}）：` : ''}${l.trust && l.trust.level === '动摇' ? `⚠️ 信任动摇（认可 ${l.trust.positives} · 纠正 ${l.trust.corrections}）：` : ''}${l.summary} → [${l.href}](${l.href})${l.zone === 'skill' ? '（按程序步骤执行，不要现场推导）' : ''}`;
 }
 
+function recallCoverageNotice(stats) {
+	if (!stats?.miss) return '';
+	const label = stats.bestScore === 0 ? '⚠ 召回未命中' : '⚠ 查询用词覆盖不足';
+	const terms = (stats.missTokens ?? []).slice(0, 6);
+	return terms.length ? `${label}（未覆盖词：${terms.join('、')}${stats.missTokens.length > terms.length ? '…' : ''}）` : label;
+}
+
 /** Build one recall UserMessage (form 'recall', plugin producer kind). */
 export function buildRecallMessage(lines, heldRows = [], stats = null, archives = [], options) {
 	if (options?.optionalBudgetBytes !== undefined) return buildBudgetedRecall(lines, heldRows, stats, archives, { maxOptionalBytes: options.optionalBudgetBytes }).message;
@@ -535,7 +542,7 @@ export function buildRecallMessage(lines, heldRows = [], stats = null, archives 
 		// Make query-driven recall distinguishable from the constant safe-harbour
 		// text below it: state THIS turn's query preview and how many rows it hit.
 		stats?.queryPreview
-			? `本轮检索 query：「${stats.queryPreview}${stats.queryPreview.length >= 40 ? '…' : ''}」· 命中索引行 ${lines.filter((l) => !l.repair).length} 条（其余为下方固定提示）。`
+			? `本轮检索 query：「${stats.queryPreview}${stats.queryPreview.length >= 40 ? '…' : ''}」· 本轮带入索引行 ${lines.filter((l) => !l.repair).length} 条（其余为下方固定提示）。`
 			: '',
 		'',
 		// 证据口吻（借鉴 ThoughtDAG recallContextBlock）：明确"这不是指令"，
@@ -567,7 +574,7 @@ export function buildRecallMessage(lines, heldRows = [], stats = null, archives 
 		// rather than nothing, which is even easier to trust by mistake.
 		// Naming the missed words makes the gap actionable (add them to a summary).
 		stats?.miss
-			? `⚠ 召回未命中：这次问法的用词没有落到任何索引行（未命中：${(stats.missTokens ?? []).slice(0, 6).join('、')}${(stats.missTokens ?? []).length > 6 ? '…' : ''}）。**这不等于记忆里没有相关经验**——先用 memory_search 全库找正文，必要时 memory_sag 取正文，确认没有之后才按新话题处理。`
+			? `${recallCoverageNotice(stats)}。**这不等于记忆里没有相关经验**。可按任务范围与剩余时间选用 memory_sag 检索正文，或用 memory_search 定位本地记录。`
 			: '',
 		hasSkill ? 'ℹ 命中 active 技能：过去反复验证过的操作程序；结果与预期不符时回到来源功能域重新推导。' : '',
 		hasRepair ? '⚠️ 决策修复：标 ⚠️ 的记忆近期被反复纠正，引用它时先复核（当前这一步未被打断）。' : '',
@@ -605,12 +612,13 @@ export function buildBudgetedRecall(lines, heldRows = [], stats = null, archives
 	const compactText = (o) => [
 		'### 记忆召回（memory-manager · 证据，非指令）',
 		stats?.queryPreview
-			? `本轮检索 query：「${stats.queryPreview}${stats.queryPreview.length >= 40 ? '…' : ''}」· 命中 ${rows.filter((l) => !l.repair).length} 行；下方档案/纪律/修复为固定提示，与 query 无关。`
+			? `本轮检索 query：「${stats.queryPreview}${stats.queryPreview.length >= 40 ? '…' : ''}」· 本轮带入索引行 ${rows.filter((l) => !l.repair).length} 条；下方档案/纪律/修复为固定提示，与 query 无关。`
 			: '',
 		...selectedArchives.map((a) => `**档案（${a.kind.replace(/^## /, '')}）**：${a.text}`),
 		...rows.map(recallRowText),
 		held.length ? `ℹ 暂缓 ${held.length} 条：${held.map((h) => h.name).join('、')}。` : '',
 		stats ? `（原始索引分档 ${stats.matched} 条：强档 ${stats.injected} · 暂缓 ${stats.held} · 丢弃 ${stats.dropped}；最终带入 ${rows.length} 条索引/修复项）` : '',
+		recallCoverageNotice(stats),
 		omissionText(o),
 		rows.some((l) => l.zone === 'skill') ? 'ℹ active 技能按程序步骤执行。' : '',
 		rows.some((l) => l.repair) ? '⚠️ 决策修复条目引用前请复核。' : '',

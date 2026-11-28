@@ -95,6 +95,20 @@ test('字符覆盖率把两类查询分开（阈值 0.75 落在实测分布中�
 	assert.equal(hit.stats.miss, false);
 });
 
+test('partial query coverage remains visible with matched or budget-omitted rows', () => {
+	const query = 'inject 火星土豆星际航行宇宙辐射探测太阳系';
+	const rows = matchIndexRows(INDEX, tokensOf(query), 3, undefined, { queryText: query });
+	assert.ok(rows.length > 0 && rows.stats.miss);
+	for (const budget of [8192, 800]) {
+		const oversized = rows.map(row => ({ ...row, summary: row.summary.repeat(30) }));
+		const message = buildRecallMessage(oversized, rows.heldRows, rows.stats, [], { optionalBudgetBytes: budget });
+		const text = message.content[0].text;
+		assert.match(text, /查询用词覆盖不足/);
+		assert.doesNotMatch(text, /召回未命中/);
+		if (budget === 800) assert.match(text, /预算或展示上限省略：索引\/修复 [1-9]/);
+	}
+});
+
 test('注入文本真的带出 ⚠ 标记（算了却没用 = 没做）', () => {
 	// buildRecallMessage 是真正组装注入文本的函数；stats 从这里流进文本，
 	// 所以直接给它一个 miss 的 stats，看标记有没有出现在结果里。

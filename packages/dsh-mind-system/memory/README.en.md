@@ -12,7 +12,7 @@ will **re-apply** is distilled into `insights/`, whatever is **re-run and verifi
 callable procedure in `skills/`, the index keeps a single line per row, and every session starts with that
 discipline injected into its system prompt.
 
-- eighteen memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a Web panel
+- nineteen memory tools + an injected system-prompt discipline + a budgeted `agent/pre-step` recall hook + a Web panel
 - Writing is filing: `summary` and `currentState` are required parameters, so the index row never drifts
 - Mechanical lint rules (R0–R28 plus temperature analysis; rule numbers grow, so no fixed count is claimed), so rot gets detected instead of remembered
 - **Capability ledger**: every EXTERNAL CLI / MCP / local tool you used is filed in `capabilities/` — look before
@@ -165,8 +165,10 @@ records *why* we believed it then.
 | Tool | What it does |
 |---|---|
 | `memory_distill_review` | List candidate material by date and source location. Submit a review for the exact version after checking the original passages. Changed material becomes eligible for review again. |
+| `memory_cycle` | `begin` anchors a task to its native call ID; `report` lists committed reads, actions and review; `checkpoint` re-reads bounded artifacts and binds a question to that version. See the evidence limits below. |
 | `memory_read` | read the index / a function file / an insight file / a capability entry / a skill / a daily log (`kind=index` first, to judge relevance) |
 | `memory_search` | **ranked full-text search** across the whole root: scans bodies, not just one-line summaries, and returns zone/file/line/section/snippet plus each hit's attributed date. Use it when you remember a fragment but not the area or the day; `after`/`before` filter by date range (block tag → file head → filename → mtime, in that order) |
+| `memory_sag` | Supported read-only SAG-Wiki retrieval. Choose index summaries, lexical/date search in local memory, or SAG passages by scope and latency budget. `search` accepts directory `paths`/`exclude` and `timeoutMs` (default 5000 ms). It reports host round-trip `hostElapsedMs` separately from engine `elapsedMs`. Cite each original file, heading and available lines. Check memory entries with `memory_read` and project or experimental files at their source path. `status` reports registered roots and optional disk counts or target-path matches. Retrieval failures carry a reason. |
 | `memory_capability` | **the capability ledger**: `record` files an EXTERNAL CLI/MCP/local tool you used (invocation, prerequisites, what it solved — one file per tool, updated in place; never the harness's own tools or the project's own scripts); `list` before a task to see what is available; `read` for a tool's full entry |
 | `memory_write` | Append one iteration block and refresh the head summary. Cite at least three distinct material days. An explicit user request, a same-day failure with an identified cause, or a safety constraint can qualify for an exception with a concrete reason and a verifiable source day. The caller explains why the selected records are relevant. |
 | `memory_index` | **the integration layer**: once an area/theme stabilizes, upsert its row into the MEMORY.md index (row summary distilled from the block summaries); pass `group` to land in a `### 索引·<domain>` sub-table when the table has been split |
@@ -178,6 +180,10 @@ records *why* we believed it then.
 | `memory_usage` | **usage signals**: `record` logs one correction/confirmation (recalls and reads are logged automatically); `report` aggregates a window and suggests a layer (experiment / specialist / general) — advice only, it never moves files |
 | `memory_federation` | **federation mode** (optional): `sync` copies each project's `MEMORY.md` into `sources/` and rebuilds the project index table; `check` lints F1–F5 (index present, links resolve, rows/copies complete, no orphans, absolute paths alive) |
 | `memory_skill` | **the crystallization layer** (the "use" step the data flow was missing): `candidates` nominates mechanically from usage signals (≥6 uses, ≥1 confirmation, correction rate <20%, not yet crystallized); `crystallize` writes a callable procedure to `skills/<name>.md` (when-to-use / numbered steps / pitfalls / verification + frontmatter router); `activate`/`retire` drive the lifecycle (candidate → active → retired, only active enters recall); `list`/`read` inspect |
+
+`memory_cycle` rebuilds task evidence from committed session events through `sessionProjections`. Begin before the work, then use `report` to select a successful named/index `memory_read` and a later `write`, `edit` or `memory_write`. `checkpoint` reads files up to 4 MiB within the workspace or memory root, checks the recalled file against the original read hash, and binds the action's artifact version to a `questionId`. Use that exact ID with `ask_user_question`, then inspect `report` again. PTC is unsupported and degrades the projection.
+
+A real answer is associated with its checkpoint; skipped or conflicting answers, cross-task links and changed bytes do not establish review of the current artifact. Human identity remains unknown, and an answer is not necessarily approval. Later `reuseObservations` are layered into read-again, citation, adoption and outcome: only a re-read hash match and an exact byte copy into the current artifact are observable from committed events; adoption and outcome stay unobserved because the review is uninterpreted, human identity unverified and no independent goal evidence exists. None proves application, goal achievement or production gain. Legacy `live_flow` is diagnostic only; query arguments cannot turn global activity into task evidence. These observations do not prove autonomous growth or confer governance eligibility.
 
 A discipline section is injected into the system prompt; the `agent/pre-step` hook scores the user's input
 against index rows and injects the matching rows as a single `recall` message. Ranking is **lexical-first,

@@ -194,8 +194,16 @@ window.__ModuleLoader__.load({
 /* ---- architecture DIAGRAM (SVG, 2026-11-16) ------------------------------
    A drawn graph: boxes, directed edges with arrowheads, a feedback return arc.
    Stage edges remain neutral when historical data cannot establish health. */
+[data-dmo=inbox-row] .dmo-gcard-head{flex-wrap:wrap;row-gap:3px}
+[data-dmo=inbox-row]{overflow-wrap:anywhere}
+[data-dmo=skill-row] .dmo-row-sum{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;white-space:normal}
 .dmo-arch-canvas{overflow-x:auto}
-.dmo-arch-svg{display:block;width:100%;min-width:720px;height:auto;overflow:visible}
+.dmo-arch-svg{display:block;width:100%;max-width:900px;height:auto;overflow:hidden;margin-inline:auto}
+.dmo-arch-canvas.expanded .dmo-arch-svg{min-width:1000px;max-width:1280px}
+.dmo-arch-tools{position:sticky;left:0;display:flex;justify-content:flex-end;margin-bottom:2px}
+.dmo-arch-tools .dmo-btn{height:30px;border:1px solid var(--dsw-alias-border-l3)}
+.dmo-node.clickable:focus-visible .dmo-node-box,.dmo-node.clickable:hover .dmo-node-box{stroke-width:2.5}
+.dmo-node.clickable:focus-visible .dmo-node-box{stroke:var(--dsw-alias-state-business-primary)}
 .dmo-node .dmo-node-box{fill:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 72%,transparent);
   stroke:color-mix(in srgb,var(--dsw-alias-border-l3) 85%,transparent);stroke-width:1;transition:stroke .16s ease,fill .16s ease}
 .dmo-node.clickable{cursor:pointer}
@@ -212,7 +220,7 @@ window.__ModuleLoader__.load({
 .dmo-edge.business{stroke:var(--dsw-alias-state-business-primary)}
 .dmo-edge.flow-active{stroke-width:3.5;stroke-dasharray:8 6;stroke-linecap:round;animation:dmo-flow 0.7s linear infinite}
 /* Completed observations replay briefly, then retain their distinct dotted stroke. */
-.dmo-edge.flow-finished{stroke-width:3.5;stroke-linecap:round;animation:dmo-finished 0.7s linear 3}
+.dmo-edge.flow-finished{stroke-width:3.5;stroke-linecap:round;animation:dmo-finished .8s ease-out 1}
 @keyframes dmo-flow{to{stroke-dashoffset:-14}}
 @keyframes dmo-finished{to{stroke-dashoffset:-20}}
 @media (prefers-reduced-motion:reduce){.dmo-edge.flow-active,.dmo-edge.flow-finished{animation:none}}
@@ -353,7 +361,7 @@ window.__ModuleLoader__.load({
 .dmo-tl-row{display:flex;align-items:center;gap:8px;width:100%;padding:6px 8px;border:none;border-radius:var(--dsw-radius-sm);background:transparent;color:inherit;text-align:left;cursor:pointer;font:inherit}
 .dmo-tl-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dmo-tl-when{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);width:76px;flex-shrink:0;font-variant-numeric:tabular-nums}
-.dmo-tl-name{font-family:var(--ds-font-family-code,ui-monospace,monospace);font-size:12px;line-height:18px;flex-shrink:0}
+.dmo-tl-name{max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--ds-font-family-code,ui-monospace,monospace);font-size:12px;line-height:18px;flex-shrink:0}
 .dmo-tl-sum{flex:1;min-width:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dmo-zone-tag{font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary);border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-sm);padding:0 4px;flex-shrink:0}
 .dmo-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -364,10 +372,10 @@ window.__ModuleLoader__.load({
 .dmo-rows{display:flex;flex-direction:column}
 .dmo-group{display:flex;flex-direction:column}
 .dmo-month{font-size:12px;line-height:18px;font-weight:600;color:var(--dsw-alias-label-tertiary);letter-spacing:.02em;margin:8px 0 2px}
-.dmo-row{display:block;width:100%;text-align:left;padding:10px 8px;border:none;border-bottom:.5px solid var(--dsw-alias-border-l2);background:transparent;color:inherit;cursor:pointer;font:inherit}
+.dmo-row{display:block;width:100%;text-align:left;padding:7px 8px;border:none;border-bottom:.5px solid var(--dsw-alias-border-l2);background:transparent;color:inherit;cursor:pointer;font:inherit}
 .dmo-row:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dmo-row-top{display:flex;align-items:baseline;gap:8px}
-.dmo-row-name{font-family:var(--ds-font-family-code,ui-monospace,monospace);font-size:14px;line-height:22px}
+.dmo-row-name{min-width:0;overflow-wrap:anywhere;font-family:var(--ds-font-family-code,ui-monospace,monospace);font-size:14px;line-height:22px}
 .dmo-row-meta{margin-left:auto;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);flex-shrink:0;font-variant-numeric:tabular-nums}
 .dmo-row-sum{margin-top:2px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 /* skill library rows: the row is a container (flex), the open button takes the
@@ -384,7 +392,7 @@ window.__ModuleLoader__.load({
 .dmo-crumbs{display:flex;align-items:center;gap:6px;font-size:12px;line-height:18px}
 .dmo-crumb-sep{color:var(--dsw-alias-label-tertiary)}
 .dmo-doc-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.dmo-doc-title{font-family:var(--ds-font-family-code,ui-monospace,monospace);font-size:14px;font-weight:600}
+.dmo-doc-title{overflow-wrap:anywhere;min-width:0;font-family:var(--ds-font-family-code,ui-monospace,monospace);font-size:14px;font-weight:600}
 .dmo-toc{display:flex;flex-wrap:wrap;gap:4px}
 .dmo-toc-chips{display:flex;flex-wrap:wrap;gap:4px}
 .dmo-sec{border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);overflow:hidden;background:var(--dsw-alias-bg-layer-1)}
@@ -393,6 +401,10 @@ window.__ModuleLoader__.load({
 .dmo-sec-head .caret{color:var(--dsw-alias-label-tertiary);width:10px;flex-shrink:0;font-size:10px}
 .dmo-sec-date{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;flex-shrink:0}
 .dmo-sec-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dmo-sec-body>.dmo-md{max-width:80ch}
+.dmo-idx-block,.dmo-sec{scroll-margin-block:12px}
+:is(.dmo-row,.dmo-row-btn,.dmo-tl-row,.dmo-sec-head,.dmo-idx-pill,.dmo-idx-block):focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:-2px}
+@container dmo-panel (max-width:620px){.dmo-row-top{flex-wrap:wrap;gap:1px 8px}.dmo-row-meta{margin-left:0}.dmo-tl-row{flex-wrap:wrap}.dmo-tl-name{max-width:100%;flex:1}.dmo-tl-sum{flex-basis:100%}}
 .dmo-sec-body{padding:4px 12px 10px;border-top:.5px solid var(--dsw-alias-border-l2)}
 .dmo-md{margin:6px 0;line-height:22px;font-size:14px;color:var(--dsw-alias-label-primary);word-break:break-word}
 .dmo-md p{margin:6px 0}
@@ -1169,6 +1181,12 @@ window.__ModuleLoader__.load({
 		 * reading. Each block now gets its own card with a count and a collapse
 		 * control, so the page answers "what is in the index" at a glance.
 		 */
+		function scrollToSection(element) {
+			if (!element) return;
+			const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+			element.scrollIntoView({ block: 'start', behavior: reduced ? 'auto' : 'smooth' });
+		}
+
 		function IndexTables({ text, onNavigate }) {
 			const { sections } = splitSections(text);
 			// Block registry: heading prefix → block identity (tone + icon + kind).
@@ -1217,7 +1235,7 @@ window.__ModuleLoader__.load({
 					blocks.map((b) =>
 						h(
 							'button',
-							{ key: `s${b.key}`, type: 'button', className: `dmo-idx-pill tone-${b.tone}`, onClick: () => onNavigate && document.getElementById(`dmo-idx-${b.key}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' }), title: b.hint, 'data-dmo': `index-pill-${b.key}` },
+							{ key: `s${b.key}`, type: 'button', className: `dmo-idx-pill tone-${b.tone}`, onClick: () => { const block = document.getElementById(`dmo-idx-${b.key}`); block?.focus({ preventScroll: true }); scrollToSection(block); }, title: b.hint, 'data-dmo': `index-pill-${b.key}` },
 							h('span', { className: 'dmo-idx-pill-ico' }, b.icon),
 							b.name,
 							h('span', { className: 'dmo-idx-pill-n' }, String(b.rows)),
@@ -1227,7 +1245,7 @@ window.__ModuleLoader__.load({
 				blocks.map((b) =>
 					h(
 						'div',
-						{ key: b.key, id: `dmo-idx-${b.key}`, className: `dmo-idx-block tone-${b.tone}`, 'data-dmo': `index-block-${b.key}` },
+						{ key: b.key, id: `dmo-idx-${b.key}`, tabIndex: -1, role: 'region', 'aria-label': b.name, className: `dmo-idx-block tone-${b.tone}`, 'data-dmo': `index-block-${b.key}` },
 						h(
 							'div',
 							{ className: 'dmo-idx-block-head' },
@@ -1293,11 +1311,11 @@ window.__ModuleLoader__.load({
 				{ className: 'dmo-sec', 'data-dmo': 'section', ref: (el) => registerRef(index, el) },
 				h(
 					'button',
-					{ type: 'button', className: 'dmo-sec-head', onClick: () => onToggle(index), 'data-dmo': 'section-head' },
+					{ type: 'button', className: 'dmo-sec-head', 'aria-expanded': open, onClick: () => onToggle(index), 'data-dmo': 'section-head' },
 					h('span', { className: 'caret' }, open ? '▾' : '▸'),
 					section.date ? h('span', { className: 'dmo-sec-date' }, section.date) : null,
 					h('span', { className: 'dmo-sec-title' }, section.heading),
-					h('span', { className: 'dmo-meta', style: { marginLeft: 'auto' } }, `${section.body.length}B`),
+					h('span', { className: 'dmo-meta', style: { marginLeft: 'auto' } }, `${[...section.body].length} 字符`),
 				),
 				open ? h('div', { className: 'dmo-sec-body' }, h(MarkdownBody, { text: preserveOrder ? section.body : reverseBullets(section.body), zone, onNavigate })) : null,
 			);
@@ -1339,7 +1357,7 @@ window.__ModuleLoader__.load({
 			};
 			const jump = (i) => {
 				setOpen((m) => ({ ...m, [i]: true }));
-				if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => refs.current.get(i)?.scrollIntoView({ block: 'start', behavior: 'smooth' }));
+				if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => scrollToSection(refs.current.get(i)));
 			};
 			const toggleAll = () => {
 				const next = !allOpen;
@@ -1393,7 +1411,7 @@ window.__ModuleLoader__.load({
 				h(
 					'div',
 					{ className: 'dmo-crumbs' },
-					h(Btn, { sm: true, onClick: onBack, title: '返回列表' }, '← 返回'),
+					h(Btn, { sm: true, onClick: onBack, title: view.searchOrigin ? '返回搜索结果' : '返回列表' }, view.searchOrigin ? '← 返回搜索结果' : '← 返回'),
 					view.zone !== '' ? h('span', { className: 'dmo-meta' }, ZONE_LABEL[view.zone]) : null,
 					view.zone !== '' ? h('span', { className: 'dmo-crumb-sep' }, '/') : null,
 					h('span', { className: 'dmo-mono', style: { fontSize: 12 }, 'data-dmo': 'crumb' }, fileName),
@@ -1665,7 +1683,7 @@ window.__ModuleLoader__.load({
 		 * Nodes show server counts; structural edges show direction without claiming
 		 * that historical counts verify stage health or a closed loop.
 		 */
-		const FLOW_LABELS = { e2: '每日线索 → 功能域', e3: '功能域 → 思想', e4: '思想 → 道', e6: '功能域 → 索引', e7: '思想 → 索引', e9: '能力台账 → 索引', e10: '索引匹配已进入步骤的召回候选', e11: '索引读取工具调用', e12: '召回消息插入已进入的步骤（未证明模型使用）', e13: '使用数据 → 召回匹配', e14: '会话 → 使用信号记录', e15: 'SAG 搜索调用（结果返回会话）' };
+		const FLOW_LABELS = { e2: '每日线索 → 功能域', e3: '功能域 → 思想', e4: '思想 → 道', e6: '功能域 → 索引', e7: '思想 → 索引', e9: '能力台账 → 索引', e10: '索引匹配已进入步骤的召回候选', e11: '索引读取工具调用', e12: '召回消息插入已进入的步骤（未证明模型使用）', e13: '使用数据 → 召回匹配', e14: '会话 → 使用信号记录', e15: 'SAG 搜索调用' };
 		function flowState(flow, key, now = Date.now()) {
 			const edge = Object.hasOwn(FLOW_LABELS, key) && flow?.edges && Object.hasOwn(flow.edges, key) ? flow.edges[key] : null;
 			const validTime = (value) => Number.isFinite(value) && Number.isFinite(new Date(value).getTime());
@@ -1676,6 +1694,7 @@ window.__ModuleLoader__.load({
 		}
 		function Architecture({ model, onZone, live, lastEventAt, flowAt, flowFeed, fallback, refreshLoading, refreshError, refreshKnown }) {
 			const m = model ?? buildArchitecture({});
+			const [expanded, setExpanded] = useState(false);
 			const [expiryTick, setExpiryTick] = useState(0);
 			useEffect(() => {
 				const now = Date.now();
@@ -1707,7 +1726,7 @@ window.__ModuleLoader__.load({
 				// the arrows cannot show current work. It is NOT proof that nothing ran.
 				flowFeed: flowFeed === 'unavailable' || (flowFeed === 'available' && Number.isFinite(flowAt) && Date.now() - flowAt >= FLOW_FRESH_MS) ? 'unavailable' : flowFeed === 'available' ? 'available' : null,
 			};
-			return renderArchitecture(view, onZone);
+			return renderArchitecture(view, onZone, expanded, setExpanded);
 		}
 
 		/**
@@ -1800,7 +1819,7 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		function renderArchitecture(m, onZone) {
+		function renderArchitecture(m, onZone, expanded = false, setExpanded) {
 			const capture = captureEdge(m.capture);
 			const W = 1120;
 			const H = 600;
@@ -1825,11 +1844,11 @@ window.__ModuleLoader__.load({
 						'data-dmo': `arch-node-${key}`,
 						'onClick': canClick ? () => onZone(target) : undefined,
 						'onKeyDown': canClick ? (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onZone(target); } } : undefined,
-						...(canClick ? { role: 'button', tabIndex: 0 } : {}),
+						...(canClick ? { role: 'button', tabIndex: 0, 'aria-label': `打开${name}` } : {}),
 					},
 					h('title', null, `${name}${tier ? `（${tier}）` : ''}：${role ?? ''}`),
 					h('rect', { x, y, width: w, height: bh, rx: 10, className: 'dmo-node-box' }),
-					tier ? h('text', { x, y: y + 15, className: 'dmo-node-tier', textAnchor: 'middle' }, tier) : null,
+					tier ? h('text', { x: x + 10, y: y + 15, className: 'dmo-node-tier', textAnchor: 'start' }, tier) : null,
 					h('text', { x: cx, y: y + (tier ? 33 : 24), className: 'dmo-node-name', textAnchor: 'middle' }, name),
 					count !== undefined
 						? h('text', { x: cx, y: y + (tier ? 55 : 46), className: 'dmo-node-count', textAnchor: 'middle' }, [
@@ -1845,13 +1864,20 @@ window.__ModuleLoader__.load({
 			const layers = Object.fromEntries(m.layers.map((l) => [l.key, l]));
 			const nOf = (k) => layers[k]?.count ?? null;
 			const currentFlows = Object.entries(FLOW_LABELS).flatMap(([key, name]) => {
-				const phase = flowState(m.liveFlow, key).phase;
+				const { phase, expired, at, expiresAt } = flowState(m.liveFlow, key);
+				const edge = m.liveFlow?.edges?.[key];
+				if (key === 'e15' && edge?.source === 'automatic') {
+					if (expired || at === null || expiresAt === null || expiresAt <= at) return [];
+					const outcomes = { success: '已返回', failed: '失败', timeout: '超时', cancelled: '已取消', unknown: '结果未知' };
+					const status = phase === 'active' ? '进行中' : Object.hasOwn(outcomes, edge.outcome) ? outcomes[edge.outcome] : '结果未知';
+					return [`${name}：自动检索${status}`];
+				}
 				const status = key === 'e9'
 					? { finished: '能力索引已写入' }[phase]
 					: key === 'e10'
 					? phase === 'finished' ? `索引匹配完成（${m.liveFlow?.edges?.e10?.source === 'cache' ? '缓存' : m.liveFlow?.edges?.e10?.source === 'disk' ? '磁盘' : '来源未知'}）` : null
 					: key === 'e12'
-					? { active: '插入事件处理中', finished: '已插入步骤，模型使用情况未知', failed: '插入失败' }[phase]
+					? { active: '插入事件处理中', finished: edge?.includesSag ? '含 SAG 正文的召回消息已插入步骤，模型使用情况未知' : '已插入步骤，模型使用情况未知', failed: '插入失败' }[phase]
 					: key === 'e13'
 					? { finished: '匹配时已读取使用数据' }[phase]
 					: { active: '调用进行中', finished: '调用结束，结果待核验', failed: '调用失败' }[phase];
@@ -1860,7 +1886,7 @@ window.__ModuleLoader__.load({
 
 			return h(
 				'div',
-				{ style: { display: 'flex', flexDirection: 'column', gap: 14 } },
+				{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
 				h(
 					'div',
 					{ className: 'dmo-page-head' },
@@ -1894,11 +1920,12 @@ window.__ModuleLoader__.load({
 				),
 				h(
 					'div',
-					{ className: 'dmo-card dmo-arch-canvas', 'data-dmo': 'arch-canvas' },
+					{ className: `dmo-card dmo-arch-canvas${expanded ? ' expanded' : ''}`, 'data-dmo': 'arch-canvas' },
+					h('div', { className: 'dmo-arch-tools' }, h('button', { type: 'button', className: 'dmo-btn', 'aria-pressed': expanded, 'aria-label': '放大架构图', onClick: () => setExpanded?.(!expanded) }, expanded ? '恢复紧凑视图' : '放大全图')),
 					// The diagram itself.
 					h(
 						'svg',
-						{ viewBox: `0 0 ${W} ${H}`, className: 'dmo-arch-svg', role: 'img', 'aria-label': '心智系统架构与数据流' },
+						{ viewBox: `0 0 ${W} ${H}`, className: 'dmo-arch-svg', role: 'group', 'aria-label': '心智系统架构与数据流' },
 						h('defs', null, [
 							h('marker', { key: 'mb', id: 'dmo-ah-b', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '5', markerHeight: '5', orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'var(--dsw-alias-state-business-primary)' })),
 							h('marker', { key: 'mo', id: 'dmo-ah-ok', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '5', markerHeight: '5', orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: 'var(--dsw-alias-state-success-primary)' })),
@@ -1952,7 +1979,7 @@ window.__ModuleLoader__.load({
 								// The role line carries the REAL channel state so the node is not
 								// a permanent "experimental, read-only" caption that looks the
 								// same whether the channel works or is dead.
-								role: !m.sag.known ? '状态未上报' : m.sag.usable ? '第二通道 · 可用' : m.sag.online === true ? (m.sag.authorized === false ? '在线但未授权' : '在线 · 鉴权未知') : m.sag.online === false ? '不可达' : '状态未知',
+								role: !m.sag.known ? '状态未上报' : m.sag.usable ? '只读检索 · 可用' : m.sag.online === true ? (m.sag.authorized === false ? '在线但未授权' : '在线 · 鉴权未知') : m.sag.online === false ? '不可达' : '状态未知',
 							}),
 							node('daily', { x: 40, y: 150, w: 170, h: 78, name: '每日线索（含归档）', count: nOf('daily'), unit: '项', role: layers.daily?.role, tier: 'L0' }),
 							node('functions', { x: 248, y: 150, w: 162, h: 78, name: '功能域', count: nOf('functions'), unit: '个', role: layers.functions?.role, tier: 'L2' }),
@@ -1981,6 +2008,7 @@ window.__ModuleLoader__.load({
 					),
 				),
 				h('div', { 'aria-live': 'polite', 'data-dmo': 'flow-current', className: 'dmo-measure-x' }, currentFlows.join('；')),
+
 				// Storage + capacity: server-resolved paths and the real index level.
 				h(
 					'div',
@@ -2023,7 +2051,7 @@ window.__ModuleLoader__.load({
 				h(
 					Card,
 					{ className: 'dmo-span-12', 'data-dmo': 'arch-sag' },
-					h('div', { className: 'dmo-eyebrow' }, '第二召回通道 · SAG-Wiki'),
+					h('div', { className: 'dmo-eyebrow' }, '正式只读检索 · SAG-Wiki'),
 					!m.sag.known
 						? h('div', { className: 'dmo-measure-x' }, '服务器未上报 SAG 状态（可能是旧版 server 半）——按未知处理，不当作可用。')
 						: h(
@@ -2048,8 +2076,8 @@ window.__ModuleLoader__.load({
 							),
 					h('div', { className: 'dmo-measure-x', style: { marginTop: 10 } },
 						m.sag.endpoint
-							? `端点 ${m.sag.endpoint} · 工具 memory_sag · 取正文用（不替代索引召回做门禁）`
-							: '工具 memory_sag · 取正文用（不替代索引召回做门禁）',
+							? `端点 ${m.sag.endpoint} · 工具 memory_sag · 宿主按目录范围和耗时预算选择，引用按来源路径回查`
+							: '工具 memory_sag · 宿主按目录范围和耗时预算选择，引用按来源路径回查',
 					),
 					h('div', { className: 'dmo-measure-x', 'data-dmo': 'skill-count' },
 						`技能包 ${displayCount(m.skillCount)} 个（宿主技能目录，独立于上方能力台账条目数）`,
@@ -2058,57 +2086,49 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		function Diagnostics({ health, timeline, env, capture, usage, preview, previewQ, setPreviewQ, onOpen, onNavigate, open, onToggle }) {
+		function Diagnostics({ onInbox, health, timeline, capture, usage, preview, previewQ, setPreviewQ, onOpen, onNavigate, open, onToggle }) {
 			const problems = Array.isArray(health?.results) ? health.results : [];
-			const days = timeline.filter((item) => item.zone === 'daily').slice(0, 12).reverse();
-			const peak = Math.max(1, ...days.map((item) => Number.isFinite(item.bytes) && item.bytes >= 0 ? item.bytes : 0));
+			const problemRow = (p, i) => h('li', { key: i }, `[${p.level}] ${p.rule}: ${p.message}`);
 			return h('details', { className: 'dmo-card', 'data-dmo': 'architecture-diagnostics', open, onToggle: (e) => onToggle(e.currentTarget.open) },
 				h('summary', null, '诊断与最近改动'),
-				h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 } },
-					h('section', { 'data-dmo': 'health-details' }, h(CardTitle, null, '体检详情'), problems.length ? h('ul', { className: 'dmo-probs' }, problems.map((p, i) => h('li', { key: i }, `[${p.level}] ${p.rule}: ${p.message}`))) : h('div', { className: 'dmo-meta' }, '没有提供体检问题详情。')),
+				h('div', { style: { display: 'grid', gap: 12, marginTop: 12 } },
+					problems.length ? h('section', { 'data-dmo': 'health-details' },
+						h(CardTitle, null, `体检提示（${problems.length}）`),
+						h(Btn, { sm: true, onClick: onInbox }, '查看问题收件箱'),
+						h('ul', { className: 'dmo-probs' }, problems.slice(0, 3).map(problemRow)),
+						problems.length > 3 ? h('details', null, h('summary', null, `其余 ${problems.length - 3} 条提示`), h('ul', { className: 'dmo-probs' }, problems.slice(3).map(problemRow))) : null) : null,
+					h('section', { 'data-dmo': 'timeline-card' }, h(CardTitle, null, '最近改动'), timeline.length ? h('div', { className: 'dmo-tl' }, timeline.slice(0, 5).map((t, i) => h('button', { key: i, type: 'button', className: 'dmo-tl-row', onClick: () => onOpen(t.zone, t.name), 'data-dmo': 'timeline-row', title: t.name }, h('span', { className: 'dmo-tl-when' }, relTime(t.mtime)), h('span', { className: 'dmo-zone-tag' }, ZONE_LABEL[t.zone]), h('span', { className: 'dmo-tl-name' }, t.name.replace(/\.md$/, '')), t.summary ? h('span', { className: 'dmo-tl-sum' }, t.summary) : null))) : h('div', { className: 'dmo-meta' }, '还没有记忆文件。')),
+					h('details', { 'data-dmo': 'diagnostic-tools' }, h('summary', null, '排查工具'),
 						health?.reviewNotes?.length ? h('details', { 'data-dmo': 'review-notes' },
 							h('summary', null, `复核线索（${health.reviewNotes.length}）`),
 							h('ul', { className: 'dmo-probs' }, health.reviewNotes.map((n, i) => h('li', { key: i }, `${n.rule} · ${n.message}`)))) : null,
-					h(CaptureStatus, { capture }),
-					h('section', { 'data-dmo': 'usage-diagnostics' }, h(CardTitle, null, '使用信号分层与热点'),
+						h(CaptureStatus, { capture }),
+						h('section', { 'data-dmo': 'usage-diagnostics' }, h(CardTitle, null, '使用信号分层与热点'),
 						h('div', { className: 'dmo-meta' }, '召回是曝光，不证明采纳；正向和纠正是调用方声明，来源未经认证。分层是启发式建议。'),
 						h('div', { className: 'dmo-meta', 'data-dmo': 'usage-layers' }, ['实验', '专项', '通用'].map((layer) => `${layer} ${displayCount(usage?.layers?.[layer])}`).join(' · ')),
 						!Array.isArray(usage?.hotspots) ? h('div', { className: 'dmo-meta' }, '热点状态未知。') : usage.hotspots.length === 0 ? h('div', { className: 'dmo-meta' }, '没有检测到热点。') : h('ul', { className: 'dmo-probs', 'data-dmo': 'usage-hotspots' }, usage.hotspots.map((item, i) => h('li', { key: i }, `${item.href} · ${Number.isFinite(item.flips) ? `翻转 ${item.flips} · ` : ''}纠正声明比例 ${Number.isFinite(item.badRate) ? `${Math.round(item.badRate * 100)}%` : '未知'}`))),
 						h('div', { className: 'dmo-meta' }, '纠正声明比例的分母为读取与纠正声明，不含召回曝光。')),
-					env ? h('section', { 'data-dmo': 'env-card' }, h(CardTitle, null, '运行环境'),
-						h('div', { className: 'dmo-meta' }, `运行版本 ${env.version || '?'} · ${env.canReload ? '支持热重启' : '宿主不支持热重启'}${env.hotReloadRunning ? ' · 换弹进行中' : ''}`),
-						h('div', { className: 'dmo-meta' }, `索引硬上限 ${knownCount(env.indexHardBytes) === null ? '未知' : fmtBytes(env.indexHardBytes)}`)) : null,
-					preview ? h(RecallPreviewCard, { res: preview, q: previewQ, setQ: setPreviewQ, onNavigate }) : null,
-					days.length ? h('section', { 'data-dmo': 'daily-trend' }, h(CardTitle, null, '最近日线索体积'), h('div', { className: 'dmo-meta' }, '按最近改动排序，包含月归档；柱高表示文件字节数。'), h('div', { className: 'dmo-spark', role: 'img', 'aria-label': days.map((item) => `${item.name}: ${Number.isFinite(item.bytes) && item.bytes >= 0 ? `${item.bytes} 字节` : '未知'}`).join('；') }, days.map((item, i) => h('b', { key: i, title: `${item.name}: ${Number.isFinite(item.bytes) && item.bytes >= 0 ? `${item.bytes} 字节` : '未知'}`, style: { height: `${Math.max(8, Math.round(((Number.isFinite(item.bytes) && item.bytes >= 0 ? item.bytes : 0) / peak) * 100))}%` } })))) : null,
-					h('section', { 'data-dmo': 'timeline-card' }, h(CardTitle, null, '最近改动'), timeline.length ? h('div', { className: 'dmo-tl' }, timeline.map((t, i) => h('button', { key: i, type: 'button', className: 'dmo-tl-row', onClick: () => onOpen(t.zone, t.name), 'data-dmo': 'timeline-row', title: t.name }, h('span', { className: 'dmo-tl-when' }, relTime(t.mtime)), h('span', { className: 'dmo-zone-tag' }, ZONE_LABEL[t.zone]), h('span', { className: 'dmo-tl-name' }, t.name.replace(/\.md$/, '')), t.summary ? h('span', { className: 'dmo-tl-sum' }, t.summary) : null))) : h('div', { className: 'dmo-meta' }, '还没有记忆文件。'))));
+						preview ? h(RecallPreviewCard, { res: preview, q: previewQ, setQ: setPreviewQ, onNavigate }) : null)));
 		}
 
-		/**
-		 * Recall self-check (5.26.0 overview card): type what a future session
-		 * might say and see EXACTLY which index rows the real pre-step pipeline
-		 * would inject, with the reasons (name hits, lexical score, usage stats).
-		 * The same endpoint already debugged recall from the CLI side; this makes
-		 * it visible in the panel. All state is parent-owned (q is the input
-		 * value, res the debounced fetch) so the card renders deterministically
-		 * under the UI shim — the same contract SearchPane proves.
-		 */
+		/** Show ranked index rows and the signals behind their scores. */
 		function RecallPreviewCard({ res, q, setQ, onNavigate }) {
 			const data = res?.data;
 			const rows = data?.rows ?? [];
 			return h(
 				Card,
 				null,
-				h(CardTitle, null, '召回自检'),
+				h(CardTitle, null, '索引召回预览'),
 				h(
 					'div',
 					{ style: { display: 'flex', flexDirection: 'column', gap: 8 } },
 					h('input', {
-						type: 'search', className: 'dmo-filter', placeholder: '输入一段话，看它现在会召回什么…',
+						type: 'search', className: 'dmo-filter', placeholder: '输入查询，预览匹配的索引条目…',
 						value: q, 'data-dmo': 'preview-input',
 						onChange: (e) => setQ(e.target.value),
 					}),
 					q.trim().length < 2
-						? h('div', { className: 'dmo-meta' }, '至少 2 个字。命中 = 未来会话开头会注入的记忆行。')
+						? h('div', { className: 'dmo-meta' }, '至少 2 个字。实际注入还取决于会话上下文和预算。')
 						: res?.loading
 							? h('div', { className: 'dmo-empty' }, '跑召回中…')
 							: res?.error
@@ -2250,7 +2270,7 @@ window.__ModuleLoader__.load({
 						: null,
 					h('span', { className: 'dmo-page-tools' },
 						zone !== 'daily' && !showCandidates ? h(Btn, { sm: true, tone: 'outline', onClick: () => setSort(sort === 'time' ? 'name' : 'time'), title: '切换排序' }, sort === 'time' ? '按时间 ↓' : '按名称 ↑') : null,
-						h('input', { className: 'dmo-filter', style: { width: 180 }, placeholder: zone === 'daily' ? '过滤日期…' : '按名称或摘要过滤…', value: filter, onChange: (e) => setFilter(e.target.value) }),
+						h('input', { className: 'dmo-filter', type: 'search', 'aria-label': zone === 'daily' ? '过滤日期' : '过滤名称或摘要', onKeyDown: (event) => { if (event.key === 'Escape' && !event.nativeEvent?.isComposing && filter) { event.preventDefault(); event.stopPropagation(); setFilter(''); } }, style: { width: 180, maxWidth: '100%' }, placeholder: zone === 'daily' ? '过滤日期…' : '按名称或摘要过滤…', value: filter, onChange: (e) => setFilter(e.target.value) }),
 					),
 				),
 				actMsg ? h('div', { className: 'dmo-meta', 'data-dmo': 'dao-act-msg' }, actMsg) : null,
@@ -2512,7 +2532,7 @@ window.__ModuleLoader__.load({
 			const toggleTitle = (s) => s.status === 'active'
 				? '停用（retire）'
 				: canActivate(s) ? '启用（activate）' : (activationNote || '启用暂不可用');
-			const activationNoteNode = (s) => (s.status === 'active' || canActivate(s))
+			const activationNoteNode = () => (tab !== 'memory' || !shown.some(s => !canActivate(s)))
 				? null
 				: h('span', { className: 'dmo-measure-x', 'data-dmo': 'skill-activation-note' }, activationNote);
 			return h(
@@ -2525,16 +2545,17 @@ window.__ModuleLoader__.load({
 					h(
 						'div',
 						{ className: 'dmo-chips' },
-						h('button', { type: 'button', className: `dmo-chip btn${tab === 'memory' ? ' active' : ''}`, 'data-dmo': 'skill-tab', onClick: () => onTab('memory') }, `结晶技能 ${mem.length}`),
-						h('button', { type: 'button', className: `dmo-chip btn${tab === 'host' ? ' active' : ''}`, 'data-dmo': 'skill-tab', onClick: () => onTab('host') }, `系统技能 ${host.length}`),
+						h('button', { type: 'button', className: `dmo-chip btn${tab === 'memory' ? ' active' : ''}`, 'data-dmo': 'skill-tab', 'aria-pressed': tab === 'memory', onClick: () => onTab('memory') }, `结晶技能 ${mem.length}`),
+						h('button', { type: 'button', className: `dmo-chip btn${tab === 'host' ? ' active' : ''}`, 'data-dmo': 'skill-tab', 'aria-pressed': tab === 'host', onClick: () => onTab('host') }, `系统技能 ${host.length}`),
 					),
 					h('span', { className: 'dmo-page-tools' },
-						h('input', { className: 'dmo-filter', style: { width: 180 }, placeholder: '按名称或描述过滤…', value: filter, onChange: (e) => setFilter(e.target.value), 'data-dmo': 'skill-filter' }),
+						h('input', { className: 'dmo-filter', style: { width: 180 }, type: 'search', 'aria-label': '筛选技能', placeholder: '按名称或描述过滤…', onKeyDown: (e) => { if (e.key === 'Escape' && !e.nativeEvent?.isComposing && filter) { e.preventDefault(); e.stopPropagation(); setFilter(''); } }, value: filter, onChange: (e) => setFilter(e.target.value), 'data-dmo': 'skill-filter' }),
 					),
 				),
 				data?.hostDegraded && tab === 'host'
 					? h('div', { className: 'dmo-empty' }, '宿主技能根不可读，系统技能暂不可列；结晶技能不受影响。')
 					: null,
+				!error && data ? activationNoteNode() : null,
 				actMsg ? h('div', { className: 'dmo-card tight', role: 'status', 'data-dmo': 'skill-actmsg' }, actMsg) : null,
 				error
 					? h('div', { className: 'dmo-empty' }, `读取技能库失败：${error}`)
@@ -2602,7 +2623,6 @@ window.__ModuleLoader__.load({
 													},
 													h('span', { className: 'dmo-switch-dot' }),
 												),
-												activationNoteNode(s),
 												h(
 													'button',
 													{
@@ -2617,7 +2637,7 @@ window.__ModuleLoader__.load({
 								),
 							),
 						)
-					: h('div', { className: 'dmo-empty' }, filter ? '没有匹配的技能。' : tab === 'host' ? '宿主技能根没有可列的目录包。' : '还没有结晶技能——memory_skill(candidates) 看提名，反复跑通的操作可结晶成程序。'),
+					: h('div', { className: 'dmo-empty' }, filter ? h('div', null, '没有匹配的技能。', h(Btn, { sm: true, onClick: () => setFilter('') }, '清除筛选')) : tab === 'host' ? '宿主技能根没有可列的目录包。' : '暂无结晶技能。'),
 			);
 		}
 
@@ -2630,7 +2650,7 @@ window.__ModuleLoader__.load({
 		 * `sel` is navigation state owned by the parent (the same reasoning as the
 		 * library tab: a local useState would be untestable under the UI shim).
 		 */
-		function SkillBundleView({ data, name, onBack, sel, onSel, fixtures }) {
+		function SkillBundleView({ data, name, onBack, sel, onSel, fixtures, fromSearch }) {
 			const d = data?.data;
 			const files = d?.files ?? [];
 			const fileUrl = sel ? `${API}/skillfile?name=${enc(name)}&file=${enc(sel)}` : null;
@@ -2641,7 +2661,7 @@ window.__ModuleLoader__.load({
 				h(
 					'div',
 					{ className: 'dmo-toolbar' },
-					h(Btn, { sm: true, onClick: onBack, title: '返回技能库', 'data-dmo': 'back' }, '← 返回技能库'),
+					h(Btn, { sm: true, onClick: onBack, title: fromSearch ? '返回搜索结果' : '返回技能库', 'data-dmo': 'back' }, fromSearch ? '← 返回搜索结果' : '← 返回技能库'),
 					h('span', { className: 'grow' }),
 					h('span', { className: 'dmo-meta' }, '存储内容 · 只读'),
 				),
@@ -2742,7 +2762,9 @@ window.__ModuleLoader__.load({
 
 		function InboxPane({ res, statusFilter, setStatusFilter, onStateChange }) {
 			const data = res.data;
-			const items = data?.items ?? [];
+			const allItems = data?.items ?? [];
+			const items = statusFilter === 'pending' ? allItems.filter(item => item.status === 'open' || item.status === 'acknowledged')
+				: statusFilter ? allItems.filter(item => item.status === statusFilter) : allItems;
 			const counts = data?.counts ?? { open: 0, acknowledged: 0, resolved: 0 };
 			const [busy, setBusy] = useState(null);
 			const [writeError, setWriteError] = useState('');
@@ -2772,18 +2794,19 @@ window.__ModuleLoader__.load({
 			const changeStatus = (fingerprint, status) => write(fingerprint, { status });
 			const remove = (fingerprint) => write(fingerprint, { op: 'delete' });
 
-			const chips = INBOX_STATUS.map((s) =>
+			const filters = [{ key: 'pending', label: '待办', mark: '', count: counts.open + counts.acknowledged }, ...INBOX_STATUS];
+			const chips = filters.map((s) =>
 				h(
 					'button',
 					{
 						key: s.key,
 						type: 'button',
 						className: `dmo-chip btn${statusFilter === s.key ? ' active' : ''}`,
-						'data-dmo': 'inbox-filter',
+						'data-dmo': 'inbox-filter', 'aria-pressed': statusFilter === s.key,
 						onClick: () => setStatusFilter(s.key),
 						title: `只看${s.label}`,
 					},
-					`${s.mark} ${s.label} ${counts[s.key] ?? 0}`,
+					`${s.mark} ${s.label} ${s.count ?? counts[s.key] ?? 0}`,
 				),
 			);
 
@@ -2798,7 +2821,7 @@ window.__ModuleLoader__.load({
 			if (res.error) return h('div', { className: 'dmo-empty', role: 'alert' }, `收件箱读取失败：${res.error} `, h(Btn, { tone: 'outline', onClick: onStateChange }, '重试'));
 			if (res.loading && !data) return h('div', { className: 'dmo-empty' }, '正在读取收件箱…');
 			if (!items.length) {
-				const which = statusFilter ? INBOX_STATUS.find((s) => s.key === statusFilter)?.label : '全部';
+				const which = statusFilter ? filters.find((s) => s.key === statusFilter)?.label : '全部';
 				return h(
 					'div',
 					{ style: { display: 'flex', flexDirection: 'column', gap: 10 } },
@@ -2810,7 +2833,7 @@ window.__ModuleLoader__.load({
 						h(
 							'div',
 							{ className: 'dmo-meta', style: { padding: '0 14px 14px' } },
-							'插件体检发现的问题会自动投递到这里，agent 也可以用 memory_inbox 主动报告。',
+							'插件体检发现的问题会显示在这里。',
 						),
 					),
 				);
@@ -2886,7 +2909,10 @@ window.__ModuleLoader__.load({
 						h('span', { className: 'dmo-meta' }, agoText(item.lastSeenAt)),
 					),
 					h('div', { style: { padding: '0 14px 10px' } }, item.message),
-					item.hint ? h('div', { className: 'dmo-meta', style: { padding: '0 14px 10px' } }, `提示：${item.hint}`) : null,
+					item.hint || item.note ? h('details', { className: 'dmo-meta', style: { padding: '0 14px 8px' } },
+						h('summary', null, item.note ? '处置记录' : '处理提示'),
+						item.note ? h('p', null, item.note) : null,
+						item.hint ? h('div', null, item.hint) : null) : null,
 					h(
 						'div',
 						{ className: 'dmo-meta', style: { padding: '0 14px 12px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
@@ -2902,7 +2928,7 @@ window.__ModuleLoader__.load({
 		}
 
 		function SearchPane({ res, q, zone, setZone, onOpen }) {
-			const hits = res.data?.hits ?? [];
+			const hits = res.loading || res.error ? [] : res.data?.hits ?? [];
 			const zones = [
 				{ key: 'all', label: '全部' },
 				{ key: 'index', label: '索引' },
@@ -2920,7 +2946,7 @@ window.__ModuleLoader__.load({
 					'div',
 					{ className: 'dmo-page-head' },
 					h('h2', { className: 'dmo-page-title' }, `搜索“${q}”`),
-					h('span', { className: 'dmo-page-sub' }, `${hits.length} 处命中`),
+					!res.loading && !res.error ? h('span', { className: 'dmo-page-sub', role: 'status' }, `${hits.length} 处命中`) : null,
 					setZone
 						? h(
 								'div',
@@ -2931,7 +2957,7 @@ window.__ModuleLoader__.load({
 										{
 											key: z.key, type: 'button',
 											className: `dmo-chip btn${(zone ?? 'all') === z.key ? ' active' : ''}`,
-											'data-dmo': 'search-zone',
+											'data-dmo': 'search-zone', 'aria-pressed': (zone ?? 'all') === z.key,
 											onClick: () => setZone(z.key),
 										},
 										z.label,
@@ -2960,7 +2986,7 @@ window.__ModuleLoader__.load({
 						),
 					),
 				),
-				!res.loading && !hits.length
+				!res.error && !res.loading && !hits.length
 					? h(
 							'div',
 							{ className: 'dmo-empty' },
@@ -3010,9 +3036,7 @@ window.__ModuleLoader__.load({
 			// guard; this one is for the button), `reloadMsg` carries the result.
 			const [reloading, setReloading] = useState(false);
 			const [reloadMsg, setReloadMsg] = useState('');
-			// Recall self-check card (5.26.0): its own input, debounced through the
-			// SAME mechanism the global search proves (live → fetch url). The overview
-			// is where "what would a future session recall" is worth asking.
+			// Debounce the separate index-ranking query.
 			const [previewQ, setPreviewQ] = useState('');
 			const [previewLive, setPreviewLive] = useState('');
 			const preview = useApi(previewLive.length >= 2 ? `${API}/recall-preview?q=${enc(previewLive)}` : null, fixtures);
@@ -3224,6 +3248,7 @@ window.__ModuleLoader__.load({
 					} catch {
 						SSE_BOX.flow = null;
 						SSE_BOX.flowAt = null;
+						SSE_BOX.flowFeed = 'unavailable';
 					}
 					setFlowTick((n) => n + 1);
 				});
@@ -3282,11 +3307,11 @@ window.__ModuleLoader__.load({
 			timeline.sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
 			timeline = timeline.slice(0, 12);
 
-			const openFile = (zone, name) => {
+			const openFile = (zone, name, searchOrigin) => {
 				if (zone === 'skills' && typeof name === 'string' && name.includes('/')) {
-					setView({ kind: 'bundle', name: name.split('/')[0], tab: 'memory' });
+					setView({ kind: 'bundle', name: name.split('/')[0], tab: 'memory', searchOrigin });
 				} else {
-					setView({ kind: 'file', zone: zone ?? '', name: name ?? null });
+					setView({ kind: 'file', zone: zone ?? '', name: name ?? null, searchOrigin });
 				}
 				setQuery('');
 				setLive('');
@@ -3303,6 +3328,15 @@ window.__ModuleLoader__.load({
 				openFile(target.zone, target.name);
 			};
 			const back = () => {
+				if (view.searchOrigin) {
+					const { query, zone, previous } = view.searchOrigin;
+					setView(previous);
+					setQuery(query);
+					setLive(query);
+					setSearchZone(zone);
+					searchRef.current?.focus();
+					return;
+				}
 				if (view.kind === 'candidate') { setDaoView('candidates'); setView({ kind: 'zone', zone: 'dao' }); }
 				else if (view.kind === 'file' && view.zone) setView({ kind: 'zone', zone: view.zone });
 				else if (view.kind === 'bundle') setView({ kind: 'zone', zone: 'skills', tab: view.tab === 'host' ? 'host' : 'memory' });
@@ -3351,7 +3385,7 @@ window.__ModuleLoader__.load({
 
 			// ── 5. render: pick the view, then the shell ───────────────────────
 			let main = null;
-			if (live.length >= 2) main = h(SearchPane, { res: search, q: live, zone: searchZone, setZone: setSearchZone, onOpen: openFile });
+			if (live.length >= 2) main = h(SearchPane, { res: search, q: live, zone: searchZone, setZone: setSearchZone, onOpen: (zone, name) => openFile(zone === 'index' ? '' : zone, name, { query: live, zone: searchZone, previous: view.searchOrigin?.previous ?? view }) });
 			else if (!ws && overview.loading) main = h('div', { className: 'dmo-empty' }, '读取记忆体检…');
 			else if (overview.error) main = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } }, h('div', { className: 'dmo-empty' }, '总览 API 不可用。'), h('div', { className: 'dmo-empty' }, `数据刷新失败。${sseFreshness(SSE_BOX).live ? '推送连接正常。' : '推送连接不可用。'}`), h(CaptureStatus, { capture: null }));
 			else if (!ws) main = h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } }, h('div', { className: 'dmo-empty' }, '没有已注册的 workspace。'), h(CaptureStatus, { capture: null }));
@@ -3374,7 +3408,7 @@ window.__ModuleLoader__.load({
 					// The node passes its resolved TARGET (not a bare key), so a node
 					// without a destination can never navigate anywhere.
 					onZone: (target) => setView(target),
-				}), h(Diagnostics, { health, timeline, env: ws.env, capture: ws.capture, usage: ws.usage, preview, previewQ, setPreviewQ, onOpen: openFile, onNavigate: navigate, open: diagnosticsOpen, onToggle: setDiagnosticsOpen }));
+				}), h(Diagnostics, { onInbox: () => { setInboxFilter('pending'); setView({ kind: 'inbox' }); }, health, timeline, capture: ws.capture, usage: ws.usage, preview, previewQ, setPreviewQ, onOpen: openFile, onNavigate: navigate, open: diagnosticsOpen, onToggle: setDiagnosticsOpen }));
 			else if (view.kind === 'zone' && view.zone === 'skills')
 				main = h(SkillLibrary, {
 					data: skillLib.data, loading: skillLib.loading, error: skillLib.error,
@@ -3390,7 +3424,7 @@ window.__ModuleLoader__.load({
 					toggleBusy,
 					filter, setFilter,
 				});
-			else if (view.kind === 'bundle') main = h(SkillBundleView, { data: bundleSkill, name: view.name, onBack: back, sel: view.file ?? null, onSel: (f) => setView({ kind: 'bundle', name: view.name, tab: view.tab, file: f }), fixtures });
+			else if (view.kind === 'bundle') main = h(SkillBundleView, { data: bundleSkill, name: view.name, onBack: back, sel: view.file ?? null, onSel: (f) => setView({ ...view, file: f }), fixtures, fromSearch: Boolean(view.searchOrigin) });
 			else if (view.kind === 'zone') {
 				// INDEX PAGE: zone '' is the MEMORY.md registry (its own renderer, and
 				// the one place the panel shows index blocks). It has no /list source,
@@ -3421,7 +3455,7 @@ window.__ModuleLoader__.load({
 				else main = h('div', { className: 'dmo-empty' }, '正在读取候选正文…');
 			}
 			else if (fileText) main = h(Reader, { view, text: fileText, meta: fileMeta, kind, root: ws.root, onBack: back, onNavigate: navigate });
-			else main = h('div', { className: 'dmo-empty' }, fileRes.loading ? '读取文件…' : fileRes.error ? `读取失败：${fileRes.error}` : '文件为空。');
+			else main = h('div', { className: 'dmo-empty' }, fileRes.loading ? '读取文件…' : fileRes.error ? `读取失败：${fileRes.error}` : '文件为空。', view.searchOrigin ? h(Btn, { onClick: back }, '← 返回搜索结果') : null);
 
 			const searchIcon = h(
 				'svg',
@@ -3466,7 +3500,7 @@ window.__ModuleLoader__.load({
 								{ className: 'dmo-search' },
 								searchIcon,
 								h('input', {
-									ref: searchRef, type: 'search', placeholder: '搜索全部记忆', value: query,
+									ref: searchRef, type: 'search', placeholder: '搜索记忆（至少 2 个字符）', 'aria-label': '搜索全部记忆', value: query,
 									onChange: (e) => setQuery(e.target.value), 'data-dmo': 'search',
 								}),
 								h('span', { className: 'dmo-kbd' }, '/'),

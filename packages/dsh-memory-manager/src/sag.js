@@ -1,30 +1,8 @@
-/**
- * SAG 桥：把外部知识库（SAG-Wiki）的 fast 检索接成记忆系统的一条**可选**通道。
- *
- * ## 为什么需要它（2026-11-16 实测结论）
- *
- * 实测 6 条真实查询：索引召回 2.38ms / 返回索引摘要 ~30 字；SAG fast 24ms /
- * 返回**完整正文** 1508B。两者不是替代关系，是**流程上不同阶段**：
- *   · pre-step：索引召回（快，决定"要不要读"）
- *   · 要正文时：SAG（一次拿 3 条正文，比逐个 memory_read 省调用）
- *
- * ## 三条硬约束（都来自实测，不是设计洁癖）
- *
- * 1. **永不阻塞装载**。`sag api start` 实测 512ms，CLI 冷启动 758ms。把它做成
- *    同步依赖，插件装载就要多等半秒以上。所以启动是 fire-and-forget。
- * 2. **服务不可用时如实降级**。没起、超时、鉴权失败——一律返回 `{ok:false, reason}`
- *    而不是空数组。空数组会读成"没有相关内容"，那是**假阴性**，比报错更危险。
- * 3. **不把结果当正典证据**。SAG 是实验层（见 §5 D6 与 VI 阶段定界），它的命中
- *    只是"线索"，不是"事实"；工具返回里必须带这个标记，防止下游误用。
- *
- * ## 为什么是 HTTP 而不是 CLI
- *
- * CLI 每次调用要 758ms（进程启动）；常驻 API 后单次 24ms。差 30 倍。
- */
+/** Read-only fast retrieval from registered SAG roots. Citations retain their source paths. */
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, posix, win32 } from 'node:path';
 
 /** fast 档默认端点（`sag api` 的监听地址）。 */
 export const DEFAULT_SAG_ENDPOINT = 'http://127.0.0.1:24681';
@@ -161,16 +139,6 @@ export function startSagService(options = {}) {
 	};
 }
 
-/**
- * 一次 fast 检索。
- *
- * 返回形状固定，**永远不抛**（调用方是 pre-step / 工具，不能因检索崩掉）：
- *   { ok: true,  results: [{path, heading, content, startLine}], elapsedMs, experimental: true }
- *   { ok: false, reason: 'no_key' | 'timeout' | 'network' | 'bad_response' | 'http_<n>' }
- *
- * `experimental: true` 是给下游的护栏：这批命中的是**实验层**内容，不是正典，
- * 可以作为线索、不可直接当证据引用。
- */
 /** Normalize optional SAG scope filters into bounded string arrays (pure, testable). */
 export function normalizeSagScope(options = {}) {
 	const clean = (v) => Array.isArray(v)
@@ -178,53 +146,91 @@ export function normalizeSagScope(options = {}) {
 	return { paths: clean(options.paths), exclude: clean(options.exclude) };
 }
 
+function pathKey(value) {
+	if (typeof value !== 'string' || !value || value.includes('\0')) return null;
+	const windows = value.replace(/\//g, '\\');
+	if (/^(?:[a-z]:\\|\\\\)/i.test(windows)) {
+		const plain = windows.replace(/^\\\\\?\\UNC\\/i, '\\\\').replace(/^\\\\\?\\/, '');
+		return win32.normalize(plain).toLowerCase().replace(/\\/g, '/').replace(/\/$/, '');
+	}
+	return posix.isAbsolute(value) ? posix.normalize(value).replace(/\/$/, '') : null;
+}
+
+async function readSearchBody(response, maxBytes, controller) {
+	if (!response.body) return { error: { code: 'bad_response' } };
+	const reader = response.body.getReader();
+	const parts = [];
+	let bytes = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			bytes += value.byteLength;
+			if (bytes > maxBytes) {
+				controller.abort();
+				void reader.cancel().catch(() => {});
+				return { error: { code: 'response_too_large' } };
+			}
+			parts.push(value);
+		}
+	} finally { reader.releaseLock(); }
+	try { return JSON.parse(Buffer.concat(parts, bytes).toString('utf8')); }
+	catch { return { error: { code: 'bad_response' } }; }
+}
+
 export async function sagSearch(query, options = {}) {
+	const started = performance.now();
+	const timed = (result) => ({ ...result, hostElapsedMs: Math.ceil(performance.now() - started) });
+	const fail = (reason) => timed({ ok: false, reason });
 	const q = String(query ?? '').trim();
-	if (!q) return { ok: false, reason: 'empty_query' };
-	// `apiKey: null` means "explicitly none" (tests use it); undefined falls back
-	// to the normal resolution order (env → config file).
+	if (!q) return fail('empty_query');
+	if (options.signal?.aborted) return fail('aborted');
 	const key = options.apiKey === null ? null : (options.apiKey ?? resolveSagApiKey().key);
-	if (!key) return { ok: false, reason: 'no_key' };
-	const { endpoint } = options.endpoint ? { endpoint: options.endpoint } : readSagEndpoint();
-	const url = `${endpoint}/v1/search`;
+	if (!key) return fail('no_key');
+	const endpoint = options.endpoint ?? readSagEndpoint().endpoint;
 	const limit = Number.isSafeInteger(options.limit) ? Math.min(20, Math.max(1, options.limit)) : 3;
-	// Optional scope filters: SAG supports `paths` (restrict to indexed roots/subdirs)
-	// and `exclude`. Default to the previous [] so omitted callers are unchanged.
 	const { paths, exclude } = normalizeSagScope(options);
-	const controller = typeof AbortController === 'function' ? new AbortController() : null;
-	const timer = setTimeout(() => controller?.abort(), options.timeoutMs ?? 5000);
+	for (const [input, clean] of [[options.paths, paths], [options.exclude, exclude]]) {
+		if (input === undefined) continue;
+		if (!Array.isArray(input) || input.length !== clean.length || clean.some(p => pathKey(p) === null)) {
+			return fail('invalid_scope');
+		}
+	}
+	const allowed = paths.map(pathKey);
+	const excluded = exclude.map(pathKey);
+	const maxBytes = Math.min(8 * 1024 * 1024, options.maxResponseBytes ?? 8 * 1024 * 1024);
+	if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) return fail('bad_arguments');
+	const controller = new AbortController();
+	const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+	const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 5000);
 	timer.unref?.();
 	try {
-		const res = await fetch(url, {
-			method: 'POST',
+		const response = await fetch(`${endpoint}/v1/search`, {
+			method: 'POST', redirect: 'error', signal,
 			headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
 			body: JSON.stringify({ query: q, mode: 'fast', paths, exclude, limit }),
-			...(controller ? { signal: controller.signal } : {}),
 		});
-		if (!res.ok) return { ok: false, reason: `http_${res.status}` };
-		const body = await res.json();
-		// SAG 的错误是 200 + error 字段（实测：鉴权失败返回 200）。
-		if (body?.error) return { ok: false, reason: String(body.error.code ?? 'api_error') };
-		const raw = Array.isArray(body?.results) ? body.results : [];
-		const results = raw.map((r) => ({
-			path: typeof r?.path === 'string' ? r.path : '',
-			heading: typeof r?.heading === 'string' ? r.heading : '',
-			content: typeof r?.content === 'string' ? r.content : '',
-			startLine: Number.isSafeInteger(r?.start_line) ? r.start_line : null,
-		})).filter((r) => r.content);
-		return {
-			ok: true,
-			results,
-			elapsedMs: Number.isFinite(body?.elapsed_ms) ? body.elapsed_ms : null,
-			// 实验层标记：命中不等于正典证据。
-			experimental: true,
-		};
-	} catch (err) {
-		const name = err instanceof Error ? err.name : '';
-		return { ok: false, reason: name === 'AbortError' ? 'timeout' : 'network' };
-	} finally {
-		clearTimeout(timer);
-	}
+		if (!response.ok) { controller.abort(); return fail(`http_${response.status}`); }
+		const body = await readSearchBody(response, maxBytes, controller);
+		if (body?.error) return fail(String(body.error.code ?? 'api_error'));
+		if (!Array.isArray(body?.results)) return fail('bad_response');
+		const results = [];
+		for (const row of body.results.slice(0, limit)) {
+			const file = pathKey(row?.path);
+			if (file === null || typeof row.content !== 'string') return fail('bad_response');
+			const contains = dir => file === dir || file.startsWith(`${dir}/`);
+			if ((allowed.length && !allowed.some(contains)) || excluded.some(contains)) return fail('scope_mismatch');
+			if (row.content) results.push({
+				path: row.path, heading: typeof row.heading === 'string' ? row.heading : '', content: row.content,
+				startLine: Number.isSafeInteger(row.start_line) ? row.start_line : null,
+				endLine: Number.isSafeInteger(row.end_line) ? row.end_line : null,
+			});
+		}
+		return timed({ ok: true, results, elapsedMs: Number.isFinite(body.elapsed_ms) ? body.elapsed_ms : null,
+			truncated: body.truncated === true || body.results.length > limit });
+	} catch {
+		return fail(options.signal?.aborted ? 'aborted' : controller.signal.aborted ? 'timeout' : 'network');
+	} finally { clearTimeout(timer); }
 }
 
 /** 探测服务是否在线（不检索，只回答问题"能不能用"）。 */
@@ -328,12 +334,12 @@ export async function sagStatus(options = {}) {
  * "hits > 0" answers nothing. Matching the path is the only honest signal.
  */
 export async function sagIsIndexed(filePath, phrase, options = {}) {
-	const target = String(filePath ?? '').replace(/\\/g, '/').replace(/^\\\\\?\\/, '');
+	const target = pathKey(filePath);
 	const q = String(phrase ?? '').trim();
-	if (!target || !q) return { ok: false, reason: 'bad_arguments' };
+	if (target === null || !q) return { ok: false, reason: 'bad_arguments' };
 	const r = await sagSearch(q, { ...options, limit: options.limit ?? 5 });
 	if (!r.ok) return { ok: false, reason: r.reason };
-	const found = r.results.some((h) => h.path.replace(/\\/g, '/').replace(/^\/\/\?\//, '').endsWith(target));
+	const found = r.results.some(hit => pathKey(hit.path) === target);
 	return { ok: true, indexed: found, searched: r.results.length };
 }
 

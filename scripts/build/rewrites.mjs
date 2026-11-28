@@ -73,16 +73,11 @@ export const REWRITES = [
 		file: 'meta/test/clis-rule.js',
 		why:
 			'测试要按真实路径 import clis 的构建产物。独立包时期是 `../../dsh-clis/`（兄弟包），' +
-			'合成包里 clis 在 `../clis/`，相对层级没变，只是名字变了。',
+			'合成包里 CLIS 的相对路径为 `../../clis/`。',
 		edits: [
 			{
 				find: "new URL('../../dsh-clis/clis-classifier.js', import.meta.url)",
 				replace: "new URL('../../clis/clis-classifier.js', import.meta.url)",
-				count: 1
-			},
-			{
-				find: "new URL('../../dsh-clis/chunk-2HMO3QIV.js', import.meta.url)",
-				replace: "new URL('../../clis/chunk-2HMO3QIV.js', import.meta.url)",
 				count: 1
 			}
 		]

@@ -1,20 +1,4 @@
-/**
- * SAG 桥（记忆召回的第二通道）：契约测试。
- *
- * ## 这个文件防的是什么
- *
- * 桥接代码最容易犯的错不是崩溃，是**把"查不到"说成"没有"**：
- *   · 服务没起 → 返回 []（读成"没有相关内容"，假阴性）
- *   · 没配 key → 返回 []（同上）
- *   · 超时 → 返回 []（同上）
- * 一次假阴性会让模型以为记忆里没这条结论，然后凭空重推——本系统最想避免的事。
- * 所以本文件的核心断言是：**每一种不可用都必须如实报 reason，绝不返回空数组冒充成功。**
- *
- * ## 第二条：实验层标记必须存在
- *
- * SAG 命中是实验层线索（§5 D6 / VI 阶段定界），不是正典证据。返回体里没有
- * `experimental: true` 的话，下游没法区分"这是知识库片段"与"这是确认过的记忆"。
- */
+/** Contract tests for read-only SAG retrieval and observable failure modes. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -120,16 +104,59 @@ test('sagPing 把"在线但未授权"与"不在线"分开', async (t) => {
 // 成功路径的契约
 // ——————————————————————————————————————————————
 
-test('成功时带 experimental 标记与规整的结果形状', async (t) => {
-	t.mock.method(globalThis, 'fetch', async () => { throw new Error('offline'); });
-	const r = await sag.sagSearch('测试', {
-		apiKey: 'x',
-		endpoint: 'http://127.0.0.1',
-		timeoutMs: 300,
+test('scoped retrieval keeps original paths, line ranges and separate timings', async (t) => {
+	const memory = String.raw`\\?\C:\memory\functions\task.md`;
+	const project = 'D:/project/notes.md';
+	t.mock.method(globalThis, 'fetch', async (_url, request) => {
+		assert.equal(request.redirect, 'error');
+		assert.deepEqual(JSON.parse(request.body).paths, ['c:/memory', 'D:/project']);
+		return Response.json({ elapsed_ms: 8, results: [
+			{ path: memory, heading: 'Task', start_line: 4, end_line: 8, content: 'Procedure' },
+			{ path: project, content: 'Research note' },
+		] });
 	});
-	// 不可达时不产生成功形状——这条断言防止把失败包装成成功。
-	assert.equal(r.ok, false);
-	assert.equal(r.experimental, undefined, '失败结果不携带实验层标记（那会误导下游）');
+	const r = await sag.sagSearch('task', { apiKey: 'dummy', paths: ['c:/memory', 'D:/project'] });
+	assert.deepEqual(r.results.map(x => x.path), [memory, project]);
+	assert.deepEqual(r.results[0], { path: memory, heading: 'Task', content: 'Procedure', startLine: 4, endLine: 8 });
+	assert.equal(r.elapsedMs, 8);
+	assert.ok(Number.isInteger(r.hostElapsedMs));
+	assert.equal(Object.hasOwn(r, 'experimental'), false);
+});
+
+test('rejects out-of-scope passages and malformed responses', async (t) => {
+	let data;
+	t.mock.method(globalThis, 'fetch', async () => Response.json(data));
+	for (const path of ['C:/memory2/file.md', 'C:/memory/excluded/a.md', 'C:/memory/../else/a.md']) {
+		data = { results: [{ path, content: 'outside' }] };
+		const r = await sag.sagSearch('q', { apiKey: 'x', paths: ['C:/memory'], exclude: ['C:/memory/excluded'] });
+		assert.equal(r.reason, 'scope_mismatch');
+		assert.equal(r.results, undefined);
+	}
+	data = {};
+	assert.equal((await sag.sagSearch('q', { apiKey: 'x' })).reason, 'bad_response');
+	assert.equal((await sag.sagSearch('q', { apiKey: 'x', paths: [''] })).reason, 'invalid_scope');
+});
+
+test('caps a streamed response without a Content-Length header', async (t) => {
+	let cancelled = false;
+	t.mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream({
+		pull(stream) { stream.enqueue(new Uint8Array(32)); },
+		cancel() { cancelled = true; },
+	})));
+	const r = await sag.sagSearch('q', { apiKey: 'x', maxResponseBytes: 48 });
+	assert.equal(r.reason, 'response_too_large');
+	assert.equal(cancelled, true);
+});
+
+test('forwards host cancellation to a pending fetch', async (t) => {
+	const stop = new AbortController();
+	t.mock.method(globalThis, 'fetch', (_url, { signal }) => new Promise((_, reject) => {
+		signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+		stop.abort();
+	}));
+	const r = await sag.sagSearch('q', { apiKey: 'x', signal: stop.signal });
+	assert.equal(r.reason, 'aborted');
+	assert.ok(Number.isInteger(r.hostElapsedMs));
 });
 
 // ——————————————————————————————————————————————

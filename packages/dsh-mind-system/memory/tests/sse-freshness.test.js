@@ -49,12 +49,12 @@ test('stream emits visible heartbeats, serializes samples, and recovers after fa
   const intervals = [];
   const writes = [];
   const response = { writeHead() {}, write(value) { writes.push(value); }, on() {}, end() {} };
+  const sample = async () => { calls++; if (pending) await pending; if (fail) throw Error('failed'); return { counts: { daily: 1 }, edgeStatus: { status: 'available', at: now, runningGraphCount: 1 } }; };
   const ctx = { Date: { now: () => now }, JSON, String,
-    overviewPayload: async () => { calls++; if (pending) await pending; if (fail) throw Error('failed'); return { counts: { daily: 1 }, edgeStatus: { status: 'available', at: now, runningGraphCount: 1 } }; },
     setInterval(fn, ms) { const timer = { fn, ms, unref() {} }; intervals.push(timer); return timer; }, clearInterval() {} };
   vm.runInNewContext(`${code}\nthis.start = streamPanel`, ctx);
   const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
-  ctx.start(response, '', {}); await flush();
+  ctx.start(response, {}, sample); await flush();
   assert.ok(writes.some(value => /^event: overview\n/.test(value)));
   const tick = intervals.find(x => x.ms === 2000).fn;
   const beat = intervals.find(x => x.ms === 20000).fn;

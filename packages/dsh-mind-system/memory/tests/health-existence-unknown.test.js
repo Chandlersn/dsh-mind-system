@@ -53,9 +53,9 @@ for (const code of ['EIO', 'EACCES', 'ENOTDIR']) {
     const bad = path.join(root, 'functions', 'unknown.md');
     await writeFile(bad, '# exists, but stat is unknown\n', 'utf8');
     const { report, calls } = await checked(root, skills, { [bad]: code });
-    assert.ok((calls.get('unknown.md') ?? 0) >= 2, 'both rules exercise the fault');
-    assert.ok((calls.get('gone-c.md') ?? 0) >= 2, 'both rules continue after the fault');
-    assert.ok((calls.get('present.md') ?? 0) >= 2, 'normal target actually gets checked');
+    assert.ok((calls.get('unknown.md') ?? 0) >= 1, 'the target fault was reached');
+    assert.equal(calls.get('gone-c.md'), 1, 'the rules share one target lookup after the fault');
+    assert.ok((calls.get('present.md') ?? 0) >= 1, 'normal target actually gets checked');
     for (const rule of ['R23', 'R25']) {
       const unknown = unknownFor(report, rule);
       const missing = missingFor(report, rule);
@@ -75,7 +75,7 @@ test('两个真实缺失加一个未知不得凑成三个缺失，且未知不�
   await writeFile(path.join(root, 'functions', 'present.md'), '# exists\n', 'utf8');
   await writeFile(path.join(root, 'functions', 'unknown.md'), '# exists, but stat is unknown\n', 'utf8');
   const { report, calls } = await checked(root, skills, { [path.join(root, 'functions', 'unknown.md')]: 'EIO' });
-  assert.ok((calls.get('gone-b.md') ?? 0) >= 2);
+  assert.equal(calls.get('gone-b.md'), 1);
   for (const rule of ['R23', 'R25']) {
     assert.equal(unknownFor(report, rule).length, 1);
     assert.equal(missingFor(report, rule).length, 0, `${rule} must count confirmed ENOENT only`);
@@ -86,7 +86,7 @@ test('全部正常存在时两项均不产生未知或缺失告警', async (t) =
   const { root, skills } = await fixture(t, ['present-a', 'present-b', 'present-c']);
   for (const name of ['present-a', 'present-b', 'present-c']) await writeFile(path.join(root, 'functions', `${name}.md`), '# exists\n', 'utf8');
   const { report, calls } = await checked(root, skills);
-  assert.ok((calls.get('present-c.md') ?? 0) >= 2);
+  assert.ok((calls.get('present-c.md') ?? 0) >= 1);
   for (const rule of ['R23', 'R25']) {
     assert.equal(unknownFor(report, rule).length, 0);
     assert.equal(missingFor(report, rule).length, 0);

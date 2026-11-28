@@ -25,7 +25,7 @@ async function faultRead(shard, code, caller, fn) {
   let hits = 0;
   fs.promises.readFile = async function (file, ...args) {
     const stack = new Error().stack;
-    if (typeof file === 'string' && path.resolve(file) === shard && stack.includes(caller) && !stack.includes('readUsage (')) {
+    if (typeof file === 'string' && path.resolve(file) === shard && stack.includes(caller)) {
       hits++;
       throw Object.assign(new Error('synthetic descriptor read failure'), { code });
     }
@@ -53,8 +53,13 @@ test('health checks report discovered shard read failures without partial result
   }
 });
 
-test('overview fails visibly when an enumerated shard disappears', async (t) => {
+test('overview shares ledger reads, counts active sources, and reports missing shards', async (t) => {
   const f = await fixture(t);
+  const legacy = path.join(f.root, '.usage.jsonl');
+  const archive = path.join(f.root, '.usage', 'archive', '2020-01.jsonl');
+  await mkdir(path.dirname(archive));
+  await writeFile(legacy, 'broken JSON\n');
+  await writeFile(archive, JSON.stringify({ t: '2020-01-10T00:00:00Z', href: 'functions/archived.md', kind: 'recall', n: 3 }) + '\n');
   const oldHome = process.env.DSH_HOME; process.env.DSH_HOME = f.home;
   let handler;
   const noop = () => {};
@@ -71,9 +76,33 @@ test('overview fails visibly when an enumerated shard disappears', async (t) => 
     await handler({ method: 'GET', url: '/api/memory-org/overview' }, { writeHead(code) { status = code; }, end(value) { body = value; } });
     return { status, body: JSON.parse(body) };
   }
-  const normal = await overview();
+  const reads = new Map([[legacy, 0], [f.shard, 0], [archive, 0]]);
+  const original = fs.promises.readFile;
+  fs.promises.readFile = async function (file, ...args) {
+    if (reads.has(file)) reads.set(file, reads.get(file) + 1);
+    return original.call(this, file, ...args);
+  };
+  syncBuiltinESMExports();
+  let normal;
+  try {
+    const [first, second] = await Promise.all([overview(), overview()]);
+    assert.deepEqual(first, second);
+    assert.deepEqual([...reads.values()], [1, 1, 1]);
+    normal = first;
+  } finally {
+    fs.promises.readFile = original;
+    syncBuiltinESMExports();
+  }
   assert.equal(normal.status, 200);
-  assert.ok(normal.body[0].usage.sources.some((s) => s.file === '2026-11.jsonl' && s.rows === 10));
+  const usage = normal.body[0].usage;
+  assert.equal(usage.signalCount, 12);
+  assert.equal(usage.recallEvents, 1, 'physical event totals include archives');
+  assert.equal(usage.liveRows, 10);
+  assert.deepEqual(usage.sources, [
+    { file: '.usage.jsonl', rows: 1, live: false },
+    { file: '2026-11.jsonl', rows: 10, live: true },
+    { file: '2020-01.jsonl', rows: 1, live: false },
+  ]);
   for (const code of ['ENOENT', 'EIO']) {
     const result = await faultRead(f.shard, code, 'overviewPayload (', overview);
     assert.equal(result.status, 500);

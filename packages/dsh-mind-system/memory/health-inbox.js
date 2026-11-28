@@ -244,6 +244,7 @@ export function stableIssueFingerprint(canonicalIdentity) {
  * @property {string} [hint] 方向提示
  * @property {string} receivedAt 首次收到时间（ISO）
  * @property {string} lastSeenAt 最近一次收到时间
+ * @property {string} [lastHandledAt] Timestamp of the last explicit disposition update.
  * @property {number} times 收到次数
  * @property {'open'|'acknowledged'|'resolved'} status 处置状态
  * @property {string} [note] 处置备注
@@ -464,6 +465,7 @@ export class MemoryInbox {
       if (item === undefined) return undefined;
       item.status = status;
       item.lastSeenAt = new Date().toISOString();
+      item.lastHandledAt = item.lastSeenAt;
       if (note !== undefined) item.note = note;
       this.items.set(fingerprint, item);
       await this.flush();
@@ -520,8 +522,30 @@ export class MemoryInbox {
     });
   }
 
+  async summaryWorkItems() {
+    return this.mutate(async () => [...this.identities].flatMap(([key, canonical]) => {
+      const item = this.items.get(key);
+      return item?.from === 'memory-manager' && item.code === 'R3' && item.severity === 'warn' && item.status !== 'resolved'
+        ? [{ item: { ...item }, canonical }] : [];
+    }));
+  }
+
+  async resolveObserved(expected, canonical, evidence, verify) {
+    return this.mutate(async () => {
+      const item = this.items.get(expected.fingerprint);
+      if (!item || item.status === 'resolved' || canonical !== this.identities.get(expected.fingerprint) ||
+          expected.fingerprint !== stableIssueFingerprint(canonical) || JSON.stringify(item) !== JSON.stringify(expected)) {
+        throw new Error('收件箱状态已变化，旧观测不能核销');
+      }
+      item.status = 'resolved';
+      item.lastHandledAt = new Date().toISOString();
+      item.note = `memory_check 直接复核 ${evidence}`;
+      await this.flush(verify);
+    });
+  }
+
   /** 串行刷盘（原子替换）。 */
-  async flush() {
+  async flush(beforeReplace) {
     // A failed write must reject its caller without poisoning later queued writes.
     this.chain = this.chain.catch(() => {}).then(async () => {
       let tmp;
@@ -543,6 +567,7 @@ export class MemoryInbox {
         } finally {
           await handle.close();
         }
+        if (beforeReplace) await beforeReplace();
         replacementStarted = true;
         await rename(tmp, path);
         created = false;

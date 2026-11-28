@@ -56,9 +56,11 @@ flowchart LR
 
 **架构证据与当前活动分开看**：`memory_read(kind=live_flow)` 返回有界的近期活动观测；未观测到事件不证明路径卡住，动画也不证明任务成功或采纳。`memory_read(kind=graph_evidence)` 和 `npm run verify-graph` 检查可关联的历史架构证据；历史匹配不代表当前活动，检查数也不等于主图边数。CLIS 生产端、回执和技术分类的关联不认证作者，也不证明人工采纳或原则归因。具体范围及后续验收见 [`UPGRADE-PLAN.md`](UPGRADE-PLAN.md)。
 
-**SAG-Wiki 是宿主的正式只读检索通道。** 需要定位已整理的条目时可查看记忆索引，需要按词或日期查本地记忆时可用 `memory_search`，需要查一个或多个已注册目录的正文时可用 `memory_sag`。已知文件路径时可直接查阅原文。
+**SAG-Wiki 是宿主的正式只读检索通道。** 宿主可按所需范围、信息粒度和等待预算选择。索引摘要适合定位已整理的条目，`memory_search` 支持记忆根内的词法和日期检索，`memory_sag` 用 fast 模式从一个或多个已注册目录返回正文。已知文件可直接读原文。
 
-`memory_sag` 的 `search` 返回带来源路径的片段，`paths` 和 `exclude` 可限定或排除目录。`status` 可查看已注册的目录及索引情况。引用片段时保留原文件的证据属性，正式记忆可用 `memory_read` 回查，项目文档和实验笔记按各自路径核对。
+`memory_sag` 的 `paths` 与 `exclude` 分别限定和排除目录，省略时搜索全部已注册根。`timeoutMs` 限制本次请求的等待时间。`hostElapsedMs` 是宿主观察到的调用耗时，`elapsedMs` 是 SAG 报告的引擎耗时。`status` 可查已注册根、索引文件数，选择 `includeDiskCount` 可比较磁盘计数。给定 `file` 与 `phrase` 可检查本次结果是否包含目标路径。
+
+每段正文保留来源路径和可用行号。正式记忆用 `memory_read` 回查，项目资料和实验笔记按原路径核对。来源文件决定其身份与证据等级。一次检索未命中只说明当前查询和范围内未返回片段，服务不可用时另报原因。
 
 **索引召回提示。** 本版匹配器取查询中的汉字、英文字母和数字，计算其中有多少字符出现在候选索引行的名称或正文里。有有效字符且覆盖率低于 75% 时标记未命中。`hitTokens` 和 `missTokens` 解释哪些词匹配成功；字符覆盖率与实际带入的索引行数分别计算。[匹配判据](packages/dsh-memory-manager/src/recall.js)
 
@@ -211,7 +213,9 @@ execution-runtime 的任务入口包括：`runtime_run` 执行宿主原生声明
 4. **决策**：按规则类型走现有写入或确认通道；涉及人的授权时，以实际可信授权为准。
 5. **复验**：在新任务中观察实际收益、漏判与误判；必要时修订、回退或退役。
 
-架构概览的 `closureEvidence` 根据短时窗口中的召回完成、工具进行中和工具完成事件生成。当前概览调用没有传入任务标识或复核答案，因此只能显示这些事件是否出现，无法据此关联同一任务或确认复核。`memory_read(kind=live_flow)` 在本版返回活动边和丢弃计数。后续验收见 [迭代计划](UPGRADE-PLAN.md)。
+`memory_cycle` 为一次实际改进建立可查证的任务记录：`begin` 使用宿主原生 `callId` 作任务锚点，由 `sessionProjections` 从已提交会话事件重建；`report` 列出真实召回和动作调用；`checkpoint` 回读不超过 4 MiB 的产物，并核对原召回文件的当前哈希与当时读取结果一致，再把产物版本绑定到 `questionId`。用该 ID 调用 `ask_user_question`，实际回复才关联到该 checkpoint。当前支持具名或 `kind=index` 的 `memory_read`，以及 `write`、`edit`、`memory_write` 动作；PTC 暂不支持，会使投影降级。操作细节见[记忆工具说明](packages/dsh-memory-manager/README.md#memory_cycle任务记录与复核)。
+
+跨任务回复、跳过、产物变化或记录冲突不能算当前产物已复核；回复可表示认可或纠正，调用者是否为真人仍为 `unknown`。后续 `report.reuseObservations` 分层给出读到、引用、采纳、结果：只有读到与字节复制进产物可被原生事件观测，采纳与结果恒为未观测（复核未解释、真人未认证、无独立目标证据），不证明实际采用、目标达成或生产收益。legacy `live_flow` 仅作活动诊断，不能在查询时补上任务身份或复核形成证据链。这些记录不证明系统已完成自成长；后续验收见 [`UPGRADE-PLAN.md`](UPGRADE-PLAN.md)。
 
 ## 仓库与开发
 

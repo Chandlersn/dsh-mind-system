@@ -60,12 +60,34 @@ function classify(kind, payload) {
   return payload.baseline ? 'baseline' : outcome;
 }
 
+// Switching a fresh store to WAL takes an exclusive lock that busy_timeout does
+// not cover. Concurrent receivers can therefore hit SQLITE_BUSY on this PRAGMA
+// even though every later write is serialized. Retry ONLY that transition, with
+// a bounded backoff; all other errors remain unchanged and still fail closed.
+const WAL_RETRIES = 6;
+const isBusy = (error) => error?.code === 'ERR_SQLITE_ERROR' && error?.errcode === 5
+  || /database is locked|SQLITE_BUSY/i.test(String(error?.message ?? ''));
+function setWal(db) {
+  for (let attempt = 0; ; attempt++) {
+    try { db.exec('PRAGMA journal_mode=WAL;'); return; }
+    catch (error) {
+      if (!isBusy(error) || attempt >= WAL_RETRIES - 1) throw error;
+      // Synchronous busy-wait: the receiver API is synchronous and must not
+      // depend on timers or an active event loop.
+      const until = Date.now() + (attempt + 1) * 10;
+      while (Date.now() < until) { /* bounded spin */ }
+    }
+  }
+}
+
 // Keep consumption outside the receipt: older producers compare receipt evidence byte for byte.
 export function createClisEventReceiver({ filePath } = {}) {
   if (typeof filePath !== 'string' || !isAbsolute(filePath) || filePath.includes('\0')) throw fail('invalid_store_path');
   const db = new DatabaseSync(filePath);
   try {
-    db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
+    db.exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
+    setWal(db);
+    db.exec('PRAGMA synchronous=FULL;');
     if (db.prepare('PRAGMA quick_check').get().quick_check !== 'ok') throw fail('corrupt_store');
     db.exec(`BEGIN IMMEDIATE;
       CREATE TABLE IF NOT EXISTS clis_event_inbox (producer_id TEXT NOT NULL, event_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, payload_hash TEXT NOT NULL, received_at TEXT NOT NULL, PRIMARY KEY(producer_id,event_id)) STRICT;

@@ -54,7 +54,7 @@ function isUnknown(report, rule, code) {
 }
 function check(root, skills) { return runHealthCheck(root, { ...DEFAULTS, skillRoot: skills }); }
 
-test('使用账本 EIO 时 R18、R23、R25 标明未知，后续 R24 仍实际运行', async (t) => {
+test('共享使用账本读取遇到 EIO 时，相关规则标明未知，后续 R24 仍实际运行', async (t) => {
   const { root, skills } = await fixture(t);
   await mkdir(path.join(root, 'dao'));
   await writeFile(path.join(root, 'dao', 'example.md'), '# 无命题正控\n', 'utf8');
@@ -62,8 +62,8 @@ test('使用账本 EIO 时 R18、R23、R25 标明未知，后续 R24 仍实际�
   await writeFile(target, '{}\n', 'utf8');
   let injected = 0;
   const result = await withFault({ read: (name) => { if (name === target) { injected++; return true; } return false; } }, () => check(root, skills));
-  assert.ok(injected >= 4, 'must actually encounter R18, R22, R23, and R25 ledger reads');
-  for (const rule of ['R18', 'R23', 'R25']) assert.ok(isUnknown(result, rule, 'EIO'), `${rule} must report an incomplete check with EIO`);
+  assert.equal(injected, 1, 'each rule sees the same failed observation');
+  for (const rule of ['R18', 'R22', 'R23', 'R25']) assert.ok(isUnknown(result, rule, 'EIO'), `${rule} must report an incomplete check with EIO`);
   assert.ok(result.results.some((r) => r.rule === 'R24' && /缺少「## 命题」/.test(r.message)), 'later R24 must inspect the actual dao file');
   assert.ok(result.results.some((r) => r.rule === 'R26'), 'the later R26 must still run');
 });

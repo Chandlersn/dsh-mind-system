@@ -169,7 +169,7 @@ test('flow events are mapped by exact edge and never by SAG availability', () =>
   assert.match(current, /每日线索 → 功能域：调用进行中/);
   assert.match(current, /功能域 → 思想：调用结束，结果待核验/);
   assert.match(current, /思想 → 道：调用失败/);
-  assert.ok(current.includes('SAG 搜索调用（结果返回会话）：调用进行中'));
+  assert.ok(current.includes('SAG 搜索调用：调用进行中'));
   assert.doesNotMatch(current, /事件时间|过期时间|未知|secret-flow-data/);
   assert.match(nodeByDmo(fixture, 'flow-edge-e3').props.className, /warn/);
   assert.match(textOf(nodeByDmo(fixture, 'arch-node-sag')), /不可达/);
@@ -182,6 +182,25 @@ test('flow events are mapped by exact edge and never by SAG availability', () =>
   assert.match(text, /SAG 搜索调用 · 返回方向/);
   assert.match(text, /调用结束，结果待核验/);
   assert.doesNotMatch(text, /secret-flow-data|箭头活动|丢弃事件数/);
+});
+
+test('automatic SAG outcomes and excerpt insertion have separate visible labels', () => {
+  const at = Date.now();
+  const fixture = baseFixture({}, {}, {});
+  const e15 = { source: 'automatic', phase: 'unknown', outcome: 'cancelled', at, expiresAt: at + 30000 };
+  fixture.liveFlow = { dropped: 0, edges: { e15 } };
+  const status = () => textOf(nodeByDmo(fixture, 'flow-current'));
+  assert.match(status(), /自动检索已取消/);
+  assert.doesNotMatch(status(), /已插入/);
+  Object.assign(e15, { phase: 'failed', outcome: 'timeout' });
+  assert.match(status(), /自动检索超时/);
+  Object.assign(e15, { phase: 'finished', outcome: 'success' });
+  assert.match(status(), /自动检索已返回/);
+  assert.doesNotMatch(status(), /已插入/);
+  fixture.liveFlow.edges.e12 = { phase: 'finished', includesSag: true, at, expiresAt: at + 30000 };
+  assert.match(status(), /含 SAG 正文的召回消息已插入步骤/);
+  e15.expiresAt = at - 1;
+  assert.doesNotMatch(status(), /自动检索/);
 });
 
 test('index reads and recall insertion are independent exact edges', () => {
@@ -245,12 +264,12 @@ test('finished edges remain distinct for 30 seconds, including reduced motion', 
     assert.match(render(fixture, null).find(n => n.props['data-dmo'] === 'flow-edge-e12').props.className, /flow-unknown/);
     assert.match(sourceText, /\.dmo-edge\.warn\{[^}]*\}\s*\.dmo-edge\.flow-finished\{stroke-dasharray:5 5\}/);
     assert.match(sourceText, /\.dmo-edge\.flow-active\{[^}]*stroke-dasharray:8 6;[^}]*animation:dmo-flow 0\.7s linear infinite/);
-    assert.match(sourceText, /\.dmo-edge\.flow-finished\{[^}]*animation:dmo-finished 0\.7s linear 3/);
+    assert.match(sourceText, /\.dmo-edge\.flow-finished\{[^}]*animation:dmo-finished \.8s ease-out 1/);
     assert.match(sourceText, /@keyframes dmo-flow\{to\{stroke-dashoffset:-14\}\}/);
     assert.match(sourceText, /@keyframes dmo-finished\{to\{stroke-dashoffset:-20\}\}/);
     assert.match(sourceText, /@media \(prefers-reduced-motion:reduce\)\{\.dmo-edge\.flow-active,\.dmo-edge\.flow-finished\{animation:none\}\}/);
     assert.match(sourceText, /\.dmo-arch-canvas\{overflow-x:auto\}/);
-    assert.match(sourceText, /\.dmo-arch-svg\{[^}]*min-width:720px/);
+    assert.match(sourceText, /\.dmo-arch-svg\{[^}]*max-width:900px/);
   } finally { Date.now = oldNow; }
 });
 

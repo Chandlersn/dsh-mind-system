@@ -35,15 +35,15 @@ export function createLiveFlow({ now = Date.now, ttlMs = DEFAULT_TTL_MS } = {}) 
     if (!Number.isFinite(value)) throw new TypeError('now must return a finite number');
     return value;
   };
-  const remember = (edge, phase, at) => {
+  const remember = (edge, phase, at, details) => {
     const previous = recent.get(edge);
-    if (!previous || at >= previous.at) recent.set(edge, { phase, at, expiresAt: at + ttl });
+    if (!previous || at >= previous.at) recent.set(edge, { phase, at, expiresAt: at + ttl, ...details });
   };
   const expire = time => {
     for (const [id, call] of active) {
       if (time >= call.expiresAt) {
         active.delete(id);
-        remember(call.edge, 'unknown', call.expiresAt);
+        remember(call.edge, 'unknown', call.expiresAt, call.details);
       }
     }
     for (const [edge, entry] of recent) if (time >= entry.expiresAt) recent.delete(edge);
@@ -58,7 +58,7 @@ export function createLiveFlow({ now = Date.now, ttlMs = DEFAULT_TTL_MS } = {}) 
     for (const call of active.values()) {
       const current = edges[call.edge];
       if (!current || current.phase !== 'active' || call.at >= current.at) {
-        edges[call.edge] = { phase: 'active', at: call.at, expiresAt: call.expiresAt };
+        edges[call.edge] = { phase: 'active', at: call.at, expiresAt: call.expiresAt, ...call.details };
       }
     }
     return { edges, dropped };
@@ -67,6 +67,18 @@ export function createLiveFlow({ now = Date.now, ttlMs = DEFAULT_TTL_MS } = {}) 
     for (const listener of subscribers) {
       try { listener(snapshot()); } catch { /* Observers cannot affect execution. */ }
     }
+  };
+  const begin = (edge, token, details) => {
+    const time = clock();
+    expire(time);
+    if (!validToken(token) || active.has(token) || active.size >= MAX_ACTIVE) {
+      countDrop();
+      notify();
+      return false;
+    }
+    active.set(token, { edge, at: time, expiresAt: time + ACTIVE_TIMEOUT_MS, details });
+    notify();
+    return true;
   };
   return {
     subscribe(listener) {
@@ -78,16 +90,21 @@ export function createLiveFlow({ now = Date.now, ttlMs = DEFAULT_TTL_MS } = {}) 
     },
     start(exec) {
       const edge = edgeFor(exec);
-      if (!edge) return;
-      const time = clock();
-      expire(time);
-      if (!validToken(exec.token) || active.has(exec.token) || active.size >= MAX_ACTIVE) {
-        countDrop();
+      if (edge) begin(edge, exec.token);
+    },
+    automaticSagStarted() {
+      const token = Symbol();
+      const source = 'automatic';
+      if (!begin('e15', token, { source })) return;
+      return outcome => {
+        const time = clock();
+        expire(time);
+        if (!active.delete(token)) return;
+        if (!['success', 'failed', 'timeout', 'cancelled'].includes(outcome)) outcome = 'unknown';
+        const phase = outcome === 'success' ? 'finished' : outcome === 'failed' || outcome === 'timeout' ? 'failed' : 'unknown';
+        remember('e15', phase, time, { source, outcome });
         notify();
-        return;
-      }
-      active.set(exec.token, { edge, at: time, expiresAt: time + ACTIVE_TIMEOUT_MS });
-      notify();
+      };
     },
     finish(exec, result) {
       const edge = edgeFor(exec);
@@ -126,10 +143,10 @@ export function createLiveFlow({ now = Date.now, ttlMs = DEFAULT_TTL_MS } = {}) 
       }
       notify();
     },
-    recallJoined() {
+    recallJoined(includesSag) {
       const time = clock();
       expire(time);
-      remember('e12', 'finished', time);
+      remember('e12', 'finished', time, includesSag === true ? { includesSag: true } : undefined);
       notify();
     },
     snapshot,

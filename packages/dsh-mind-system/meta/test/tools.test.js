@@ -58,7 +58,7 @@ function makeTraceDir() {
  * 那是真实规则的**忠实复刻**，并由 `test/clis-rule.test.js` 用
  * **穷举 81 种组合**与真实现逐条比对把住 —— 两者不可能再漂。
  *
- * 规则本身（来自 `dsh-clis/chunk-2HMO3QIV.js` 的 `decide()`）：
+ * CLIS 分类器的判定规则：
  *   Q4=yes → nested
  *   Q4≠yes 且 Q1..Q3 恰好一个 yes → 那个类型
  *   Q4≠yes 且 Q1..Q3 两个以上 yes → nested（结构冲突）

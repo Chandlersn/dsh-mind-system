@@ -101,9 +101,11 @@ test('the tool reports the write state through to the caller', async () => {
   assert.equal(result.indexError, 'not_searchable');
 });
 
-test('the SAG key resolves from configuration before the environment file', () => {
+test('the SAG key uses the environment first and falls back to desktop configuration', () => {
   const root = mkdtempSync(join(tmpdir(), 'sag-key-'));
+  const savedKey = process.env.SAG_API_KEY;
   try {
+    delete process.env.SAG_API_KEY;
     const appData = join(root, 'appdata');
     const dir = join(appData, 'com.sag.desktop');
     mkdirSync(dir, { recursive: true });
@@ -116,7 +118,13 @@ test('the SAG key resolves from configuration before the environment file', () =
     const none = resolveSagKey({ appData: join(root, 'nowhere') });
     assert.equal(none.key, null);
     assert.equal(none.source, null);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+    process.env.SAG_API_KEY = 'sag_from_env';
+    assert.deepEqual(resolveSagKey({ appData }), { key: 'sag_from_env', source: 'env' });
+  } finally {
+    if (savedKey === undefined) delete process.env.SAG_API_KEY;
+    else process.env.SAG_API_KEY = savedKey;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('a SAG adapter without a key refuses to read rather than reporting an empty base', async () => {

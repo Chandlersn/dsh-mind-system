@@ -37,6 +37,22 @@ function decodeBoundedText(row, name) {
   return text;
 }
 
+function addRecipeOutcome(groups, outcome) {
+  const { recipeId, recipeVersion, origin, status } = outcome;
+  const key = JSON.stringify([recipeId, recipeVersion]);
+  if (!groups.has(key)) groups.set(key, { recipeId, recipeVersion, origins: {} });
+  const group = groups.get(key);
+  const source = origin.kind === 'declared' ? origin.value : 'unknown';
+  group.origins[source] ??= {};
+  group.origins[source][status] = (group.origins[source][status] ?? 0) + 1;
+}
+
+function checkpointFromRow(row) {
+  return { checkpointId: row.checkpoint_id, stepIndex: row.step_index, attemptFloor: row.attempt_floor,
+    state: JSON.parse(row.state_json), environment: JSON.parse(row.environment_json),
+    evidenceRef: row.evidence_ref, createdAt: row.created_at };
+}
+
 // Inspect descriptors to avoid silently dropping JSON data or executing getters.
 function storageSnapshot(value, visiting = new Set(), depth = 0) {
   if (depth > 100) throw error('invalid_json', 'JSON nesting exceeds the storage limit.');
@@ -499,12 +515,7 @@ export class RuntimeStore {
           unavailable++;
           return { rowid: row.rowid, coverage: 'unavailable' };
         }
-        const key = JSON.stringify([outcome.recipeId, outcome.recipeVersion]);
-        if (!groups.has(key)) groups.set(key, { recipeId: outcome.recipeId, recipeVersion: outcome.recipeVersion, origins: {} });
-        const group = groups.get(key);
-        const origin = outcome.origin.kind === 'declared' ? outcome.origin.value : 'unknown';
-        group.origins[origin] ??= {};
-        group.origins[origin][outcome.status] = (group.origins[origin][outcome.status] ?? 0) + 1;
+        addRecipeOutcome(groups, outcome);
         return { rowid: row.rowid, taskId, ...outcome };
       });
       const truncated = rows.length > limit;
@@ -537,12 +548,7 @@ export class RuntimeStore {
         let outcome;
         try { outcome = this.getRecipeOutcome(decodeBoundedText(row, 'task_id')); } catch { unavailable++; continue; }
         if (outcome.coverage !== 'bound') { unavailable++; continue; }
-        const key = JSON.stringify([outcome.recipeId, outcome.recipeVersion]);
-        if (!groups.has(key)) groups.set(key, { recipeId: outcome.recipeId, recipeVersion: outcome.recipeVersion, origins: {} });
-        const group = groups.get(key);
-        const origin = outcome.origin.kind === 'declared' ? outcome.origin.value : 'unknown';
-        group.origins[origin] ??= {};
-        group.origins[origin][outcome.status] = (group.origins[origin][outcome.status] ?? 0) + 1;
+        addRecipeOutcome(groups, outcome);
       }
       this.#db.exec('COMMIT');
       return { coverage: unavailable ? 'partial_unavailable' : 'available', limit,
@@ -1125,9 +1131,7 @@ export class RuntimeStore {
     this.#row(taskId);
     const row = this.#db.prepare('SELECT * FROM checkpoints WHERE task_id = ? AND checkpoint_id = ?')
       .get(taskId, checkpointId);
-    return row ? { checkpointId: row.checkpoint_id, stepIndex: row.step_index, attemptFloor: row.attempt_floor,
-      state: JSON.parse(row.state_json),
-      environment: JSON.parse(row.environment_json), evidenceRef: row.evidence_ref, createdAt: row.created_at } : null;
+    return row ? checkpointFromRow(row) : null;
   }
 
   /**
@@ -1135,7 +1139,6 @@ export class RuntimeStore {
    * deriving that from recorded attempts (with their declared effects) is what keeps the decision honest.
    */
   readAttemptsAfter(taskId, checkpointId) {
-    this.#row(taskId);
     const checkpoint = this.getCheckpoint(taskId, checkpointId);
     if (!checkpoint) throw error('invalid_checkpoint', 'The rollback target is not a checkpoint of this task.');
     return this.#db.prepare('SELECT * FROM attempts WHERE task_id = ? AND rowid > ? ORDER BY rowid')
@@ -1153,8 +1156,8 @@ export class RuntimeStore {
   listCheckpoints(taskId, { limit = 5 } = {}) {
     this.#row(taskId);
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw error('invalid_checkpoint', 'Checkpoint limit must be from 1 to 20.');
-    return this.#db.prepare('SELECT checkpoint_id FROM checkpoints WHERE task_id = ? ORDER BY step_index DESC, rowid DESC LIMIT ?')
-      .all(taskId, limit).map((row) => this.getCheckpoint(taskId, row.checkpoint_id));
+    return this.#db.prepare('SELECT * FROM checkpoints WHERE task_id = ? ORDER BY step_index DESC, rowid DESC LIMIT ?')
+      .all(taskId, limit).map(checkpointFromRow);
   }
 
   /** Freeze unfinished work; this does not prove the previous owner is dead. */

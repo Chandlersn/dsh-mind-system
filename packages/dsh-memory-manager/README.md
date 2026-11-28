@@ -136,10 +136,11 @@ memory/
 | 工具 | 作用 |
 |---|---|
 | `memory_distill_review` | 列出蒸馏候选、素材版本、日期和原文位置。查阅原文后，提交对应版本的审阅结论。素材发生变化后重新进入待审。 |
+| `memory_cycle` | `begin` 以宿主原生调用 ID 建立任务记录；`report` 列出真实召回、动作及复核；`checkpoint` 回读产物并绑定复核问题。由已提交会话事件重建，不接受调用方自行填入复核结论；详见下文。 |
 | `memory_retention_inventory` | 只读盘点配置的记忆根与默认 `DSH_HOME/storages` 中固定的后台文件类别、数量和字节；返回缺失、未知、失败及自动整理停用标记。默认存储目录可能并非活动 valves 自定义目录；不统计运行时 SQLite/WAL 或系统缓存，不返回用户内容，不代表全系统盘点或清理资格。结果是非原子快照，未知类别的计数是下界。 |
 | `memory_read` | 读索引 / 功能文件 / 思想文件 / 能力台账 / 技能 / 每日记录（`kind=index` 先读索引判断相关性）；`kind=operation` 加精确 `request_id`，只读当前配置根的原始操作账本：8 MiB/10000 行上限，最多 256 匹配与 64 KiB 返回；缺失、损坏和超限单列，匹配不证明成功或采纳，空结果不证明没写。查询不增加准入或使用计数 |
 | `memory_search` | **全库排序检索**：索引一行摘要之外还能搜正文，返回命中的分区/文件/行号/小节/片段/归属日期。只记得片段、说不清在哪个域或哪天时用它；`after`/`before` 按日期区间过滤（迭代块标签→文件头→文件名→mtime 逐级归属） |
-| `memory_sag` | **SAG-Wiki 正式只读检索通道**。`search` 在已注册目录中查找正文片段，可用 `paths` 和 `exclude` 限定范围。`status` 显示目录和索引状态，可用 `file` 与 `phrase` 核对特定路径。引用时沿用原文件的证据属性，正式记忆用 `memory_read` 回查，项目资料按来源路径核对。 |
+| `memory_sag` | SAG-Wiki 正式只读检索。宿主按范围与耗时预算选择索引摘要、本地 `memory_search` 或 SAG 正文。`search` 支持目录 `paths`/`exclude`、`timeoutMs`（默认 5000 ms），区分 `hostElapsedMs` 与引擎 `elapsedMs`。各段附来源路径、小节和可用行号。引用时按来源回查正式记忆、项目文件或实验笔记。`status` 列出已注册根，可选磁盘计数和目标路径命中检查。不可用时返回具体原因。 |
 | `memory_capability` | **能力台账**：`record` 登记一个用过的**外部** CLI/MCP/本地工具（调用方式、前提、解决过什么，就地更新一工具一文件；harness 自带工具与项目自己的脚本/API 不算）；`list` 开工前看一眼有什么可用；`read` 读某工具的完整台账 |
 | `memory_write` | 综合至少三个不同素材日，追加一个迭代块并刷新头部摘要。显式要求、当日踩坑因果和安全约束可凭具体理由豁免，仍须列出可回查的素材日。工具检查日期及正文，调用方说明这些素材为何相关。 |
 | `memory_index` | **整合层**：功能域/思想稳定后把一行收进 MEMORY.md 索引（行摘要从迭代块概括中提炼）；表大时可传 `group` 落到 `### 索引·<域>` 子分区 |
@@ -158,7 +159,26 @@ memory/
 
 `src/closure-evidence.js` 的 `classifyClosure` 是首次成长闭环的只读判据：它把召回、动作、结果、复核四跳按调用方提供的身份与来源分类，要求四跳身份一致且链接连贯才算 `correlated`，自产复核、身份漂移、actor 缺失或损坏、actor 与身份同名均不能算独立复核。它永不输出 `closureClaim=true`，因为闭环是否成立是人的判断；独立复核的布尔值也只是调用方声明，不是认证。判据与反例见 `tests/closure-evidence.test.js`。
 
-`src/closure-stream.js` 通过现有的 `tools/execute`、`tools/result`、pre-step 召回被动观测，**自动采集**召回/动作/结果三跳并把它收到的报告放进 overview 的 `closureEvidence`：不新建监听、不碰用户消息、不读工具参数或结果正文，不泄漏 token。任务关联 ID 和复核跳必须在查询时由在回路的人提供；缺省时三跳保持 `unknown`、复核 `missing`，系统不会按时间拼接、不会自造复核，也不会自动宣布闭环成立。自动采集只把证据摆好，判据自动运行，确认权始终在人。
+[`closure-stream.js`](src/closure-stream.js) 保留 legacy `live_flow` 作为活动诊断；没有任务绑定的全局活动不能在查询时补上 `taskId` 或 `review` 变为关联证据。显式事件须在进入时绑定任务与前序事件引用；已完成动作可以保留，工具 finished 不等于持久结果。冲突或容量截断标记不完整；`independentReview` 始终为 `false`，`declaredIndependentReview` 仅表示调用方声明的参与者不同，不认证真人身份。
+
+### memory_cycle：任务记录与复核
+
+工具通过宿主 `sessionProjections` 从**已提交会话事件**重建状态，使用同一会话内原生调用 ID 关联证据，不把全局活动或调用方填写的结论当作复核。按以下顺序处理真实任务：
+
+1. **开始**：调用 `memory_cycle(action=begin)`，仅传 `action`；返回的 `cycleId` 就是这次 begin 的原生 `callId`，应在读取记忆和实际修改之前建立。
+2. **查看调用**：完成相关读取和修改后调用 `report`，从真实 `recalls`、`actions` 中选择 `recallCallId` 和 `actionCallId`。当前 checkpoint 支持 `memory_read(kind=index)`，或带 `name` 的 function / insight / dao / capability 读取；动作支持 `write`、`edit`、`memory_write`。动作必须在召回之后成功完成，`write` / `edit` 使用绝对 `file_path`。PTC 暂不支持，遇到相关分派时投影标记降级而不补造内部调用。
+3. **固定复核对象**：调用 `checkpoint`，传 `cycleId`、上述两个调用 ID 和产物 `path`。工具在会话工作区或记忆根内回读每份不超过 **4 MiB** 的文件：原召回文件的当前哈希必须匹配当时读取结果；产物路径与哈希必须匹配所选动作目标。返回产物哈希与绑定本次 checkpoint、产物版本的 `questionId`。文件身份和时间戳检查用于发现读取竞态，不提供原子快照或恶意父目录 ABA 防护。
+4. **收集回复**：使用返回的 `questionId` 作为 `ask_user_question` 的问题 `id`，或采用随后 `report.reviewQuestion` 给出的内容；真实回复按问答调用绑定到该 checkpoint，再读取 `report` 核对。跨任务回复、跳过、记录冲突或产物变化不能算当前字节已复核；认可与纠正都可作为回复记录，不能把“收到回复”解读为“认可改进”。
+
+已发出或已回答的问题也不会由 report 再次提示发送。`report.reuseObservations` 现在分层给出 `readAgain`（再次读到的字节哈希匹配）、`cited`（当前产物字节等于再次读到的字节，属于可观测的引用特例）、`adopted` 与 `outcome`（恒为未观测：前者因复核未解释且真人未认证，后者因无独立目标证据）；读到或引用都不升级为采纳或收益。
+
+投影保留原始执行结果；宿主压缩上下文生成的展示替换须通过调用身份和前序结果引用核对，不能改写原始证据。调用 ID 按宿主原值保存，兼容模型提供方的组合 ID。单会话最多保留 32 个循环、256 个调用和 1024 条相关事件；超限会持续标记不完整，需在新会话中继续。
+
+`questionAnswerObserved` 表示观测到绑定回复，`reviewAppliesToCurrentBytes` 还要求当前产物哈希匹配。调用者是否为真人保持 `humanIdentity=unknown`，目标达成与原则归因不作判定，也不取得治理资格。后续任务的 `report.reuseObservations` 仅表示先前已复核的字节再次读到，**不证明实际采用或生产收益**；这些证据不意味着系统已完成自成长。
+
+实现见 [`growth-cycle-tool.js`](src/growth-cycle-tool.js)、[`growth-cycle-projection.js`](src/growth-cycle-projection.js) 与 [`growth-artifact.js`](src/growth-artifact.js)。
+
+### 主动召回
 
 系统提示里会注入一段纪律说明；`agent/pre-step` 钩子按用户输入与索引行的词元重合度打分，
 把命中的索引行作为一条 `recall` 消息注入。打分以**词法分为主、使用信号只做有界加成**：

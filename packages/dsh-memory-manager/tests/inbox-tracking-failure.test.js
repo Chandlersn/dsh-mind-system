@@ -87,6 +87,12 @@ test('memory_check 明示收件箱替换后异常的具体条目状态未知', a
   assert.match(failure.message, /未知/);
   assert.match(failure.message, /不要盲目重试/);
   const rendered = check.output.render({}, snapshot).map((part) => part.text).join('\n');
+  assert.ok(snapshot.tracked?.length, 'the fixture must also exercise successful tracking');
+  const lines = rendered.split('\n');
+  for (const tracked of snapshot.tracked) {
+    const line = lines.findIndex(text => text.includes(report.results[tracked.resultIndex].message));
+    assert.equal(lines[line + 1], `    fingerprint: ${tracked.fingerprint}`);
+  }
   assert.ok(rendered.includes(report.results[index].message), '渲染结果必须保留该条体检问题');
   assert.match(rendered, /未知/);
   assert.match(rendered, /不要盲目重试/);

@@ -468,23 +468,21 @@ ok(overview.includes('2 功能 · 1 思想 · 0 道 · 0 能力 · 1 技能 · 4
 const indexPage = render({ kind: 'file', zone: '', name: null });
 ok(indexPage.includes('决策共识') && indexPage.includes('环境常量'), 'the index surfaces consensus and environment constants');
 ok(indexPage.includes('索引行摘要只说「这是什么」') && indexPage.includes('C:/x/memory'), 'index prose renders from MEMORY.md');
-// Environment card (5.26.0): the overview answers "which build runs, where do
-// the stores live, how full is the index" from the server's own truth.
-ok(overview.includes('运行环境') && overview.includes('5.26.0'), 'the env card names the running version');
-ok(overview.includes('支持热重启'), 'the env card reports the reload capability');
-ok(overview.includes('记忆根') && overview.includes('技能库') && overview.includes('C:/x/.dsh/skills'), 'the env card names both roots');
+ok(!overview.includes('data-dmo="env-card"'), 'diagnostics omit the separate environment card');
+ok(overview.includes('data-dmo="diagnostic-tools"'), 'diagnostics group secondary tools under a disclosure');
+ok(overview.includes('记忆根') && overview.includes('技能库') && overview.includes('C:/x/.dsh/skills'), 'the architecture view names both roots');
 ok(overview.includes('dmo-meter') && overview.includes('索引容量'), 'the architecture index fill meter renders');
 // The recall self-check card is on the overview: empty query explains itself.
-ok(overview.includes('召回自检') && overview.includes('至少 2 个字'), 'the recall-preview card invites input');
+ok(overview.includes('索引召回预览') && overview.includes('至少 2 个字'), 'the index ranking card invites input');
 // Hot reload (5.25.0): the header offers the in-place server-half swap button.
 ok(overview.includes('热重启'), 'the header offers a 热重启 button');
-// 3 功能 + 1 思想 + 1 技能 + 3 日文件 + 1 月归档 = 8；归档并入 daily 时间线（口径变更）。
-ok(count(overview, 'data-dmo="timeline-row"') === 8, `timeline merges all zones incl. archive (${count(overview, 'data-dmo="timeline-row"')})`);
+// Recent changes show the five newest files across zones.
+ok(count(overview, 'data-dmo="timeline-row"') === 5, `recent changes cap the merged timeline (${count(overview, 'data-dmo="timeline-row"')})`);
 const tl = overview.slice(overview.indexOf('data-dmo="timeline-row"'));
 ok(tl.indexOf('2026-10-18') < tl.indexOf('beta'), 'timeline is newest-first');
 ok(overview.includes('alpha 已稳定'), 'timeline rows carry the index one-line summary');
 ok(overview.includes('刚刚') || overview.includes('分钟前'), 'timeline shows relative time');
-ok(overview.includes('data-dmo="daily-trend"') && overview.includes('2026-10-18.md:') && overview.includes('字节'), 'daily volume trend retains dated byte observations');
+ok(!overview.includes('data-dmo="daily-trend"'), 'compact diagnostics omit the separate volume chart');
 // Missing usage data must not be presented as an explicitly empty history.
 ok(overview.includes('热点状态未知') && overview.includes('实验 未知'), 'diagnostics report missing usage data as unknown');
 ok(count(overview, 'dmo-card') >= 3, `overview renders health + usage + timeline cards (${count(overview, 'dmo-card')})`);
@@ -1057,7 +1055,7 @@ ok(inboxView.includes('在写入时限制篇幅'), 'inbox surfaces the hint');
 // 状态操作按钮：open 可认领+解决，acknowledged 可解决，resolved 可重开
 ok(inboxView.includes('认领') && inboxView.includes('标记已解决') && inboxView.includes('重新打开'), 'inbox offers status transitions');
 const inboxFilters = count(inboxView, 'data-dmo="inbox-filter"');
-ok(inboxFilters === 3, `inbox offers one filter per status (${inboxFilters})`);
+ok(inboxFilters === 4 && inboxView.includes('待办 2'), `inbox offers pending work and three individual statuses (${inboxFilters})`);
 
 // 删除（2026-10-26）：与"标记已解决"是两回事 —— 解决保留记录，删除抹掉记录。
 // 渲染是一次性的（无交互），故这里只钉"删除入口存在且默认不在确认态"；
@@ -1220,8 +1218,8 @@ ok(T.relTime(new Date(Date.now() - 3600_000).toISOString()) === '1 小时前', '
 	ok(usable.sag.usable === true, 'a configured+online+authorized channel reports usable');
 	const usableHtml = serialize(FakeReact.createElement(T.Architecture, { model: usable }));
 	ok(usableHtml.includes('arch-node-sag'), 'the SAG node is drawn');
-	ok(usableHtml.includes('第二通道 · 可用'), `the SAG node states the channel works (${usableHtml.includes('第二通道 · 可用')})`);
-	ok(usableHtml.includes('SAG 搜索调用 · 返回方向') && usableHtml.includes('第二通道 · 可用'), 'the search call and service availability are labelled separately');
+	ok(usableHtml.includes('只读检索 · 可用'), `the SAG node states the channel works (${usableHtml.includes('只读检索 · 可用')})`);
+	ok(usableHtml.includes('SAG 搜索调用 · 返回方向') && usableHtml.includes('只读检索 · 可用'), 'the search call and service availability are labelled separately');
 	ok(usableHtml.includes('技能包 7 个') && !usableHtml.includes('技能库 7 项') && usableHtml.includes('条台账') && usableHtml.includes('每日线索（含归档）'), 'skill count is its own fact, distinct from the capability ledger, and daily includes archives');
 	ok(usableHtml.includes('使用数据匹配') && usableHtml.includes('flow-edge-e13') && !usableHtml.includes('校准阈值'), 'usage matching is a live observation');
 	ok(usableHtml.includes('static-edge-e8') && usableHtml.includes('手工登记') && usableHtml.includes('静态关系（无实时观测）') && !usableHtml.includes('flow-edge-e8'), 'manual Dao registration has a static legend and no flow state');

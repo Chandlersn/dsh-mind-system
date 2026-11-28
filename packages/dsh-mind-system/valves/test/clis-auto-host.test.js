@@ -12,11 +12,14 @@ import { apply, createRuntime } from '../index.js';
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-test('a stalled asynchronous peer is visible and never starts parallel retries', async () => {
+test('a stalled asynchronous peer is visible and never starts parallel retries', async (t) => {
+  const storageDir = mkdtempSync(join(tmpdir(), 'clis-stall-'));
+  t.after(() => rmSync(storageDir, { recursive: true, force: true }));
   let calls = 0;
   let finish;
   const pending = new Promise(resolve => { finish = resolve; });
-  const rt = createRuntime({ clisStallMs: 10, getClisOutbox: () => ({ pending: () => { calls++; return pending; }, recordReceipt() {} }) });
+  const rt = createRuntime({ storageDir, clisStallMs: 10, getClisOutbox: () => ({ pending: () => { calls++; return pending; }, recordReceipt() {} }) });
+  t.after(() => rt.dispose());
   const first = rt.retryClisEvents();
   const second = rt.retryClisEvents();
   await wait(30);
@@ -25,7 +28,6 @@ test('a stalled asynchronous peer is visible and never starts parallel retries',
   finish([]);
   await Promise.all([first, second]);
   assert.equal(rt.clisEventStatus().state, 'pending_unverified');
-  rt.dispose();
 });
 
 test('host lifecycle retries pending events, tolerates lost receipt, and rotates pages', async t => {

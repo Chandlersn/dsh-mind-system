@@ -86,7 +86,15 @@ test('health warning navigates to open diagnostics with the issue details', () =
   {
     const fixture = { root: 'fixture', initialized: true, counts: {}, results: [{ level: 'WARN', rule: 'R5', message: 'missing index entry' }] };
     fixture.reviewNotes = [{ rule: 'R28', message: 'candidate for review' }];
-    const props = { initialView: { kind: 'zone', zone: 'functions' }, __apiFixtures: { '/api/memory-org/overview?v=0': { data: [fixture], loading: false, error: null } } };
+    const inbox = { counts: { open: 1, acknowledged: 1, resolved: 1 }, items: [
+      { fingerprint: 'a', status: 'acknowledged', message: 'checked item', note: 'verified note' },
+      { fingerprint: 'b', status: 'open', message: 'open item' },
+      { fingerprint: 'c', status: 'resolved', message: 'resolved item' },
+    ] };
+    const props = { initialView: { kind: 'zone', zone: 'functions' }, __apiFixtures: {
+      '/api/memory-org/overview?v=0': { data: [fixture], loading: false, error: null },
+      '/api/memory-org/inbox?v=0': { data: inbox, loading: false, error: null },
+    } };
     const renderPanel = () => { index = 0; return expand(statefulReact.createElement(StatefulPanel, props)); };
     let tree = renderPanel();
     const warning = tree.find((n) => n?.type === 'button' && expand(n.props.children).includes('体检有提示'));
@@ -97,6 +105,15 @@ test('health warning navigates to open diagnostics with the issue details', () =
     assert.ok(tree.some((n) => n?.props?.['data-dmo'] === 'architecture-diagnostics' && n.props.open === true));
     assert.ok(tree.includes('[WARN] R5: missing index entry'));
     assert.ok(tree.includes('R28 · candidate for review'));
+    tree.find(n => n?.type === 'button' && expand(n.props.children).includes('查看问题收件箱')).props.onClick();
+    tree = renderPanel();
+    assert.ok(tree.includes('verified note'));
+    assert.ok(tree.includes('open item'));
+    assert.ok(!tree.includes('resolved item'));
+    tree.find(n => n?.props?.['data-dmo'] === 'inbox-filter' && expand(n.props.children).join('').includes('未处理')).props.onClick();
+    tree = renderPanel();
+    assert.ok(tree.includes('open item'));
+    assert.ok(!tree.includes('checked item'));
   }
 });
 

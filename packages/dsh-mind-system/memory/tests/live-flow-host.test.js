@@ -257,6 +257,64 @@ test('pre-step records e12 only when matching index rows enter the step', async 
   }
 });
 
+test('automatic SAG observes dispatch, settlement and admitted excerpts on existing edges', { timeout: 20000 }, async () => {
+  for (const outcome of ['success', 'empty', 'filtered', 'failed', 'unknown', 'timeout', 'cancelled', 'rejected', 'no-directory']) {
+    const states = [];
+    const controller = new AbortController();
+    let searches = 0, toolEvents = 0, release;
+    const body = '太阳能 PRIVATE_BODY';
+    const host = await fixture({
+      createLiveFlow() {
+        const flow = createLiveFlow();
+        flow.subscribe(state => states.push(state));
+        return { ...flow, start() { toolEvents++; }, finish() { toolEvents++; } };
+      },
+      sagSearch() {
+        searches++;
+        assert.equal(states.at(-1)?.edges.e15?.phase, 'active');
+        if (outcome === 'timeout' || outcome === 'cancelled') {
+          if (outcome === 'cancelled') queueMicrotask(() => controller.abort());
+          return new Promise(resolve => { release = resolve; });
+        }
+        if (outcome === 'failed') return { ok: false, reason: 'private-error' };
+        if (outcome === 'unknown') return {};
+        if (outcome === 'empty') return { ok: true, results: [] };
+        const name = outcome === 'filtered' ? 'missing.md' : 'solar.md';
+        return { ok: true, results: [{ path: path.join(host.root, 'functions', name), content: body, start_line: 1, end_line: 1 }] };
+      },
+    });
+    try {
+      if (outcome !== 'no-directory') {
+        await mkdir(path.join(host.root, 'functions'));
+        await writeFile(path.join(host.root, 'functions', 'solar.md'), body);
+      }
+      const messages = [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '查找上次有关太阳能控制的正文' }] }];
+      const pre = host.listeners.get('agent/pre-step')[0];
+      const decision = await pre({ agent: { id: 'private-agent' }, messages, turn: 1, signal: controller.signal }, async () => ({ kind: outcome === 'rejected' ? 'reject' : 'enter', messages }));
+      release?.({ ok: true, results: [] });
+      await new Promise(resolve => setImmediate(resolve));
+      const snapshot = JSON.parse((await host.tools.get('memory_read').execute({ kind: 'live_flow' })).content);
+      assert.equal(toolEvents, 0, outcome);
+      assert.doesNotMatch(JSON.stringify(states), /太阳能|private|solar\.md/i);
+      if (outcome === 'rejected' || outcome === 'no-directory') {
+        assert.equal(searches, 0, outcome);
+        assert.equal(snapshot.edges.e15, undefined, outcome);
+      } else {
+        assert.equal(searches, 1, outcome);
+        const expected = ['filtered', 'empty'].includes(outcome) ? 'success' : outcome;
+        assert.equal(snapshot.edges.e15.outcome, expected, outcome);
+        assert.equal(snapshot.edges.e15.source, 'automatic');
+        const terminal = states.filter(state => state.edges.e15?.outcome);
+        assert.ok(terminal.length > 0);
+        assert.ok(terminal.every(state => state.edges.e15.outcome === expected));
+      }
+      assert.equal(JSON.stringify(decision.messages).includes(body), outcome === 'success', outcome);
+      assert.equal(snapshot.edges.e12?.includesSag, outcome === 'success' ? true : undefined, outcome);
+      assert.equal(snapshot.edges.e12?.phase, outcome === 'success' ? 'finished' : undefined, outcome);
+    } finally { await host.close(); }
+  }
+});
+
 test('e9 records only acknowledged changes to the named capability row', async () => {
   let events = 0;
   const host = await fixture({ createLiveFlow: () => {
@@ -444,10 +502,9 @@ test('flow-only changes do not resend overview and stale snapshots recover', asy
   const intervals = [], writes = [];
   const response = { writeHead() {}, write(x) { writes.push(x); return true; }, on() {}, off() {}, end() {} };
   const ctx = { Buffer, Date: { now: () => now }, JSON, String,
-    overviewPayload: async () => ({ count: 1, liveFlow: flow }),
     setInterval(fn, ms) { const t = { fn, ms, unref() {} }; intervals.push(t); return t; }, clearInterval() {} };
   vm.runInNewContext(`${code}\nthis.start = streamPanel`, ctx);
-  ctx.start(response, '', { liveFlow: () => flow, subscribeLiveFlow(fn) { listener = fn; return () => {}; } });
+  ctx.start(response, { liveFlow: () => flow, subscribeLiveFlow(fn) { listener = fn; return () => {}; } }, async () => ({ count: 1, liveFlow: flow }));
   await Promise.resolve(); await Promise.resolve();
   const tick = intervals.find(x => x.ms === 2000).fn;
   const beat = intervals.find(x => x.ms === 20000).fn;
@@ -471,14 +528,13 @@ test('heartbeat samples flow independently and cleans up after close', async () 
     const intervals = [], writes = [], handlers = {};
     const response = { writeHead() {}, write(x) { writes.push(x); return true; }, on(name, fn) { handlers[name] = fn; }, off(name) { delete handlers[name]; }, end() {} };
     const ctx = { Buffer, Date: { now: () => now }, JSON, String,
-      overviewPayload: async () => ({ count: 1 }),
       setInterval(fn, ms) { const timer = { fn, ms, unref() {} }; intervals.push(timer); return timer; }, clearInterval(timer) { if (timer) timer.cleared = true; } };
     vm.runInNewContext(`${code}\nthis.start = streamPanel`, ctx);
     const opts = subscribed ? {
       liveFlow() { snapshotCalls++; if (fail) throw Error('private observer error'); return { edges: { e2: { phase: 'finished', at: now } }, dropped: 0 }; },
       subscribeLiveFlow(fn) { listener = fn; return () => { unsubscribed++; }; },
     } : {};
-    ctx.start(response, '', opts);
+    ctx.start(response, opts, async () => ({ count: 1 }));
     for (let i = 0; i < 8; i++) await Promise.resolve();
     const beat = intervals.find(x => x.ms === 20000).fn;
     const frames = name => writes.filter(x => x.startsWith(`event: ${name}\n`)).map(x => JSON.parse(x.split('\n')[1].slice(6)));

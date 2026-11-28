@@ -704,10 +704,17 @@ console.log(`    search "插件": ${JSON.parse(search.body).hits.length} hits`);
 const shortQ = await call('/api/memory-org/search?q=a');
 ok(shortQ.status === 200 && JSON.parse(shortQ.body).hits.length === 0, 'sub-2-char query returns empty');
 
-// --- recall preview (MemOS borrow ②) ---------------------------------------
-// Same pipeline the pre-step hook runs, exposed for debugging: "what would this
-// input recall, and why". Short queries must not error out (the panel calls it
-// on every keystroke-ish interaction).
+const rankingFixture = path.join(root, 'functions', 'ranking-fixture.md');
+await writeFile(rankingFixture, 'alpha weak\nalpha beta first\nalpha beta second\nalpha weak\nalpha beta third\nalpha beta fourth\n');
+try {
+	const ranked = await tcall('/api/memory-org/search?zone=functions&q=alpha%20beta');
+	const lines = ranked.status === 200 ? JSON.parse(ranked.body).hits.filter((r) => r.name === 'ranking-fixture.md').map((r) => r.line) : [];
+	ok(lines.join(',') === '2,3,5', 'search keeps the best three hits per file and preserves line order on ties');
+} finally {
+	await rm(rankingFixture, { force: true });
+}
+
+// --- index recall preview ---------------------------------------------------
 const prevShort = await call('/api/memory-org/recall-preview?q=a');
 ok(prevShort.status === 200 && JSON.parse(prevShort.body).rows.length === 0, 'recall-preview tolerates a sub-2-char query');
 const prev = await call('/api/memory-org/recall-preview?q=' + encodeURIComponent('记忆 插件'));
@@ -844,8 +851,8 @@ const countInst = makeInstance(ALLOW, {
 mod.apply(countInst.fakeCtx, { memoryRoot: tmpMem, skillRoot: tmpSkills });
 const toolNames = registered.filter(Boolean).sort();
 
-const CN_NUM = { 十: 10, 十一: 11, 十二: 12, 十三: 13, 十四: 14, 十五: 15, 十六: 16, 十七: 17, 十八: 18 };
-const EN_NUM = { ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18 };
+const CN_NUM = { 十: 10, 十一: 11, 十二: 12, 十三: 13, 十四: 14, 十五: 15, 十六: 16, 十七: 17, 十八: 18, 十九: 19 };
+const EN_NUM = { ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19 };
 const cnWord = Object.keys(CN_NUM).find((k) => CN_NUM[k] === toolNames.length);
 const enWord = Object.keys(EN_NUM).find((k) => EN_NUM[k] === toolNames.length);
 

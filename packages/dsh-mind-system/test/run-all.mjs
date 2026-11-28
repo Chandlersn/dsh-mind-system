@@ -1,10 +1,10 @@
 /**
- * 合成包的统一测试入口：跑四家成员 + 合成自身的全部测试。
+ * 合成包的统一测试入口：跑成员与合成包自身的测试。
  *
  * ## 为什么不用一个 glob
  *
- * 四家的测试原来长在四个仓库里，约定不同：
- * mind / meta 用 `test/*.test.js`（node:test），
+ * 成员的测试目录约定不同：
+ * mind / meta / valves / runtime 用 `test/*.test.js`（node:test），
  * memory 用 `tests/*.test.js` + 三个手写断言脚本（harness/api/ui-test.mjs）。
  * 合成后保持各自目录不动（mind/ meta/ memory/），由这里逐套调度，
  * 一套失败立即非零退出——CI 与本地同一条命令。
@@ -52,6 +52,7 @@ const suites = [
   { name: 'agent-mind', files: readdirSync(join(pkgRoot, 'mind', 'test')).filter((f) => f.endsWith('.test.js')).map((f) => `mind/test/${f}`) },
   { name: 'meta-framework', files: readdirSync(join(pkgRoot, 'meta', 'test')).filter((f) => f.endsWith('.test.js')).map((f) => `meta/test/${f}`) },
   { name: 'valves', files: readdirSync(join(pkgRoot, 'valves', 'test')).filter((f) => f.endsWith('.test.js')).map((f) => `valves/test/${f}`) },
+  { name: 'execution-runtime', files: readdirSync(join(pkgRoot, 'runtime', 'test')).filter((f) => f.endsWith('.test.js')).map((f) => `runtime/test/${f}`) },
   { name: 'memory-manager tests/', files: readdirSync(join(pkgRoot, 'memory', 'tests')).filter((f) => f.endsWith('.test.js')).map((f) => `memory/tests/${f}`) },
 ];
 

@@ -4,7 +4,7 @@
  * ## 为什么要这个文件
  *
  * 缺陷 2：`test/tools.test.js` 里的 mock 分类器**手写**了一份四问→类型的规则，
- * 而真实规则住在 `dsh-clis` 的 `chunk-2HMO3QIV.js` 里（`decide()` 函数）。
+ * 真实规则通过 `dsh-clis/classifier` 的 `classifyProblem` 导出。
  *
  * 两份规则对不上 —— 已实测 81 种组合里 **14 种**给出不同结论。
  * 手写的那份在"2 个以上 yes"时全错（它按 Q1→Q2→Q3 短路取第一个），
@@ -28,7 +28,7 @@
  *
  * ## 加载真实实现为什么要造假安装根
  *
- * `dsh-clis/chunk-DC3YUXV4.js` 在**模块顶层**就执行
+ * 分类器的宿主适配模块在顶层执行
  * `var host = loadHost("@deepseek-ai/cordis")` —— 找不到 DSH 安装目录
  * 就抛错，模块根本 import 不了。
  *
@@ -37,8 +37,7 @@
  * 一个导出 `Service`/`Context`/`symbols`/`Fiber`/`RegistryService`/`Inject`
  * 的 index.js），把 `DSH_INSTALL_DIR` 指过去，就能把真实现完整加载起来。
  *
- * 这个假根只满足"能被 require 到"，不提供任何功能 —— 被加载的
- * `chunk-2HMO3QIV.js` 里真正用到的只是纯函数 `classifyProblem`。
+ * 这个假根满足模块加载所需的 Cordis 接口。测试调用的是纯函数 `classifyProblem`。
  *
  * ## 找不到兄弟包时**必须失败**，不能静默跳过
  *
@@ -46,18 +45,13 @@
  * 所以这里明确抛错，并说清原因与解法。
  */
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-
-const here = dirname(fileURLToPath(import.meta.url));
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** 兄弟包 `dsh-clis` 的入口（分类器子路径）。 */
 export const REAL_CLIS_MODULE = new URL('../../clis/clis-classifier.js', import.meta.url);
-
-/** 兄弟包 `dsh-clis` 的内部 chunk（`classifyProblem` 真正住在这里）。 */
-export const REAL_CLIS_CHUNK = new URL('../../clis/chunk-2HMO3QIV.js', import.meta.url);
 
 /**
  * 契约里的四种确定类型 + unknown。
@@ -93,7 +87,7 @@ export const TRI_STATES = ['yes', 'no', 'unknown'];
 /**
  * 忠实复刻真实 CLIS 的四问→类型规则。
  *
- * ## 真实规则（`dsh-clis/chunk-2HMO3QIV.js` 的 `decide()`）
+ * ## 真实分类规则
  *
  * ```
  * Q4 = yes              → nested          （R1：系统内多种结构并存）
@@ -138,7 +132,7 @@ export function decideType(answers) {
 }
 
 /**
- * 造一个最小的"假 DSH 安装根"，让 `dsh-clis` 的 chunk 能被 import。
+ * 造一个最小的"假 DSH 安装根"，供分类器入口加载。
  *
  * 只提供 cordis 的**壳**（被 chunk 顶层解构的那几个导出），
  * 不提供任何功能 —— 真实现里用到的是纯函数。
@@ -181,30 +175,17 @@ export function makeFakeInstallRoot() {
  * @returns `{ classifyProblem, cleanup }`；找不到兄弟包时**抛错**（不静默跳过）。
  */
 export async function loadRealClassifier() {
-  let chunkUrl;
-  try {
-    chunkUrl = REAL_CLIS_CHUNK;
-    // 触一下文件系统，确认真的存在（URL 存在不代表文件存在）
-    const { existsSync } = await import('node:fs');
-    if (!existsSync(fileURLToPath(chunkUrl))) throw new Error('chunk 文件不存在');
-  } catch (error) {
-    throw new Error(
-      '找不到兄弟包 dsh-clis 的实现（' +
-        fileURLToPath(REAL_CLIS_CHUNK) +
-        '）—— 漂移守卫无法运行。' +
-        '这不是"跳过"：真实判据必须与 mock 逐条比对，否则漂移无人看守。' +
-        '请在 monorepo 布局下运行本测试（packages/dsh-clis 与 packages/dsh-meta-framework 同级）。' +
-        `原始错误：${error instanceof Error ? error.message : String(error)}`,
-    );
+  if (!existsSync(REAL_CLIS_MODULE)) {
+    throw new Error(`找不到 CLIS 分类器入口 ${fileURLToPath(REAL_CLIS_MODULE)}，请在 monorepo 布局下运行测试。`);
   }
 
   const fake = makeFakeInstallRoot();
   const previousInstallDir = process.env.DSH_INSTALL_DIR;
   process.env.DSH_INSTALL_DIR = fake.root;
   try {
-    const mod = await import(pathToFileURL(fileURLToPath(chunkUrl)).href);
+    const mod = await import(REAL_CLIS_MODULE.href);
     if (typeof mod.classifyProblem !== 'function') {
-      throw new Error('dsh-clis 的 chunk 没有导出 classifyProblem');
+      throw new Error('CLIS 分类器入口未导出 classifyProblem');
     }
     return {
       classifyProblem: mod.classifyProblem,

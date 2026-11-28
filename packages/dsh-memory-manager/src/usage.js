@@ -887,53 +887,109 @@ export async function usageFiles(root) {
 	return files;
 }
 
-/**
- * Usage entries newer than `days`, newest last. Bad lines are skipped.
- *
- * Reads the legacy single file AND every monthly shard, so a root written before
- * the split keeps all of its history. Shards outside the window are skipped by
- * NAME before being read — the whole point of sharding is that a 30-day query
- * does not parse years of log.
- */
+function usageCutoff(days, now) {
+	const ms = now - days * 24 * 60 * 60 * 1000;
+	const date = new Date(ms);
+	return { ms, month: `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}` };
+}
+
+function* usageRows(text) {
+	for (const line of text.split('\n')) {
+		if (!line.trim()) continue;
+		let entry = null;
+		try { entry = JSON.parse(line); } catch { /* count the physical row even when it is corrupt */ }
+		yield entry;
+	}
+}
+
+function appendRecentUsage(out, entry, cutoff) {
+	try {
+		const ms = Date.parse(entry?.t);
+		if (!Number.isFinite(ms) || ms < cutoff) return;
+		const href = canonicalHref(entry.href);
+		// Compaction stores repeated recall exposures in a single physical row.
+		const count = Number.isSafeInteger(entry.n) && entry.n > 1 ? entry.n : 1;
+		for (let i = 0; i < count; i++) out.push({ ...entry, href, ms });
+	} catch {
+		/* skip corrupt entries */
+	}
+}
+
+/** Read entries within the window, skipping older monthly shards before opening them. */
 export async function readUsage(root, days = 30) {
-	const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-	// Month shards strictly older than the window can be skipped unread: their
-	// newest possible line is the last instant of that month.
-	const cutoffMonth = (() => {
-		const d = new Date(cutoff);
-		return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
-	})();
+	const cutoff = usageCutoff(days, Date.now());
 	const out = [];
-	// usageFiles() now includes archive months too. Read each descriptor exactly
-	// once: a second archive loop here would double-count every compacted row.
 	for (const { file, month } of await usageFiles(root)) {
-		if (month && month < cutoffMonth) continue;
+		if (month && month < cutoff.month) continue;
 		const text = await readFile(file, 'utf8');
-		for (const line of text.split('\n')) {
-			const s = line.trim();
-			if (!s) continue;
-			try {
-				const e = JSON.parse(s);
-				const t = Date.parse(e.t);
-				if (!Number.isFinite(t) || t < cutoff) continue;
-				// Fold on READ as well as write: pre-fold lines in an existing ledger
-				// (and recall lines written with the absolute bundle href) aggregate
-				// under one identity, so evidence is never split across two hrefs.
-				//
-				// Compacted recall rows carry `n` (how many injections that href saw
-				// that day). Expand into n equivalent events so every consumer keeps
-				// seeing the true exposure count — compaction changes the storage
-				// shape, never the numbers a judgement reads.
-				const n = Number.isSafeInteger(e.n) && e.n > 1 ? e.n : 1;
-				for (let i = 0; i < n; i++) out.push({ ...e, href: canonicalHref(e.href), ms: t });
-			} catch {
-				/* skip corrupt line */
+		for (const entry of usageRows(text)) appendRecentUsage(out, entry, cutoff.ms);
+	}
+	return out;
+}
+
+/** Share ledger observations within a health check or overview sample. */
+export function createUsageSnapshot(root) {
+	const now = Date.now();
+	const oldest = usageCutoff(30, now);
+	let files;
+	let history;
+	let monthlySummary;
+	const sources = () => files ??= usageFiles(root);
+	const observations = new Map();
+	async function readSource(descriptor) {
+		const { file, month, source } = descriptor;
+		if (!observations.has(file)) {
+			const read = readFile(file, 'utf8').then((text) => {
+				const summary = { file: path.basename(file), rows: 0, live: source === 'live' };
+				const entries = [];
+				const hrefs = new Set();
+				let recallEvents = 0, readEvents = 0, verdictEvents = 0;
+				const recent = !month || month >= oldest.month;
+				for (const entry of usageRows(text)) {
+					summary.rows++;
+					if (entry?.kind === 'recall') recallEvents++;
+					else if (entry?.kind === 'read') readEvents++;
+					else if (entry?.kind === 'positive' || entry?.kind === 'correction') verdictEvents++;
+					if (entry?.href) {
+						try { hrefs.add(canonicalHref(entry.href)); } catch { /* skip invalid targets */ }
+					}
+					if (recent) appendRecentUsage(entries, entry, oldest.ms);
+				}
+				return { summary, entries, hrefs, recallEvents, readEvents, verdictEvents };
+			});
+			observations.set(file, read);
+		}
+		return observations.get(file);
+	}
+	async function gatherHistory() {
+		const result = { sources: [], hrefs: new Set(), signalCount: 0, liveRows: 0, recallEvents: 0, readEvents: 0, verdictEvents: 0 };
+		for (const descriptor of await sources()) {
+			const { summary, hrefs, recallEvents, readEvents, verdictEvents } = await readSource(descriptor);
+			result.sources.push(summary);
+			result.signalCount += summary.rows;
+			if (summary.live) result.liveRows += summary.rows;
+			result.recallEvents += recallEvents;
+			result.readEvents += readEvents;
+			result.verdictEvents += verdictEvents;
+			for (const href of hrefs) result.hrefs.add(href);
+		}
+		return result;
+	}
+	async function recent(cutoff) {
+		const entries = [];
+		for (const descriptor of await sources()) {
+			if (descriptor.month && descriptor.month < cutoff.month) continue;
+			for (const entry of (await readSource(descriptor)).entries) {
+				if (entry.ms >= cutoff.ms) entries.push(entry);
 			}
 		}
+		return entries;
 	}
-	// Compacted months are already included above through usageFiles(). Reading
-	// them a second time here used to double-count every archived exposure.
-	return out;
+	return {
+		recentWeek: () => recent(usageCutoff(7, now)),
+		summarizeMonth: () => monthlySummary ??= recent(oldest).then(summarizeUsage),
+		history: () => history ??= gatherHistory(),
+	};
 }
 
 /**

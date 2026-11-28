@@ -50,7 +50,11 @@ async function read(tool) {
 test('reads the live host collector through active and finished SAG execution without private details', async t => {
   const { root, tools, listeners } = await fixture(t);
   const tool = tools.get('memory_read');
-  assert.deepEqual((await read(tool)).data, { status: 'available', edges: {}, dropped: 0 });
+  const initial = (await read(tool)).data;
+  assert.deepEqual({ status: initial.status, edges: initial.edges, dropped: initial.dropped }, { status: 'available', edges: {}, dropped: 0 });
+  assert.equal(initial.taskEvidenceTool, 'memory_cycle');
+  assert.equal(initial.closureEvidence.correlation, 'required');
+  assert.equal(initial.closureEvidence.independentReview, false);
   const before = await readdir(root);
   const exec = { token: Symbol('secret-token'), name: 'memory_sag', arguments: { action: 'search', query: 'secret-query' }, callId: 'secret-id' };
   let release;
@@ -87,5 +91,8 @@ test('snapshot exceptions are unavailable and do not expose exception details', 
 test('snapshot projection discards arbitrary fields and unknown edges', async t => {
   const host = await fixture(t, { createLiveFlow: () => ({ start() {}, finish() {}, snapshot() { return { dropped: 0, secret: 'secret', edges: { e10: { phase: 'finished', at: 1, expiresAt: 2, source: 'cache', args: 'secret' }, e15: { phase: 'finished', at: 1, expiresAt: 2, args: 'secret' }, secret: { phase: 'active', at: 1, expiresAt: 2 } } }; } }) });
   const { data } = await read(host.tools.get('memory_read'));
-  assert.deepEqual(data, { status: 'available', edges: { e10: { phase: 'finished', at: 1, expiresAt: 2, source: 'cache' }, e15: { phase: 'finished', at: 1, expiresAt: 2 } }, dropped: 0 });
+  assert.deepEqual({ status: data.status, edges: data.edges, dropped: data.dropped }, { status: 'available', edges: { e10: { phase: 'finished', at: 1, expiresAt: 2, source: 'cache' }, e15: { phase: 'finished', at: 1, expiresAt: 2 } }, dropped: 0 });
+  assert.equal(data.taskEvidenceTool, 'memory_cycle');
+  assert.equal(data.closureEvidence.chain, 'unknown');
+  assert.doesNotMatch(JSON.stringify(data), /secret/);
 });
