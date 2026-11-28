@@ -64,7 +64,7 @@ flowchart LR
 
 ## 安装与使用
 
-需要可运行的 DSH 宿主，以及 Node.js 22 或更高版本。若合成包在当前包源中可用，可安装到指定 profile：
+需要可运行的 DSH 宿主。合成包声明 Node.js ≥22，默认启用的六个成员中 execution-runtime 要求最高，为 Node.js ≥22.23.0。若合成包在当前包源中可用，可安装到指定 profile：
 
 ```bash
 dsh plugin --profile web add dsh-mind-system

@@ -7,21 +7,17 @@
 
 一句话区别：它不是"按项目存笔记"，而是按**功能域**（登录、构建、部署、UI 面板……）累积迭代史，
 把**会重跑的操作**沉淀成 `functions/`，把**会重套的原则**蒸馏成 `insights/`，
-把**反复跑通且被验证的操作**结晶成可直接调用的 `skills/`，
+把可复用程序写成宿主技能候选包，
 索引只留一行摘要，并让每个会话开局就被注入这套纪律。
 
 - 记忆工具、系统提示纪律、`agent/pre-step` 主动回忆钩子与 Web 记忆面板；部分面板操作经插件写入通道执行。
-- 写入即建档：`summary` 与 `currentState` 是必填参数，索引行不会漂移
+- `memory_write` 必填 `summary`，传 `currentState` 时刷新文件头；功能域稳定后用 `memory_index` 单独登记索引。
 - 带机械体检（R0–R28 + 温度分析，规则号会增长故不写死条数），坏了能被检查出来，而不是靠记性
 - **能力台账**：用过的外部 CLI / MCP / 本地工具（不含 harness 自带能力与本项目自己的脚本/API）登记在 `capabilities/`，下次同类任务先查台账，不重复摸索
-- **技能结晶**：反复重跑且被确认的操作结晶成**宿主技能目录包**（`~/.dsh/skills/<kebab>/`，与宿主 `skill` 工具、
-  面板技能库读同一份，无记忆根副本；使用信号机械提名、模型判断成文、candidate→active→retired，只有 active 进召回）
-  ——数据流的"用"这一步就此闭合；技能带 `scope`（global/project），frontmatter `agent_created: true` 标记本插件自有
-  （面板据此分「结晶/系统」两栏），`active` 时经可选桥注册进宿主 skill 目录、可被 `skill` 工具直接调用
-  （宿主无该服务则静默降级，仍走自家召回）；成文必须走 skill-creator 流程（Step1-6 + Quality Bar）
+- **技能结晶**：使用记录提名，`crystallize` 写入宿主技能目录包 `<dshHome>/skills/<kebab-name>/SKILL.md`。`agent_created: true` 标明自有包，可设 global/project 作用域。已有 active 技能可召回并通过可选桥发布；本版因缺少与技能版本和任务绑定的独立执行证据而暂停转正。
 - **粒度有闸门**：迭代块只写蒸馏结论，块 >900 字或索引行摘要 >110 字会在写入时告警并由体检 R14 点名
-- **密钥防线（借鉴 Hindsight 的 memory defence）**：插件全部写路径在落盘前把凭据形态（API key/token/私钥/JWT）替换成 `[REDACTED:kind]` 并在回执点名；身份证/手机号只由体检 R21 告警、绝不改写（事实不得被静默篡改）
-- **洞察有信任级（借鉴 Hindsight 的 observations）**：原则是「带证据的信念」——信任级（待验证/已验证/稳固/动摇）由 `.usage.jsonl` 的认可与纠正计数**自动算出**，写进思想文件头并随每次沉淀刷新；动摇的思想在召回里标 ⚠️、由体检 R22 提示精炼或取代，绝不被静默替换
+- **凭据处理**：共用 Markdown 写入通道在落盘前替换可识别的凭据形态。直接编辑每日记录有不同的来源与脱敏边界；R21 可检查磁盘内容。
+- **思想文件头**：按正向和纠正声明计算信任级，写入思想时刷新；R22 提示复核动摇的条目。这些计数不能验证原则成立。
 - **时间检索（借鉴 Hindsight 的 temporal recall）**：`memory_search` 的 `after`/`before` 按日期区间过滤，每条命中带归属日期（迭代块标签→文件头→文件名→mtime 逐级解析）——"上个月怎么解决的"直接可查
 - 面板配色/尺寸对齐 Host 设计令牌（`--dsw-alias-*` / `--dsw-radius-*`）
 
@@ -35,8 +31,10 @@ memory/
 ├── functions/<功能域>.md   # 每功能一个文件，追加式迭代块（日期只是标签）
 ├── insights/<主题>.md      # 可迁移原则（从具体功能向上蒸馏，回链来源）
 ├── capabilities/<能力>.md  # 能力台账：外部 CLI/MCP/本地工具怎么调、前提、解决过什么（项目自身脚本/API 不进这里）
-├── skills/<技能>.md        # 技能结晶：反复跑通的操作程序（frontmatter 路由 + 步骤 + 验证；candidate→active→retired）
-├── YYYY-MM-DD.md          # 每日记录：原始层，格式与内容不约束（任务过程的第一手数据）
+├── dao/<名称>.md           # 正式命题
+├── dao/_candidates/       # 召回范围外的候选
+├── YYYY-MM-DD.md          # 每日原始素材
+├── daily/YYYY-MM.md       # 已有月归档
 └── legacy/                # 原型时代日志（须带“历史原貌”头部）
 ```
 
@@ -58,19 +56,19 @@ memory/
         │ 整合展示（memory_index，功能域稳定后）
 第 3 层 · MEMORY.md 索引 + 面板总览：一行摘要 + 计数，检索与呈现的派生物
         │ 结晶为程序（memory_skill，操作被反复重跑且确认后）
-第 4 层 · skills/<技能>.md：可直接照做的调用程序（数据流的"用"在此闭合，只有 active 进召回）
+第 4 层 · <skillRoot>/<kebab-name>/SKILL.md：宿主技能目录包，只有 active 进入召回
 ```
 
-- **思想有验证闸门**：`memory_insight` 要求有原则正文与来源功能域；只有一个独立来源时降为专项，而不是跨域的法。操作步骤句式及原则过长产生警告；缺少符合要求的反面适用边界等情形会被写入闸门拒绝。
-- **共识层（最高层）必须带依据**：MEMORY.md 的「决策共识 / 规范」区由体检 **R19** 把关——
+- **思想自检**：写明来源及原则的适用范围、失效情形。单源产生专项提示。写后从磁盘回读检查反面边界，结果见 `selfCheck`。
+- **共识条目必须带依据**：MEMORY.md 的「决策共识 / 规范」区由体检 **R19** 检查，
   单条 >150 字、没有任何记忆文件链接、或声称"跨功能/全局"却只指向 1 个来源域，都会报警。
   约束不是意见，它得能指回证据。
 
-- **每日记录是原始层**：编辑工具可写入，并以提示词筛选值得复用的判断、取舍、因果和待验证事项，不抄日常流水。提示词不是硬过滤；直接编辑不会自动脱敏或登记账本，可能触发 R26 和采集基线拒绝。真实 `captureUserTurns` 默认关闭。采集实现只从获准进入的 `role=user`、`source.kind=user` 且带稳定 ID 的消息提取并脱敏；这些字段、ID 和哈希都不是身份或来源认证，不能保证采集不漏，也不自动生成助手判断。
-- **每日按月/周归档**：插件启动 60s 后首跑、每 6h 一次，把**非当月**的顶层 `YYYY-MM-DD.md` 折进 `daily/YYYY-MM.md`（ISO 周分节 + 每日标题，原文逐字保留）；当月文件永不触碰。归档走账本配对（归档件记账 → 源文件 delete_intent/delete 配对删除），任何一步失败保留源文件。体检 R10/R21 双来源扫描，`memory_read`/`memory_search` 计入归档，面板按月组→周子折叠→日线索展示。配置 `dailyArchiveFirstDelayMs` / `dailyArchiveIntervalMs` 可调（0 关闭，上限一天）。
+- **每日记录与采集**：编辑工具可筛选写入判断、取舍及待验证事项；直接编辑不自动脱敏或记账，可触发 R26 或采集基线拒绝。`captureUserTurns` 仅接受布尔 `true` 开启。下游允许该步进入后，钩子异步处理 `role=user`、`source.kind=user`、有非空 ID 和有效文本的消息，同 ID 内容冲突时跳过。跨文本块脱敏后默认截取 160 个码点。元数据和哈希不能认证来源，采集可能有缺口，助手判断须另行记录。
+- **按月归档**：本版暂停自动归档，调整 `dailyArchiveFirstDelayMs` 或 `dailyArchiveIntervalMs` 不能启动调度。已有 `daily/YYYY-MM.md` 仍可按日读取、检索及在面板展开。
 - **采集协议**：写前检查现有文件与账本基线，历史正文保持原样；合作采集进程以 SQLite 锁串行化（Node 22 的 `node:sqlite` 为实验性功能）。写入前留持久 pending 意图；崩溃后意图未完成则停写，不自动恢复或补账。文件与账本并非崩溃原子，非幂等副作用仍待处理；shell、旧版、其他非合作进程不受该锁保护。概览提供本实例状态及失败、意图现场，不代表全局或端到端送达。历史日记可能没有账本记录，缺口只能现场核查，不能补造来源。
 - **历史保留与未知范围**：`memory_write` 的 `resolve` 不修改或勾选历史每日记录；`memory_rename` 不改写历史每日链接，可能留有旧名。R10 遇到根目录无法枚举或每日文件不可读，报告该范围未知，已发现死链数只是下界。
-- **采集意图清理边界**：面板 exclusive 提交先把暂存写入记忆根 `.stage/`，创建时记录 `(dev, ino)`，提交后仅在 inode 核验一致时删除。`finishCaptureIntent` 仍按路径 `unlink`，核验与删除之间存在被另一进程替换的路径替换窗口（反例见 `capture-intent-window-boundary.test.js`）；追加式意图日志仍是未接入原型。该问题闭环前不得启用真实自动采集，也不得把采集路径称为已修复。
+- **采集意图清理**：`finishCaptureIntent` 先把意图移至隔离路径、核验文件身份，再按路径删除；核验与删除之间仍有替换窗口。追加式意图日志仍是独立原型，该问题闭环前保持真实自动采集关闭。
 - **一层比一层精炼、更普世**：每日层是过程，功能层是结论，思想层是普适原则，
   索引层是检索面。任何一层都不复制下一层的原文——同一事实只在一处为真。
 - **索引是派生物不是同步物**：`memory_write` 不再自动写索引行与每日线索；
@@ -93,7 +91,7 @@ memory/
 | **器** | 指向内容的指针与检索面 | 这是内容，还是指向内容的指针？ | MEMORY.md 双表 + 面板 |
 | **术** | 一个功能域"怎么做"的完整迭代史 | 我会不会再跑一次这个操作？ | `functions/<功能域>.md` |
 | **法** | 从具体操作提炼出的可套原则 | 换个项目/领域还成立吗？ | `insights/<主题>.md` |
-| **道** | 跨域都必须遵守的约束 | 违反了会不会出事故？ | MEMORY.md「决策共识 / 规范」区 |
+| **道** | 由至少五条不同来源法推演的描述性命题 | 各条法如何共同支持它，何时不成立？ | `dao/<名称>.md` |
 
 ### 边界：什么不该进这一层（反例）
 
@@ -102,21 +100,21 @@ memory/
 | **器** | 把某个功能的推导过程写进索引行 | 索引是检索面；塞内容会让它臃肿且每处都要双份维护 |
 | **术** | 在迭代块里写"以后所有项目都应该……" | 功能域只回答这一个域怎么做；普适断言在这里无法被验证 |
 | **法** | 原则写成"1. 先运行 X；2. 再执行 Y" | 能改写成操作手册的就不是原则——步骤属于术层 |
-| **道** | 把某次的具体技术选型记成共识 | 共识是约束不是记录；选型理由留在对应功能域的迭代块里 |
+| **道** | 把某项技术选型写成上位命题 | 选型依据归入功能域；操作约束另列 R19 检查的共识区 |
 
 ### 升降级：内容什么时候该搬家
 
 ```
 每日记录（原始层，怎么记都行）
-   │ 蒸馏：一次实质工作的结论
+   │ 蒸馏：综合与同一主题相关的素材日
    ▼
 术 · functions/<功能域>.md        ← memory_write 落点
    │ 提炼：≥2 个来源功能域都验证过这条判断
    ▼
-法 · insights/<主题>.md           ← memory_insight 落点（跨域/不可降级/≤200 字三闸门把关）
-   │ 收敛：违反即出事故、且跨域无例外
+法 · insights/<主题>.md           ← memory_insight
+   │ 从至少五条不同的现有法共同推演命题
    ▼
-道 · MEMORY.md 共识区             ← R19 把关：必须带依据、≤150 字、声称跨域要 ≥2 来源
+道 · dao/<名称>.md                ← memory_dao
    │ 整合：稳定后收进行索引（派生物）
    ▼
 器 · MEMORY.md 双表 + 面板        ← memory_index 落点
@@ -135,30 +133,30 @@ memory/
 
 | 工具 | 作用 |
 |---|---|
-| `memory_distill_review` | 列出蒸馏候选、素材版本、日期和原文位置。查阅原文后，提交对应版本的审阅结论。素材发生变化后重新进入待审。 |
+| `memory_distill_review` | `list` 列候选、素材版本、原文位置；读原文后可对精确版本提交 1–4000 字结论，`receipt` 查历史回执。扫描不完整时不能提交，仅同版本抑制提醒。 |
 | `memory_retention_inventory` | 只读盘点配置的记忆根与默认 `DSH_HOME/storages` 中固定的后台文件类别、数量和字节；返回缺失、未知、失败及自动整理停用标记。默认存储目录可能并非活动 valves 自定义目录；不统计运行时 SQLite/WAL 或系统缓存，不返回用户内容，不代表全系统盘点或清理资格。结果是非原子快照，未知类别的计数是下界。 |
-| `memory_read` | 读索引 / 功能文件 / 思想文件 / 能力台账 / 技能 / 每日记录（`kind=index` 先读索引判断相关性）；`kind=operation` 加精确 `request_id`，只读当前配置根的原始操作账本：8 MiB/10000 行上限，最多 256 匹配与 64 KiB 返回；缺失、损坏和超限单列，匹配不证明成功或采纳，空结果不证明没写。查询不增加准入或使用计数 |
+| `memory_read` | 读索引、功能、思想、道、能力、技能或每日记录。`live_flow` 是当次观测，`graph_evidence` 是历史架构检查。`operation` 按精确请求 ID 读有界操作账本；`object_trace` 和分页 `adoption_evidence` 按对象键查已记录的链路及声明。 |
 | `memory_search` | **全库排序检索**：索引一行摘要之外还能搜正文，返回命中的分区/文件/行号/小节/片段/归属日期。只记得片段、说不清在哪个域或哪天时用它；`after`/`before` 按日期区间过滤（迭代块标签→文件头→文件名→mtime 逐级归属） |
-| `memory_sag` | **SAG-Wiki 正式只读检索通道**。`search` 在已注册目录中查找正文片段，可用 `paths` 和 `exclude` 限定范围。`status` 显示目录和索引状态，可用 `file` 与 `phrase` 核对特定路径。引用时沿用原文件的证据属性，正式记忆用 `memory_read` 回查，项目资料按来源路径核对。 |
+| `memory_sag` | 在 SAG 已索引目录中检索原文片段、路径及行号。`limit` 默认 3、最多 10，`paths` 与目录级 `exclude` 可缩小范围。`status` 报告索引根，`file` 加独特 `phrase` 探测特定文件。服务不可用会单独报告。本版渲染把命中标为实验层线索；引用时回查原文并保留其证据属性。 |
 | `memory_capability` | **能力台账**：`record` 登记一个用过的**外部** CLI/MCP/本地工具（调用方式、前提、解决过什么，就地更新一工具一文件；harness 自带工具与项目自己的脚本/API 不算）；`list` 开工前看一眼有什么可用；`read` 读某工具的完整台账 |
-| `memory_write` | 综合至少三个不同素材日，追加一个迭代块并刷新头部摘要。显式要求、当日踩坑因果和安全约束可凭具体理由豁免，仍须列出可回查的素材日。工具检查日期及正文，调用方说明这些素材为何相关。 |
+| `memory_write` | 从至少三个不同且非空的素材日综合一个迭代块，说明选材理由；顶层日记优先，缺失时检查归档日节。1–2 天须以「用户显式要求」「当日踩坑因果」或「安全约束」加冒号及具体理由声明豁免，零天拒绝。核验限于日期和正文，相关性由调用方声明。 |
 | `memory_index` | **整合层**：功能域/思想稳定后把一行收进 MEMORY.md 索引（行摘要从迭代块概括中提炼）；表大时可传 `group` 落到 `### 索引·<域>` 子分区 |
-| `memory_insight` | 从功能划分中提取可迁移原则到 `insights/`，回链来源功能域，支持 `supersedes` 取代旧思想；写入时过「跨域 ≥2 来源 / 不可降级 / ≤200 字」三道软闸门 |
-| `memory_dao` | 写**道层**（`dao/`）：最抽象的指导思想。硬闸门——必须从 **≥5 条法**萃取、命题不得含具体技术/项目/文件名、不得是操作步骤、层内上限 7 条；不满足直接拒绝并说明缺什么。**候选公理**（`status=candidate`）：走同一套闸门，但写到 `dao/_candidates/`，不进索引、不进召回、不参与任何判定，等用户确认；`status=list_candidates` 列出待决策候选，`status=active` 才是正式道 |
+| `memory_insight` | 写入可迁移原则，回链来源功能域，同步思想索引；可用 `supersedes` 标记旧思想。查看写入警告及磁盘回读自检。 |
+| `memory_dao` | 候选和正式条目均校验 ≥5 条不同的现有来源法、命题形态、描述节、共同推演、适用边界和在用上限 7 条。`candidate` 写入 `dao/_candidates/`，候选不进召回；`list_candidates` 查看候选。`active` 或省略状态可直写 `dao/`，不提供独立人工批准凭据，也不自动登记索引。 |
 | `memory_fold` | 功能文件超 30KB 时把最旧迭代块折叠成"早期演化"段（保留结论与全部日期标签） |
-| `memory_rename` | 重命名 / 合并功能域，更新派生层引用并报告死链；历史每日记录保留原样，无法保证死链清零。实际生效以运行中宿主加载的版本为准 |
-| `memory_delete` | 删除一条提炼结果：术 `functions`、法 `insights`、器 `capabilities` 先独占归档并记录删除，再移除能识别的索引行；道 `dao` 工具层拒绝，走面板人工确认。归档、删除、索引更新是独立提交；索引失败或结果未知时须核对，不得盲目重试。归档存在不等于自动恢复能力已实现。 |
+| `memory_rename` | 改名和合并均暂停。有效请求在写入前返回 `safe_rename_unavailable`。 |
+| `memory_delete` | 下层有效删除请求在归档、移除文件及更新索引前返回 `safe_delete_unavailable`。道层由工具直接拒绝。 |
 | `memory_check` | 体检：索引体积、缺摘要、孤儿文件、反向链接、日期乱序、死链、冷记忆、头部守卫、路径存活、块/行过详（R14）、重复行/表（R15）、纠正率熔断（R18）、共识条目无依据/过长/假跨域（R19）、旧布局残留与索引行-包状态对照（R20/R20e）、宿主包死链（R10 扫 bundle） |
 | `memory_usage` | **使用信号**：`record` 记一次纠正/认可（召回与读取由插件自动记）；`report` 按窗口聚合，给出 实验/专项/通用 的分层建议（只建议，不自动移动文件） |
 | `memory_federation` | **联邦模式**（可选）：`sync` 把各项目 `MEMORY.md` 复制进联邦层 `sources/` 并重建项目索引表；`check` 体检 F1–F5（索引存在、链接可解析、项目/副本齐全、无孤儿副本、绝对路径存活） |
-| `memory_skill` | **技能结晶层**（数据流缺的"用"这一步）：`candidates` 用使用信号机械提名（≥6 用 + ≥1 认可 + 纠正率<20%，纯聚合不自动写）；`crystallize` 把反复跑通的操作写成宿主技能目录包 `<dshHome>/skills/<kebab>/SKILL.md`（何时使用/步骤/坑/验证 + frontmatter 路由；重结晶前把旧正文存档 `.history/`）；`activate`/`retire` 生命周期（candidate→active→retired，只有 active 进召回；转正需使用/认可以外证据或显式 note 承担）；`delete` 删整包（仅限自有）；`list`/`read` 查 |
+| `memory_skill` | `candidates` 从 ≥6 次使用、≥1 个正向声明且纠正率 <20% 的域提名；`crystallize` 写宿主候选包，`list`、`read`、`retire` 可用。有效 `activate` 返回 `verified_skill_execution_unavailable`，有效自有包 `delete` 返回 `safe_delete_unavailable`。 |
 | `memory_inbox` | **插件问题收件箱**：各插件经 `clis/health-finding` 事件自动投递，agent 也可用 `post` 主动报一条（去重靠来源+代号+消息指纹）；`list` 看队列（未处理在前，可按状态/来源筛）；`update` 在 open/acknowledged/resolved 间改处置；`delete` **彻底删除**一条（不可逆，用于误报或重复投递 —— 与"标记已解决"不同，后者保留记录）。面板「收件箱」页提供同一套操作，侧栏徽标显示**未处理**数 |
 
 `memory_read(kind=adoption_evidence)` 按规范对象键分页读取调用方声明的正向或纠正信号，不认证人类身份、目标达成或原则归因，也不具备治理资格。新 `v2` 游标绑定对象、来源列表和所读内容摘要；旧 `v1` 游标返回 `incomplete/legacy_cursor`，需从首页重读。续页前来源变化时返回不完整，摘要不是认证，也不能保证跨文件原子快照或发现没有旧游标时的历史截断。旧账本枚举现在不读取文件正文，但枚举后其他调用方仍可能按路径重新打开文件；身份检查不能防止后续替换或 ABA，部分其他读取路径也不具备同样的字节上限。
 
 `src/closure-evidence.js` 的 `classifyClosure` 是首次成长闭环的只读判据：它把召回、动作、结果、复核四跳按调用方提供的身份与来源分类，要求四跳身份一致且链接连贯才算 `correlated`，自产复核、身份漂移、actor 缺失或损坏、actor 与身份同名均不能算独立复核。它永不输出 `closureClaim=true`，因为闭环是否成立是人的判断；独立复核的布尔值也只是调用方声明，不是认证。判据与反例见 `tests/closure-evidence.test.js`。
 
-`src/closure-stream.js` 通过现有的 `tools/execute`、`tools/result`、pre-step 召回被动观测，**自动采集**召回/动作/结果三跳并把它收到的报告放进 overview 的 `closureEvidence`：不新建监听、不碰用户消息、不读工具参数或结果正文，不泄漏 token。任务关联 ID 和复核跳必须在查询时由在回路的人提供；缺省时三跳保持 `unknown`、复核 `missing`，系统不会按时间拼接、不会自造复核，也不会自动宣布闭环成立。自动采集只把证据摆好，判据自动运行，确认权始终在人。
+概览的 `closureEvidence` 使用短时活动窗口，观察召回完成、工具进行中及工具完成。公开查询不接受任务 ID 或复核答案，因此只能说明窗口内出现过哪些事件，任务归属和人工复核无法确认。此版 `memory_read(kind=live_flow)` 返回活动边和丢弃计数。
 
 系统提示里会注入一段纪律说明；`agent/pre-step` 钩子按用户输入与索引行的词元重合度打分，
 把命中的索引行作为一条 `recall` 消息注入。打分以**词法分为主、使用信号只做有界加成**：
@@ -186,39 +184,28 @@ memory/
 
 ## 使用信号与自组织分层
 
-记忆"写进去"和"被用起来"是两个不同信号——前者靠模型落地，后者只能靠记录。插件把使用信号落在
-`<memory-root>/.usage.jsonl`（点文件，分区列表、搜索、体检都不扫它），每条一行：
-
-> **存储布局**：单文件会随时间不断增大，因此**按月分片** `.usage/YYYY-MM.jsonl`；旧的单文件**仍然可读**（无需迁移，两者一起读）。
-> 超过 90 天的整月会被**降采样归档**到 `.usage/archive/YYYY-MM.jsonl`：`recall` 折成
-> `{href, 日, n}` 计数行（**曝光总数一个不少**，判据照旧），`read`/`correction`/`positive`
-> 原样保留（它们各自有独立权重）。归档先写后校验行数，校验失败保留原文件——崩溃只会多数据，不会少。
+使用信号写入按月分片的 `.usage/YYYY-MM.jsonl`；旧 `.usage.jsonl` 和已有归档仍可读取。生产环境的自动压缩写入暂停。
 
 | 信号 | 来源 | 含义 |
 |---|---|---|
 | `recall` | `agent/pre-step` 注入时自动记 | **曝光**（不是使用）：插件把它推到了模型面前 |
 | `read` | `memory_read` 打开具体文件时自动记 | **触及**：模型主动去看了它 |
-| `correction` | 模型调 `memory_usage(record, kind=correction)` | 质量端：用户纠正/否定了它 |
-| `positive` | 模型调 `memory_usage(record, kind=positive)` | 质量端：用户明确认可（"对了/就是这个"） |
+| `correction` | 调用方写入 `memory_usage` | 调用方声明的纠正 |
+| `positive` | 调用方写入 `memory_usage` | 调用方声明的认可 |
 
 **`recall` 只算曝光，不计入使用**：召回是插件自己的动作，把它当成"被用了"等于让插件用自己
 的输出证明自己的价值。`memory_usage(report)` 因此分两栏显示——**触及**（读 + 判断）与
-**曝光**（召回注入），分层建议与热度只用触及。纠正率的分母同样**排除召回**（`纠正 / (读 + 纠正)`），
+**曝光**（聚合字段 `exposure` 为召回数加读取数），分层建议与热度只用触及。纠正率的分母同样**排除召回**（`纠正 / (读 + 纠正)`），
 否则一条被大量注入、偶尔被纠正的记忆会把纠正率稀释成个位数百分比，永远不触发任何告警。
 
 `memory_usage(action=report)` 聚合后给分层建议——**这层借鉴自"用数据自己排序"的思路，但落到
 只建议不擅动**：
 
-- **实验层**：触及 <3 次（仍在小范围验证）
+- **实验层**：未达到专项或通用层条件
 - **专项层**：触及 ≥3 次且至少一次明确认可（进入常规选择池）
 - **通用层**：触及 ≥10 次、认可 ≥2 次、纠正率 <20%（可作默认推荐）
 - 纠正率 >40% 且纠正 ≥3 次 → 建议**先重构再追加**，同时体检 **R18** 报熔断
-- **翻转计数（flips）**：同一条记忆在「认可 ↔ 纠正」之间来回切换的次数。
-  翻转 ≥2 次说明**结论本身不稳定**（不是偶尔失手）——报告会点名"先查清哪个判断成立，再决定保留哪一版"。
-  它补的是纠正率看不到的那一面：纠正率低但反复翻烧饼的记忆，同样不能当依据。
-
-两点刻意的保守：**工具不自动移动文件**（层级是人的判断与数据的建议叠加，不是脚本搬运），
-**纠正/认可无法自动获得**（只有交互里明确表达过才算，不去猜用户语气）。
+- 同一对象多次在正向与纠正之间翻转，可结合备注核对是否涉及同一判断。计数不能认证调用者、证明采纳或任务成功。
 
 此外，低频但高价值的记忆（安全审计、关键踩坑、兜底规则）会被"冷记忆"规则误伤——用
 `memory_write(guard=true)` 给文件头打 `🛡 守护型` 标记，冷记忆判定就跳过它：**"很久没写"不等于
@@ -236,13 +223,7 @@ plugin_manager install_bundle  <本目录绝对路径>
 
 ### 更新插件时的缓存行为
 
-| 改了什么 | 生效方式 |
-|---|---|
-| `client.js`（面板） | **刷新页面即可**：宿主按 mtime/size 算出 bundle rev，变化时重组模块图并把新 `?rev=` 交给页面 |
-| `server.js`（工具、路由、注入） | **需要重启 DSH**：模块生成缓存以 realpath 为键，原地改文件不会被重新加载 |
-
-所以只有改了服务端才需要"换新物理目录 + 新包名"（更省事的做法是直接重启 dsh）。换包名时先禁用旧 bundle
-再启用新的，避免同名工具重复注册。
+宿主具备 loader/registry 时可从面板请求服务端热重载；不支持时重启 DSH。客户端产物更新后刷新页面，在总览核对运行版本。
 
 必要时在 profile 的 `cordis.yml` 里配置；将尖括号中的占位符替换为本机绝对路径，未使用的可选项可省略：
 
@@ -297,17 +278,9 @@ Node ≥ 22.12），返回的正是 Host 已加载的同一份命名空间。
   （按 mtime 倒序，带索引里的一行摘要），先看"记忆最近长成什么样"
 - **功能 / 思想 / 每日**：每个文件一行卡片，直接显示索引摘要（不用点进去才知道是什么）、相对时间、体积；
   可**按时间/名称排序**、**按名称或摘要过滤**；每日区按月份分组，天多了也不会变成一堵墙
-- **技能库**：技能页双面库——「结晶技能 / 系统技能」一个切换按钮分组，但背后是**一个存储两个视角**：技能都是宿主
-  目录包（`~/.dsh/skills/<kebab>/`），frontmatter 带 `agent_created: true` 的是本插件结晶的（candidate/active/retired
-  全生命周期 + scope，**每行带启用开关（activate/retire）与删除按钮**），其余是安装的（如 skill-creator，只读）。
-  点开任一技能 = 渲染它存储的 SKILL.md 正文 + **文件树**（`scripts/`、`references/` 这些随技能带的可复用资产，
-  点开即读原文）——面板展示存储内容，调用策略归宿主注册表，两层各司其职。面板的写操作（开关/删除）只走
-  `POST /skill-action` 一条通道，内部跑 memory_skill 工具的真执行器（kebab 名守卫、原子写、索引同步、宿主失效
-  全部照旧），crystallize 不对面板开放（那是模型判断）
-- **热重启**：面板顶栏「热重启」按钮（5.25.0）——不重启宿主进程，让运行中的插件 server 半重新加载磁盘上的代码
-  （机制借鉴 dsh-our-free-model 的 src/reload.js：快照纤维→清本包模块缓存→经宿主 loader 重 import→重新注册，
-  失败自动回滚并报告）。本插件敢这么做是因为它没有长驻内存状态（记忆在磁盘、工具/召回钩子/路由随 apply 重建）。
-  宿主没有 loader/registry 时接口直接 501，不会假接受。**client 半改动仍需刷新页面**（重载后请刷新浏览器）
+- **道**：展示正式条目、候选及来源。候选确认、拒绝、删除以及正式条目删除均会校验请求；有效请求也在首次变更前以 `safe_delete_unavailable` 停止。会话授权不能证明真实用户批准。
+- **技能库**：按 `agent_created` 区分自有和安装的宿主包。同一处可读正文、文件树及附带资源。缺少独立执行证据时启用开关禁用；退役可用，删除暂停。写操作经 `POST /skill-action` 校验。
+- **热重启**：宿主具备 loader/registry 时可由面板请求服务端重载；受理后需查看最终结果和运行版本。客户端构建完成后刷新页面。
 - **阅读**：功能文件按迭代块折起，默认只展开最新一块（短文件全展开），顶部日期跳转条 + "展开全部"；
   思想/每日按小节展开；索引页把"功能模块索引 / 创新优化思想索引"渲染成**可点击的导航表**，其余小节折叠。
   每日分区按**月组 → 周子组**折叠（2026-11 月/周折叠方案）：月头 `▾ YYYY-MM` 默认展开当月，
@@ -323,7 +296,7 @@ Node ≥ 22.12），返回的正是 Host 已加载的同一份命名空间。
   标签 11/17 且状态色走 `color-mix()`、焦点环 `--dsw-focus-ring-*`、正文链接 `--dsw-alias-link`、
   列表用宿主式细线行（不是卡片框）——都能在 `dsh-client-ui-primitives` 的 CSS 里找到同款
 
-## 面板 HTTP API（只读）
+## 面板 HTTP API
 
 面板数据全部来自 Host 路由 `/api/memory-org/*`。**记忆根由服务端解析，请求不能指定路径**
 （不接受 `?path=`，因此无法被面板或页面请求指向任意目录）：
@@ -336,10 +309,11 @@ Node ≥ 22.12），返回的正是 Host 已加载的同一份命名空间。
 | `GET /api/memory-org/list?zone=functions\|insights\|dao\|daily` | 分区文件列表（每日区只列 `YYYY-MM-DD.md`，最新在前） |
 | `GET /api/memory-org/file?zone=functions&name=x.md` | 读记忆文件（省略 `zone` 读索引） |
 | `GET /api/memory-org/search?q=关键词` | 全库搜索 |
+| `POST /api/memory-org/{skill-action,inbox-action,axiom-action,dao-action,reload}` | 由宿主 connection 服务检查请求；缺少该服务时写路由返回 501，各动作另有执行条件。 |
 
 ### SSE 推送（`/stream`）
 
-事件名 `overview`，`data` 是一份与 `/overview` **同构**的单对象（注意 `/overview` 返回单元素数组，`/stream` 发扁平对象）。另发 `error` 事件（检索失败时，绝不静默）与纯注释心跳（`: keep-alive`，每 20 秒）。
+事件 `overview` 携带与 `/overview` 单元素数组中同构的对象。快照失败时可收到 `error`，定时 `heartbeat` 另报 `snapshotFresh`。
 
 三条设计约束：
 
@@ -354,7 +328,7 @@ HTTP 路由与 SSE **共用同一个 `overviewPayload()`**，避免两处装配�
 | 响应 | 字段 |
 |---|---|
 | `overview`（数组，单元素） | `root`、`initialized`、`failCount`、`warnCount`、**`results`**（体检条目：`level`/`rule`/`message`；不是 `problems`）、`counts{functions,insights,dao,capabilities,skills,daily,archived}`（`daily` **含归档月**在内，`archived` 只数 `daily/YYYY-MM.md`；2026-11 口径变更）、`usage{signalCount,recallEvents,readEvents,verdictEvents,distinctHrefs,indexRows,layers,hotspots}`、**`sag{configured,online,authorized,endpoint,tool}`**（三个布尔分开报，因为失败原因不同、修法不同：无 key / 服务没起 / key 被拒——合成一个"不可用"会藏住是哪一个坏了）、`capture`、`env{version,canReload,hotReloadRunning,memoryRoot,skillRoot,indexBytes,indexComfortBytes,indexHardBytes,lastReload}`（`skillRoot` 为**已解析**的存储路径：无覆盖时 = `<dshHome>/skills`，与 config 项同名同义） |
-| `stream` | SSE。事件 `overview` 的 data 是 `overview` 单元素数组里的那个对象（**扁平，不包数组**）；事件 `error` 带 `{message}`；心跳是 `: keep-alive` 注释行 |
+| `stream` | `overview` 事件携带单个概览对象，`error` 事件携带错误，`heartbeat` 的 `snapshotFresh` 表示快照新鲜度。 |
 | `list` | `files[]{name,bytes,mtime}` |
 | `file` | `{name,text}` |
 | `search` | `hits[]{zone,name,line,heading,snippet}`（片段是 `snippet`，不是 `text`） |
@@ -363,17 +337,7 @@ HTTP 路由与 SSE **共用同一个 `overviewPayload()`**，避免两处装配�
 
 ## 开发与测试
 
-```bash
-DSH_INSTALL_DIR=<DSH 安装目录> npm test   # harness-test.mjs + api-test.mjs + ui-test.mjs
-```
-
-- `harness-test.mjs`：用假 ctx 捕获工具定义，在临时记忆根上跑完整闭环（写/读/思想/折叠/改名/体检/回忆）
-- `api-test.mjs`：用 stub req/res 直接驱动面板 HTTP 处理器，在临时 DSH 根及独立临时记忆根上做断言
-- `ui-test.mjs`：给面板注入**最小 React 替身**（createElement + 静态 hooks），把六种视图渲染成标记后断言
-  （索引表导航、迭代块折叠、分区摘要/排序/过滤、每日按月/周两级分组、内部链接解析）；纯解析逻辑由
-  `__internalsForTest` 直接测
-
-Host 安装目录探测不到时需要 `DSH_INSTALL_DIR`（测试进程的 CLI 入口不是 DSH 自己，所以自动探测失效）。
+在包目录运行 `npm test`。`tests/run-all.mjs` 定位 DSH 宿主，找不到时明确失败，可通过 `DSH_INSTALL_DIR` 指定安装位置。测试入口包含工具、HTTP、UI 集成以及采集、归档调度、蒸馏和生命周期的专项测试。
 
 ## 许可
 

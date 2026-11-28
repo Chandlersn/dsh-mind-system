@@ -9,7 +9,7 @@
     },
     "clis/README.md": {
       "source": "dsh-clis/README.md",
-      "sha256": "181bf0d4f97547cf550d5a0f5caeaac310377f71d4b3503f5c26eb290a207586"
+      "sha256": "7c54478d730ed8b927513745288fede14aa6054897809162e757f352e51f874e"
     },
     "clis/chunk-2HMO3QIV.js": {
       "source": "dsh-clis/chunk-2HMO3QIV.js",
@@ -141,11 +141,11 @@
     },
     "memory/README.en.md": {
       "source": "dsh-memory-manager/README.en.md",
-      "sha256": "2bedd35489d16256427fe9b78dae5b2b2c4dd7282431010c7cbd0f5742b010bc"
+      "sha256": "e2dfc868ad0d24f6c427ed1a7dfd45c701e62e04985045ddf62fe1a114b0fdc0"
     },
     "memory/README.md": {
       "source": "dsh-memory-manager/README.md",
-      "sha256": "ca7b0412179733c4a38e2ef3663b2bcbe4e03ed19a1e5f0f9749f2b377ab12b0"
+      "sha256": "fc975893f541c1fe32b85850687d170444d597d2e6a2807026ef39067ac7c735"
     },
     "memory/api-test.mjs": {
       "source": "dsh-memory-manager/api-test.mjs",
@@ -1005,7 +1005,7 @@
     },
     "meta/README.md": {
       "source": "dsh-meta-framework/README.md",
-      "sha256": "2d2cf459cbdfbe0b5c9c8e7cb322277c0c4a71a28d0809ed4979700c42e6aca1"
+      "sha256": "d12a0c22b5a8ae212708bd32de1b082eac5593e6ddf4a132061a3ec93147c384"
     },
     "meta/index.js": {
       "source": "dsh-meta-framework/index.js",
@@ -1057,7 +1057,7 @@
     },
     "mind/README.md": {
       "source": "dsh-agent-mind/README.md",
-      "sha256": "95065ce91734e7ba5c44330c4a7e84ad6e3497e15338618f68f4e08a314cf192"
+      "sha256": "3642b595b502728fe2f2e93979af3a9fe94401e7fad1ede2b8de6bd339a5bb5f"
     },
     "mind/index.js": {
       "source": "dsh-agent-mind/index.js",
@@ -1757,7 +1757,7 @@
     },
     "valves/README.md": {
       "source": "dsh-valves/README.md",
-      "sha256": "2157e928f9b83c68f1185a55a130c83660df764240365b0c37bb1b091cd7bed1"
+      "sha256": "46e7e0e374b7f6023653799033528bdd968c4396bb60df3f8d3a1dd39ca3f8de"
     },
     "valves/index.js": {
       "source": "dsh-valves/index.js",

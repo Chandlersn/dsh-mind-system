@@ -1,238 +1,56 @@
-# 双循环执行运行时：隔离开发包
+# dsh-execution-runtime
 
-这是融合方案DL-0、DL-1与DL-2.1的隔离开发包，尚未接入活动心智系统，也不是已发布的Host插件。有界异常分析和修正提议已接入；修正执行、生产装配、恢复所有权、补偿及知识访问适配器按后续节点实现。
+本包提供 DSH 任务调度器、SQLite 运行库和 Cordis 宿主入口。合成包可装载它；源码包自身标为 `private`，要求 Node.js ≥22.23.0。默认合成配置启用运行时、允许动态任务分析，并以空原生任务列表启动。`no-tasks` 只影响按引用启动原生任务。宿主装配或 schema 校验器不可用时，应查看 `load-failed` 和具体错误。[宿主装配](src/host-plugin.js) · [启用测试](test/host-enablement.test.js)
 
-## 已有能力
+## 执行与验收
 
-- `RuntimeScheduler`：注册模板→完整候选→准入→规则或提供者判别→公开宿主管线→登记的独立Verifier。正常多步任务可完成；没有候选、歧义、拒绝、无进展、预算耗尽、取消与未知结果分别停止。
-- `admitCandidate`：绑定可信调用者、工作区、模板版本、必需前置条件、工具可见性、宿主参数schema和可信工具副作用声明。候选不能把写操作自报成读操作，也不能省略必需条件。选中动作在派发前再次准入。
-- `HostExecutor`：只调用公开`ToolRuntime.execute`，保持同一显式Agent、root和真实parent token。私有host调用ID隔离观察器；先绑定执行身份与参数引用，再经过已有策略。信号仍可由宿主融合；调用身份和参数不能由普通包装器替换。缺少本次派发准入证据的成功回执会变为未知结果。
-- `DecisionClient`：systemone批量评分、严格协议检查、有界超时/取消、显式选择与弃权。普通规则路径不需要提供者；提供者失联仅能降级到已准入、显式登记且唯一的读动作，不自动降级到写动作。真实提供者配置缺失时只有fixture证据。
-- `RuntimeStore`：SQLite事务、版本CAS、预算预留和不可改事件。结果、验证与下一业务游标在同一事务提交，防止结果已记账而游标未推进。旧阶段0数据库补齐新增列和有界预算默认值。
-- JSON模板：准备、候选生成、两次前置检查和独立验证均接入计量的只读I/O。工具只负责创建文件；Verifier重新读取源文件和产物，不使用工具自报的验证结果。
+| 入口 | 输入、权限与结果 |
+|---|---|
+| `runtime_run` | 传入 `taskRef`。目标、配方、工作区、工具许可和可选验收合同来自宿主注册的原生任务。 |
+| `runtime_execute` | 调用方提供目标、输入、配方规格和预期结果。支持单步、多步 `steps[]` 及 `next[]` 分支。挂载实例决定工作区、范围、可见工具和可信副作用声明。 |
+| `runtime_verifiers` | 列出验收原语 `exact_bytes`、`line_set`、`structure`、`sorted_lines`、`json_fields` 和分支条件 `file_exists`、`file_sha256`、`step_less_than`、`always`。 |
+| `runtime_status` | 查看已注册任务及运行状态、原因、预算和配方绑定覆盖情况。数据库标识来自 SQLite 主库路径的哈希，同一标识不足以识别被替换的数据库文件。 |
+| `runtime_recovery_diagnosis` | 只读比较持久化原生绑定与当前注册；匹配只涉及可比较的字段，手写配方的完整身份未知。查询不授权恢复。 |
 
-## 配方历史与复用状态
+调度器检查范围、模板版本、宿主与配方的工具许可、必需前置条件、参数 schema 和副作用声明。只有 `read` 和 `reversible_write` 可进入派发；不可逆或未知效应在执行前被拒。规则模式需要唯一的准入候选。已选动作在派发前再次准入，工具随后走调用 Agent 的公开宿主管线。没有计划或选择有歧义可进入 `waiting_analysis`，检查条件不可用可进入 `waiting_human`；已派发且结果未知的动作冻结在 `reconciling`。[准入](src/admission.js) · [调度器测试](test/scheduler.test.js)
 
-`runtime_recipes` 返回历史规格供检查，不自动执行。每条的 `reuseStatus` 为 `identity_unverifiable`（身份缺失、损坏或与规格不符，当前身份检查会拒绝复用）或 `identity_verified_requires_admission`（持久身份一致，仍需当前宿主权限、可信副作用声明、注册表身份及运行时验证；不保证可执行）。历史记录不因此删除。规格 JSON 损坏时返回明确错误 `recipe_library_corrupt`，不会伪装成空结果。
+`runtime_write_json` 和 `runtime_write_text` 在挂载工作区内独占新建文件，通过临时文件和硬链接发布完整内容，遇到已有目标、`createOnly:false` 或不支持硬链接时拒绝。`repair.replaceTool: true` 可额外注册按目标哈希核对的 `runtime_replace_json`，使用它仍需任务和配方同时授权。路径检查的保证以协作式文件系统为前提。[写入工具](src/write-tools.js)
 
-`read`、`list` 和 `suggest` 的每条记录都带 `countBasis`：`origins: "all_origins"`、`historicalOriginSplit: "unknown"`、`success: "selected_verifier_completion"`、`failure: "failed_or_cancelled_historical_other_statuses_possible"`、`updateReliability: "updates_may_be_lost_or_duplicated"`、`taskUnique: false`、`productionEvidence: false`、`independentGoalProof: false`。既有 `verifiedRuns` 和 `failedRuns` 是跨全部来源的聚合，历史来源拆分未知；完成由生产者选定的 verifier 判定。新计数只将 `failed` 和 `cancelled` 记为失败，未解决及未知状态不计成败；旧规则可能已将其他状态记入历史失败数，无法拆分或修正。记账可能丢失或重复，不能作为目标独立达成证明。排序和筛选仍使用原有计数。
+读运行结果时应区分两个字段。
 
-`runtime_status` 的 `recipeOutcome.coverage` 仅根据实际持久绑定报告：同一宿主数据库中成功原子绑定的生成配方为 `bound`；无库、独立库、原生模板和历史未绑定运行是 `unbound`；已绑定记录无法核实时为 `unavailable`。不会通过配方 key 推断绑定，绑定也不证明目标独立达成。
+- `status: completed` 表示已通过该配方登记的验证器。动态配方的验收原语和参数由调用方选择；检查目标是否被充分表达仍需核对判据。`sorted_lines` 可核对输入与输出的重复行计数，`json_fields` 按指定字段比较值。
+- 原生任务可另外配置 `acceptanceContract`。受支持的 v1 合同在派发前绑定原生引用、合同与授权；运行后重读工作区文件，单独报告 SHA-256 谓词结果。`status: completed` 和 `acceptance.status: fail` 可以同时出现；文件缺失可返回 `unknown`。该结果不证明整体目标、原则归因或治理资格。[宿主验收用例](test/acceptance-host-guard.test.js)
 
-`runtime_recipes` 可选传入 `bindingLimit`（1–100）读取独立的 `bindingSummary`：按任务 ID 顺序扫描新增绑定的有界前缀，以同一 SQLite 读取快照、逐条复用 `getRecipeOutcome` 校验后，按精确配方 ID、版本、调用者声明的来源及当前状态计数。`truncated` 表示尚有未扫描绑定；`partial_unavailable` 和 `unavailable` 明确表示存在无法核实的行或快照，不能把缺失计数解释为零。历史未绑定任务不回填，嵌套事务不保证快照时返回 unavailable；结果不证明目标达成或生产验证。该摘要不影响历史计数和排序，且与配方列表分别读取。
+## 预算、持久化与恢复
 
-分页需同时传 `bindingLimit`（1–100）和 `bindingCursor`：空字符串开始，之后使用返回的 `nextCursor`；`null` 表示所给游标之后的范围已读完，`rangeExhausted` 不证明先前范围已读取。游标为 `v1:<high>:<after>`，两个位置是规范的有符号 64 位十进制字符串。首次读取在一个事务中取得行号高水位和第一页，后续页各自使用新的读取快照，仅扫描 `(after, high]`；预读行不消费。每条 `observations` 提供行号和可核实的任务、配方、来源及当前状态，损坏行标为 unavailable 并仍推进游标；`groups` 只统计本页可核实行。重试同一游标的状态可以变化，跨页状态不是全局原子快照；partial/unavailable 不能解释为零。
+数据库使用 `stateDir`，未指定时使用 `DSH_HOME/execution-runtime`，再回退到工作目录的 `.execution-runtime`，文件名为 `runtime.sqlite`。动作、工具调用、逻辑 I/O、判别和分析分别计量。验证器声明的 I/O 在业务派发前预留；超出预算会停止。逻辑读取量和模型调用次数不能换算为系统调用数或 token 消耗。[存储实现](src/store.js)
 
-成员稳定性依赖绑定表不可修改、不可删除，且只使用正常隐式 rowid 插入；不允许 VACUUM、最大 rowid 耗尽、显式 rowid 插入、数据库或 schema 替换。SQLite 默认设置下 `INSERT OR REPLACE` 可绕过删除触发器并移动行号，因此外部写入也不得替换已有绑定；现有触发器检查不能证明没有发生替换。无法确认必要表结构或触发器、检测到 rowid 耗尽时返回 unavailable；这些检查不能证明外部操作遵守假设。游标由调用者控制，可以跳页或伪造位置，不能证明扫描完整、来源真实或目标达成。只传 `bindingLimit` 时保留旧的按任务 ID 排序的汇总。
+租约和递增的 `fence` 用于拒绝失权写者后续的预留和结算。`recoverRun` 冻结未结尝试，保留已用预算。旧 worker 的在途副作用仍可能稍后发生，调用方声明的 `evidenceRef` 不足以自动对账或重放。底层有暂停、环境比对、恢复预留、检查点和补偿逻辑；绑定了原生验收合同的任务拒绝恢复、修复和对账，绑定了生成配方的任务也拒绝恢复、修复。工具入口只提供恢复诊断。[迟到副作用测试](test/late-effect-recovery.test.js) · [配方绑定测试](test/recipe-run-binding.test.js)
 
-## 嵌入契约
+## 异常分析与原生修复
 
-构造调度器时注入`store`、可信注册的`recipes`、`executor`、可见的`tools`与`validateArguments`。后者必须使用宿主支持的真实schema校验函数，返回错误字符串数组；不能以“无校验器”为放行条件。可选注入`decisionClient`与显式版本的`decisionPolicy`。
+宿主可使用显式配置的 HTTP 分析器，或使用可用的宿主 LLM。动态任务还要求 `analysis.allowDynamic: true`；调用方的任务参数不能启用它。异常包可能包含目标、工作区路径、参数、结果和证据引用，传给所配置的服务时无脱敏保证。分析受任务截止时间、分析预算和传输超时约束，迟到的结果不会取得派发权。[分析装配](src/host-plugin.js) · [动态任务分析测试](test/dynamic-analysis-host.test.js)
 
-运行调用为`await scheduler.run(task, { authority, signal, decisionMode })`。`authority`由可信宿主构造，包含`scopeRef`、绝对`workspaceRoot`、`allowedTools`与`agent`；其Agent必须与执行适配器不可改的Agent相同。模板回调与Verifier由可信原生代码注册，不能由模型提交可执行函数。普通任务输入不能覆盖授权、Verifier或模板代码。
+动态任务只记录提议。原生 `runtime_run` 的自动修复入口要求模板启用 `autoRepair`、任务处于 `waiting_analysis`、分析路线为 `repair_directly`，并有持久、未消费、无需人工复核的 `retry_with`。候选须匹配原配方版本和许可工具，重新准入后由原验证器核对。JSON 修复策略另查产物所有权与预期哈希。底层调度器还处理受信探针取证、放弃和有检查点的回滚；原生工具的自动分支只选择符合上述条件的重试。未知结果保持冻结。[原生派发条件](src/plugin.js) · [原生修复测试](test/native-repair-entry.test.js) · [修复策略](recipes/json-repair.js)
 
-`decisionMode`为`rules`或`provider`。规则主路径只接受唯一准入候选，并记录模板规则版本；这与提供者故障后的只读降级是两个明确入口。提供者超时、HTTP或传输错误可消费登记的`fallbackRule`，协议坏数据、取消和预算耗尽不会自动执行替代动作。
+`tools/post-execute` 可在重复且相关的失败后附加可选提示，默认阈值为两次。提示只提供入口；是否采用、后续目标是否达成需另查。[介入策略测试](test/intervention.test.js)
 
-执行适配器调用完成后由其所有者`await executor.dispose()`，再关闭数据库与宿主Context；调度器不擅自销毁可复用的共享执行适配器。
+## 跨任务修复模式与阀门
 
-## 预算与I/O
+模式汇总器按 `repairId` 去重，按已结算且明确成败的修复计算成功率，另按不同 `taskId` 计算覆盖数。达到阈值可产生候选。**当前宿主的持久记录无法直接供此解析器复用。** `listPatternEvidence()` 按签名返回分组，`taskId` 和 `repairId` 在 `repairs[]` 内；解析器把整组直接传给要求顶层逐条身份的汇总器。非空分组进入汇总时会被拒。解析器测试注入扁平样例，不能据此断言真实历史已触发命中或减少分析调用。[数据库输出](src/store.js) · [解析器](src/pattern-resolver.js) · [汇总器](src/repair-patterns.js) · [解析器测试](test/pattern-resolver.test.js)
 
-默认预算在契约中定义：50个动作尝试、20个公开工具调用、100个逻辑I/O操作、100个判别请求、5个分析调用。分析协调器只在待分析状态预留并提交分析，正常路径不消耗分析额度。工具意图、判别请求与I/O在发生前持久化预留，失败不返还。`usage`保留旧的动作/工具两项；`budgetUsage`提供完整维度。
+`runtime_pattern` 用 `patternId` 选择宿主登记的正文，并检查批准状态、到期时间和正文版本。`human:true` 是调用声明；显式委托策略也可在满足条件时签发标记为 `automation:` 的批准。启用 `valves.enabled` 后，宿主优先使用传入的 `confirmRule`，缺省时可调用已挂载的 `valves.confirm`。后者自行签写入许可；桥未传 `human` 或 `permit` 不能证明有真人在场。要求真人批准的部署由宿主写入端核实该条件。[批准条件](src/pattern-approval.js) · [阀门桥](src/valve-bridge.js) · [宿主写入端选择](src/host-plugin.js)
 
-I/O计数是文件读取、lstat和realpath等逻辑能力调用，不是操作系统系统调用数；授权根核对等宿主策略元数据开销另属接入层。Verifier的声明I/O额度在业务派发前预留，不足则不派发；超出预留停止并保留未知结果。预留未用完仍保守计入预算，实际成功读取另有`io_observed`事件。
+独立的修复事件投递路径已经接入。修复结算时在 SQLite 事务中保存 `repair_finished` 及待投递记录；宿主派发器向 valves 接收器投递，按回执标记，未确认可重试。接收、双端记录一致、复读当前文件字节和持久技术审查分别回答不同问题。它们不会自动确认规则，也不提供目标或原则归因证明。[投递器](src/outbox-dispatcher.js) · [宿主证据集成测试](test/host-evidence-service.test.js)
 
-计量能力只暴露只读操作，拒绝自定义文件flag和越界路径，每次读取上限4MiB；JSON源另有限制1MiB、最多10000条记录。此能力限制受信任模板的正常I/O，不是隔离任意原生JavaScript代码的沙箱。
+## 历史配方与知识接口
 
-## 有界异常分析
+`runtime_recipes` 返回历史规格。`identity_unverifiable` 表示无法核验身份，`identity_verified_requires_admission` 表示身份匹配且重新使用仍需当前授权和验证。历史计数混合所有来源，可能丢失或重复；`verifiedRuns` 仅计通过所选验证器的完成。新记录只把 `failed` 和 `cancelled` 计为失败，历史失败计数可能含其他状态。排序用于检索，无法独立证明生产成效。损坏的规格返回 `recipe_library_corrupt`。[配方库](src/recipe-library.js)
 
-`Analyzer({invoke,timeoutMs,maxResponseBytes})`使用显式注入的可信模型传输；`invoke({instructions,input,signal})`返回原始JSON文本。这里没有自动选择提供者或扫描凭据。指令与不可信异常数据分离，修正结果只接受四种互斥分支：retry_with、gather_evidence、rollback_to、abort。目标/授权字段、混合分支、重复键、伪造证据、数组伪装kind以及不完整候选均拒绝。
+`runtime_status` 的 `recipeOutcome.coverage` 区分 `bound`、`unbound`、`unavailable`。`runtime_recipes(bindingLimit)` 可另查 1–100 行绑定汇总；加 `bindingCursor: ""` 从第一页开始，后续传 `nextCursor`。分页固定 rowid 高水位，状态逐页取快照；游标由调用方控制，部分不可读的数据保留为未知。成员稳定性依赖正常隐式插入、无替换或删除、无 VACUUM 或数据库替换。历史未绑定任务不回填。`origin` 取自声明。[绑定读写实现](src/store.js)
 
-`AnalysisCoordinator({store,analyzer,agent})`将同一Agent和任务授权绑定到分析。`runWithAnalysis({scheduler,coordinator,task,options})`先走正常调度，再按状态决定是否分析；已完成、拒绝和未知副作用不会被直接送入普通修复。提议只保存到数据库，当前没有修正执行入口。
-
-动态 `runtime_execute` 分析默认关闭；仅宿主配置 `analysis.allowDynamic: true` 且提供 endpoint、model 和 apiKey 后启用。任务输入不能开启该选项。启用后异常包可能将目标、授权范围与工作区路径、工具参数、结果和证据引用发送至配置的外部服务；不保证脱敏。动态分析仅保存提案，不自动派发修复。HTTP 响应按实际字节流限制为 65536 字节，超限中止传输；有效提案另受分析器自身 16KiB 上限约束。
-
-异常包最多16KiB、最近3条事件身份；过大字段保存为任务隔离的不可改SHA-256证据引用，并显式记录省略字段与字节数。单条证据原始JSON最多4MiB，超出时停止分析并记录包失败，不静默截断为可用证据。每次分析最多取证2次、累计32KiB，读取还计入任务I/O预算；只读已绑定的同任务引用，不解析任意文件链接。
-
-分析默认30秒超时，并受任务截止约束。超时/取消立即隔离迟到结果；`pendingCount`仍显示尚未结束的提供者工作。`dispose()`取消当前分析并有界返回，不承诺终止不响应信号的传输；仅显式`drain()`等待真实提供者收敛，它可能一直等待。调用方应在正常工作收敛后关闭数据库与Context。分析预算是发起前的保守预留，`analysis_submitted`是提交记录，不等于供应商完成或令牌用量。
-
-完整验收范围见[阶段2·DL-2.1证据](../../docs/runtime-phase2-evidence.md)。真实推理提供者、模型取证工具循环与修复后的再次准入/验证尚未验收。
-
-## 修正提议的执行边界
-
-`json-repair.js`登记了`jsonNormalizeRepairPolicy`，只授权替换本任务**独占创建且哈希未变**的产物；它不提供写入工具，写入仍走宿主工具边界。原生上下文经`WeakSet`标记身份并深冻结，不能由模型提交或序列化重建；目标、模板版本、验收条件与Verifier始终取自原任务登记，修复策略不能替换。
-
-`scheduler.repair(taskId, analysisId, {authority, signal})`只消费已持久化的提议：先以原生模板策略准备原始所有权上下文，再按修复工具集重新准入（必需前置条件、副作用、宿主schema），随后经同一公开宿主管线派发，最后由**原任务登记的独立Verifier**判定。提议中的目标、模板、参数结构或自报成功均不能放行；越界提议在写入前被拒并计为一次失败。
-
-`startRepair`/`finishRepair`把提议消费、修复意图、新attempt归属与结果分开记账。成功只由实际验证派生，模型回执或调度器布尔值都不能替代；派发后结果未知保持`reconciling`，不重放也不计为成功。同一原生异常签名两次实际失败后停止为`waiting_human/repair_limit`；取消与非派发不计失败样本。
-
-## 取证探针
-
-`createProbeRegistry`只接受可信原生代码登记、带唯一`probeId`和只读`run`的探针。取证分支按分析器给出的`probeIds`逐个运行：越界读取被`probeIo`的范围校验拒绝，每次观察计一个逻辑I/O；输出超过4MiB或抛错记为不可用，不静默截断。观察到的事实作为`probe:<id>`证据存入任务库，修复记录结为`observed`，运行回到`waiting_analysis/evidence_gathered`，下一轮异常包自动带上这些引用。取证不派发业务工具、不生成候选、不计修复成败。
-
-当前仅支持首个JSON `retry_with`、`gather_evidence`与`abort`。取证分支只运行可信登记的只读探针：探针输出存入任务证据并按引用返回下一轮分析，不产生业务写入、不生成候选、不计成功；未登记探针记为不可用。回滚/补偿、第二次修复的原生上下文刷新、跨任务推广及正式工具注册仍待后续；未登记策略时拒绝执行。
+`runtime_knowledge` 要求 `domain`（`formal`、`workspace`、`scratch`）、对象 ID 和版本。默认适配器关闭。内置 SAG 适配器无法验证域、对象与版本；配置有效凭据后，读和带路径的写均在发起检索或索引前以 `knowledge_identity_unsupported` 拒绝。无密钥的读、缺路径的写各有自己的错误。抽象接口支持可信适配器分别报告存储与索引状态；已注册目录的正文检索由记忆插件的 `memory_sag` 提供。[SAG 适配器](src/knowledge-sag.js) · [知识接口测试](test/knowledge-wiring.test.js)
 
 ## 验证
 
-在本包目录运行：
-
-```powershell
-node --test test/*.test.js
-node scripts/verify-core-mutations.mjs
-node scripts/verify-phase1-mutations.mjs
-node scripts/verify-analysis-mutations.mjs
-node scripts/verify-repair-mutations.mjs
-node scripts/verify-recovery-mutations.mjs
-node scripts/verify-lease-mutations.mjs
-node scripts/verify-plugin-mutations.mjs
-node scripts/verify-compensation-mutations.mjs
-node scripts/verify-rollback-mutations.mjs
-node scripts/verify-pattern-mutations.mjs
-node scripts/verify-approval-mutations.mjs
-node scripts/verify-hit-mutations.mjs
-node scripts/verify-diagnosis-mutations.mjs
-node scripts/verify-knowledge-mutations.mjs
-node scripts/probe-jev.mjs
-```
-
-共14个变异套件（92个边界变异），每个都用指定断言证明其守卫在链路上生效；套件基线退出必须为0，否则视为脚本没跑到目标分支。全部14个套件的暂存文件由`scripts/build/module-closure.mjs`按测试入口的真实import图自动收集，新增依赖无需再手工补清单。本轮实测该清单确实会漂移：`src/diagnosis.js`未登记曾让analysis与hit两个套件基线以模块缺失失败并被误读为功能回归，改为闭包收集后消除。
-
-宿主测试默认读取本机安装根，可用`DSH_SEAM_HOST_ROOT`显式覆盖。测试创建独立Context、临时DSH_HOME和临时文件，结束后关闭资源并清理目标目录，不更改活动profile。详见[阶段0证据](../../docs/runtime-phase0-evidence.md)、[阶段1证据](../../docs/runtime-phase1-evidence.md)和[宿主管线证据](../../docs/runtime-host-evidence.md)。
-
-真实Jev探针只读取`DSH_JEV_ENDPOINT`、`DSH_JEV_MODEL`、`DSH_JEV_API_KEY`。缺少配置返回`external_dependency_not_verified`，不会发送请求。具体参数见[协议证据](../../docs/runtime-jev-evidence.md)。
-
-## 恢复与幂等
-
-`recoverRun`把未结动作冻结为`unknown`，递增 fence 并清除租约；不重放、不清空预算，也不证明旧 worker 已停止。最终派发检查拒绝已经冻结或失权的尝试；已获准或已进入下游的调用仍可能在冻结后产生副作用。冻结后的 run 停在 `reconciling`。
-
-调用方提供的 `evidenceRef` 只是声明，不能证明旧调用已终止或副作用不存在。未决尝试的自动对账目前关闭：未经宿主独立核验的结论不会转换为 `reconciled_applied` 或 `reconciled_absent`，也不会触发后续派发。后续要恢复此能力，需持久、可信且绑定同一尝试的终止证据和目标对象复核；缺失时保持未知。
-
-`idempotencyKey`按**工具+键**在同一任务内绑定，且只拦"已核验生效"的同一意图：已`reconciled_applied`，或已结算且验证通过。已验证失败的动作保留同键可修复，未知动作先由冻结阻止而非幂等表判断。不同工具复用同键不算同一副作用。该守卫在`reserveAttempt`内生效，因此拦在派发之前。
-
-```powershell
-node scripts/verify-recovery-mutations.mjs
-```
-
-## 单写者、暂停与恢复
-
-`acquireLease`每次授予都把`fence`加一，旧持有者即使仍在运行也不再是写者。`reserveAttempt`、`markStarted`、`recordOutcome`都接受`fence`并在事务内校验：不一致直接`stale_owner`，因此"以为自己是写者"的旧worker无法派发或结算。同一个未过期租约不能被重复获取；过期后由同一owner重新获取会得到更大的fence。fence与owner持久化在数据库中，进程重启不能凭旧状态绕过。
-
-`pauseRun`要求没有未结动作（未知副作用先走核对），暂停时把fence加一并清空owner，所以"发起暂停的一方"也不再能写。暂停只阻止新派发，不宣称杀死在途工具；已派发动作的收敛仍由公开管线与核对处理。暂停时同时记录当时的模板与授权快照。
-
-`resumeRun`只接受`paused`状态。它要求调用方提交**当前**模板与授权快照，并与暂停时记录的快照逐项比对；模板版本、范围、工作区或工具集任一变化即`resume_environment_changed`，不做"盲恢复"。恢复时fence再加一，重复resume在`running`上被拒，从而不会双写；暂停期间越过任务截止则直接拒绝恢复。
-
-`RuntimeScheduler.run`在创建或取得run后立即申请租约，并把fence带入其后所有写入；有反例证明：工具执行中途被新worker接管时，旧调度器的结算会被`stale_owner`拒绝，被接管的attempt保持未结，留给新owner核对。
-
-## 补偿契约
-
-补偿不是"回滚标志"，而是一次有明确前后版本、有目标事实的独立动作。`validateCompensationPlan`要求恰好声明补偿ID、目标工具与参数、来源动作、`expectedBeforeSha256`、`expectedAfterSha256`与`reason: 'restore_prior_version'`；前后版本必须不同且是真实哈希，多余字段一律拒绝。
-
-`assessCompensation`只在同时满足三条时才认可完成：登记的Verifier判定通过、带证据引用、并且观察到的目标哈希等于计划中的`expectedAfterSha256`。任一不满足返回`unverified`或`diverged`，不冒充"已回滚"。
-
-`assertCompensationSupported`对`irreversible`与`unknown`效应直接拒绝：不可逆或未知副作用不能自动补偿。只读动作没有需要补偿的状态，`registerCompensation`也只接受`reversible_write`。
-
-`RuntimeStore.recordCompensation`要求来源动作已结算；`status:'completed'`必须同时给出`verifiedByTarget`，否则在写库前被拒。完成时运行状态保持原样（不因补偿完成就把目标标成完成），失败/分歧/不支持则让`running`进入`waiting_human`。事件`compensation_recorded`只记录计划ID、状态与证据引用。
-
-JSON模板提供`buildJsonCompensation`：从原Verifier观察到的版本与先前版本构造恢复计划，不接受模型自报的前后哈希。
-
-## 作为宿主插件装载
-
-`createExecutionRuntimePlugin({store,recipes,tasks,validateArguments,owner,...})`返回标准Cordis插件形状：`name`、`inject:['tools']`、`apply(ctx)`、`healthProbe.probe()`。它注册两个任务级工具：
-
-- `runtime_status`：只读报告已登记模板与任务引用；给出`taskId`时返回该run的持久状态、原因、预算用量、fence与owner。
-- `runtime_run`：只接受`taskRef`。目标、工作区、工具集与Verifier全部来自原生`tasks`工厂，模型无法自带或放宽；没有显式调用Agent时直接拒绝。
-
-调度器与执行器按调用Agent缓存，身份不会被模型传值扩大。插件卸载时释放自己注册的工具，并让探针报`execution-runtime.unloaded`；从未apply时探针报`degraded/execution-runtime.not-applied`，不冒充健康。关闭插件不影响宿主其他工具。
-
-宿主真实契约（本机实测，不是推测）：工具`output.schema.type`只能是`object/array/string/number/integer/boolean/null`；`execute`返回`{isError, content, value}`；注册表用`get(name, scope)`查询，没有列表面API。
-
-## 卸载与排空
-
-`apply`返回的dispose按HMR语义执行：先置`disposed`拒绝新派发，再释放两个工具，最后记录状态。工具从注册表消失后宿主以`UNKNOWN_TOOL`拒绝调用；持有旧定义直接调用时由运行时自身以`runtime_unloaded`拒绝，两层都有测试。
-
-`drain()`等待真正的在途work，并在等待前快照pending，所以`drained`反映实际等待的条数；卸载时有在途work，探针返回`degraded/execution-runtime.draining`，排空后才回到`execution-runtime.unloaded`。run持久在SQLite中，卸载只影响插件实例，后续owner仍可resume或reconcile。
-
-## 修正证据与模式候选
-
-`patternIdentity`按**实际约束**生成身份：模板与版本、范围、Verifier及版本、触发类型、工具名。它不读退出码、也不读瞬时错误文本——同一个约束换一句报错仍是同一模式，不同工具或范围不会塌缩成一个。
-
-`classifyRepairEvidence`决定一条修正记录算不算样本：只有`settled`且`succeeded===true`计入成功；**已验证失败计入分母但不计成功**（否则成功率只由成功样本构成，必然虚高）；`blocked`/`unknown`/`observed`（取证）既不进分子也不进分母，并在`rejected`里留下原因。`settled`但未声明成败会被拒绝，不默认成功。
-
-`summarizePatternEvidence`按**独立run**计数：同一个run反复修正只算一个独立样本，重复回执按`repairId`去重。`eligible`需要独立run数达阈值且成功率达标——重复次数不能替代覆盖面。
-
-`buildPatternCandidates`只产出**候选**：`activatable:false`且附注说明"候选不是生效规则"。它不写任何规则库，推广仍需人工评审（DL-4.2）。
-
-## 人工确认与阀门写入
-
-`patternVersionOf`把模式的**含义**哈希成一个版本：身份、陈述、负向类型、关键词集合、范围。改关键词顺序不算改版，换一个关键词就算——这样"评审过的内容"与"真正生效的内容"始终是同一样东西。
-
-流程是三段式，任何一段缺失都不生效：
-
-1. `proposeApproval`只接受`activatable:false`的候选，产出一条`pending`请求，带版本与过期时间。请求本身**不能授权任何事**。
-2. `confirmApproval`要求显式的`human:true`——分析结果、候选字段、`'yes'`字符串都不算；并且必须提交与被评审请求**相同的版本**，版本不符直接拒。
-3. `approvalApplies`在生效时再核一次：状态为`confirmed`、未过期、且当前模式的版本仍等于批准版本。模式被编辑后旧批准自动失效（`pattern_version_changed`），不会"批准一次永远有效"。
-
-`revokeApproval`保留审计痕迹（`reviewTicket`不删），撤销后`approvalApplies`返回`not_confirmed`。`rejectBorrowedTicket`拒绝携带`reviewTicket`/`approvalId`/`permit`/`confirmedBy`的候选——票只能来自人工确认，不能夹带。
-
-`createValveWriter({confirmRule})`把已批准模式交给宿主阀门写入：调用前先验批准有效性，调用时**不传`human`也不传`permit`**，所以运行时无法自己签票；阀门若拒绝或抛错，一律变成失败而不是静默成功。既有阀门的许可只绑定`ruleId`、不绑版本，因此版本绑定由本层补齐，并把`patternVersion`随写入一起交给宿主。
-
-## 命中、弃权、撤销与回退
-
-`matchPattern`决定已批准模式能否替代本次分析，要同时满足：批准仍有效（`confirmed`、未过期、版本一致）、范围/触发/工具/模板版本全部匹配、证据达到阈值。任何一条不满足就**弃权**（`analysesSuppressed:false`），分析照常运行——弃权不会静默跳步。
-
-命中时`analyze()`返回`pattern_applied`并写`pattern_applied`事件，**不调用分析器**；弃权时写`pattern_abstained`事件并继续正常分析流程。未配置模式匹配器时行为与之前完全一致，事件也不会出现。用真实宿主管线与计数器验证：命中时分析器调用数为0，弃权时为1。
-
-`planRollback`/`applyRollback`处理版本回退：回退把目标版本重新置为`pending`并**清空`reviewTicket`**，同时把当前批准留为`superseded`。也就是说，回退恢复的是内容而不是票据——那个版本必须重新评审才能再生效。回退目标必须是历史中确实确认过的版本，且不能是当前版本。
-
-## 知识读写与治理outbox
-
-`knowledgeRef`要求显式`domain:id@version`（`formal`/`workspace`/`scratch`），但请求者填写身份并不能证明检索结果属于该域和版本。当前 SAG 全库近邻检索及目录索引无法核对这一身份，因此运行时 SAG 适配器暂时拒绝读写，返回 `knowledge_identity_unsupported`；独立的 `memory_sag` 检索通道不受此限制。恢复运行时读写需要可核验的域、对象和版本映射。
-
-`readKnowledge`要求适配器返回与请求一致的域、对象 ID 和版本；`scratch`的 `verified` 恒为 `false`，只有 `formal` 且适配器明确标记才返回已验证。这只是适配器的声明，调用方仍须信任并核验适配器的归属与版本来源。`writeKnowledge`把**存储**与**索引**分成两个事实：`stored_not_indexed`表示"写进去了但还搜不到"，`write_failed`表示根本没写进去，两者都带`indexError`。把这两件事合成一个`ok`正是"静默降级"的常见来源。
-
-写入带`origin`；`daily`origin只允许`formal`域，防止验证样本污染日常校准记录。
-
-`createGovernanceOutbox`按`eventId+kind`派生稳定ID，并区分失败与已投递。它目前仅是进程内原型，重启后记录丢失，生产执行路径尚未接入；不能把原型内去重当成持久重放或治理投递已完成。
-
-## 选择性接入结构诊断
-
-`classifyFailureRoute`决定一个失败要不要做因果诊断：**自解释的错误直接修**（错误本身已经说清原因，诊断只会增加成本不增加信息）；首次出现也直接修；只有**重复且无进展**才升级为诊断。是否重复读的是持久化的修复历史，不是单次失败的感觉。
-
-`validateDiagnosis`把`unknown`当作一等答案：`unknown`不允许携带置信度、`resolved`恒为`false`，也不允许被"补"成某个具体结构。`createDiagnosisEscalation`每任务最多调用1–3次，同一任务再次请求直接返回`budget_exhausted`；传输失败或结构不合法的答案一律转成`unavailable`，不会被放宽成可用的“原因”。
-
-`nextStepAfterDiagnosis`给出落点：已诊断 → `waiting_analysis`且`repairAuthorized:false`（结构只是指引，仍需走准入与验证）；`unknown`/`unavailable`/预算耗尽 → `waiting_human`，不靠猜。诊断预算耗尽本身也是停止条件，而不是继续猜的许可。
-
-## 回滚与补偿编排
-
-`createCheckpoint`记录的**不只是业务游标**，还包括它产生时的环境（模板与版本、范围、工作区）与外部证据引用。`planRollbackTo`据此分三种情况，只有前两种能自动进行：
-
-- **只读步骤**：直接恢复到检查点游标，不需要补偿。
-- **可逆写**：必须带已登记的补偿计划（前后版本可观测），否则返回`compensation_required`。
-- **不可逆/未知**：一律`not_compensable`，没有安全撤销就不假装能撤销。
-
-环境任一项变化即`environment_changed:<key>`——跨模板或跨工作区的检查点不是回滚点，而是另一个任务。
-
-`settleRollback`要求补偿被独立验证且目标事实匹配才置`restored`；失败、分歧或缺少目标事实都返回`unresolved`，留待人工，不冒充"已回滚"。
-
-## 重复修复的上下文刷新
-
-首个JSON修复要求原始create-only动作建立所有权；**第二次修复**允许从"上一次已核验的owned替换"继续建立上下文：仍然要求同一产物路径、同一模板版本、同一inputVersion、同一后置条件集与修复策略前置条件，只是不再要求`createOnly`。这样修复链可以延续，而所有权仍可回溯到最初的创建动作。路径或条件不符仍然fail closed。
-
-## 恢复预留
-
-核对与补偿属于恢复工作，不消耗业务预算，而是走独立的**恢复预留**：`maxRecoveryReads`、`maxCompensations`、`recoveryTimeoutMs`。计费在调用方事务内先扣再做，超限抛`recovery_exhausted`并在错误对象上带原因（计数或超时）；耗尽后由独立事务把仍冻结的run交给`waiting_human`并落`recovery_exhausted`事件。限额按**每run**计，一次失败的补偿不能靠重试买到第二次机会。
-
-恢复用量单独出现在`getRun().budgetUsage.recovery`，与`attempts/toolCalls/ioOperations/decisionRequests/analysisCalls`分开，两者互不遮掩。这三个键此前只在校验层存在、从未被读取——声明了限额却不执行，比没有限额更危险。
-
-## 持久化与授权边界
-
-当前使用Node.js内建`node:sqlite`；本机Node v22.23.3仍将该API标记为实验性。原型验证不等于生产驱动选型已完成。事件不可改限制来自SQLite触发器，不能防御拥有数据库文件写权限的外部进程。
-
-`recoverRun`只把未结动作冻结为`reconciling`，不自动重放、不清空预算，也不证明旧worker已停止。运行时暂不提供resume；租约、fencing、恢复预留与补偿仍待后续节点。执行中的取消等待公开管线收敛，不宣称能强杀不响应信号的任意原生回调。
-
-证据引用的类型校验不证明真实性。调度器已强制使用登记的Verifier身份、版本与后置条件，JSON模板实际检查磁盘产物；其他Verifier必须各自证明目标事实。准入支持显式约束/负向检查回调，但尚未接活动valves规则库。
-
-文件路径与指纹检查不抵御并发目录替换的全部竞态；真正写入仍须经宿主工具边界，并使用独占创建或版本核对。固定JSON闭环测试使用独占创建。完整文件系统授权、持久Session/AgentFactory与Web事件投影仍待后续节点。
-
-## 开发约束
-
-仅在隔离工作树开发；不运行面向活动junction的合成构建，不改Web profile。源包通过隔离验收后再按DL-3进入合成成员、装配和发布守卫。此包暂设`private:true`，尚无插件入口或安装patch。
+在本包目录运行 `npm test`。宿主集成用例需能解析已安装的 DSH 模块，可用 `DSH_SEAM_HOST_ROOT` 指定安装根；涉及 valves 的集成测试也可设置 `DSH_INSTALL_DIR`。变异测试和外部探针的命令见[包脚本](package.json)。真实 Jev 探针另需 endpoint、model 和 API key，缺少配置时报告 `external_dependency_not_verified`。
